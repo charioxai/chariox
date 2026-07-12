@@ -534,13 +534,11 @@ async fn display_websocket_route_bridges_browser_and_daemon_frames() {
         RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
             assert_eq!(request.tunnel_id, "live");
             assert_eq!(request.path, "/display/live/websockify");
-            assert!(
-                request
-                    .headers
-                    .iter()
-                    .any(|header| header.name.eq_ignore_ascii_case("upgrade")
-                        && header.value.eq_ignore_ascii_case("websocket"))
-            );
+            assert!(request
+                .headers
+                .iter()
+                .any(|header| header.name.eq_ignore_ascii_case("upgrade")
+                    && header.value.eq_ignore_ascii_case("websocket")));
             request.stream_id
         }
         other => panic!("unexpected display tunnel open envelope: {other:?}"),

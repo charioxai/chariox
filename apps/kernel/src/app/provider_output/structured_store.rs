@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crate::provider::ProviderPromptSignalBatch;
@@ -55,12 +55,38 @@ impl StructuredOutputRecordStore {
             .insert(provider_run_id, due_at_ms);
     }
 
+    #[cfg(test)]
     pub(crate) fn poll_due_at_ms(&self, provider_run_id: &str) -> Option<u64> {
         self.next_poll_due_at_ms
             .lock()
             .expect("structured output poll schedule poisoned")
             .get(provider_run_id)
             .copied()
+    }
+
+    pub(crate) fn take_due_provider_run_ids(&self, now_ms: u64) -> BTreeSet<String> {
+        let mut schedule = self
+            .next_poll_due_at_ms
+            .lock()
+            .expect("structured output poll schedule poisoned");
+        let due = schedule
+            .iter()
+            .filter(|(_, due_at_ms)| **due_at_ms <= now_ms)
+            .map(|(provider_run_id, _)| provider_run_id.clone())
+            .collect::<BTreeSet<_>>();
+        for provider_run_id in &due {
+            schedule.remove(provider_run_id);
+        }
+        due
+    }
+
+    pub(crate) fn next_poll_due_at_ms(&self) -> Option<u64> {
+        self.next_poll_due_at_ms
+            .lock()
+            .expect("structured output poll schedule poisoned")
+            .values()
+            .copied()
+            .min()
     }
 
     pub(crate) fn clear(&self, provider_run_id: &str) {
@@ -111,6 +137,12 @@ mod tests {
         assert!(!store.poll_due("provider-run-1", 1_499));
         assert!(store.poll_due("provider-run-1", 1_500));
         assert_eq!(store.poll_due_at_ms("provider-run-1"), Some(1_500));
+        assert_eq!(store.next_poll_due_at_ms(), Some(1_500));
+        assert!(store.take_due_provider_run_ids(1_499).is_empty());
+        assert_eq!(
+            store.take_due_provider_run_ids(1_500),
+            ["provider-run-1".to_string()].into_iter().collect()
+        );
 
         store.mark_poll_enqueued("provider-run-1");
 

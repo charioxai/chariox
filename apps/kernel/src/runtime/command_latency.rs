@@ -1,3 +1,6 @@
+use std::hash::{Hash, Hasher};
+use std::sync::OnceLock;
+
 use serde_json::{json, Value};
 
 use crate::app::{ActivePromptState, ActiveTurnState};
@@ -143,7 +146,7 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 pub(crate) fn log_command_received(trace: &CommandTrace) {
-    if is_quiet_success_command_type(trace.command_type()) {
+    if is_quiet_success_command_type(trace.command_type()) || !sampled(trace.command_id()) {
         return;
     }
     crate::logging::info_with_fields(
@@ -157,7 +160,9 @@ pub(crate) fn log_command_completed(
     trace: &CommandTrace,
     result: &Result<LocalDaemonResponse, DaemonError>,
 ) {
-    if result.is_ok() && is_quiet_success_command_type(trace.command_type()) {
+    if result.is_ok()
+        && (is_quiet_success_command_type(trace.command_type()) || !sampled(trace.command_id()))
+    {
         return;
     }
     let now_ms = now_ms();
@@ -190,6 +195,9 @@ pub(crate) fn log_lane_enqueued(
     queue_depth_before: usize,
     queue_depth_after: usize,
 ) {
+    if !sampled(trace.command_id()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.command_latency",
         "kernel command enqueued",
@@ -239,6 +247,9 @@ pub(crate) fn log_lane_dispatched(
     lane_id: &str,
     dispatch_started_at_ms: u64,
 ) {
+    if !sampled(trace.command_id()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.command_latency",
         "kernel command lane dispatched",
@@ -253,6 +264,9 @@ pub(crate) fn log_lane_completed(
     dispatch_started_at_ms: u64,
     result: &Result<LocalDaemonResponse, DaemonError>,
 ) {
+    if result.is_ok() && !sampled(trace.command_id()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.command_latency",
         "kernel command lane completed",
@@ -266,6 +280,9 @@ pub(crate) fn log_provider_launch_accepted(
     launch_started_at_ms: u64,
     runtime_init_delay_ms: u64,
 ) {
+    if !sampled(trace.command_id()) {
+        return;
+    }
     let now_ms = now_ms();
     crate::logging::info_with_fields(
         "daemon.provider_latency",
@@ -287,6 +304,9 @@ pub(crate) fn log_provider_runtime_binding_started(
     launch_started_at_ms: u64,
 ) -> u64 {
     let now_ms = now_ms();
+    if !sampled(trace.command_id()) {
+        return now_ms;
+    }
     crate::logging::info_with_fields(
         "daemon.provider_latency",
         "provider runtime binding started",
@@ -339,6 +359,9 @@ pub(crate) fn log_provider_first_response_content(
     run: &crate::provider::RuntimeProviderRun,
     active_turn: Option<&ActiveTurnState>,
 ) {
+    if !sampled(run.id()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.provider_latency",
         "provider first response content observed",
@@ -351,11 +374,38 @@ pub(crate) fn log_provider_turn_completed(
     active_turn: Option<&ActiveTurnState>,
     prompt_activity: Option<&ActivePromptState>,
 ) {
+    if !sampled(run.id()) {
+        return;
+    }
     crate::logging::info_with_fields(
         "daemon.provider_latency",
         "provider turn activity completed",
         provider_turn_completion_fields(run, active_turn, prompt_activity, now_ms()),
     );
+}
+
+fn sampled(key: &str) -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    static CONFIG: OnceLock<Option<u64>> = OnceLock::new();
+    let Some(sample_rate) = *CONFIG.get_or_init(|| {
+        let enabled = std::env::var("ARROBA_PERF_DIAGNOSTICS")
+            .ok()
+            .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
+        enabled.then(|| {
+            std::env::var("ARROBA_PERF_DIAGNOSTICS_SAMPLE_RATE")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(100)
+                .max(1)
+        })
+    }) else {
+        return false;
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish().is_multiple_of(sample_rate)
 }
 
 fn elapsed_ms(start_ms: u64, end_ms: u64) -> u64 {
@@ -481,6 +531,9 @@ fn log_provider_runtime_binding_completed(
     status: &'static str,
     error: Option<String>,
 ) {
+    if status == "ok" && !sampled(trace.command_id()) {
+        return;
+    }
     let now_ms = now_ms();
     let mut fields = merge_fields(
         merge_fields(trace.fields_at(now_ms), provider_run_fields(run)),

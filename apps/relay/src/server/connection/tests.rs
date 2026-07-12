@@ -1,12 +1,29 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{mpsc, RwLock};
 
 use super::support::*;
 use super::*;
 use crate::auth::DEFAULT_RELAY_REALM_ID;
 use crate::protocol::{DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
+
+#[test]
+fn outgoing_queue_capacity_override_is_positive_and_defaults_safely() {
+    assert_eq!(parse_relay_outgoing_queue_capacity(Some("32")), 32);
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(None),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("0")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("invalid")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+}
 
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
@@ -130,9 +147,10 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
         .peers
         .insert(peer_addr, daemon_peer(sender, registration));
     registry.daemon_peers.insert(daemon_key.clone(), peer_addr);
+    let routes = registry.route_index();
     let registry = Arc::new(RwLock::new(registry));
 
-    let _ = remove_peer(&registry, peer_addr, Some(&daemon_key)).await;
+    let _ = remove_peer(&registry, &routes, peer_addr, Some(&daemon_key)).await;
 
     let guard = registry.read().await;
     assert!(!guard.daemons.contains_key(&daemon_key));
@@ -172,6 +190,15 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
             daemon_key: other_daemon_key.clone(),
         },
     );
+    let routes = registry.route_index();
+    routes.set_client_sender(client_addr, sender.clone());
+    routes.set_subscription(
+        "slow-subscription".to_string(),
+        ActiveEventRoute {
+            daemon_key: daemon_key.clone(),
+            client_sender: sender.clone(),
+        },
+    );
     let registry = Arc::new(RwLock::new(registry));
 
     let result = send_envelope(
@@ -188,7 +215,7 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
     );
     assert!(result.is_err(), "full client queue should reject event");
 
-    close_slow_subscription(&registry, "slow-subscription", &daemon_key).await;
+    close_slow_subscription(&registry, &routes, "slow-subscription", &daemon_key).await;
 
     let guard = registry.read().await;
     assert!(!guard.subscriptions.contains_key("slow-subscription"));
@@ -210,8 +237,8 @@ async fn target_backpressure_rejects_client_pending_request_without_client_close
     let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
     let client_addr = peer_addr(10_006);
     let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
-    let mut registry = RelayRegistry::default();
-    registry.pending_requests.insert(
+    let registry = RelayRegistry::default();
+    registry.route_index().insert_pending_client(
         "relay-request-1".to_string(),
         PendingClientRequest {
             client_addr,
@@ -263,8 +290,8 @@ async fn target_backpressure_rejects_peer_pending_request_without_requester_clos
     let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
     let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
     let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
-    let mut registry = RelayRegistry::default();
-    registry.pending_daemon_peer_requests.insert(
+    let registry = RelayRegistry::default();
+    registry.route_index().insert_pending_daemon(
         "relay-peer-request-1".to_string(),
         PendingDaemonPeerRequest {
             requester_daemon_key: requester_key,

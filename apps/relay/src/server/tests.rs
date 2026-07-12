@@ -10,8 +10,8 @@ mod subscription;
 use super::*;
 
 use crate::auth::{
-    DEFAULT_RELAY_REALM_ID, RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier,
-    RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
+    RelayAction, RelayAuthError, RelayAuthRequest, RelayAuthVerifier, RelaySubjectKind,
+    RelayTokenClaims, ScopedTokenVerifier, DEFAULT_RELAY_REALM_ID,
 };
 use crate::protocol::{
     ClientTarget, DaemonRegistration, EncryptedRelayPayload, RelayDisplayTunnelHeader,
@@ -24,7 +24,7 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{sleep, timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 fn test_registration(

@@ -1,0 +1,7 @@
+[m8-local-restart] daemon-ready {"kernelUrl":"ws://127.0.0.1:49193"}
+[m8-local-restart] session-created {"sessionId":"18c1582d05470bb0","defaultAgentId":"agent-1","workerAgentId":"agent-2"}
+[m8-local-restart] provider-launched {"providerRunId":"provider-run-1"}
+[m8-local-restart] workflow-invoked {"workflowId":"18c1582d0e329630","workflowRunId":"0000019f52ff1a6f"}
+[m8-local-restart] daemon-stopped
+[m8-local-restart] daemon-restarted
+[m8-local-restart] verified {"sessionId":"18c1582d05470bb0","agentId":"agent-2","workflowId":"18c1582d0e329630","workflowRunId":"0000019f52ff1a6f","historyEvents":1,"artifactRoot":"/Users/miguel/arroba-scale-efficiency/target/live-local-restart-persistence-drill/97462-1783803877393"}

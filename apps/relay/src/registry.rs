@@ -1,5 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock as StdRwLock};
 
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -24,10 +26,261 @@ pub(crate) struct PeerHandle {
     pub(crate) client_daemon_key: Option<DaemonKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DaemonKey {
     pub(crate) realm_id: String,
     pub(crate) daemon_id: String,
+}
+
+const RELAY_ROUTE_SHARD_COUNT: usize = 64;
+
+#[derive(Debug)]
+struct ShardedRouteMap<K, V> {
+    shards: Box<[StdRwLock<HashMap<K, V>>]>,
+}
+
+impl<K, V> Default for ShardedRouteMap<K, V> {
+    fn default() -> Self {
+        Self {
+            shards: (0..RELAY_ROUTE_SHARD_COUNT)
+                .map(|_| StdRwLock::new(HashMap::new()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        }
+    }
+}
+
+impl<K, V> ShardedRouteMap<K, V>
+where
+    K: Clone + Eq + Hash,
+    V: Clone,
+{
+    fn shard_index(key: &K) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % RELAY_ROUTE_SHARD_COUNT
+    }
+
+    fn get(&self, key: &K) -> Option<V> {
+        self.shards[Self::shard_index(key)]
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn insert(&self, key: K, value: V) {
+        self.shards[Self::shard_index(&key)]
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, value);
+    }
+
+    fn remove(&self, key: &K) -> Option<V> {
+        self.shards[Self::shard_index(key)]
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key)
+    }
+
+    fn remove_if(&self, key: &K, predicate: impl FnOnce(&V) -> bool) -> Option<V> {
+        let mut shard = self.shards[Self::shard_index(key)]
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if shard.get(key).is_some_and(predicate) {
+            shard.remove(key)
+        } else {
+            None
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .len()
+            })
+            .sum()
+    }
+
+    fn values(&self) -> Vec<V> {
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn drain_where(&self, predicate: impl Fn(&V) -> bool) -> Vec<V> {
+        let mut removed = Vec::new();
+        for shard in self.shards.iter() {
+            let mut shard = shard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let keys = shard
+                .iter()
+                .filter(|(_, value)| predicate(value))
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            removed.extend(keys.into_iter().filter_map(|key| shard.remove(&key)));
+        }
+        removed
+    }
+}
+
+impl<V: Clone> ShardedRouteMap<String, V> {
+    fn get_str(&self, key: &str) -> Option<V> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        self.shards[(hasher.finish() as usize) % RELAY_ROUTE_SHARD_COUNT]
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn remove_str(&self, key: &str) -> Option<V> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        self.shards[(hasher.finish() as usize) % RELAY_ROUTE_SHARD_COUNT]
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveEventRoute {
+    pub(crate) daemon_key: DaemonKey,
+    pub(crate) client_sender: RelaySender,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RelayRouteIndex {
+    daemon_senders: ShardedRouteMap<DaemonKey, RelaySender>,
+    client_senders: ShardedRouteMap<SocketAddr, RelaySender>,
+    subscriptions: ShardedRouteMap<String, ActiveEventRoute>,
+    pending_client_requests: ShardedRouteMap<String, PendingClientRequest>,
+    pending_daemon_requests: ShardedRouteMap<String, PendingDaemonPeerRequest>,
+}
+
+impl RelayRouteIndex {
+    pub(crate) fn daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {
+        self.daemon_senders.get(daemon_key)
+    }
+
+    pub(crate) fn set_daemon_sender(&self, daemon_key: DaemonKey, sender: RelaySender) {
+        self.daemon_senders.insert(daemon_key, sender);
+    }
+
+    pub(crate) fn remove_daemon_sender(&self, daemon_key: &DaemonKey) {
+        self.daemon_senders.remove(daemon_key);
+    }
+
+    pub(crate) fn set_client_sender(&self, peer_addr: SocketAddr, sender: RelaySender) {
+        self.client_senders.insert(peer_addr, sender);
+    }
+
+    pub(crate) fn client_sender(&self, peer_addr: &SocketAddr) -> Option<RelaySender> {
+        self.client_senders.get(peer_addr)
+    }
+
+    pub(crate) fn remove_client_sender(&self, peer_addr: &SocketAddr) {
+        self.client_senders.remove(peer_addr);
+    }
+
+    pub(crate) fn set_subscription(&self, subscription_id: String, route: ActiveEventRoute) {
+        self.subscriptions.insert(subscription_id, route);
+    }
+
+    pub(crate) fn subscription(&self, subscription_id: &str) -> Option<ActiveEventRoute> {
+        self.subscriptions.get_str(subscription_id)
+    }
+
+    pub(crate) fn remove_subscription(&self, subscription_id: &str) {
+        self.subscriptions.remove_str(subscription_id);
+    }
+
+    pub(crate) fn insert_pending_client(
+        &self,
+        relay_request_id: String,
+        pending: PendingClientRequest,
+    ) {
+        self.pending_client_requests
+            .insert(relay_request_id, pending);
+    }
+
+    pub(crate) fn remove_pending_client(
+        &self,
+        relay_request_id: &str,
+    ) -> Option<PendingClientRequest> {
+        self.pending_client_requests.remove_str(relay_request_id)
+    }
+
+    pub(crate) fn take_pending_client_if(
+        &self,
+        relay_request_id: &str,
+        predicate: impl FnOnce(&PendingClientRequest) -> bool,
+    ) -> Option<PendingClientRequest> {
+        let key = relay_request_id.to_string();
+        self.pending_client_requests.remove_if(&key, predicate)
+    }
+
+    pub(crate) fn pending_clients(&self) -> Vec<PendingClientRequest> {
+        self.pending_client_requests.values()
+    }
+
+    pub(crate) fn drain_pending_clients_where(
+        &self,
+        predicate: impl Fn(&PendingClientRequest) -> bool,
+    ) -> Vec<PendingClientRequest> {
+        self.pending_client_requests.drain_where(predicate)
+    }
+
+    pub(crate) fn insert_pending_daemon(
+        &self,
+        relay_request_id: String,
+        pending: PendingDaemonPeerRequest,
+    ) {
+        self.pending_daemon_requests
+            .insert(relay_request_id, pending);
+    }
+
+    pub(crate) fn remove_pending_daemon(
+        &self,
+        relay_request_id: &str,
+    ) -> Option<PendingDaemonPeerRequest> {
+        self.pending_daemon_requests.remove_str(relay_request_id)
+    }
+
+    pub(crate) fn take_pending_daemon_if(
+        &self,
+        relay_request_id: &str,
+        predicate: impl FnOnce(&PendingDaemonPeerRequest) -> bool,
+    ) -> Option<PendingDaemonPeerRequest> {
+        let key = relay_request_id.to_string();
+        self.pending_daemon_requests.remove_if(&key, predicate)
+    }
+
+    pub(crate) fn drain_pending_daemons_where(
+        &self,
+        predicate: impl Fn(&PendingDaemonPeerRequest) -> bool,
+    ) -> Vec<PendingDaemonPeerRequest> {
+        self.pending_daemon_requests.drain_where(predicate)
+    }
+
+    pub(crate) fn pending_request_count(&self) -> usize {
+        self.pending_client_requests.len() + self.pending_daemon_requests.len()
+    }
 }
 
 impl DaemonKey {
@@ -118,20 +371,37 @@ pub(crate) struct PendingDisplayStream {
     pub(crate) sender: DisplayStreamSender,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
     pub(crate) daemons: BTreeMap<DaemonKey, DaemonRegistration>,
     pub(crate) daemon_peers: BTreeMap<DaemonKey, SocketAddr>,
-    pub(crate) pending_requests: BTreeMap<String, PendingClientRequest>,
-    pub(crate) pending_daemon_peer_requests: BTreeMap<String, PendingDaemonPeerRequest>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
     pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
     pub(crate) pending_display_streams: BTreeMap<String, PendingDisplayStream>,
     backpressure_metrics: RelayBackpressureMetrics,
+    routes: Arc<RelayRouteIndex>,
+}
+
+impl Default for RelayRegistry {
+    fn default() -> Self {
+        Self {
+            peers: BTreeMap::new(),
+            daemons: BTreeMap::new(),
+            daemon_peers: BTreeMap::new(),
+            subscriptions: BTreeMap::new(),
+            display_tunnels: BTreeMap::new(),
+            pending_display_streams: BTreeMap::new(),
+            backpressure_metrics: RelayBackpressureMetrics::default(),
+            routes: Arc::new(RelayRouteIndex::default()),
+        }
+    }
 }
 
 impl RelayRegistry {
+    pub(crate) fn route_index(&self) -> Arc<RelayRouteIndex> {
+        Arc::clone(&self.routes)
+    }
     pub fn peer_count(&self) -> usize {
         self.peers.len()
     }
@@ -150,7 +420,7 @@ impl RelayRegistry {
     }
 
     pub fn pending_request_count(&self) -> usize {
-        self.pending_requests.len() + self.pending_daemon_peer_requests.len()
+        self.routes.pending_request_count()
     }
 
     pub fn subscription_count(&self) -> usize {
@@ -509,6 +779,41 @@ fn normalized_kernel_started_at_ms(registration: &DaemonRegistration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn route_index_resolves_packet_paths_without_registry_state() {
+        let routes = RelayRouteIndex::default();
+        let daemon_key = DaemonKey::new("realm-1", "daemon-1");
+        let (daemon_sender, _daemon_receiver) = mpsc::channel(1);
+        let (client_sender, _client_receiver) = mpsc::channel(1);
+        let client_addr = "127.0.0.1:41001".parse().expect("client address");
+
+        routes.set_daemon_sender(daemon_key.clone(), daemon_sender.clone());
+        routes.set_client_sender(client_addr, client_sender.clone());
+        routes.set_subscription(
+            "subscription-1".to_string(),
+            ActiveEventRoute {
+                daemon_key: daemon_key.clone(),
+                client_sender,
+            },
+        );
+
+        assert!(routes.daemon_sender(&daemon_key).is_some());
+        assert!(routes.client_sender(&client_addr).is_some());
+        assert_eq!(
+            routes
+                .subscription("subscription-1")
+                .expect("event route")
+                .daemon_key,
+            daemon_key
+        );
+        routes.remove_subscription("subscription-1");
+        routes.remove_client_sender(&client_addr);
+        routes.remove_daemon_sender(&daemon_key);
+        assert!(routes.subscription("subscription-1").is_none());
+        assert!(routes.client_sender(&client_addr).is_none());
+        assert!(routes.daemon_sender(&daemon_key).is_none());
+    }
 
     #[test]
     fn display_tunnels_are_scoped_to_daemon_and_expire() {

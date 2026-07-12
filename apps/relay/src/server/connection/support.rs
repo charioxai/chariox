@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -36,6 +36,7 @@ impl ConnectionAction {
 pub(super) async fn handle_client_packet_route_envelope(
     envelope: RelayEnvelope,
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
     peer_addr: SocketAddr,
     outgoing_tx: &RelaySender,
     relay_request_counter: &AtomicU64,
@@ -124,25 +125,18 @@ pub(super) async fn handle_client_packet_route_envelope(
                 "relay-request-{}",
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
             );
-            let daemon_sender = {
-                let mut guard = registry.write().await;
-                guard.pending_requests.insert(
-                    relay_request_id.clone(),
-                    PendingClientRequest {
-                        client_addr: peer_addr,
-                        client_request_id: request_id.clone(),
-                        daemon_key: daemon_key.clone(),
-                        kind: PendingRequestKind::Request,
-                    },
-                );
-                resolve_daemon_sender_locked(&guard, &daemon_key)
-            };
+            routes.insert_pending_client(
+                relay_request_id.clone(),
+                PendingClientRequest {
+                    client_addr: peer_addr,
+                    client_request_id: request_id.clone(),
+                    daemon_key: daemon_key.clone(),
+                    kind: PendingRequestKind::Request,
+                },
+            );
+            let daemon_sender = routes.daemon_sender(&daemon_key);
             let Some(daemon_sender) = daemon_sender else {
-                registry
-                    .write()
-                    .await
-                    .pending_requests
-                    .remove(&relay_request_id);
+                routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_request",
                     &registry,
@@ -348,11 +342,11 @@ pub(super) async fn handle_client_packet_route_envelope(
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
             );
             let (subscription_conflict, daemon_sender) = {
-                let mut guard = registry.write().await;
-                if subscription_owned_by_other_client(&guard, &subscription_id, peer_addr) {
+                let guard = registry.read().await;
+                if subscription_owned_by_other_client(&guard, routes, &subscription_id, peer_addr) {
                     (true, None)
                 } else {
-                    guard.pending_requests.insert(
+                    routes.insert_pending_client(
                         relay_request_id.clone(),
                         PendingClientRequest {
                             client_addr: peer_addr,
@@ -363,7 +357,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                             },
                         },
                     );
-                    (false, resolve_daemon_sender_locked(&guard, &daemon_key))
+                    (false, routes.daemon_sender(&daemon_key))
                 }
             };
             if subscription_conflict {
@@ -382,11 +376,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                 return Ok(ConnectionAction::Continue);
             }
             let Some(daemon_sender) = daemon_sender else {
-                registry
-                    .write()
-                    .await
-                    .pending_requests
-                    .remove(&relay_request_id);
+                routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_subscribe",
                     &registry,
@@ -535,27 +525,20 @@ pub(super) async fn handle_client_packet_route_envelope(
                 return Ok(ConnectionAction::Continue);
             };
             let daemon_key = active.daemon_key.clone();
-            let daemon_sender = {
-                let mut guard = registry.write().await;
-                guard.pending_requests.insert(
-                    relay_request_id.clone(),
-                    PendingClientRequest {
-                        client_addr: peer_addr,
-                        client_request_id: request_id.clone(),
-                        daemon_key: daemon_key.clone(),
-                        kind: PendingRequestKind::Unsubscribe {
-                            subscription_id: subscription_id.clone(),
-                        },
+            routes.insert_pending_client(
+                relay_request_id.clone(),
+                PendingClientRequest {
+                    client_addr: peer_addr,
+                    client_request_id: request_id.clone(),
+                    daemon_key: daemon_key.clone(),
+                    kind: PendingRequestKind::Unsubscribe {
+                        subscription_id: subscription_id.clone(),
                     },
-                );
-                resolve_daemon_sender_locked(&guard, &daemon_key)
-            };
+                },
+            );
+            let daemon_sender = routes.daemon_sender(&daemon_key);
             let Some(daemon_sender) = daemon_sender else {
-                registry
-                    .write()
-                    .await
-                    .pending_requests
-                    .remove(&relay_request_id);
+                routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_unsubscribe",
                     &registry,
@@ -709,6 +692,7 @@ pub(super) async fn connected_client_binding(
 
 pub(super) async fn close_slow_subscription(
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<crate::registry::RelayRouteIndex>,
     subscription_id: &str,
     daemon_key: &DaemonKey,
 ) {
@@ -721,10 +705,8 @@ pub(super) async fn close_slow_subscription(
             .filter(|active| active.daemon_key == *daemon_key);
         if let Some(active) = active {
             guard.subscriptions.remove(subscription_id);
-            guard
-                .peers
-                .get(&active.client_addr)
-                .map(|peer| peer.sender.clone())
+            routes.remove_subscription(subscription_id);
+            routes.client_sender(&active.client_addr)
         } else {
             None
         }
@@ -738,6 +720,7 @@ pub(super) async fn close_slow_subscription(
 
 fn subscription_owned_by_other_client(
     registry: &RelayRegistry,
+    routes: &crate::registry::RelayRouteIndex,
     subscription_id: &str,
     peer_addr: SocketAddr,
 ) -> bool {
@@ -745,7 +728,7 @@ fn subscription_owned_by_other_client(
         .subscriptions
         .get(subscription_id)
         .is_some_and(|active| active.client_addr != peer_addr)
-        || registry.pending_requests.values().any(|pending| {
+        || routes.pending_clients().iter().any(|pending| {
             pending.client_addr != peer_addr
                 && matches!(
                     &pending.kind,
@@ -793,7 +776,7 @@ pub(super) async fn reject_client_pending_on_target_backpressure(
 ) -> Result<(), std::io::Error> {
     {
         let mut guard = registry.write().await;
-        guard.pending_requests.remove(relay_request_id);
+        guard.route_index().remove_pending_client(relay_request_id);
         guard.record_target_queue_full();
     }
     send_envelope(
@@ -815,7 +798,7 @@ pub(super) async fn reject_peer_pending_on_target_backpressure(
 ) -> Result<(), std::io::Error> {
     {
         let mut guard = registry.write().await;
-        guard.pending_daemon_peer_requests.remove(relay_request_id);
+        guard.route_index().remove_pending_daemon(relay_request_id);
         guard.record_target_queue_full();
     }
     send_envelope(
@@ -829,6 +812,7 @@ pub(super) async fn reject_peer_pending_on_target_backpressure(
     )
 }
 
+#[cfg(test)]
 pub(super) fn resolve_daemon_sender_locked(
     registry: &RelayRegistry,
     daemon_key: &DaemonKey,

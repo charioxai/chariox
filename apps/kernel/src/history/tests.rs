@@ -1,6 +1,7 @@
 mod legacy_import;
 
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Barrier};
 
 use base64::Engine;
 
@@ -245,6 +246,39 @@ fn session_history_replace_rejects_external_provider_observed_without_complete_i
 }
 
 #[test]
+fn session_history_replacement_appends_and_deduplicates_without_rewriting_the_file() {
+    let config = DaemonConfig::for_tests();
+    let mut sessions = SessionService::new(&config);
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let store = SessionHistoryStore::new(config.session_history_root.clone())
+        .expect("history store should initialize");
+    let original = external_observed_entry(session.id());
+    let merge_key = original.merge_key.clone().expect("merge key");
+    store
+        .append(&session, &original)
+        .expect("original history should append");
+    let path = store.path_for_session(&session);
+    let original_bytes = std::fs::metadata(&path).expect("history metadata").len();
+    let mut replacement = original.clone();
+    replacement.text = "replacement output".to_string();
+
+    assert!(store
+        .replace_by_merge_key(&session, &merge_key, &replacement)
+        .expect("history replacement should append"));
+
+    assert!(
+        std::fs::metadata(&path).expect("history metadata").len() > original_bytes,
+        "legacy replacement should be append-only"
+    );
+    assert_eq!(
+        store.load(&session).expect("history should load"),
+        vec![replacement]
+    );
+}
+
+#[test]
 fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
     let path = std::env::temp_dir().join(format!(
         "arroba-operational-history-prompt-owned-validation-{}-{}.db",
@@ -462,6 +496,102 @@ fn converts_session_history_entry_to_canonical_history_event() {
         round_tripped.prompt_origin,
         Some(crate::session::PromptOrigin::External)
     );
+}
+
+#[test]
+fn operational_history_replaces_transcripts_through_merge_key_index() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-indexed-replace-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let original = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("provider-turn-1".to_string()),
+        "partial",
+    );
+    let event = store
+        .append_transcript(&original, HistoryEventTurnContext::default())
+        .expect("original transcript should append");
+    let replacement = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        Some("provider-turn-1".to_string()),
+        "complete",
+    );
+    let replaced = store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "provider-turn-1",
+            &replacement,
+            HistoryEventTurnContext::default(),
+        )
+        .expect("indexed replacement should succeed")
+        .expect("indexed transcript should exist");
+    assert_eq!(replaced.event_id, event.event_id);
+    assert_eq!(replaced.sequence, event.sequence);
+    assert_eq!(replaced.content.as_deref(), Some("complete"));
+
+    let connection = store.connection.lock().expect("history lock should hold");
+    let plan = connection
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT event_json FROM history_events
+             WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+             ORDER BY sequence ASC LIMIT 1",
+            rusqlite::params!["session-1", "agent-1", "provider-turn-1"],
+            |row| row.get::<_, String>(3),
+        )
+        .expect("replacement query plan should load");
+    assert!(
+        plan.contains("idx_history_events_session_agent_merge_sequence"),
+        "replacement lookup should use the merge-key index: {plan}"
+    );
+    drop(connection);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn operational_history_reads_do_not_hold_the_writer_connection() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-read-write-isolation-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history should open");
+    let read_connection = store
+        .lock_read_connection(Some("session-1"))
+        .expect("read connection should lock");
+    let entry = SessionHistoryEntry::provider_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "output while hydration holds a reader",
+    );
+    store
+        .append_transcript(&entry, HistoryEventTurnContext::default())
+        .expect("writer should remain independent from hydration readers");
+    drop(read_connection);
+    assert!(store
+        .has_session_events("session-1")
+        .expect("session history should remain readable"));
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
 #[test]
@@ -1136,6 +1266,57 @@ fn operational_history_amortizes_size_budget_checks_for_small_appends() {
         0
     );
 
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn operational_history_writer_groups_concurrent_acknowledged_appends() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-grouped-writes-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let writers = 32;
+    let barrier = Arc::new(Barrier::new(writers));
+    let mut threads = Vec::new();
+    for index in 0..writers {
+        let store = store.clone();
+        let barrier = Arc::clone(&barrier);
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            store
+                .append_operational_event(
+                    HistoryEventKind::Notice,
+                    Some(HistoryEventRole::System),
+                    Some(format!("event-{index}")),
+                    Default::default(),
+                    HistoryEventTurnContext::default(),
+                )
+                .expect("concurrent history event should append");
+        }));
+    }
+    for thread in threads {
+        thread.join().expect("history append thread should join");
+    }
+
+    let health = store.writer_health_snapshot();
+    assert_eq!(health.committed_records, writers as u64);
+    assert!(health.committed_batches < writers as u64, "{health:?}");
+    assert!(health.max_batch_records > 1, "{health:?}");
+    assert_eq!(
+        store
+            .query_events(HistoryEventQuery::default())
+            .expect("written history should query")
+            .len(),
+        writers
+    );
+
+    drop(store);
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));

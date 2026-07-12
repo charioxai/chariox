@@ -4,7 +4,9 @@ use arroba_kernel::local::{
     AttachToSessionRequest, GetDaemonHealthRequest, GetSessionStateRequest, LocalDaemonRequest,
     RunShellCapabilityRequest,
 };
-use arroba_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use arroba_kernel::runtime_transport::{
+    run_kernel_websocket_server_on_listener, CONNECTION_INBOUND_REQUEST_LIMIT,
+};
 use arroba_kernel::session::CreateSessionRequest;
 use arroba_kernel::{DaemonApp, DaemonConfig};
 use futures_util::{SinkExt, StreamExt};
@@ -418,7 +420,7 @@ async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
         .expect("attachment id should be present")
         .to_string();
 
-    for index in 0..16 {
+    for index in 0..=CONNECTION_INBOUND_REQUEST_LIMIT {
         send_frame(
             &mut socket,
             json!({
@@ -428,9 +430,9 @@ async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
                     session_id: session_id.clone(),
                     attachment_id: attachment_id.clone(),
                     command: "sh".to_string(),
-                    args: vec!["-c".to_string(), "sleep 0.2".to_string()],
+                    args: vec!["-c".to_string(), "sleep 1".to_string()],
                     working_directory: None,
-                    timeout_ms: Some(1_000),
+                    timeout_ms: Some(3_000),
                 }),
             }),
         )

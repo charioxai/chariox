@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::DaemonError;
 
@@ -10,22 +10,22 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionStateStore {
-    inner: Arc<Mutex<SessionService>>,
+    inner: Arc<RwLock<SessionService>>,
 }
 
 impl SessionStateStore {
     pub(crate) fn new(sessions: SessionService) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(sessions)),
+            inner: Arc::new(RwLock::new(sessions)),
         }
     }
 
-    pub(crate) fn read(&self) -> MutexGuard<'_, SessionService> {
-        self.inner.lock().expect("session state mutex poisoned")
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, SessionService> {
+        self.inner.read().expect("session state rwlock poisoned")
     }
 
-    pub(crate) fn write(&self) -> MutexGuard<'_, SessionService> {
-        self.inner.lock().expect("session state mutex poisoned")
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, SessionService> {
+        self.inner.write().expect("session state rwlock poisoned")
     }
 
     pub(crate) fn snapshot(&self) -> SessionService {
@@ -221,5 +221,25 @@ impl SessionStateOwner {
         self.store
             .write()
             .set_active_provider_run(session_id, provider_run_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn independent_session_reads_can_hold_the_store_concurrently() {
+        let store = SessionStateStore::new(SessionService::new(&crate::DaemonConfig::for_tests()));
+        let first_reader = store.read();
+
+        let second_reader = store
+            .inner
+            .try_read()
+            .expect("a read must not exclude another read");
+
+        drop(second_reader);
+        drop(first_reader);
+        assert!(store.inner.try_write().is_ok());
     }
 }

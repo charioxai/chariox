@@ -5,6 +5,60 @@ use tokio::time::{timeout, Instant as TokioInstant};
 use tokio_tungstenite::connect_async;
 
 #[test]
+fn process_admission_scales_with_cpu_inside_bounded_limits() {
+    let limit = process_inbound_request_limit();
+    assert!(
+        (MIN_PROCESS_INBOUND_REQUEST_LIMIT..=MAX_PROCESS_INBOUND_REQUEST_LIMIT).contains(&limit)
+    );
+}
+
+#[test]
+fn process_admission_reserves_capacity_for_interactive_commands() {
+    let admission = InboundRequestAdmission::new(10);
+    let connection = Arc::new(Semaphore::new(32));
+    let normal = (0..2)
+        .map(|_| {
+            admission
+                .try_acquire(&connection, &KernelCommandPriority::Normal)
+                .expect("non-interactive capacity should be available")
+        })
+        .collect::<Vec<_>>();
+    assert!(admission
+        .try_acquire(&connection, &KernelCommandPriority::Background)
+        .is_err());
+
+    let interactive = (0..8)
+        .map(|_| {
+            admission
+                .try_acquire(&connection, &KernelCommandPriority::Interactive)
+                .expect("reserved interactive capacity should remain available")
+        })
+        .collect::<Vec<_>>();
+    assert!(admission
+        .try_acquire(&connection, &KernelCommandPriority::Interactive)
+        .is_err());
+
+    drop(interactive);
+    drop(normal);
+}
+
+#[test]
+fn connection_admission_prevents_one_client_from_consuming_process_capacity() {
+    let admission = InboundRequestAdmission::new(64);
+    let connection = Arc::new(Semaphore::new(2));
+    let first = admission
+        .try_acquire(&connection, &KernelCommandPriority::Interactive)
+        .expect("first request should enter");
+    let second = admission
+        .try_acquire(&connection, &KernelCommandPriority::Interactive)
+        .expect("second request should enter");
+    assert!(admission
+        .try_acquire(&connection, &KernelCommandPriority::Interactive)
+        .is_err());
+    drop((first, second));
+}
+
+#[test]
 fn kernel_event_writer_coalesces_event_lane_with_stable_deadline() {
     let now = TokioInstant::now();
     let mut coalescer = EventWriteCoalescer::new(33);

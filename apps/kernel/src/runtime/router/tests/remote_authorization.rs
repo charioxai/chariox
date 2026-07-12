@@ -174,14 +174,14 @@ fn remote_home_invocation_router_with_active_prompt(
             },
         )
         .expect("agent should be remote-backed");
-    app.sessions_mut()
-        .submit_prompt(
-            &session_id,
-            attachment.id(),
-            agent.id(),
-            "active remote prompt",
-            Vec::new(),
-        )
+    let prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "active remote prompt",
+        PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
         .expect("active prompt should be recorded");
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id,

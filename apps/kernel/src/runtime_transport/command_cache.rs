@@ -13,6 +13,7 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
+const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
 const COMMAND_RESULT_COMPACTION_SKIP_LIMIT: u64 = 1_024;
@@ -22,6 +23,7 @@ const COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES: u64 = 256 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CommandResultRetentionPolicy {
     max_entries: usize,
+    max_memory_bytes: u64,
     max_total_bytes: Option<u64>,
     max_age_ms: Option<u64>,
 }
@@ -30,6 +32,7 @@ impl CommandResultRetentionPolicy {
     fn memory() -> Self {
         Self {
             max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: None,
             max_age_ms: None,
         }
@@ -38,6 +41,7 @@ impl CommandResultRetentionPolicy {
     fn persistent() -> Self {
         Self {
             max_entries: COMMAND_RESULT_CACHE_LIMIT,
+            max_memory_bytes: COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES,
             max_total_bytes: Some(COMMAND_RESULT_CACHE_MAX_BYTES),
             max_age_ms: Some(COMMAND_RESULT_CACHE_MAX_AGE_MS),
         }
@@ -123,16 +127,16 @@ struct CommandResultPersistence {
 }
 
 #[derive(Debug, Default)]
-struct CommandResultByteAccounting {
+struct CommandResultMemoryAccounting {
     by_command_id: BTreeMap<String, u64>,
-    total_jsonl_bytes: u64,
+    total_estimated_bytes: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct CommandResultCache {
     results: Mutex<BTreeMap<String, CommandResultEntry>>,
     order: Mutex<VecDeque<String>>,
-    byte_accounting: Mutex<CommandResultByteAccounting>,
+    memory_accounting: Mutex<CommandResultMemoryAccounting>,
     retention: CommandResultRetentionPolicy,
     persistence: Option<CommandResultPersistence>,
 }
@@ -142,7 +146,7 @@ impl Default for CommandResultCache {
         Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
-            byte_accounting: Mutex::new(CommandResultByteAccounting::default()),
+            memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             persistence: None,
         }
@@ -165,7 +169,7 @@ impl CommandResultCache {
         let mut cache = Self {
             results: Mutex::new(BTreeMap::new()),
             order: Mutex::new(VecDeque::new()),
-            byte_accounting: Mutex::new(CommandResultByteAccounting::default()),
+            memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
             persistence: Some(CommandResultPersistence {
                 path: path.clone(),
@@ -187,14 +191,14 @@ impl CommandResultCache {
         }
         let mut results = BTreeMap::new();
         let mut order = VecDeque::new();
-        let mut byte_accounting = CommandResultByteAccounting::default();
+        let mut memory_accounting = CommandResultMemoryAccounting::default();
         for retained in retained.entries {
             let entry = retained.entry;
-            let entry_bytes = retained.jsonl_bytes;
-            byte_accounting.total_jsonl_bytes = byte_accounting
-                .total_jsonl_bytes
+            let entry_bytes = cached_command_result_memory_bytes(&entry.command_id, &entry.result);
+            memory_accounting.total_estimated_bytes = memory_accounting
+                .total_estimated_bytes
                 .saturating_add(entry_bytes);
-            byte_accounting
+            memory_accounting
                 .by_command_id
                 .insert(entry.command_id.clone(), entry_bytes);
             order.push_back(entry.command_id.clone());
@@ -205,7 +209,7 @@ impl CommandResultCache {
         }
         cache.results = Mutex::new(results);
         cache.order = Mutex::new(order);
-        cache.byte_accounting = Mutex::new(byte_accounting);
+        cache.memory_accounting = Mutex::new(memory_accounting);
         Ok(cache)
     }
 
@@ -285,21 +289,23 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        let persisted_bytes = if should_persist_completed_result(&cached.fingerprint) {
-            let persisted = PersistentCommandResult {
-                command_id: command_id.clone(),
-                completed_at_ms: cached.completed_at_ms,
-                result: cached.clone(),
-            };
-            persistent_result_jsonl_bytes(&persisted)
-                .ok()
-                .filter(|bytes| *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES)
-        } else {
-            None
+        let persisted = PersistentCommandResult {
+            command_id: command_id.clone(),
+            completed_at_ms: cached.completed_at_ms,
+            result: cached.clone(),
         };
+        // Account every completed result in memory, including responses that are too large or
+        // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
+        // so entry-count retention alone is not a meaningful memory bound.
+        let result_jsonl_bytes = persistent_result_jsonl_bytes(&persisted).ok();
+        let result_memory_bytes = cached_command_result_memory_bytes(&command_id, &cached);
+        let persisted_bytes = result_jsonl_bytes.filter(|bytes| {
+            should_persist_completed_result(&cached.fingerprint)
+                && *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES
+        });
         let should_persist = persisted_bytes.is_some();
         let compact_after_append = self
-            .apply_retention_to_completed_results(&command_id, persisted_bytes)
+            .apply_retention_to_completed_results(&command_id, result_memory_bytes)
             .await;
         if !should_persist {
             return;
@@ -337,8 +343,8 @@ impl CommandResultCache {
             return Ok(());
         }
         let compact_snapshot =
-            if compact_after_append && persistence.should_compact_now(next_append_bytes)? {
-                Some(self.completed_results_snapshot().await)
+            if compact_after_append || persistence.should_compact_now(next_append_bytes)? {
+                Some(self.persistable_completed_results_snapshot().await)
             } else {
                 None
             };
@@ -357,29 +363,28 @@ impl CommandResultCache {
     async fn apply_retention_to_completed_results(
         &self,
         completed_command_id: &str,
-        completed_jsonl_bytes: Option<u64>,
+        completed_memory_bytes: u64,
     ) -> bool {
         let mut order = self.order.lock().await;
         let mut results = self.results.lock().await;
-        let mut byte_accounting = self.byte_accounting.lock().await;
+        let mut memory_accounting = self.memory_accounting.lock().await;
 
         if let Some(existing_index) = order.iter().position(|entry| entry == completed_command_id) {
             order.remove(existing_index);
         }
         order.push_back(completed_command_id.to_string());
 
-        if let Some(bytes) = completed_jsonl_bytes {
-            if let Some(previous_bytes) = byte_accounting
-                .by_command_id
-                .insert(completed_command_id.to_string(), bytes)
-            {
-                byte_accounting.total_jsonl_bytes = byte_accounting
-                    .total_jsonl_bytes
-                    .saturating_sub(previous_bytes);
-            }
-            byte_accounting.total_jsonl_bytes =
-                byte_accounting.total_jsonl_bytes.saturating_add(bytes);
+        if let Some(previous_bytes) = memory_accounting
+            .by_command_id
+            .insert(completed_command_id.to_string(), completed_memory_bytes)
+        {
+            memory_accounting.total_estimated_bytes = memory_accounting
+                .total_estimated_bytes
+                .saturating_sub(previous_bytes);
         }
+        memory_accounting.total_estimated_bytes = memory_accounting
+            .total_estimated_bytes
+            .saturating_add(completed_memory_bytes);
 
         let mut compacted = false;
         let now_ms = crate::session::unix_epoch_ms();
@@ -396,23 +401,24 @@ impl CommandResultCache {
                         completed_at_ms != 0 && now_ms.saturating_sub(completed_at_ms) > max_age_ms
                     })
             }) {
-                compacted |=
-                    remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting);
+                compacted |= remove_oldest_completed_result(
+                    &mut order,
+                    &mut results,
+                    &mut memory_accounting,
+                );
             }
         }
 
         while order.len() > self.retention.max_entries {
             compacted |=
-                remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting);
+                remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting);
         }
 
-        if let Some(max_total_bytes) = self.retention.max_total_bytes {
-            while byte_accounting.total_jsonl_bytes > max_total_bytes {
-                if !remove_oldest_completed_result(&mut order, &mut results, &mut byte_accounting) {
-                    break;
-                }
-                compacted = true;
+        while memory_accounting.total_estimated_bytes > self.retention.max_memory_bytes {
+            if !remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting) {
+                break;
             }
+            compacted = true;
         }
 
         compacted
@@ -434,6 +440,22 @@ impl CommandResultCache {
                 })
             })
             .collect()
+    }
+
+    async fn persistable_completed_results_snapshot(&self) -> Vec<PersistentCommandResult> {
+        let mut entries = self
+            .completed_results_snapshot()
+            .await
+            .into_iter()
+            .filter(|entry| should_persist_completed_result(&entry.result.fingerprint))
+            .filter_map(|entry| {
+                let jsonl_bytes = persistent_result_jsonl_bytes(&entry).ok()?;
+                (jsonl_bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES)
+                    .then_some(PersistentCommandResultWithBytes { entry, jsonl_bytes })
+            })
+            .collect::<Vec<_>>();
+        apply_persistent_retention(&mut entries, self.retention);
+        entries.into_iter().map(|entry| entry.entry).collect()
     }
 
     #[cfg(test)]
@@ -535,16 +557,76 @@ impl CommandResultPersistence {
 fn remove_oldest_completed_result(
     order: &mut VecDeque<String>,
     results: &mut BTreeMap<String, CommandResultEntry>,
-    byte_accounting: &mut CommandResultByteAccounting,
+    memory_accounting: &mut CommandResultMemoryAccounting,
 ) -> bool {
     let Some(command_id) = order.pop_front() else {
         return false;
     };
     results.remove(&command_id);
-    if let Some(bytes) = byte_accounting.by_command_id.remove(&command_id) {
-        byte_accounting.total_jsonl_bytes = byte_accounting.total_jsonl_bytes.saturating_sub(bytes);
+    if let Some(bytes) = memory_accounting.by_command_id.remove(&command_id) {
+        memory_accounting.total_estimated_bytes = memory_accounting
+            .total_estimated_bytes
+            .saturating_sub(bytes);
     }
     true
+}
+
+fn cached_command_result_memory_bytes(command_id: &str, result: &CachedCommandResult) -> u64 {
+    let mut bytes = std::mem::size_of::<CachedCommandResult>() as u64;
+    // The command id is owned once by the result map and once by the completion order.
+    bytes = bytes.saturating_add((command_id.len() as u64).saturating_mul(2));
+    bytes = bytes
+        .saturating_add(result.fingerprint.command_type.capacity() as u64)
+        .saturating_add(result.fingerprint.source.capacity() as u64)
+        .saturating_add(
+            result
+                .fingerprint
+                .session_id
+                .as_ref()
+                .map_or(0, |value| value.capacity() as u64),
+        )
+        .saturating_add(
+            result
+                .fingerprint
+                .attachment_id
+                .as_ref()
+                .map_or(0, |value| value.capacity() as u64),
+        );
+    if let Some(error) = &result.error {
+        bytes = bytes
+            .saturating_add(error.code.capacity() as u64)
+            .saturating_add(error.message.capacity() as u64);
+    }
+    if let Some(response) = result.response.as_ref().as_ref() {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<Option<Value>>() as u64)
+            .saturating_add(value_heap_bytes(response));
+    }
+    bytes
+}
+
+fn value_heap_bytes(value: &Value) -> u64 {
+    match value {
+        Value::String(value) => value.capacity() as u64,
+        Value::Array(values) => (values.capacity() as u64)
+            .saturating_mul(std::mem::size_of::<Value>() as u64)
+            .saturating_add(values.iter().fold(0_u64, |total, value| {
+                total.saturating_add(value_heap_bytes(value))
+            })),
+        Value::Object(values) => values.iter().fold(
+            (values.len() as u64).saturating_mul(
+                (std::mem::size_of::<String>()
+                    + std::mem::size_of::<Value>()
+                    + 3 * std::mem::size_of::<usize>()) as u64,
+            ),
+            |total, (key, value)| {
+                total
+                    .saturating_add(key.capacity() as u64)
+                    .saturating_add(value_heap_bytes(value))
+            },
+        ),
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+    }
 }
 
 fn stable_hash64(bytes: &[u8]) -> u64 {

@@ -160,6 +160,7 @@ async fn persistent_event_store_replays_after_restart() {
         .expect("second event should append");
     first_log
         .flush_persistence_for_tests()
+        .await
         .expect("persistent writer should flush before restart");
 
     let restarted_log =
@@ -263,6 +264,7 @@ async fn persistent_event_store_compacts_by_total_bytes() {
             .await
             .expect("extra event should append");
         log.flush_persistence_for_tests()
+            .await
             .expect("persistent writer should flush before reading event store");
         let stored = std::fs::read_to_string(&events_path).expect("event store should exist");
         if !stored.contains("\"first\"") {

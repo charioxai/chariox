@@ -159,7 +159,7 @@ impl KernelRuntimeState {
             },
             RelayPeerRequest::LaunchLeasedNativeProviderRun {
                 leased_agent_id: leased_agent_id.clone(),
-                adapter_key: crate::provider::adapter_key_for_provider(&request.provider)
+                adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
                     .to_string(),
                 provider: request.provider.clone(),
                 account_profile: request.account_profile.clone(),

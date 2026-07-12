@@ -14,8 +14,9 @@ impl CommandRouter {
         &self,
     ) -> Result<crate::local::WaitingRoomPublicSnapshot, DaemonError> {
         projected_waiting_room_public_snapshot(
-            Arc::clone(&self.app),
             &self.runtime_state,
+            &self.session_projection,
+            &self.waiting_room_session_summaries,
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),

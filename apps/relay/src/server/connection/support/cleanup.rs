@@ -4,12 +4,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::protocol::RelayConnectionRole;
-use crate::registry::{DaemonKey, DisplayStreamSender, RelayRegistry, RelaySender};
-
-use super::resolve_daemon_sender_locked;
+use crate::registry::{
+    DaemonKey, DisplayStreamSender, RelayRegistry, RelayRouteIndex, RelaySender,
+};
 
 pub(in crate::server::connection) async fn remove_peer(
     registry: &Arc<RwLock<RelayRegistry>>,
+    routes: &Arc<RelayRouteIndex>,
     peer_addr: SocketAddr,
     daemon_key: Option<&DaemonKey>,
 ) -> (
@@ -29,16 +30,16 @@ pub(in crate::server::connection) async fn remove_peer(
         .collect::<Vec<_>>();
     for subscription_id in client_subscription_ids {
         guard.subscriptions.remove(&subscription_id);
+        routes.remove_subscription(&subscription_id);
     }
+    routes.remove_client_sender(&peer_addr);
     let dropped_client_pending_requests = if removed_peer
         .as_ref()
         .is_some_and(|peer| peer.role == RelayConnectionRole::Client)
     {
-        let before = guard.pending_requests.len();
-        guard
-            .pending_requests
-            .retain(|_, pending| pending.client_addr != peer_addr);
-        before.saturating_sub(guard.pending_requests.len())
+        routes
+            .drain_pending_clients_where(|pending| pending.client_addr == peer_addr)
+            .len()
     } else {
         0
     };
@@ -63,6 +64,7 @@ pub(in crate::server::connection) async fn remove_peer(
         }
         guard.daemons.remove(daemon_key);
         guard.daemon_peers.remove(daemon_key);
+        routes.remove_daemon_sender(daemon_key);
         guard.remove_display_tunnels_for_daemon(daemon_key);
         let display_stream_senders = guard.remove_display_streams_for_daemon(daemon_key);
         let daemon_subscriptions = guard
@@ -79,6 +81,7 @@ pub(in crate::server::connection) async fn remove_peer(
         subscription_client_addrs.dedup();
         for (subscription_id, _) in daemon_subscriptions {
             guard.subscriptions.remove(&subscription_id);
+            routes.remove_subscription(&subscription_id);
         }
         let subscription_client_senders = subscription_client_addrs
             .into_iter()
@@ -89,44 +92,28 @@ pub(in crate::server::connection) async fn remove_peer(
                     .map(|peer| peer.sender.clone())
             })
             .collect::<Vec<_>>();
-        let doomed_request_ids = guard
-            .pending_requests
-            .iter()
-            .filter(|(_, pending)| &pending.daemon_key == daemon_key)
-            .map(|(relay_request_id, _)| relay_request_id.clone())
-            .collect::<Vec<_>>();
         let mut client_errors = Vec::new();
-        for relay_request_id in doomed_request_ids {
-            if let Some(pending) = guard.pending_requests.remove(&relay_request_id) {
-                if let Some(peer) = guard.peers.get(&pending.client_addr) {
-                    client_errors.push((peer.sender.clone(), pending.client_request_id));
-                }
+        for pending in
+            routes.drain_pending_clients_where(|pending| &pending.daemon_key == daemon_key)
+        {
+            if let Some(sender) = routes.client_sender(&pending.client_addr) {
+                client_errors.push((sender, pending.client_request_id));
             }
         }
-        let doomed_peer_request_ids = guard
-            .pending_daemon_peer_requests
-            .iter()
-            .filter(|(_, pending)| {
-                &pending.target_daemon_key == daemon_key
-                    || &pending.requester_daemon_key == daemon_key
-            })
-            .map(|(relay_request_id, _)| relay_request_id.clone())
-            .collect::<Vec<_>>();
+        let doomed_peer_requests = routes.drain_pending_daemons_where(|pending| {
+            &pending.target_daemon_key == daemon_key || &pending.requester_daemon_key == daemon_key
+        });
         let mut daemon_errors = Vec::new();
-        for relay_request_id in doomed_peer_request_ids {
-            if let Some(pending) = guard.pending_daemon_peer_requests.remove(&relay_request_id) {
-                if &pending.requester_daemon_key == daemon_key {
-                    continue;
-                }
-                if let Some(sender) =
-                    resolve_daemon_sender_locked(&guard, &pending.requester_daemon_key)
-                {
-                    daemon_errors.push((
-                        sender,
-                        pending.requester_request_id,
-                        pending.target_daemon_key.daemon_id,
-                    ));
-                }
+        for pending in doomed_peer_requests {
+            if &pending.requester_daemon_key == daemon_key {
+                continue;
+            }
+            if let Some(sender) = routes.daemon_sender(&pending.requester_daemon_key) {
+                daemon_errors.push((
+                    sender,
+                    pending.requester_request_id,
+                    pending.target_daemon_key.daemon_id,
+                ));
             }
         }
         return (

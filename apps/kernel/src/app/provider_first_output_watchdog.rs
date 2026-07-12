@@ -4,6 +4,7 @@ use std::time::Duration;
 use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState};
 
 const PROVIDER_FIRST_OUTPUT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+pub(crate) const PROVIDER_OUTPUT_TIMEOUT_MS: u64 = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderFirstOutputTimeoutCandidate {
@@ -27,7 +28,7 @@ pub(crate) fn provider_first_output_timeout_candidates(
     mut active_prompt_matches: impl FnMut(&ActiveTurnState) -> bool,
 ) -> Vec<ProviderFirstOutputTimeoutCandidate> {
     let now_ms = crate::session::unix_epoch_ms();
-    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+    let timeout_ms = PROVIDER_OUTPUT_TIMEOUT_MS;
     active_turns
         .into_iter()
         .filter_map(|turn| {
@@ -66,7 +67,7 @@ pub(crate) fn provider_inactivity_timeout_candidates(
     mut provider_run_is_waiting: impl FnMut(&ActiveTurnState) -> bool,
     mut active_prompt_matches: impl FnMut(&ActiveTurnState) -> bool,
 ) -> Vec<ProviderInactivityTimeoutCandidate> {
-    let timeout_ms = PROVIDER_FIRST_OUTPUT_TIMEOUT.as_millis() as u64;
+    let timeout_ms = PROVIDER_OUTPUT_TIMEOUT_MS;
     active_turns
         .into_iter()
         .filter_map(|turn| {

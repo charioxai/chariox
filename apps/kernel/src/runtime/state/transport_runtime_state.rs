@@ -3,6 +3,19 @@ use super::*;
 const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
 
 impl KernelRuntimeState {
+    pub(crate) fn waiting_room_auxiliary_projection(
+        &self,
+        request: &crate::local::ListExternalProviderSessionsRequest,
+    ) -> (
+        crate::local::ExternalProviderSessionPage,
+        crate::runtime::metaagent_event::MetaagentEventStore,
+    ) {
+        (
+            self.owned.external_provider_sessions.list(request),
+            self.owned.metaagent_events.clone(),
+        )
+    }
+
     pub(crate) fn durable_snapshot_scheduler(
         &self,
     ) -> Option<crate::durable_snapshot::DurableSnapshotScheduler> {
@@ -35,13 +48,50 @@ impl KernelRuntimeState {
                 }),
             );
         }
-        let pumped_provider_run_ids = self
-            .with_app_side_effect(|app| {
-                let pumped_provider_run_ids =
-                    crate::app::provider_output::pump_active_prompt_outputs(app);
-                pumped_provider_run_ids
-            })
-            .await;
+        let mut ready_provider_run_ids = self.owned.pty_output_signal.take_ready_provider_run_ids();
+        ready_provider_run_ids.extend(
+            self.owned
+                .provider_store
+                .run_actor_completion_signal()
+                .take_ready_provider_run_ids(),
+        );
+        ready_provider_run_ids.extend(
+            self.owned
+                .structured_output_records
+                .take_due_provider_run_ids(now_ms),
+        );
+        ready_provider_run_ids.extend(
+            self.owned
+                .provider_output_deadlines
+                .take_due_provider_run_ids(now_ms),
+        );
+        self.owned.reap_structured_prompt_jobs();
+        let mut pumped_provider_run_ids = Vec::with_capacity(ready_provider_run_ids.len());
+        for provider_run_id in ready_provider_run_ids {
+            let Ok(provider_run) = self.owned.provider_store.get_run(&provider_run_id) else {
+                continue;
+            };
+            let session_id = provider_run.session_id().to_string();
+            let recipients = self
+                .owned
+                .attachment_store
+                .list_session_attachment_ids(&session_id);
+            match self
+                .pump_owned_provider_output(&session_id, &provider_run_id, recipients, false)
+                .await
+            {
+                Ok(_) => pumped_provider_run_ids.push(provider_run_id),
+                Err(error) => crate::logging::warn_with_fields(
+                    "daemon.provider_output",
+                    "ready provider output pump failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                ),
+            }
+        }
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
@@ -252,8 +302,15 @@ impl KernelRuntimeState {
         idle_interval_ms: u64,
         now_ms: u64,
     ) -> u64 {
-        transport_runtime_pump_interval_for_state(
+        let next_output_due_at_ms = [
             self.next_structured_output_poll_due_at_ms(),
+            self.owned.provider_output_deadlines.next_due_at_ms(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        transport_runtime_pump_interval_for_state(
+            next_output_due_at_ms,
             self.next_workflow_watchdog_run_at_ms(now_ms),
             now_ms,
             active_interval_ms,
@@ -284,31 +341,7 @@ impl KernelRuntimeState {
     }
 
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
-        self.owned
-            .session_store
-            .list_non_ended_sessions_including_hidden()
-            .iter()
-            .flat_map(|session| {
-                super::provider_output_runtime::provider_run_ids_for_owned_output_pump(
-                    &self.owned,
-                    session,
-                )
-            })
-            .filter_map(|provider_run_id| {
-                let run = self.owned.provider_store.get_run(&provider_run_id).ok()?;
-                if !run.client_interface().is_arroba()
-                    || !self
-                        .owned
-                        .provider_store
-                        .run_uses_structured_prompt_io(&run)
-                {
-                    return None;
-                }
-                self.owned
-                    .structured_output_records
-                    .poll_due_at_ms(&provider_run_id)
-            })
-            .min()
+        self.owned.structured_output_records.next_poll_due_at_ms()
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {

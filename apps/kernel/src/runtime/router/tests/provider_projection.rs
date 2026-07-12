@@ -170,6 +170,38 @@ async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_i
     );
     assert_eq!(provider_runs[0].index, 0);
     assert_eq!(provider_runs[1].index, 1);
+
+    for launched in &provider_runs {
+        let provider_run_id = launched.provider_run.id().to_string();
+        let mut running_seen = false;
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let request = LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+                provider_run_id: provider_run_id.clone(),
+            });
+            let command = KernelCommand::from_local_request(
+                format!("cmd-provider-batch-running-{provider_run_id}"),
+                None,
+                None,
+                &request,
+            );
+            let response = router
+                .dispatch(command, request)
+                .await
+                .expect("provider run lookup should succeed");
+            let LocalDaemonResponse::ProviderRun { provider_run } = response else {
+                panic!("unexpected provider run lookup response");
+            };
+            if provider_run.state() == crate::provider::ProviderRunState::Running {
+                running_seen = true;
+                break;
+            }
+        }
+        assert!(
+            running_seen,
+            "provider run {provider_run_id} should remain alive and finish launching"
+        );
+    }
 }
 
 #[test]

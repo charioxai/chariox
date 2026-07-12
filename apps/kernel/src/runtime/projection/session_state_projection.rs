@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
+use std::sync::{Mutex as StdMutex, RwLock as StdRwLock};
 
 use tokio::sync::Notify;
 
@@ -20,30 +20,44 @@ mod workspace_coordination;
 
 #[derive(Clone, Default)]
 pub(crate) struct SessionStateProjectionStore {
-    state: Arc<StdMutex<SessionProjectionState>>,
+    state: Arc<StdRwLock<SessionProjectionState>>,
     changes: Arc<SessionProjectionChangeSignal>,
     session_changes: Arc<StdMutex<HashMap<String, Arc<SessionProjectionChangeSignal>>>>,
 }
 
 #[derive(Default)]
 struct SessionProjectionState {
-    session_states: HashMap<String, RuntimeSession>,
-    session_list: Option<Vec<RuntimeSession>>,
+    session_states: HashMap<String, Arc<RuntimeSession>>,
+    session_list: Option<Arc<[Arc<RuntimeSession>]>>,
 }
 
 impl SessionStateProjectionStore {
     pub(crate) fn get(&self, session_id: &str) -> Option<RuntimeSession> {
+        self.get_shared(session_id)
+            .map(|session| session.as_ref().clone())
+    }
+
+    pub(crate) fn list(&self) -> Option<Vec<RuntimeSession>> {
+        self.list_shared().map(|sessions| {
+            sessions
+                .iter()
+                .map(|session| session.as_ref().clone())
+                .collect()
+        })
+    }
+
+    pub(crate) fn get_shared(&self, session_id: &str) -> Option<Arc<RuntimeSession>> {
         self.state
-            .lock()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_states
             .get(session_id)
             .cloned()
     }
 
-    pub(crate) fn list(&self) -> Option<Vec<RuntimeSession>> {
+    pub(crate) fn list_shared(&self) -> Option<Arc<[Arc<RuntimeSession>]>> {
         self.state
-            .lock()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_list
             .clone()
@@ -51,7 +65,7 @@ impl SessionStateProjectionStore {
 
     pub(crate) fn has_warmed_list(&self) -> bool {
         self.state
-            .lock()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_list
             .is_some()
@@ -59,13 +73,17 @@ impl SessionStateProjectionStore {
 
     pub(crate) fn update(&self, session: RuntimeSession) {
         let session_id = session.id().to_string();
+        let session = Arc::new(session);
         let changed = {
             let mut state = self
                 .state
-                .lock()
+                .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let list_changed = upsert_session(&mut state.session_list, session.clone());
-            let session_changed = state.session_states.get(&session_id) != Some(&session);
+            let session_changed = state
+                .session_states
+                .get(&session_id)
+                .is_none_or(|existing| existing.as_ref() != session.as_ref());
             if session_changed {
                 state.session_states.insert(session_id.clone(), session);
             }
@@ -79,6 +97,7 @@ impl SessionStateProjectionStore {
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
+        let sessions = sessions.into_iter().map(Arc::new).collect::<Vec<_>>();
         let changed_session_ids = sessions
             .iter()
             .map(|session| session.id().to_string())
@@ -86,22 +105,28 @@ impl SessionStateProjectionStore {
         let changed = {
             let mut state = self
                 .state
-                .lock()
+                .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut changed = false;
             for session in &sessions {
-                if state.session_states.get(session.id()) != Some(session) {
+                if state
+                    .session_states
+                    .get(session.id())
+                    .is_none_or(|existing| existing.as_ref() != session.as_ref())
+                {
                     state
                         .session_states
                         .insert(session.id().to_string(), session.clone());
                     changed = true;
                 }
             }
-            let session_list = sessions
-                .into_iter()
-                .filter(|session| !session.is_hidden())
-                .collect::<Vec<_>>();
-            if state.session_list.as_ref() != Some(&session_list) {
+            let session_list = Arc::<[Arc<RuntimeSession>]>::from(
+                sessions
+                    .into_iter()
+                    .filter(|session| !session.is_hidden())
+                    .collect::<Vec<_>>(),
+            );
+            if state.session_list.as_deref() != Some(session_list.as_ref()) {
                 state.session_list = Some(session_list);
                 changed = true;
             }
@@ -120,11 +145,13 @@ impl SessionStateProjectionStore {
         {
             let mut state = self
                 .state
-                .lock()
+                .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.session_states.remove(session_id);
-            if let Some(session_list) = state.session_list.as_mut() {
+            if let Some(session_list) = state.session_list.take() {
+                let mut session_list = session_list.iter().cloned().collect::<Vec<_>>();
                 session_list.retain(|session| session.id() != session_id);
+                state.session_list = Some(session_list.into());
             }
         }
         self.changes.record_change();
@@ -156,13 +183,17 @@ impl SessionStateProjectionStore {
     pub(crate) fn health_snapshot(&self) -> SessionProjectionHealthSnapshot {
         let state = self
             .state
-            .lock()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (active_prompts, queued_prompts) =
-            projected_session_prompt_counts(state.session_states.values());
+        let (active_prompts, queued_prompts) = projected_session_prompt_counts(
+            state
+                .session_states
+                .values()
+                .map(|session| session.as_ref()),
+        );
         SessionProjectionHealthSnapshot {
             projected_sessions: state.session_states.len(),
-            projected_session_list_entries: state.session_list.as_ref().map(Vec::len),
+            projected_session_list_entries: state.session_list.as_ref().map(|list| list.len()),
             active_prompts,
             queued_prompts,
         }
@@ -231,15 +262,21 @@ impl SessionStateProjectionStore {
     }
 
     pub(crate) fn projected_sessions(&self) -> Vec<RuntimeSession> {
+        self.projected_sessions_shared()
+            .into_iter()
+            .map(|session| session.as_ref().clone())
+            .collect()
+    }
+
+    pub(crate) fn projected_sessions_shared(&self) -> Vec<Arc<RuntimeSession>> {
         let state = self
             .state
-            .lock()
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .session_list
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| state.session_states.values().cloned().collect())
+        state.session_list.as_ref().map_or_else(
+            || state.session_states.values().cloned().collect(),
+            |sessions| sessions.iter().cloned().collect(),
+        )
     }
 
     fn session_change_signal(&self, session_id: &str) -> Arc<SessionProjectionChangeSignal> {
@@ -280,28 +317,36 @@ impl SessionProjectionChangeSignal {
     }
 }
 
-fn upsert_session(session_list: &mut Option<Vec<RuntimeSession>>, session: RuntimeSession) -> bool {
-    let Some(session_list) = session_list.as_mut() else {
+fn upsert_session(
+    session_list: &mut Option<Arc<[Arc<RuntimeSession>]>>,
+    session: Arc<RuntimeSession>,
+) -> bool {
+    let Some(existing_list) = session_list.as_ref() else {
         return false;
     };
+    let mut updated_list = existing_list.iter().cloned().collect::<Vec<_>>();
     if session.is_hidden() {
-        let before_len = session_list.len();
-        session_list.retain(|existing| existing.id() != session.id());
-        return session_list.len() != before_len;
+        let before_len = updated_list.len();
+        updated_list.retain(|existing| existing.id() != session.id());
+        if updated_list.len() == before_len {
+            return false;
+        }
+        *session_list = Some(updated_list.into());
+        return true;
     }
-    if let Some(existing) = session_list
+    if let Some(existing) = updated_list
         .iter_mut()
         .find(|existing| existing.id() == session.id())
     {
-        if existing == &session {
+        if existing.as_ref() == session.as_ref() {
             return false;
         }
         *existing = session;
-        true
     } else {
-        session_list.push(session);
-        true
+        updated_list.push(session);
     }
+    *session_list = Some(updated_list.into());
+    true
 }
 
 fn projected_session_prompt_counts<'a>(
@@ -393,6 +438,18 @@ mod tests {
         assert_eq!(store.change_sequence(), global_sequence);
         assert_eq!(store.session_change_sequence("session-1"), first_sequence);
         assert_eq!(store.session_change_sequence("session-2"), second_sequence);
+    }
+
+    #[test]
+    fn warmed_list_reads_reuse_one_immutable_snapshot() {
+        let store = SessionStateProjectionStore::default();
+        store.update_list(vec![session("session-1"), session("session-2")]);
+
+        let first = store.list_shared().expect("list should be warmed");
+        let second = store.list_shared().expect("list should remain warmed");
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first[0], &second[0]));
     }
 
     #[test]

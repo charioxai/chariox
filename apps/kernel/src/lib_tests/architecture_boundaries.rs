@@ -2,6 +2,77 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 #[test]
+fn transport_output_pump_is_ready_run_driven() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/state/transport_runtime_state.rs"),
+    )
+    .expect("transport runtime source should be readable");
+    let pump = source
+        .split("pub(crate) async fn pump_transport_runtime")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub(crate) async fn record_terminal_attachment_heartbeat")
+                .next()
+        })
+        .expect("transport output pump should remain discoverable");
+    for forbidden in [
+        "pump_active_prompt_outputs",
+        "list_sessions",
+        "list_non_ended_sessions_including_hidden",
+    ] {
+        assert!(
+            !pump.contains(forbidden),
+            "transport output pump must consume ready-run identities, not `{forbidden}`"
+        );
+    }
+    assert!(pump.contains("take_ready_provider_run_ids"));
+    assert!(pump.contains("take_due_provider_run_ids"));
+}
+
+#[test]
+fn provider_run_actors_use_async_mailboxes_and_bounded_blocking_work() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/provider/run_actor/worker.rs"),
+    )
+    .expect("provider run actor worker source should be readable");
+    for forbidden in ["thread::spawn", "mpsc::sync_channel"] {
+        assert!(
+            !source.contains(forbidden),
+            "provider run actors must not allocate a native worker thread per run via `{forbidden}`"
+        );
+    }
+    assert!(source.contains("tokio_mpsc::channel"));
+    assert!(source.contains("spawn_blocking"));
+    assert!(source.contains("blocking_executor_permits"));
+}
+
+#[test]
+fn remote_provider_launches_preserve_explicit_adapter_selection() {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for relative in [
+        "runtime/state/provider_launch_runtime.rs",
+        "local/provider_requests.rs",
+    ] {
+        let source = std::fs::read_to_string(src_root.join(relative))
+            .expect("remote provider launch source should be readable");
+        assert!(
+            source.contains("adapter_key_for_provider(&request.adapter_key)"),
+            "{relative} must forward the requested adapter independently from provider identity"
+        );
+        assert!(
+            !source.contains("adapter_key_for_provider(&request.provider)"),
+            "{relative} must not replace an explicit remote adapter with provider identity"
+        );
+    }
+    let peer_dispatch =
+        std::fs::read_to_string(src_root.join("transport/relay_client/peer_requests.rs"))
+            .expect("relay peer dispatch source should be readable");
+    assert!(peer_dispatch.contains("adapter_key,"));
+    assert!(!peer_dispatch.contains("adapter_key: _,"));
+    assert!(!peer_dispatch.contains("adapter_key_for_provider(&provider)"));
+}
+
+#[test]
 fn runtime_command_paths_do_not_lock_daemon_app() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = BTreeSet::new();

@@ -37,7 +37,9 @@ use workspace_live_sync_workspace_context::*;
 mod context_handoff;
 use context_handoff::*;
 mod config_runtime_state;
+mod provider_output_deadline_store;
 mod provider_reload;
+use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -70,6 +72,7 @@ struct KernelRuntimeOwnedState {
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
     prompt_activity: PromptActivityStore,
+    provider_output_deadlines: ProviderOutputDeadlineStore,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     pty_output_signal: crate::pty::PtyOutputSignal,
@@ -383,6 +386,7 @@ impl KernelRuntimeState {
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,
+                provider_output_deadlines: ProviderOutputDeadlineStore::default(),
                 prompt_workspace_claims,
                 structured_output_records,
                 pty_output_signal,

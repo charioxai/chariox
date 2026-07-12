@@ -1,11 +1,16 @@
 use super::*;
+use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Clone, Default)]
+const TERMINAL_STREAM_SHARD_COUNT: usize = 64;
+
+#[derive(Debug, Clone)]
 pub struct TerminalStreamStore {
-    inner: Arc<StdMutex<TerminalStreamService>>,
+    shards: Arc<[StdMutex<TerminalStreamService>]>,
+    health_store: TerminalStreamHealthStore,
     changes: Arc<TerminalStreamChangeSignal>,
-    session_changes: Arc<StdMutex<BTreeMap<String, Arc<TerminalStreamChangeSignal>>>>,
-    attachment_changes: Arc<StdMutex<BTreeMap<(String, String), Arc<TerminalStreamChangeSignal>>>>,
+    session_changes: Arc<[StdMutex<BTreeMap<String, Arc<TerminalStreamChangeSignal>>>]>,
+    attachment_changes:
+        Arc<[StdMutex<BTreeMap<(String, String), Arc<TerminalStreamChangeSignal>>>]>,
 }
 
 #[derive(Debug, Default)]
@@ -16,12 +21,57 @@ struct TerminalStreamChangeSignal {
 
 impl TerminalStreamStore {
     pub fn new() -> Self {
+        let shards = (0..TERMINAL_STREAM_SHARD_COUNT)
+            .map(|_| StdMutex::new(TerminalStreamService::new()))
+            .collect::<Vec<_>>();
+        let health_store = TerminalStreamHealthStore::aggregate(shards.iter().map(|shard| {
+            shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .health_store()
+        }));
         Self {
-            inner: Arc::new(StdMutex::new(TerminalStreamService::new())),
+            shards: shards.into(),
+            health_store,
             changes: Arc::new(TerminalStreamChangeSignal::default()),
-            session_changes: Arc::new(StdMutex::new(BTreeMap::new())),
-            attachment_changes: Arc::new(StdMutex::new(BTreeMap::new())),
+            session_changes: (0..TERMINAL_STREAM_SHARD_COUNT)
+                .map(|_| StdMutex::new(BTreeMap::new()))
+                .collect::<Vec<_>>()
+                .into(),
+            attachment_changes: (0..TERMINAL_STREAM_SHARD_COUNT)
+                .map(|_| StdMutex::new(BTreeMap::new()))
+                .collect::<Vec<_>>()
+                .into(),
         }
+    }
+
+    fn shard_index(session_id: &str) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        session_id.hash(&mut hasher);
+        (hasher.finish() as usize) % TERMINAL_STREAM_SHARD_COUNT
+    }
+
+    fn shard(&self, session_id: &str) -> &StdMutex<TerminalStreamService> {
+        &self.shards[Self::shard_index(session_id)]
+    }
+
+    #[cfg(test)]
+    pub(super) fn shard_index_for_test(session_id: &str) -> usize {
+        Self::shard_index(session_id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_session_shard_for_test(
+        &self,
+        session_id: &str,
+        release: &std::sync::Barrier,
+    ) {
+        let _guard = self
+            .shard(session_id)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        release.wait();
+        release.wait();
     }
 
     pub fn change_sequence(&self) -> u64 {
@@ -81,10 +131,7 @@ impl TerminalStreamStore {
     }
 
     pub fn health_store(&self) -> TerminalStreamHealthStore {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .health_store()
+        self.health_store.clone()
     }
 
     pub fn record_input(
@@ -94,7 +141,7 @@ impl TerminalStreamStore {
         source_attachment_id: &str,
         bytes: &[u8],
     ) {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_input(session_id, provider_run_id, source_attachment_id, bytes);
@@ -162,7 +209,7 @@ impl TerminalStreamStore {
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_output_with_prompt_metadata(
@@ -184,15 +231,35 @@ impl TerminalStreamStore {
         if outputs.is_empty() {
             return Vec::new();
         }
-        let fanout = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .fan_out_outputs(outputs);
-        if !fanout.records.is_empty() {
-            self.record_change_for_keys(fanout.changed_keys);
+        let output_count = outputs.len();
+        let mut by_shard = BTreeMap::<usize, Vec<(usize, TerminalOutputAppend)>>::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            by_shard
+                .entry(Self::shard_index(&output.session_id))
+                .or_default()
+                .push((index, output));
         }
-        fanout.records
+        let mut records = vec![None; output_count];
+        for (shard_index, indexed_outputs) in by_shard {
+            let indexes = indexed_outputs
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>();
+            let fanout = self.shards[shard_index]
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fan_out_outputs(
+                    indexed_outputs
+                        .into_iter()
+                        .map(|(_, output)| output)
+                        .collect(),
+                );
+            self.record_change_for_keys(fanout.changed_keys);
+            for (index, record) in indexes.into_iter().zip(fanout.records) {
+                records[index] = Some(record);
+            }
+        }
+        records.into_iter().flatten().collect()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -209,7 +276,7 @@ impl TerminalStreamStore {
         source_attachment_id: Option<String>,
     ) -> TerminalOutputRecord {
         let record = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_external_observed_output(
@@ -240,7 +307,7 @@ impl TerminalStreamStore {
         bytes: &[u8],
     ) -> TerminalOutputRecord {
         let record = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .fan_out_prompt_output(
@@ -266,7 +333,7 @@ impl TerminalStreamStore {
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
         let record = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_notice(
@@ -281,25 +348,40 @@ impl TerminalStreamStore {
     }
 
     pub fn input_records(&self) -> Vec<TerminalInputRecord> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .input_records()
-            .to_vec()
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .input_records()
+                    .to_vec()
+            })
+            .collect()
     }
 
     pub fn output_records(&self) -> Vec<TerminalOutputRecord> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .output_records()
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .output_records()
+            })
+            .collect()
     }
 
     pub fn notice_records(&self) -> Vec<RuntimeNoticeRecord> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .notice_records()
+        self.shards
+            .iter()
+            .flat_map(|shard| {
+                shard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .notice_records()
+            })
+            .collect()
     }
 
     pub fn health_snapshot(&self) -> TerminalStreamHealthSnapshot {
@@ -311,14 +393,14 @@ impl TerminalStreamStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<TerminalOutputRecord> {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_output_records(session_id, attachment_id)
     }
 
     pub fn has_pending_output_records(&self, session_id: &str, attachment_id: &str) -> bool {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .has_pending_output_records(session_id, attachment_id)
@@ -334,7 +416,7 @@ impl TerminalStreamStore {
         completed_at_ms: u64,
     ) -> AssistantMessageCompletionRecord {
         let record = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_assistant_message_completion(
@@ -354,7 +436,7 @@ impl TerminalStreamStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<AssistantMessageCompletionRecord> {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_completion_records(session_id, attachment_id)
@@ -365,22 +447,23 @@ impl TerminalStreamStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Vec<RuntimeNoticeRecord> {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain_notice_records(session_id, attachment_id)
     }
 
     pub fn remove_session(&self, session_id: &str) {
-        self.inner
+        self.shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_session(session_id);
-        self.attachment_changes
+        let shard_index = Self::shard_index(session_id);
+        self.attachment_changes[shard_index]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(signal_session_id, _), _| signal_session_id != session_id);
-        self.session_changes
+        self.session_changes[shard_index]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
@@ -389,12 +472,12 @@ impl TerminalStreamStore {
 
     pub fn remove_attachment(&self, session_id: &str, attachment_id: &str) {
         let changed = self
-            .inner
+            .shard(session_id)
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_attachment(session_id, attachment_id);
         if changed {
-            self.attachment_changes
+            self.attachment_changes[Self::shard_index(session_id)]
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&(session_id.to_string(), attachment_id.to_string()));
@@ -471,7 +554,7 @@ impl TerminalStreamStore {
     }
 
     fn session_signal(&self, session_id: &str) -> Arc<TerminalStreamChangeSignal> {
-        self.session_changes
+        self.session_changes[Self::shard_index(session_id)]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(session_id.to_string())
@@ -484,11 +567,17 @@ impl TerminalStreamStore {
         session_id: &str,
         attachment_id: &str,
     ) -> Arc<TerminalStreamChangeSignal> {
-        self.attachment_changes
+        self.attachment_changes[Self::shard_index(session_id)]
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry((session_id.to_string(), attachment_id.to_string()))
             .or_default()
             .clone()
+    }
+}
+
+impl Default for TerminalStreamStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
