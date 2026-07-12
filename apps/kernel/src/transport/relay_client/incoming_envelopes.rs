@@ -168,6 +168,16 @@ pub(super) async fn handle_incoming_envelope(
                 handle_display_tunnel_open(state, outgoing_tx, request).await;
             });
         }
+        RelayEnvelope::DaemonDisplayTunnelRegistered {
+            tunnel_id,
+            error,
+            ..
+        } => {
+            state
+                .write()
+                .await
+                .resolve_display_tunnel_registration(&tunnel_id, error);
+        }
         RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
             let sender = {
                 let guard = state.read().await;

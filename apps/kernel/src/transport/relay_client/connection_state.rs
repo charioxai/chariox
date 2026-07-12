@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use crate::runtime::router::CommandRouter;
 
 use arroba_relay::protocol::RelayDisplayTunnelStreamChunk;
+use arroba_relay::protocol::RelayError;
 
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
@@ -27,6 +28,8 @@ pub struct RelayClientState {
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
     pub(super) next_peer_request_id: u64,
     pub(super) display_tunnels: BTreeMap<String, RelayDisplayTunnelTarget>,
+    pub(super) pending_display_tunnel_registrations:
+        BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
 }
 
@@ -50,6 +53,29 @@ impl RelayClientState {
 
     pub(crate) fn remove_display_tunnel(&mut self, tunnel_id: &str) {
         self.display_tunnels.remove(tunnel_id);
+    }
+
+    pub(crate) fn insert_pending_display_tunnel_registration(
+        &mut self,
+        tunnel_id: String,
+        sender: oneshot::Sender<Option<RelayError>>,
+    ) {
+        self.pending_display_tunnel_registrations
+            .insert(tunnel_id, sender);
+    }
+
+    pub(crate) fn resolve_display_tunnel_registration(
+        &mut self,
+        tunnel_id: &str,
+        error: Option<RelayError>,
+    ) {
+        if let Some(sender) = self.pending_display_tunnel_registrations.remove(tunnel_id) {
+            let _ = sender.send(error);
+        }
+    }
+
+    pub(crate) fn cancel_display_tunnel_registration(&mut self, tunnel_id: &str) {
+        self.pending_display_tunnel_registrations.remove(tunnel_id);
     }
 
     pub(crate) fn remove_display_tunnels_for_slice(&mut self, slice_id: &str) -> Vec<String> {
@@ -135,6 +161,7 @@ impl Default for RelayClientState {
             pending_peer_requests: BTreeMap::new(),
             next_peer_request_id: 0,
             display_tunnels: BTreeMap::new(),
+            pending_display_tunnel_registrations: BTreeMap::new(),
             display_streams: BTreeMap::new(),
         }
     }
@@ -232,14 +259,17 @@ pub(super) async fn publish_offline_and_set_disconnected(
 }
 
 pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
-    let pending_peer = {
+    let (pending_peer, pending_display_tunnels) = {
         let mut guard = state.write().await;
         guard.connected = false;
         guard.connected_relay_url = None;
         guard.outgoing_tx = None;
         guard.display_tunnels.clear();
         guard.display_streams.clear();
-        std::mem::take(&mut guard.pending_peer_requests)
+        (
+            std::mem::take(&mut guard.pending_peer_requests),
+            std::mem::take(&mut guard.pending_display_tunnel_registrations),
+        )
     };
     for (_, sender) in pending_peer {
         let _ = sender.send(RelayPeerResponseEnvelope {
@@ -252,4 +282,5 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
             )),
         });
     }
+    drop(pending_display_tunnels);
 }

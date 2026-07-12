@@ -1,6 +1,8 @@
 use rand::RngCore;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::sync::oneshot;
+use tokio::time::{timeout, Duration};
 
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonResponse, SliceRefRequest};
@@ -11,6 +13,7 @@ use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget}
 use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 const DISPLAY_TUNNEL_TTL_MS: u64 = 60_000;
+const DISPLAY_TUNNEL_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) async fn execute_get_slice_display_endpoint_request(
     runtime_state: &KernelRuntimeState,
@@ -44,20 +47,22 @@ async fn tunneled_display_endpoint(
     let now_ms = crate::session::unix_epoch_ms();
     let expires_at_ms = now_ms.saturating_add(DISPLAY_TUNNEL_TTL_MS);
     let tunnel_id = format!("display-{}", random_hex_id());
-    let (outgoing_tx, tunnel_url) = {
+    let (outgoing_tx, tunnel_url, registration_rx) = {
         let mut guard = relay_state.write().await;
         guard.prune_expired_display_tunnels(now_ms);
         let relay_url = guard.connected_relay_url().or(config_relay_url)?;
         let relay_base_url = relay_display_base_url(&relay_url)?;
         let tunnel_url = relay_display_endpoint_url(&relay_base_url, &tunnel_id, &local_endpoint)?;
         let outgoing_tx = guard.outgoing_sender()?;
+        let (registration_tx, registration_rx) = oneshot::channel();
         guard.upsert_display_tunnel(RelayDisplayTunnelTarget {
             tunnel_id: tunnel_id.clone(),
             slice_id: local_endpoint.slice_id.clone(),
             local_base_url,
             expires_at_ms,
         });
-        (outgoing_tx, tunnel_url)
+        guard.insert_pending_display_tunnel_registration(tunnel_id.clone(), registration_tx);
+        (outgoing_tx, tunnel_url, registration_rx)
     };
     if outgoing_tx
         .try_send(RelayEnvelope::DaemonDisplayTunnelRegister {
@@ -69,7 +74,22 @@ async fn tunneled_display_endpoint(
         })
         .is_err()
     {
-        relay_state.write().await.remove_display_tunnel(&tunnel_id);
+        let mut guard = relay_state.write().await;
+        guard.remove_display_tunnel(&tunnel_id);
+        guard.cancel_display_tunnel_registration(&tunnel_id);
+        return None;
+    }
+    let registration_confirmed = matches!(
+        timeout(DISPLAY_TUNNEL_REGISTRATION_TIMEOUT, registration_rx).await,
+        Ok(Ok(None))
+    );
+    if !registration_confirmed {
+        let mut guard = relay_state.write().await;
+        guard.remove_display_tunnel(&tunnel_id);
+        guard.cancel_display_tunnel_registration(&tunnel_id);
+        let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {
+            tunnel_id: tunnel_id.clone(),
+        });
         return None;
     }
     Some(SliceDisplayEndpoint {
