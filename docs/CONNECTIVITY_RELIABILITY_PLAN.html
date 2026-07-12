@@ -427,7 +427,7 @@
         </p>
       </div>
       <aside class="stamp">
-        <strong>Executed 2026-07-10</strong>
+        <strong>Executed through 2026-07-12</strong>
         <p>
           Distributed runtime gate passed. The tested user paths reconnect, replay, reconcile, and repair state without
           losing prompts, duplicating turns, erasing transcripts, or getting stuck.
@@ -469,9 +469,9 @@
 
       <div class="result-grid" aria-label="Execution results">
         <article class="result-card">
-          <span class="num">55/55</span>
-          <h3>Scenarios</h3>
-          <p>32 reports, zero failed, zero skipped, zero dry-run.</p>
+          <span class="num">7/7</span>
+          <h3>Component Loss</h3>
+          <p>Kernel, relay, worker, provider, and collaborator recovery rows passed live.</p>
         </article>
         <article class="result-card">
           <span class="num">13</span>
@@ -479,14 +479,14 @@
           <p>Every required signal and all seven owning subsystems covered.</p>
         </article>
         <article class="result-card">
-          <span class="num">752</span>
-          <h3>Assertions</h3>
-          <p>568 OSS and 184 Cloud validation assertions passed.</p>
+          <span class="num">6/6</span>
+          <h3>Native Claude</h3>
+          <p>Auth, permission, remote, slice, transcript, and Hetzner rows passed live.</p>
         </article>
         <article class="result-card">
-          <span class="num">5</span>
-          <h3>Deployments</h3>
-          <p>Local, same-host remote, self-hosted relay, Hetzner, and hosted Cloud.</p>
+          <span class="num">31</span>
+          <h3>Live Sync Checks</h3>
+          <p>Every web/TUI latency stayed within budget; eight screenshots were captured.</p>
         </article>
       </div>
     </section>
@@ -509,17 +509,17 @@
           </tr>
           <tr>
             <td>Same-host remote workers</td>
-            <td>Seven remote-agent scenarios, lease repair, home authority, collaborator projection, Codex resume, OpenCode resume, remote native TUI, and transcript parity.</td>
+            <td>Seven remote-agent scenarios, lease repair, home authority, collaborator projection, Codex/OpenCode resume, live Claude dispatch, remote native TUI, and transcript parity.</td>
             <td><strong class="outcome">Passed</strong>. Worker restarts and reordered queues recovered through the home kernel path.</td>
           </tr>
           <tr>
             <td>Docker slices</td>
-            <td>Slice lifecycle/auth/session/agent/UI matrix, Cloud slice contracts, Codex and OpenCode native TUI turns, real relay disconnect, and browser cookie/localStorage/IndexedDB restore.</td>
+            <td>Slice lifecycle/auth/session/agent/UI matrix, Cloud slice contracts, Codex, OpenCode, and Claude native/headless turns, real relay disconnect, and browser cookie/localStorage/IndexedDB restore.</td>
             <td><strong class="outcome">Passed</strong>. Containers and volumes were removed after execution.</td>
           </tr>
           <tr>
             <td>Hetzner and collaboration</td>
-            <td>Single-user and collaborator remote agents, home-extension authority, collaborator reconnect, native Codex TUI, and managed/tracked/permission Workspace Live Sync.</td>
+            <td>Single-user and four-user Claude collaborator agents, private/transparent/full scopes, home-extension authority, collaborator reconnect, native provider TUI, and managed/tracked/permission Workspace Live Sync.</td>
             <td><strong class="outcome">Passed</strong>. No run-owned Hetzner process or temporary root remains.</td>
           </tr>
           <tr>
@@ -529,8 +529,8 @@
           </tr>
           <tr>
             <td>Providers</td>
-            <td>Live Codex and OpenCode local/remote/slice turns, provider thread resume, external-session import, plus Claude contract/auth coverage.</td>
-            <td><strong class="outcome">Passed or classified</strong>. The current Claude credential was expired and is recorded as <code>provider-auth</code>; no live Claude success is claimed.</td>
+            <td>Live Codex, OpenCode, and Claude local/remote/slice turns, provider thread resume, external-session import, permissions, transcript parity, and provider-account health.</td>
+            <td><strong class="outcome">Passed</strong>. Refreshed Claude credentials were validated in live native, headless, Hetzner, collaboration, web/TUI popup, and remote dispatch drills.</td>
           </tr>
         </tbody>
       </table>
@@ -545,6 +545,8 @@
             <li>Recovered remote native terminal projection after relay disconnects and provider executable updates.</li>
             <li>Preserved leased prompts that arrive while providers start, including reordered queues and canonical prompt identity.</li>
             <li>Required explicit completion evidence before settling remote turns and bounded status recovery reads.</li>
+            <li>Kept remote prompt projection drains alive through active turns and coalesced dispatch wakeups without losing retries.</li>
+            <li>Transferred live Claude authentication into managed Linux slices without printing or persisting temporary credentials.</li>
             <li>Restored Workspace Live Sync launch policy, permission calls, status propagation, provider fixtures, and worker cleanup.</li>
             <li>Protected kernel-owned provider descendants while removing stale run-owned provider processes.</li>
           </ul>
@@ -589,18 +591,24 @@
             <td>Six screenshots inspected before/after restore; cookie, localStorage, IndexedDB, and webmail state survived.</td>
           </tr>
           <tr>
-            <td>TUI and native TUI</td>
-            <td><code>.artifacts/final-resilience-evidence/matrices/native-*.json</code></td>
-            <td>Automation snapshots asserted local, remote, permission, transcript, and slice behavior before success cleanup.</td>
+            <td>Two-client web and TUI</td>
+            <td><code>.artifacts/web-tui-sync-final/hetzner-3557-claude-popup-cloud327</code></td>
+            <td>Eight screenshots cover queues, permissions resolved from either client, real Claude user requests, and workflow synchronization; all 31 checks stayed within budget.</td>
+          </tr>
+          <tr>
+            <td>Claude native and remote</td>
+            <td><code>.artifacts/resilience-closure-20260712/native-claude-*.json</code> and <code>remote-claude-*.json</code></td>
+            <td>Final reruns close the initial defects: native matrix 6/6, remote matrix 5/5, headless slice passed, and four-user Hetzner collaboration passed.</td>
           </tr>
         </tbody>
       </table>
-      <div class="callout warning" style="margin-top: 18px;">
-        <h3>Provider Account Classification</h3>
+      <div class="callout" style="margin-top: 18px;">
+        <h3>Claude Live Validation</h3>
         <p>
-          Claude authentication was checked at <code>.artifacts/provider-auth/claude-20260710T060607Z</code> and
-          classified as an expired account credential. This is an external provider-account prerequisite, not a
-          transport recovery regression. Rerun the Claude live rows after refreshing the credential.
+          After credential refresh, live Claude validation passed provider auth, permission projection, transcript parity,
+          remote and slice native TUI, headless slice, remote dispatch, Hetzner native TUI, four-user collaboration, and
+          bidirectional web/TUI user-request resolution. Initial failed rows remain preserved as root-cause evidence and
+          are superseded by the named final rerun artifacts.
         </p>
       </div>
     </section>
@@ -927,19 +935,19 @@
       </table>
       <div class="result-grid" aria-label="Validation results">
         <article class="result-card">
-          <span class="num">74</span>
+          <span class="num">79</span>
           <h3>OSS Test Files</h3>
-          <p>568 assertions passed.</p>
+          <p>589 validation assertions passed.</p>
         </article>
         <article class="result-card">
-          <span class="num">31</span>
+          <span class="num">36</span>
           <h3>Cloud Test Files</h3>
-          <p>184 assertions passed.</p>
+          <p>Every committed validation test is registered and passed.</p>
         </article>
         <article class="result-card">
-          <span class="num">11</span>
-          <h3>Verified Indexes</h3>
-          <p>Cloud and OSS hashes accepted by the gate.</p>
+          <span class="num">6,759</span>
+          <h3>Core Assertions</h3>
+          <p>Kernel, relay, CLI, Cloud web, and Cloud API suites passed.</p>
         </article>
         <article class="result-card">
           <span class="num">0</span>
@@ -948,8 +956,8 @@
         </article>
       </div>
       <p class="note" style="margin-top: 14px;">
-        Final evidence: <code>.artifacts/final-resilience-evidence/distributed-runtime-gate.json</code> and
-        <code>.artifacts/final-resilience-evidence/gate-matrix-summary.json</code>.
+        Final closure evidence: <code>.artifacts/resilience-closure-20260712</code>, plus the final web/TUI and
+        component-loss manifests in the resilience recovery worktree.
       </p>
     </section>
 
@@ -967,11 +975,10 @@
           supported protocol versions only where required, and add a focused drill.
         </p>
         <p>
-          Execution followed this rule: 43 scoped OSS commits and 8 scoped Cloud commits were pushed to
-          <code>codex/runtime-resilience-recovery</code>. Key final checkpoints include <code>e9cd48c99</code> for native
-          Docker-slice access, <code>2c6b1c3c2</code> for hosted worker inventory, <code>c97ee9664</code> for validation
-          suite coverage, <code>ccdfc4872</code> for hosted identity cleanup, and <code>a5202150</code> for Cloud staging
-          binary resolution.
+          Execution followed the commit cadence on dedicated OSS and Cloud continuation branches. Final checkpoints
+          include remote projection recovery, live Claude slice and native TUI support, deterministic provider lifecycle
+          drills, exhaustive validation registries, and restored Cloud lint gates. Push was attempted, but the configured
+          GitHub credential is invalid; the local commits remain ready to push after authentication is repaired.
         </p>
       </div>
     </section>
@@ -979,7 +986,7 @@
     <section>
       <h2>Acceptance Criteria</h2>
       <ol>
-        <li><strong class="outcome">Met.</strong> All targeted local, web, TUI, remote, slice, native TUI, collaborator, and provider scenarios pass or have a classified provider-account prerequisite.</li>
+        <li><strong class="outcome">Met.</strong> All targeted local, web, TUI, remote, slice, native TUI, collaborator, and provider scenarios pass, including the refreshed live Claude rows.</li>
         <li><strong class="outcome">Met.</strong> No tested outage loses prompts, duplicates prompts or completions, erases transcript state, or leaves a terminal stuck in pending/working state.</li>
         <li><strong class="outcome">Met.</strong> Browser screenshots and TUI automation show consistent user experience before, during, and after recovery where visual validation is possible.</li>
         <li><strong class="outcome">Met.</strong> Hetzner and local cleanup audits show no run-owned processes, temp roots, ports, Docker slices, or volumes left behind.</li>
