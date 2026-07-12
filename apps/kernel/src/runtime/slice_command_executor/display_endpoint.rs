@@ -1,7 +1,7 @@
 use rand::RngCore;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tokio::sync::oneshot;
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::error::DaemonError;
@@ -200,13 +200,34 @@ mod tests {
         let relay_state = Arc::new(RwLock::new(state));
         let local = local_novnc_endpoint();
 
-        let endpoint = tunneled_display_endpoint(
+        let endpoint_task = tokio::spawn(tunneled_display_endpoint(
             local,
             Some("wss://relay.example.test".to_string()),
             Arc::clone(&relay_state),
-        )
-        .await
-        .expect("connected wss relay should produce tunnel endpoint");
+        ));
+
+        let registration = priority_rx
+            .recv()
+            .await
+            .expect("display tunnel registration should be queued");
+        let tunnel_id = match registration {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
+                assert!(registration.tunnel_id.starts_with("display-"));
+                assert!(registration.expires_at_ms > crate::session::unix_epoch_ms());
+                registration.tunnel_id
+            }
+            other => panic!("unexpected relay envelope: {other:?}"),
+        };
+        assert!(!endpoint_task.is_finished());
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(&tunnel_id, None);
+
+        let endpoint = endpoint_task
+            .await
+            .expect("display endpoint task should finish")
+            .expect("acknowledged wss relay should produce tunnel endpoint");
 
         assert_eq!(endpoint.access, SliceDisplayEndpointAccess::Tunnel);
         assert!(endpoint
@@ -215,18 +236,57 @@ mod tests {
         assert!(endpoint.url.contains("/vnc.html?"));
         assert!(endpoint.url.contains("path=display%2Fdisplay-"));
         assert_eq!(endpoint.expires_at_ms.is_some(), true);
+    }
 
-        let registration = priority_rx
+    #[tokio::test]
+    async fn display_endpoint_does_not_return_tunnel_when_relay_rejects_registration() {
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
+        let relay_state = Arc::new(RwLock::new(state));
+
+        let endpoint_task = tokio::spawn(tunneled_display_endpoint(
+            local_novnc_endpoint(),
+            Some("wss://relay.example.test".to_string()),
+            Arc::clone(&relay_state),
+        ));
+        let tunnel_id = match priority_rx
             .recv()
             .await
-            .expect("display tunnel registration should be queued");
-        match registration {
-            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
-                assert!(registration.tunnel_id.starts_with("display-"));
-                assert!(registration.expires_at_ms > crate::session::unix_epoch_ms());
-            }
+            .expect("display tunnel registration should be queued")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => registration.tunnel_id,
             other => panic!("unexpected relay envelope: {other:?}"),
-        }
+        };
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(
+                &tunnel_id,
+                Some(arroba_relay::protocol::RelayError {
+                    code: "invalid_display_tunnel".to_string(),
+                    message: "registration rejected".to_string(),
+                    retryable: false,
+                }),
+            );
+
+        assert!(endpoint_task
+            .await
+            .expect("display endpoint task should finish")
+            .is_none());
+        assert!(relay_state
+            .read()
+            .await
+            .display_tunnel(&tunnel_id, crate::session::unix_epoch_ms())
+            .is_none());
+        assert_eq!(
+            priority_rx
+                .recv()
+                .await
+                .expect("rejected registration should be revoked"),
+            RelayEnvelope::DaemonDisplayTunnelRevoke { tunnel_id },
+        );
     }
 
     #[tokio::test]
