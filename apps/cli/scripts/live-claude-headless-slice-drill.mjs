@@ -25,6 +25,7 @@ import {
 import {
   assertBinary,
   makeAvailablePorts,
+  resolveBuiltBinarySync,
   runLogged,
   terminateChild,
   waitForTcpPort,
@@ -33,8 +34,16 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
+const relayBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/relay/target/debug/arroba-relay"),
+  path.join(repoRoot, "apps/relay/Cargo.toml"),
+  "arroba-relay",
+)
 const realHomeDir = os.homedir()
 const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 
@@ -151,10 +160,6 @@ async function prebuildLocalDockerSliceImageIfNeeded(root, policy) {
 }
 
 async function exportClaudeCredentialsForSlice(root) {
-  const sourceCredentials = path.join(realHomeDir, ".claude", ".credentials.json")
-  if (await access(sourceCredentials).then(() => true, () => false)) {
-    return sourceCredentials
-  }
   const child = spawn("security", [
     "find-generic-password",
     "-s",
@@ -170,10 +175,13 @@ async function exportClaudeCredentialsForSlice(root) {
     child.on("close", (code) => resolve(code ?? 1))
   })
   const payload = Buffer.concat(chunks)
-  if (status !== 0 || payload.length === 0) return null
-  const credentialsPath = path.join(root, "claude-credentials.json")
-  await writeFile(credentialsPath, payload, { mode: 0o600 })
-  return credentialsPath
+  if (status === 0 && payload.length > 0) {
+    const credentialsPath = path.join(root, "claude-credentials.json")
+    await writeFile(credentialsPath, payload, { mode: 0o600 })
+    return credentialsPath
+  }
+  const sourceCredentials = path.join(realHomeDir, ".claude", ".credentials.json")
+  return await access(sourceCredentials).then(() => sourceCredentials, () => null)
 }
 
 async function loadAgentHistoryEntries(client, sessionId, agentId, latestPromptCount = 20) {
