@@ -131,14 +131,30 @@ function providerAccountsNeedRecovery(
   providers: readonly string[],
   accounts: readonly ProviderAccountSummary[],
 ): boolean {
-  return providers.some((provider) => {
-    const account = accounts.find((entry) => entry.provider === provider)
-    return !account || providerAccountNeedsAttention(account)
-  })
+  return providers.every((provider) => providerAccountNeedsRecovery(provider, accounts))
 }
 
 function providerAccountNeedsAttention(account: ProviderAccountSummary): boolean {
-  return account.state !== "authenticated"
+  return account.state !== "authenticated" && account.state !== "configured"
+}
+
+function providerAccountNeedsRecovery(
+  provider: string,
+  accounts: readonly ProviderAccountSummary[],
+): boolean {
+  const family = providerAccountFamily(provider)
+  if (family == null) return false
+  return !accounts.some((account) => (
+    providerAccountFamily(account.provider) === family
+    && !providerAccountNeedsAttention(account)
+  ))
+}
+
+function providerAccountFamily(provider: string): string | null {
+  if (provider === "dev-stub") return null
+  if (provider === "opencode" || provider.startsWith("opencode:")) return "opencode"
+  if (provider === "claude" || provider.startsWith("claude-")) return "claude"
+  return provider
 }
 
 function remoteKernelNextAction(kernel: RelayKernelPresence): string {
@@ -198,6 +214,22 @@ export function remoteKernelReadiness(kernel: RelayKernelPresence): RemoteKernel
   if (
     "provider_accounts" in kernel
     && providerAccountsNeedRecovery(kernel.available_providers ?? [], kernel.provider_accounts ?? [])
+  ) {
+    return "needs-account"
+  }
+  return "ready"
+}
+
+export function remoteKernelReadinessForProvider(
+  kernel: RelayKernelPresence,
+  provider: string,
+): RemoteKernelReadiness {
+  if (kernel.accepting_remote_leases === false) return "blocked"
+  if (kernel.accepting_remote_leases === undefined) return "unknown"
+  if (!(kernel.available_providers ?? []).includes(provider)) return "needs-provider"
+  if (
+    "provider_accounts" in kernel
+    && providerAccountNeedsRecovery(provider, kernel.provider_accounts ?? [])
   ) {
     return "needs-account"
   }

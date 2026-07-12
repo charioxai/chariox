@@ -45,6 +45,7 @@ import {
   resolveShellSliceRef,
   shellSliceCreatesPlacement,
 } from "./shell-slice-placement.js"
+import { remoteKernelReadinessForProvider } from "./shell-remote-format.js"
 import { resolveShellAttachmentId } from "./shell-session-attachment.js"
 
 type ShellKernelClient = {
@@ -435,23 +436,17 @@ async function resolveMachineSpawnKernelRef(
   if (providerCandidates.length === 0) {
     return { ok: false, message: `remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: run /machine kernels ${machineRef}; choose a ready worker with ${provider}, configure/import its provider account, or change the agent provider` }
   }
-  const providerReady = providerCandidates.find((kernel) => remoteKernelHasAuthenticatedProviderAccount(kernel, provider))
+  const providerReady = providerCandidates.find((kernel) => (
+    remoteKernelReadinessForProvider(kernel, provider) === "ready"
+  ))
   if (!providerReady) {
-    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel with an authenticated ${provider} account; next: run /machine kernels ${machineRef}; configure/import or refresh the ${provider} account, or choose another worker` }
+    return { ok: false, message: `remote machine ${machineRef} has no ready worker kernel with a usable ${provider} account; next: run /machine kernels ${machineRef}; configure/import or refresh the ${provider} account, or choose another worker` }
   }
   return { ok: true, kernelRef: providerReady.kernel_id }
 }
 
 function remoteKernelAcceptsRemoteLeases(kernel: RelayKernelPresence): boolean {
   return kernel.accepting_remote_leases === true
-}
-
-function remoteKernelHasAuthenticatedProviderAccount(kernel: RelayKernelPresence, provider: string): boolean {
-  if (!("provider_accounts" in kernel)) {
-    return true
-  }
-  const account = (kernel.provider_accounts ?? []).find((entry) => entry.provider === provider)
-  return account?.state === "authenticated"
 }
 
 async function listAgentInspectSlices(deps: ShellAgentCommandDeps): Promise<{

@@ -6,6 +6,7 @@ import {
   formatRemoteMachines,
   remoteKernelReadiness,
   remoteKernelReadinessCounts,
+  remoteKernelReadinessForProvider,
 } from "./shell-remote-format.js"
 
 test("remote machine formatter shows provider account identities", () => {
@@ -39,7 +40,7 @@ test("remote machine formatter shows provider account identities", () => {
     provider_accounts: [],
   }])
 
-  assert.match(output, /mini id=machine-1 status=approved kernels=2 providers=codex,opencode accounts=codex=daily \(dev@example.com\),opencode=api\/state=not_configured next: run \/machine kernels mini; configure\/import or refresh provider accounts before spawning remote agents/)
+  assert.match(output, /mini id=machine-1 status=approved kernels=2 providers=codex,opencode accounts=codex=daily \(dev@example.com\),opencode=api\/state=not_configured$/m)
   assert.match(output, /offline-box id=machine-2 status=approved,offline kernels=0 providers=- accounts=none next: connect or restart the remote kernel on this machine/)
 })
 
@@ -127,4 +128,41 @@ test("remote kernel readiness helpers classify worker state", () => {
     "needs-account": 1,
     unknown: 1,
   })
+})
+
+test("remote kernel readiness normalizes provider aliases and configured accounts", () => {
+  const kernel = {
+    kernel_id: "worker",
+    machine_id: "machine",
+    available_providers: ["claude", "claude-headless", "claude-p", "codex", "opencode"],
+    provider_accounts: [
+      { provider: "claude", state: "configured" },
+      { provider: "codex", state: "configured" },
+      { provider: "opencode:anthropic", state: "configured" },
+    ],
+    accepting_remote_leases: true,
+  }
+
+  assert.equal(remoteKernelReadiness(kernel), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "claude-headless"), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "claude-p"), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "codex"), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "opencode"), "ready")
+})
+
+test("generic readiness remains ready when only the requested provider needs recovery", () => {
+  const kernel = {
+    kernel_id: "worker",
+    machine_id: "machine",
+    available_providers: ["codex", "opencode"],
+    provider_accounts: [
+      { provider: "codex", state: "authenticated" },
+      { provider: "opencode:openai", state: "not_configured" },
+    ],
+    accepting_remote_leases: true,
+  }
+
+  assert.equal(remoteKernelReadiness(kernel), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "codex"), "ready")
+  assert.equal(remoteKernelReadinessForProvider(kernel, "opencode"), "needs-account")
 })
