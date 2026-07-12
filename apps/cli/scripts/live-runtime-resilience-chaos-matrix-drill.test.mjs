@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { validateDrillChaosReplayBundle } from "./lib/drill-chaos-contract.mjs"
 
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-runtime-resilience-chaos-matrix-drill.mjs", import.meta.url))
@@ -29,6 +30,10 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "claude=work_claude",
       "--provider-account",
       "codex=work_codex",
+      "--chaos-seed",
+      "matrix-dry-run",
+      "--chaos-replay",
+      path.join(rootDir, "replay.json"),
       "--report",
       reportPath,
       "--artifact-index",
@@ -41,6 +46,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(report.matrix, "runtime-resilience-chaos-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [
+      "deterministic-runtime-convergence",
       "local-kernel-websocket-drop",
       "local-kernel-restart-durable-state",
       "local-relay-restart-reconnect",
@@ -65,6 +71,12 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
       "codex=gpt-test-codex",
     ])
     assert(report.scenarios.find((scenario) => scenario.id === "worker-provider-resume-codex").args.includes("--cleanup-on-success"))
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "deterministic-runtime-convergence").args.slice(-4), [
+      "--seed",
+      "matrix-dry-run",
+      "--output",
+      path.join(rootDir, "replay.json"),
+    ])
     assert.equal(report.metadata.deploymentPresets, "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.providerAccountAliases, "claude=work_claude,codex=work_codex")
@@ -73,12 +85,50 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(report.metadata.includeHostedCloud, true)
     assert.equal(report.metadata.generatedMatrixNames, "runtime-resilience-chaos-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")
+    assert.equal(report.metadata.deterministicChaosSeed, "matrix-dry-run")
+    assert.equal(report.metadata.deterministicChaosReplaySchema, "arroba.drill.chaos_replay.v1")
+    assert.match(report.metadata.deterministicChaosFaultKinds, /process-death/)
+    assert.match(report.metadata.deterministicChaosInvariantIds, /eventual-client-convergence/)
+    assert.match(stdout, /dry-run deterministic-runtime-convergence classification=ui-client-projection/)
     assert.match(stdout, /dry-run local-kernel-websocket-drop classification=relay-runtime/)
     assert.match(stdout, /dry-run hosted-cloud-relay-second-kernel-reconnect classification=relay-runtime/)
     assert.equal(artifactIndex.metadata.matrix, "runtime-resilience-chaos-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
     assert.equal(artifactIndex.metadata.generatedMatrixNames, "runtime-resilience-chaos-matrix")
     assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("runtime resilience matrix retains a validated deterministic replay on success", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-resilience-replay-"))
+  const reportPath = path.join(rootDir, "matrix.json")
+  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const replayPath = path.join(rootDir, "replay.json")
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      "--only",
+      "deterministic-runtime-convergence",
+      "--chaos-seed",
+      "matrix-live-replay",
+      "--chaos-replay",
+      replayPath,
+      "--report",
+      reportPath,
+      "--artifact-index",
+      artifactIndexPath,
+    ])
+    const replay = JSON.parse(await readFile(replayPath, "utf8"))
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+    validateDrillChaosReplayBundle(replay)
+    await verifyDrillArtifactIndex(artifactIndexPath)
+
+    assert.equal(replay.seed, "matrix-live-replay")
+    assert.equal(replay.invariants.status, "passed")
+    assert.equal(report.status, "passed")
+    assert.deepEqual(report.scenarios[0].artifactHints, [replayPath])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -116,6 +166,7 @@ test("runtime resilience chaos matrix uses the supported Codex default model", a
       "--provider-model",
       "codex=gpt-5.4-mini",
     ])
+    assert.equal(Object.hasOwn(report.metadata, "deterministicChaosSeed"), false)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

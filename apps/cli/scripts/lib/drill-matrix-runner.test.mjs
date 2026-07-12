@@ -531,6 +531,29 @@ test("records artifact hints in failed scenario reports", async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
+test("records artifact hints in passing scenario reports", async () => {
+  const dir = await fixtureDir()
+  const pass = await writeFixtureScript(
+    dir,
+    "pass-artifacts.mjs",
+    "console.log(JSON.stringify({ artifactPath: '/tmp/arroba-drill-passed/replay.json' }))",
+  )
+  const reportPath = path.join(dir, "artifacts.json")
+
+  const results = await runDrillMatrix({
+    matrixName: "test-matrix",
+    scenarios: [{ id: "pass", description: "passing scenario", script: pass }],
+    commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
+    cwd: dir,
+    reportPath,
+  })
+
+  assert.deepEqual(results[0].artifactHints, ["/tmp/arroba-drill-passed/replay.json"])
+  const report = JSON.parse(await readFile(reportPath, "utf8"))
+  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/arroba-drill-passed/replay.json"])
+  await rm(dir, { recursive: true, force: true })
+})
+
 test("continues after failure when configured", async () => {
   const dir = await fixtureDir()
   const fail = await writeFixtureScript(dir, "fail.mjs", "process.exit(3)")

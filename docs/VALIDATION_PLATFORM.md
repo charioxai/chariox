@@ -9,6 +9,7 @@ Arroba runtime features must be validated through reusable drill primitives, not
 - Failure taxonomy: use `apps/cli/scripts/lib/drill-failure-taxonomy.mjs` for classification owners and next actions shared by failure manifests and matrix reports.
 - Runtime signals: use `apps/cli/scripts/lib/drill-runtime-signals.mjs` for stable distributed-runtime signal ids and owner mapping. Do not hand-write signal owner tables in feature drills. Use `runtime-projection-health` for kernel read-model freshness/invariant drift, and `client-projection-health` for web/TUI/native transcript rendering or client-visible projection state.
 - Runtime authority invariants: use `apps/cli/scripts/lib/drill-runtime-authority-invariants.mjs` for the stable "clients render and request; kernel decides" contract. Validation-suite artifacts embed this manifest so client, relay, Cloud, worker, and home-kernel authority drift is caught as a contract change instead of staying as prose-only architecture guidance.
+- Deterministic chaos: use `apps/cli/scripts/lib/drill-deterministic-chaos.mjs` for the seeded virtual clock, fault transport, and process generations; `drill-chaos-contract.mjs` for replay validation; and `drill-runtime-convergence-invariants.mjs` for no-loss, exactly-once, cursor, authority, convergence, queue, stale-callback, and cleanup assertions. Every failed seed must remain directly replayable.
 - Aggregate actions: use `apps/cli/scripts/lib/drill-aggregate-actions.mjs` to group and validate owner/classification/next-action counts consistently across reports.
 - Secret hygiene: use `apps/cli/scripts/lib/drill-secrets.mjs` for shared drill metadata redaction and token-shaped value detection.
 - Time fields: use `apps/cli/scripts/lib/drill-time.mjs` to validate strict ISO timestamps and report start/end ordering.
@@ -34,6 +35,17 @@ node apps/cli/scripts/drill-validation-suite.mjs --command
 
 The `--json` output uses schema `arroba.drill.validation_suite.v1` and lists the exact test paths and command covered by the suite. Use `--output PATH` with `--json` when CI or staging jobs should collect the coverage manifest as an artifact.
 The `--run-json` output uses schema `arroba.drill.validation_suite_run.v1`, runs the suite, records pass/fail status, duration, exit code, command, and embeds the manifest. Use `--run-json --output PATH --output-artifact-index PATH` when a staging or release gate needs evidence that the suite actually executed.
+
+Run or replay the deterministic runtime convergence scenario with:
+
+```bash
+pnpm --filter @arroba/cli run runtime-resilience:deterministic-chaos-drill -- --seed local-replay
+node apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.mjs \
+  --only deterministic-runtime-convergence \
+  --chaos-seed local-replay
+```
+
+The replay schema is `arroba.drill.chaos_replay.v1`. It records the seed, fault plan, monotonic virtual-time trace, invariant evidence, queue/resource summaries, and stale-callback suppression without recording credentials or payload secrets. The resilience matrix captures replay paths from successful as well as failed children so a passing baseline and a regression can both be audited.
 
 Export the shared failure taxonomy with:
 

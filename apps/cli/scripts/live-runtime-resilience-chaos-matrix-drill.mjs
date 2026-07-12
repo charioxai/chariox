@@ -20,6 +20,12 @@ import {
   providerProfileMetadata,
   resolveProviderModel,
 } from "./lib/drill-provider-profiles.mjs"
+import {
+  DRILL_CHAOS_FAULT_KINDS,
+  DRILL_CHAOS_INVARIANT_IDS,
+  DRILL_CHAOS_REPLAY_SCHEMA,
+} from "./lib/drill-chaos-contract.mjs"
+import { DEFAULT_DETERMINISTIC_RUNTIME_CHAOS_SEED } from "./lib/drill-deterministic-runtime-model.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(scriptDir, "..", "..", "..")
@@ -32,6 +38,7 @@ const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extensio
 const hostedCloudRelayDrill = path.join(scriptDir, "live-hosted-cloud-relay-drill.mjs")
 const tuiWebParityDrill = path.join(scriptDir, "tui-web-terminal-parity-drill.mjs")
 const providerThreadTransferDrill = path.join(scriptDir, "live-provider-thread-transfer-drill.mjs")
+const deterministicRuntimeChaosDrill = path.join(scriptDir, "deterministic-runtime-chaos-drill.mjs")
 
 const DEFAULT_CODEX_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
   ?? process.env.ARROBA_CODEX_MODEL
@@ -39,8 +46,25 @@ const DEFAULT_CODEX_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
 const DEFAULT_OPENCODE_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_OPENCODE_MODEL
   ?? process.env.ARROBA_OPENCODE_MODEL
   ?? "opencode/gpt-5.2"
+const DEFAULT_CHAOS_SEED = process.env.ARROBA_RUNTIME_RESILIENCE_CHAOS_SEED
+  ?? DEFAULT_DETERMINISTIC_RUNTIME_CHAOS_SEED
 
 const MATRIX = [
+  scenario({
+    id: "deterministic-runtime-convergence",
+    description: "seeded virtual-clock fault injection proves idempotent execution and eventual TUI/web convergence",
+    script: deterministicRuntimeChaosDrill,
+    args: [],
+    classification: "ui-client-projection",
+    runtimeSignals: ["client-projection-health", "runtime-projection-health", "runtime-transition-audit", "session-authority"],
+    deployment: "local",
+    provider: "dev-stub",
+    exitCriteria: [
+      "every accepted action executes exactly once despite drop, delay, duplication, and reorder faults",
+      "TUI and web projections converge through cursor replay or snapshot fallback with monotonic cursors",
+      "process death suppresses stale callbacks and leaves bounded empty queues with no leaked resources",
+    ],
+  }),
   scenario({
     id: "local-kernel-websocket-drop",
     description: "local kernel websocket close, reconnect, resubscribe, and request replay",
@@ -258,6 +282,8 @@ function printHelp() {
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH     Write a verifiable artifact index for the matrix report",
+    "  --chaos-seed VALUE        Replay seed for deterministic fault injection",
+    "  --chaos-replay PATH       Deterministic replay artifact path",
     "  --provider-model P=M      Override model for provider-resume scenarios",
     "  --provider-account P=A    Label provider account/profile metadata without exposing credentials",
     "  --hetzner-host HOST       Forwarded to Hetzner drill scenarios",
@@ -267,6 +293,7 @@ function printHelp() {
     "Environment defaults:",
     `  ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
     `  ARROBA_RUNTIME_RESILIENCE_OPENCODE_MODEL=${DEFAULT_OPENCODE_MODEL}`,
+    `  ARROBA_RUNTIME_RESILIENCE_CHAOS_SEED=${DEFAULT_CHAOS_SEED}`,
     "",
     "Scenario ids:",
     ...MATRIX.map((scenarioItem) => `  ${scenarioItem.id.padEnd(42)} ${scenarioItem.description}`),
@@ -289,6 +316,8 @@ function parseArgs(argv) {
     continueOnFailure: false,
     reportPath: null,
     artifactIndexPath: null,
+    chaosSeed: DEFAULT_CHAOS_SEED,
+    chaosReplayPath: null,
     providerAccounts: {},
     providerModels: {},
     passthrough: [],
@@ -306,6 +335,10 @@ function parseArgs(argv) {
     else if (arg.startsWith("--report=")) options.reportPath = arg.slice("--report=".length)
     else if (arg === "--artifact-index") options.artifactIndexPath = readValue(argv, index++, arg)
     else if (arg.startsWith("--artifact-index=")) options.artifactIndexPath = arg.slice("--artifact-index=".length)
+    else if (arg === "--chaos-seed") options.chaosSeed = readValue(argv, index++, arg)
+    else if (arg.startsWith("--chaos-seed=")) options.chaosSeed = arg.slice("--chaos-seed=".length)
+    else if (arg === "--chaos-replay") options.chaosReplayPath = readValue(argv, index++, arg)
+    else if (arg.startsWith("--chaos-replay=")) options.chaosReplayPath = arg.slice("--chaos-replay=".length)
     else if (arg === "--provider-account") applyProviderAccountAlias(options.providerAccounts, readValue(argv, index++, arg))
     else if (arg.startsWith("--provider-account=")) applyProviderAccountAlias(options.providerAccounts, arg.slice("--provider-account=".length))
     else if (arg === "--provider-model") applyProviderModelOverride(options.providerModels, readValue(argv, index++, arg))
@@ -355,6 +388,10 @@ function modelForProvider(provider, options) {
 
 function commandForScenario(scenarioItem, options) {
   let args = [scenarioItem.script, ...scenarioItem.args]
+  if (scenarioItem.script === deterministicRuntimeChaosDrill) {
+    args = [...args, "--seed", options.chaosSeed]
+    if (options.chaosReplayPath) args = [...args, "--output", path.resolve(options.chaosReplayPath)]
+  }
   if (scenarioItem.script === providerThreadTransferDrill && scenarioItem.provider && scenarioItem.provider !== "dev-stub") {
     args = [...args, "--provider-model", `${scenarioItem.provider}=${modelForProvider(scenarioItem.provider, options)}`]
   }
@@ -366,6 +403,7 @@ function commandForScenario(scenarioItem, options) {
 }
 
 function metadataFor(selected, options) {
+  const includesDeterministicChaos = selected.some((scenarioItem) => scenarioItem.script === deterministicRuntimeChaosDrill)
   const providers = [...new Set([
     ...selected
       .map((scenarioItem) => scenarioItem.providerFamily ?? scenarioItem.provider)
@@ -378,6 +416,14 @@ function metadataFor(selected, options) {
     includeHostedCloud: options.includeHostedCloud,
     generatedMatrixNames: "runtime-resilience-chaos-matrix",
     generatedMatrixRepos: "oss",
+    ...(includesDeterministicChaos
+      ? {
+        deterministicChaosSeed: options.chaosSeed,
+        deterministicChaosReplaySchema: DRILL_CHAOS_REPLAY_SCHEMA,
+        deterministicChaosFaultKinds: DRILL_CHAOS_FAULT_KINDS.join(","),
+        deterministicChaosInvariantIds: DRILL_CHAOS_INVARIANT_IDS.join(","),
+      }
+      : {}),
     resourceEvidence: "child drills use isolated ports/roots and preserve cleanup artifacts on failure",
     ...drillDeploymentPresetMetadata([
       "local",

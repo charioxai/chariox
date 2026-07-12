@@ -181,7 +181,16 @@ async function runMatrixScenario({ matrixName, scenario, command, args, env, cwd
       return { scenario, ok: false, durationMs, reason, command, args, env }
     }
     console.log(`[${matrixName}] pass ${scenario.id} duration_ms=${durationMs}`)
-    return { scenario, ok: true, durationMs, classification: scenario.classification ?? null, command, args, env }
+    return {
+      scenario,
+      ok: true,
+      durationMs,
+      classification: scenario.classification ?? null,
+      command,
+      args,
+      env,
+      artifactHints: extractDrillArtifactHints(output),
+    }
   }
 
   if (scenario.expectedFailure) {
