@@ -5,6 +5,7 @@ import {
 
 export const DRILL_CHAOS_REPLAY_SCHEMA = "arroba.drill.chaos_replay.v1"
 export const DRILL_CHAOS_INVARIANTS_SCHEMA = "arroba.drill.chaos_invariants.v1"
+export const DRILL_CHAOS_CONTRACT_SCHEMA = "arroba.drill.chaos_contract.v1"
 
 export const DRILL_CHAOS_FAULT_KINDS = Object.freeze([
   "delay",
@@ -27,6 +28,16 @@ export const DRILL_CHAOS_INVARIANT_IDS = Object.freeze([
   "stale-callback-suppression",
   "valid-authority",
 ])
+
+export function drillChaosContractManifest() {
+  return {
+    schema: DRILL_CHAOS_CONTRACT_SCHEMA,
+    replaySchema: DRILL_CHAOS_REPLAY_SCHEMA,
+    invariantsSchema: DRILL_CHAOS_INVARIANTS_SCHEMA,
+    faultKinds: [...DRILL_CHAOS_FAULT_KINDS],
+    invariantIds: [...DRILL_CHAOS_INVARIANT_IDS],
+  }
+}
 
 export function validateDrillChaosFaultPlan(faultPlan, source = "chaos fault plan") {
   if (!Array.isArray(faultPlan)) throw new Error(`${source} is not an array`)

@@ -1,5 +1,6 @@
 import {
   assert,
+  drillChaosContractManifest,
   drillFailureTaxonomyManifest,
   drillRuntimeAuthorityManifest,
   drillRuntimeSignalsManifest,
@@ -17,6 +18,7 @@ import {
   writeFile,
   scenario,
   writeCloudFailureTaxonomyRegistry,
+  writeCloudChaosContractRegistry,
   writeCloudGeneratedMatrixRegistry,
   writeCloudRuntimeAuthorityRegistry,
   writeCloudRuntimeSignalsRegistry,
@@ -24,6 +26,61 @@ import {
   writeMatrixReport,
   writeValidationSuiteArtifact,
 } from '../drill-cross-repo-validation-gate.test-support.mjs'
+
+test("cross repo validation gate checks chaos contract registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const bundleDir = path.join(rootDir, "bundle")
+    await writeDrillPlatformBundle(bundleDir)
+    await writeCloudChaosContractRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--cloud-root",
+      cloudRoot,
+      "--no-default-roots",
+      "--platform-bundle",
+      bundleDir,
+      "--require-chaos-contract-registry-parity",
+      "--json",
+    ])
+    assert.equal(JSON.parse(stdout).status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("cross repo validation gate rejects chaos contract registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillChaosContractManifest()
+    await writeCloudChaosContractRegistry(cloudRoot, {
+      ...manifest,
+      invariantIds: manifest.invariantIds.filter((id) => id !== "no-action-loss"),
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--no-default-roots",
+        "--require-chaos-contract-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /chaos contract registry parity failed/)
+        assert.match(error.stderr, /no-action-loss/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
 
 test("cross repo validation gate checks generated matrix registry parity", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))

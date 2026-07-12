@@ -55,6 +55,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-aggregate-actions.test.mjs",
   "apps/cli/scripts/lib/drill-artifact-kinds.test.mjs",
   "apps/cli/scripts/lib/drill-artifacts.test.mjs",
+  "apps/cli/scripts/lib/drill-chaos-contract-registry-parity.test.mjs",
   "apps/cli/scripts/lib/drill-chaos-contract.test.mjs",
   "apps/cli/scripts/lib/drill-child-process.test.mjs",
   "apps/cli/scripts/lib/drill-cli-args.test.mjs",
@@ -137,6 +138,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-runtime-authority-invariants.test.mjs",
       "apps/cli/scripts/lib/drill-runtime-authority-registry-parity.test.mjs",
       "apps/cli/scripts/lib/drill-runtime-signal-registry-parity.test.mjs",
+      "apps/cli/scripts/lib/drill-chaos-contract-registry-parity.test.mjs",
     ]),
   },
   {

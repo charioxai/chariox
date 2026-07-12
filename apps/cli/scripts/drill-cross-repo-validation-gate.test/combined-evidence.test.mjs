@@ -32,6 +32,7 @@ test("cross repo validation gate help lists artifact identity requirements", asy
   assert.match(stdout, /--require-artifact-planned-owner OWNER\[,OWNER\]/)
   assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
   assert.match(stdout, /--require-runtime-authority-registry-parity/)
+  assert.match(stdout, /--require-chaos-contract-registry-parity/)
 })
 
 test("cross repo validation gate combines OSS and Cloud matrix evidence", async () => {
@@ -206,4 +207,3 @@ function assertMetadataIncludes(value, expected) {
     assert.equal(actual.has(entry), true, `expected metadata to include ${entry}`)
   }
 }
-

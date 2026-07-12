@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { drillChaosContractManifest } from "./lib/drill-chaos-contract.mjs"
 import { DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO } from "./lib/drill-distributed-runtime-evidence.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import {
@@ -262,6 +263,21 @@ export async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudDrillGeneratedMatrixNamesManifest() {",
     `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+export async function writeCloudChaosContractRegistry(
+  cloudRoot,
+  manifest = drillChaosContractManifest(),
+) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-chaos-contract.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudDrillChaosContractManifest() {",
+    `  return ${JSON.stringify(manifest)}`,
     "}",
     "",
   ].join("\n"), "utf8")
@@ -774,6 +790,7 @@ export {
   writeDrillArtifactIndex,
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO,
   drillFailureTaxonomyManifest,
+  drillChaosContractManifest,
   DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
   drillRuntimeAuthorityManifest,
   drillRuntimeSignalOwnersFor,

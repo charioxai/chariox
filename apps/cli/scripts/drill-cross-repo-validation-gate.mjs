@@ -6,6 +6,7 @@ import {
   parseDrillMaxDepth,
   parseDrillNonNegativeInteger,
 } from "./lib/drill-cli-args.mjs"
+import { verifyDrillChaosContractRegistryParity } from "./lib/drill-chaos-contract-registry-parity.mjs"
 import { verifyDrillFailureTaxonomyRegistryParity } from "./lib/drill-failure-taxonomy-registry-parity.mjs"
 import { verifyDrillGeneratedMatrixRegistryParity } from "./lib/drill-generated-matrix-registry-parity.mjs"
 import { verifyDrillRuntimeAuthorityRegistryParity } from "./lib/drill-runtime-authority-registry-parity.mjs"
@@ -45,6 +46,8 @@ function printHelp() {
     "                         Discover failure manifests under each repo's .artifacts root",
     "  --require-generated-matrix-registry-parity",
     "                         Fail when OSS and Cloud generated matrix registries drift",
+    "  --require-chaos-contract-registry-parity",
+    "                         Fail when OSS and Cloud chaos replay contracts drift",
     "  --require-failure-taxonomy-registry-parity",
     "                         Fail when Cloud failure classifications drift from OSS diagnostics",
   "  --require-runtime-signal-registry-parity",
@@ -114,6 +117,9 @@ async function main() {
   if (options.requireGeneratedMatrixRegistryParity) {
     await verifyDrillGeneratedMatrixRegistryParity(options)
   }
+  if (options.requireChaosContractRegistryParity) {
+    await verifyDrillChaosContractRegistryParity(options)
+  }
   if (options.requireFailureTaxonomyRegistryParity) {
     await verifyDrillFailureTaxonomyRegistryParity(options)
   }
@@ -170,6 +176,7 @@ function parseArgs(argv) {
     outputPath: null,
     platformBundleDir: null,
     requireComplete: false,
+    requireChaosContractRegistryParity: false,
     requireFailureTaxonomyRegistryParity: false,
     requireGeneratedMatrixRegistryParity: false,
     requireRuntimeAuthorityRegistryParity: false,
@@ -187,6 +194,7 @@ function parseArgs(argv) {
     else if (arg === "--include-default-artifacts") options.includeDefaultArtifacts = true
     else if (arg === "--include-default-failures") options.includeDefaultFailures = true
     else if (arg === "--require-failure-taxonomy-registry-parity") options.requireFailureTaxonomyRegistryParity = true
+    else if (arg === "--require-chaos-contract-registry-parity") options.requireChaosContractRegistryParity = true
     else if (arg === "--require-generated-matrix-registry-parity") options.requireGeneratedMatrixRegistryParity = true
     else if (arg === "--require-runtime-authority-registry-parity") options.requireRuntimeAuthorityRegistryParity = true
     else if (arg === "--require-runtime-signal-registry-parity") options.requireRuntimeSignalRegistryParity = true

@@ -2,14 +2,23 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  DRILL_CHAOS_CONTRACT_SCHEMA,
   DRILL_CHAOS_FAULT_KINDS,
   DRILL_CHAOS_INVARIANT_IDS,
+  drillChaosContractManifest,
   validateDrillChaosFaultPlan,
   validateDrillChaosReplayBundle,
 } from "./drill-chaos-contract.mjs"
 import { createDeterministicRuntimeChaosReplay } from "./drill-deterministic-runtime-model.mjs"
 
 test("chaos contract exposes every required deterministic fault and invariant", () => {
+  assert.deepEqual(drillChaosContractManifest(), {
+    schema: DRILL_CHAOS_CONTRACT_SCHEMA,
+    replaySchema: "arroba.drill.chaos_replay.v1",
+    invariantsSchema: "arroba.drill.chaos_invariants.v1",
+    faultKinds: [...DRILL_CHAOS_FAULT_KINDS],
+    invariantIds: [...DRILL_CHAOS_INVARIANT_IDS],
+  })
   assert.deepEqual(DRILL_CHAOS_FAULT_KINDS, [
     "delay",
     "drop",

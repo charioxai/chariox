@@ -4,6 +4,7 @@ import {
   DISTRIBUTED_RUNTIME_GENERATED_MATRIX_NAMES_BY_REPO,
   DISTRIBUTED_RUNTIME_REQUIRED_FAILURE_CLASSIFICATIONS,
   DRILL_RUNTIME_AUTHORITY_INVARIANT_IDS,
+  drillChaosContractManifest,
   drillFailureTaxonomyManifest,
   drillRuntimeAuthorityManifest,
   drillRuntimeSignalOwnersFor,
@@ -22,6 +23,7 @@ import {
   test,
   verifyDrillArtifactIndex,
   writeCloudFailureTaxonomyRegistry,
+  writeCloudChaosContractRegistry,
   writeCloudGeneratedMatrixRegistry,
   writeCloudRuntimeAuthorityRegistry,
   writeCloudRuntimeSignalsRegistry,
@@ -288,6 +290,65 @@ test("distributed runtime gate can require generated matrix registry parity", as
 
     const report = JSON.parse(stdout)
     assert.equal(report.status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate can require chaos contract registry parity", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const ossRoot = path.join(rootDir, "arroba")
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
+    await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
+      evidenceRepo: "oss",
+    })
+    await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
+    await writeCloudChaosContractRegistry(cloudRoot)
+
+    const { stdout } = await execFile(process.execPath, [
+      scriptPath,
+      "--oss-root",
+      ossRoot,
+      "--cloud-root",
+      cloudRoot,
+      "--include-default-artifacts",
+      "--require-chaos-contract-registry-parity",
+      "--json",
+    ])
+
+    assert.equal(JSON.parse(stdout).status, "passed")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("distributed runtime gate rejects chaos contract registry drift", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  try {
+    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const manifest = drillChaosContractManifest()
+    await writeCloudChaosContractRegistry(cloudRoot, {
+      ...manifest,
+      replaySchema: "arroba.drill.chaos_replay.v2",
+    })
+
+    await assert.rejects(
+      execFile(process.execPath, [
+        scriptPath,
+        "--cloud-root",
+        cloudRoot,
+        "--require-chaos-contract-registry-parity",
+        "--json",
+      ]),
+      (error) => {
+        assert.equal(error.code, 1)
+        assert.match(error.stderr, /chaos contract registry parity failed/)
+        assert.match(error.stderr, /chaos_replay.v2/)
+        return true
+      },
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

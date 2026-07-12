@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
 import { verifyDrillArtifactIndex, writeDrillArtifactIndex } from "./lib/drill-artifacts.mjs"
+import { drillChaosContractManifest } from "./lib/drill-chaos-contract.mjs"
 import { drillFailureTaxonomyManifest } from "./lib/drill-failure-taxonomy.mjs"
 import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 import { drillRuntimeAuthorityManifest } from "./lib/drill-runtime-authority-invariants.mjs"
@@ -19,6 +20,7 @@ const scriptPath = fileURLToPath(new URL("./drill-cross-repo-validation-gate.mjs
 export {
   assert,
   drillFailureTaxonomyManifest,
+  drillChaosContractManifest,
   drillRuntimeAuthorityManifest,
   drillRuntimeSignalsManifest,
   execFile,
@@ -62,6 +64,21 @@ export async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   await writeFile(registryPath, [
     "export function cloudFailureTaxonomyManifest() {",
     `  return { schema: "arroba.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
+    "}",
+    "",
+  ].join("\n"), "utf8")
+  return registryPath
+}
+
+export async function writeCloudChaosContractRegistry(
+  cloudRoot,
+  manifest = drillChaosContractManifest(),
+) {
+  const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-chaos-contract.mjs")
+  await mkdir(path.dirname(registryPath), { recursive: true })
+  await writeFile(registryPath, [
+    "export function cloudDrillChaosContractManifest() {",
+    `  return ${JSON.stringify(manifest)}`,
     "}",
     "",
   ].join("\n"), "utf8")

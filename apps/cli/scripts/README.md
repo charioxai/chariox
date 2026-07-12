@@ -98,7 +98,7 @@ reconciliation, relay freshness, manifest sync, slice-state, or Workspace Live
 Sync changes. Treat dry-run matrices as scope evidence only; release evidence
 still needs the matching live matrix reports.
 
-When a distributed gate spans OSS and Cloud, keep the registry parity flags enabled: `--require-generated-matrix-registry-parity`, `--require-runtime-signal-registry-parity`, `--require-runtime-authority-registry-parity`, and `--require-failure-taxonomy-registry-parity`. These checks validate registry schemas, reject duplicate generated matrix names/runtime signal ids/runtime authority invariants/failure classifications, and fail on matrix repo, signal owner/description, authority owner/signal, or taxonomy owner drift before live drills consume provider or remote-host time.
+When a distributed gate spans OSS and Cloud, keep the registry parity flags enabled: `--require-generated-matrix-registry-parity`, `--require-chaos-contract-registry-parity`, `--require-runtime-signal-registry-parity`, `--require-runtime-authority-registry-parity`, and `--require-failure-taxonomy-registry-parity`. These checks validate registry schemas, reject duplicate generated matrix names/chaos fault kinds and invariants/runtime signal ids/runtime authority invariants/failure classifications, and fail on matrix repo, chaos replay schema, signal owner/description, authority owner/signal, or taxonomy owner drift before live drills consume provider or remote-host time.
 
 To reject stale or discovered-only bundles, summarize the generated gate report and require both generated evidence kinds:
 

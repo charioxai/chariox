@@ -45,6 +45,7 @@ test("distributed runtime gate help lists artifact evidence requirements", async
   assert.match(stdout, /--require-artifact-planned-owner OWNER\[,OWNER\]/)
   assert.match(stdout, /--require-artifact-planned-classification KIND\[,KIND\]/)
   assert.match(stdout, /--require-runtime-authority-registry-parity/)
+  assert.match(stdout, /--require-chaos-contract-registry-parity/)
 })
 
 test("distributed runtime gate accepts a pnpm argument separator", async () => {
