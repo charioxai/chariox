@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  historyOutlineContiguousText,
   historyOutlineRows,
   historyOutlineText,
 } from "./drill-history-outline.mjs"
@@ -22,6 +23,17 @@ test("can include user prompts for restart persistence assertions", () => {
     historyOutlineText(sampleOutline(), { includeUserPrompt: true }),
     "user marker\nassistant output\nsummary text\nblob summary",
   )
+})
+
+test("reconstructs streamed output chunks for exact drill assertions", () => {
+  const outline = sampleOutline()
+  outline.agents[0].turns[0].entries = [
+    { entry: { text: "USER" } },
+    { entry: { text: "_FEEDBACK" } },
+    { entry: { text: "_RESULT:green" } },
+  ]
+
+  assert.match(historyOutlineContiguousText(outline), /USER_FEEDBACK_RESULT:green/)
 })
 
 function sampleOutline() {

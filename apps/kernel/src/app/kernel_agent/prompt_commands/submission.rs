@@ -34,6 +34,7 @@ impl<'a> KernelAgentService<'a> {
         if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
             self.spawn_prompt_history_append(
                 &submitted.admission,
+                None,
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
@@ -58,6 +59,25 @@ impl<'a> KernelAgentService<'a> {
         prompt: &str,
         attachments: Vec<PromptAttachment>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
+        self.submit_prompt_with_hidden_system_context(
+            session_id,
+            attachment_id,
+            target_agent_id,
+            prompt,
+            "",
+            attachments,
+        )
+    }
+
+    pub(crate) fn submit_prompt_with_hidden_system_context(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        target_agent_id: Option<&str>,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<PromptAttachment>,
+    ) -> Result<PromptSubmissionOutcome, DaemonError> {
         crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent_id = match target_agent_id {
@@ -79,7 +99,8 @@ impl<'a> KernelAgentService<'a> {
             prompt,
             PromptStatus::Queued,
         )
-        .with_attachments(attachments);
+        .with_attachments(attachments)
+        .with_hidden_system_context(hidden_system_context);
         let submitted = self.submit_prepared_prompt_for_kernel(KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt: prepared_prompt,
@@ -97,6 +118,7 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        history_source_attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
         attachments: Vec<PromptAttachment>,
@@ -128,6 +150,7 @@ impl<'a> KernelAgentService<'a> {
         if let PromptSubmissionOutcome::Started { prompt } = &submitted.outcome {
             self.spawn_prompt_history_append(
                 &submitted.admission,
+                Some(history_source_attachment_id),
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
@@ -245,16 +268,18 @@ impl<'a> KernelAgentService<'a> {
     fn spawn_prompt_history_append(
         &self,
         admission: &KernelPromptAdmission,
+        history_source_attachment_id: Option<&str>,
         prompt_id: &str,
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
         self.app.spawn_user_prompt_history_append_with_prompt_id(
             &admission.session_id,
-            &admission.attachment_id,
+            history_source_attachment_id.unwrap_or(&admission.attachment_id),
             &admission.target_agent_id,
             prompt,
             attachments,
+            admission.prompt.prompt_origin(),
             prompt_id,
             admission.prompt.workflow_run_id(),
             admission.prompt.workflow_node_run_id(),

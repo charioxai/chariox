@@ -207,6 +207,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
       onTerminalRecords: remotePlacement
         ? (records) => proxy?.projectKernelOutputToTui(records)
         : undefined,
+      pollRuntimeNotices: !remotePlacement,
       debug: debugNativeCodex,
       formatError,
     })

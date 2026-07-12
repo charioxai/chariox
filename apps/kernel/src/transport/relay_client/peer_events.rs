@@ -142,7 +142,7 @@ pub(super) async fn emit_leased_projection_event(
 ) -> Result<(), DaemonError> {
     let config = router.relay_config_snapshot();
     let Some((target_daemon_id, event)) = router
-        .relay_drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)
+        .relay_drain_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output, false)
         .await?
     else {
         return Ok(());

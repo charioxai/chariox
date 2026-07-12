@@ -12,11 +12,11 @@ import type {
 import { sessionResponseLayout } from "@arroba/kernel-client/session-config-projection"
 import {
   isCompleteSessionSnapshot,
-  resolveAttachTimeProviderLaunch,
   sessionListEntryFromSession,
   upsertSessionListEntry,
   type SessionLifecycleLaunchSelection,
 } from "@arroba/kernel-client/session-lifecycle-state"
+import { settleAttachProviderRun } from "./attach-provider-run.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { SessionListEntry } from "./sessions.js"
@@ -242,7 +242,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         applyAttachedState(provisionalSession, attachment, createdSession)
       }
 
-      const attachedSession = await deps.getSessionState(session.id)
+      let attachedSession = await deps.getSessionState(session.id)
 
       applyAttachedState(attachedSession, attachment, createdSession)
 
@@ -267,39 +267,39 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
-      const launchDecision = resolveAttachTimeProviderLaunch(
+      const providerSettlement = await settleAttachProviderRun(
         attachedSession,
         launch,
+        deps.cliOptions.accountProfile,
         createdSession,
+        {
+          launchProviderRun: deps.launchProviderRun,
+          getSessionState: deps.getSessionState,
+          tryGetProviderRun: deps.tryGetProviderRun,
+        },
       )
-      switch (launchDecision.action) {
-        case "launch_provider_run": {
-          deps.cliOptions.provider = launchDecision.launch.provider
-          deps.cliOptions.model = launchDecision.launch.model
-          deps.cliOptions.effort = launchDecision.launch.effort
-          const run = await deps.launchProviderRun(
-            session.id,
-            launchDecision.launch.provider,
-            deps.cliOptions.accountProfile,
-            launchDecision.launch.model,
-            launchDecision.launch.effort,
-            launchDecision.targetAgentId,
-          )
+      attachedSession = providerSettlement.session
+      switch (providerSettlement.action) {
+        case "launched": {
+          deps.cliOptions.provider = providerSettlement.launch.provider
+          deps.cliOptions.model = providerSettlement.launch.model
+          deps.cliOptions.effort = providerSettlement.launch.effort
+          const run = providerSettlement.providerRun
           deps.logAttachedProviderRun?.("launched", run, {
             session_id: session.id,
-            requested_model: launchDecision.launch.model,
-            requested_variant: launchDecision.launch.effort,
+            requested_model: providerSettlement.launch.model,
+            requested_variant: providerSettlement.launch.effort,
           })
           deps.setProviderRunState(run)
           deps.syncCliProviderSelection({
             provider: run.provider,
             model: run.model,
-            effort: run.variant ?? launchDecision.launch.effort,
+            effort: run.variant ?? providerSettlement.launch.effort,
           })
           break
         }
-        case "load_provider_run": {
-          const run = await deps.tryGetProviderRun(launchDecision.providerRunId)
+        case "loaded": {
+          const run = providerSettlement.providerRun
           deps.logAttachedProviderRun?.("loaded", run, {
             session_id: session.id,
             requested_model: deps.cliOptions.model,
@@ -314,31 +314,37 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
           }
           break
         }
-        case "skip_launch":
-          deps.cliOptions.provider = launchDecision.launch.provider
-          deps.cliOptions.model = launchDecision.launch.model
-          deps.cliOptions.effort = launchDecision.launch.effort
-          if (launchDecision.reason === "no_visible_agents") {
+        case "skipped":
+          deps.cliOptions.provider = providerSettlement.launch.provider
+          deps.cliOptions.model = providerSettlement.launch.model
+          deps.cliOptions.effort = providerSettlement.launch.effort
+          if (providerSettlement.recoveredRemotePlacement) {
+            deps.logWarning?.("recovered attach-time provider launch after agent moved remote", {
+              session_id: session.id,
+              agent_id: providerSettlement.targetAgent?.id ?? null,
+              worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+            })
+          } else if (providerSettlement.reason === "no_visible_agents") {
             deps.logWarning?.("skipping provider launch because no agents are visible to this client", {
               session_id: session.id,
               focused_agent_id: attachedSession.focused_agent_id,
             })
-          } else if (launchDecision.reason === "missing_focused_agent") {
+          } else if (providerSettlement.reason === "missing_focused_agent") {
             deps.logWarning?.("skipping provider launch because focused agent is not visible to this client", {
               session_id: session.id,
               focused_agent_id: attachedSession.focused_agent_id,
             })
-          } else if (launchDecision.reason === "remote_backed_agent") {
+          } else if (providerSettlement.reason === "remote_backed_agent") {
             deps.logWarning?.("skipping attach-time provider launch for remote-backed agent", {
               session_id: session.id,
-              agent_id: launchDecision.targetAgent?.id ?? null,
-              worker_kernel_id: launchDecision.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+              agent_id: providerSettlement.targetAgent?.id ?? null,
+              worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
             })
           }
           deps.setProviderRunState(null)
           break
         default: {
-          const exhaustive: never = launchDecision
+          const exhaustive: never = providerSettlement
           throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
         }
       }

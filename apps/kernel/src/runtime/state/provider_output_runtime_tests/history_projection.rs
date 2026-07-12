@@ -51,7 +51,10 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
 
     let waiting_room_sequence = runtime.waiting_room_change_sequence();
     let listed = runtime.list_session_snapshots();
-    assert_eq!(runtime.waiting_room_change_sequence(), waiting_room_sequence);
+    assert_eq!(
+        runtime.waiting_room_change_sequence(),
+        waiting_room_sequence
+    );
     let listed_session = listed
         .iter()
         .find(|listed| listed.id() == session.id())

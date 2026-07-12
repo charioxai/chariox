@@ -61,6 +61,7 @@ use incoming_envelopes::handle_incoming_envelope;
 pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub use peer_client::{
+    send_peer_request_via_connected_relay, send_peer_request_via_connected_relay_with_timeout,
     send_peer_request_via_temporary_connection,
     send_peer_request_via_temporary_connection_with_timeout, LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
 };
@@ -80,6 +81,25 @@ pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::RelayDisplayTunnelTarget;
 pub use connector::{run_daemon_relay_connector, run_daemon_relay_connector_with_static_relay};
+
+#[cfg(test)]
+pub(crate) async fn resolve_pending_peer_response_for_test(
+    state: &Arc<RwLock<RelayClientState>>,
+    request_id: String,
+    from_daemon_id: String,
+    encrypted_response: EncryptedRelayPayload,
+) {
+    resolve_pending_peer_response(
+        state,
+        request_id,
+        RelayPeerResponseEnvelope {
+            from_daemon_id,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+    )
+    .await;
+}
 
 const RELAY_HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 const RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS: u64 = 150;

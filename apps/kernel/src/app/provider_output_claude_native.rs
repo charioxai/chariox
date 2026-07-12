@@ -31,14 +31,16 @@ use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
     claude_headless_composer_visible, claude_headless_prompt_waiting_in_composer,
     claude_headless_workspace_trust_visible, claude_native_marker, claude_permission_recent_file,
-    claude_rendered_permission_visible, clear_claude_permission_recent,
-    extract_native_hidden_instructions, format_claude_permission_message,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
-    write_claude_hook_context_response, write_claude_native_marker, write_claude_permission_input,
-    write_claude_permission_response,
+    claude_rendered_permission_visible, clear_claude_hook_permission_tombstone,
+    clear_claude_permission_recent, extract_native_hidden_instructions,
+    format_claude_permission_message, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_startup_wait_marker,
+    write_claude_headless_submit_retry, write_claude_hook_context_response,
+    write_claude_hook_permission_tombstone, write_claude_native_marker,
+    write_claude_permission_input, write_claude_permission_response,
 };
 use transcript::{
     drain_claude_transcript_file, known_claude_transcript_paths, load_claude_transcript_cursor,
@@ -80,6 +82,21 @@ pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
 
+fn claude_native_history_source_attachment_id(
+    app: &DaemonApp,
+    session_id: &str,
+    provider_run_id: &str,
+    fallback_attachment_id: &str,
+) -> String {
+    app.terminal()
+        .input_records()
+        .into_iter()
+        .rev()
+        .find(|record| record.session_id == session_id && record.provider_run_id == provider_run_id)
+        .map(|record| record.source_attachment_id)
+        .unwrap_or_else(|| fallback_attachment_id.to_string())
+}
+
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -103,10 +120,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         };
 
+        let resolving_permission = claude_native_marker(context_file)
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"));
+        let resolved_prompt_marker = if resolving_permission {
+            self.app
+                .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                .map(|prompt| format!("permission-resolved:{}", prompt.id()))
+        } else {
+            None
+        };
         for input in take_claude_permission_inputs(context_file) {
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, &input)?;
-            write_claude_native_marker(context_file, "");
+            if resolving_permission {
+                write_claude_native_marker(
+                    context_file,
+                    resolved_prompt_marker.as_deref().unwrap_or_default(),
+                );
+            }
         }
         self.inject_pending_prompt(
             session_id,
@@ -125,7 +157,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(outcome);
         }
         let _ = fs::write(events_path, "");
-        let attachment_id = self
+        let runtime_attachment_id = self
             .app
             .attachments
             .list_session_attachment_ids(session_id)
@@ -156,6 +188,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if event_name == "UserPromptSubmit" {
+                clear_claude_hook_permission_tombstone(context_file);
                 let Some(prompt) = event
                     .get("prompt")
                     .and_then(Value::as_str)
@@ -182,16 +215,23 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
-                let Some(attachment_id) = attachment_id.as_deref() else {
+                let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
                     continue;
                 };
+                let history_source_attachment_id = claude_native_history_source_attachment_id(
+                    self.app,
+                    session_id,
+                    provider_run_id,
+                    runtime_attachment_id,
+                );
                 let attachments = extract_claude_native_prompt_attachments(
                     prompt,
                     provider_run.working_directory().map(PathBuf::as_path),
                 );
                 let outcome = self.app.record_native_prompt_started_with_attachments(
                     session_id,
-                    attachment_id,
+                    runtime_attachment_id,
+                    &history_source_attachment_id,
                     &agent_id,
                     prompt,
                     attachments,
@@ -416,6 +456,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 return Ok(());
             }
         }
+        if claude_native_marker(context_file)
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"))
+        {
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
         let recent = if visible {
             rendered.to_string()
         } else {
@@ -424,10 +471,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if !visible && !claude_rendered_permission_visible(&recent) {
             return Ok(());
         }
-        if claude_native_marker(context_file)
-            .as_deref()
-            .is_some_and(|value| value.starts_with("permission:"))
-        {
+        if take_matching_claude_hook_permission_tombstone(context_file, &recent) {
+            clear_claude_permission_recent(context_file);
             return Ok(());
         }
         let interaction_id = format!(
@@ -441,8 +486,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id,
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some("Approve Claude Code Bash?".to_string()),
-            "Claude Code is showing a native Bash permission prompt.",
+            Some("Approve Claude Code tool?".to_string()),
+            "Claude Code is showing a native tool permission prompt.",
             vec![
                 RuntimeInteractionChoice::new(
                     "allow_once",
@@ -516,8 +561,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .get("tool_name")
             .and_then(Value::as_str)
             .unwrap_or("tool");
+        let interaction_id = format!("claude-native-permission-{provider_run_id}-{request_id}");
+        write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
+        write_claude_hook_permission_tombstone(context_file, event);
+        clear_claude_permission_recent(context_file);
         let interaction = RuntimeInteraction::new(
-            format!("claude-native-permission-{provider_run_id}-{request_id}"),
+            interaction_id,
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
@@ -683,6 +732,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         prompt: &ClaudeNativePromptInjection<'_>,
     ) -> Result<(), DaemonError> {
         let mut marker = claude_native_marker(context_file);
+        if marker
+            .as_deref()
+            .is_some_and(|value| value.starts_with("permission:"))
+        {
+            return Ok(());
+        }
         let force_post_stop_ready = provider_run.provider() == "claude-headless"
             && marker
                 .as_deref()
@@ -811,7 +866,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             };
             if count < 3
                 && now.saturating_sub(last_attempt_ms) >= 2_000
-                && claude_headless_prompt_waiting_in_composer(&recent)
+                && claude_headless_prompt_waiting_in_composer(
+                    &recent,
+                    redact_native_hidden_instructions(prompt.prompt).trim(),
+                )
             {
                 append_claude_headless_debug(
                     context_file,

@@ -146,3 +146,44 @@ fn relay_registry_scopes_metadata_and_aliases_by_realm() {
         "public-key-b"
     );
 }
+
+#[test]
+fn relay_metadata_ignores_temporary_peer_transport_registrations() {
+    let mut registry = RelayRegistry::default();
+    let mut home = test_registration("home-kernel", "machine-a", "Linux", 10);
+    home.daemon_alias = Some("home".to_string());
+    let mut temporary = test_registration("home-kernel:peer-tmp:req-1", "machine-a", "Linux", 20);
+    temporary.daemon_alias = Some("home".to_string());
+    temporary.kernel_alias = Some("home".to_string());
+    temporary.capabilities = vec!["relay_peer_transport".to_string()];
+    temporary.available_providers = Vec::new();
+    temporary.accepting_remote_leases = false;
+
+    registry
+        .daemons
+        .insert(DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel"), home);
+    registry.daemons.insert(
+        DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel:peer-tmp:req-1"),
+        temporary,
+    );
+
+    let machines = registry.live_machines();
+    assert_eq!(machines.len(), 1);
+    assert_eq!(machines[0].kernel_count, 1);
+
+    let kernels = registry.live_kernels_for_machine("machine-a");
+    assert_eq!(kernels.len(), 1);
+    assert_eq!(kernels[0].kernel_id, "home-kernel");
+
+    assert_eq!(
+        registry
+            .live_kernel("home")
+            .expect("real home alias should resolve")
+            .kernel_id,
+        "home-kernel"
+    );
+    assert!(
+        registry.live_kernel("home-kernel:peer-tmp:req-1").is_none(),
+        "temporary peer transport sockets are not live kernels"
+    );
+}

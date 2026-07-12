@@ -5,6 +5,8 @@ use serde_json::Value;
 
 use crate::session::unix_epoch_ms;
 
+const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     fs::read_to_string(marker)
@@ -92,6 +94,93 @@ pub(super) fn claude_permission_recent_file(context_file: &str) -> Option<PathBu
     std::path::Path::new(context_file)
         .parent()
         .map(|root| root.join("permission-recent.txt"))
+}
+
+fn claude_hook_permission_tombstone_file(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("hook-permission-tombstone.json"))
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ClaudeHookPermissionTombstone {
+    recorded_at_ms: u64,
+    tool_name: String,
+    detail: String,
+}
+
+pub(super) fn write_claude_hook_permission_tombstone(context_file: &str, event: &Value) {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return;
+    };
+    let tool_name = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    let detail = event
+        .get("tool_input")
+        .and_then(Value::as_object)
+        .and_then(|input| {
+            input
+                .get("command")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_string();
+    let tombstone = ClaudeHookPermissionTombstone {
+        recorded_at_ms: unix_epoch_ms(),
+        tool_name,
+        detail,
+    };
+    if let Ok(raw) = serde_json::to_string(&tombstone) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn clear_claude_hook_permission_tombstone(context_file: &str) {
+    if let Some(path) = claude_hook_permission_tombstone_file(context_file) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+pub(super) fn take_matching_claude_hook_permission_tombstone(
+    context_file: &str,
+    rendered: &str,
+) -> bool {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return false;
+    };
+    let Some(tombstone) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClaudeHookPermissionTombstone>(&raw).ok())
+    else {
+        let _ = fs::remove_file(path);
+        return false;
+    };
+    if unix_epoch_ms().saturating_sub(tombstone.recorded_at_ms)
+        > CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS
+    {
+        let _ = fs::remove_file(path);
+        return false;
+    }
+    let rendered = compact_claude_permission_text(rendered);
+    let tool_name = compact_claude_permission_text(&tombstone.tool_name);
+    let detail = compact_claude_permission_text(&tombstone.detail);
+    if !rendered.contains(&tool_name) || (!detail.is_empty() && !rendered.contains(&detail)) {
+        return false;
+    }
+    let _ = fs::remove_file(path);
+    true
+}
+
+fn compact_claude_permission_text(value: &str) -> String {
+    normalize_claude_rendered_permission_text(value)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 pub(super) fn write_claude_hook_context_response(
@@ -188,13 +277,19 @@ pub(super) fn timestamp_millis() -> u128 {
 }
 
 pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
-    let Some(tool_name) = event.get("tool_name").and_then(Value::as_str) else {
+    let Some(tool_name) = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return false;
     };
-    matches!(
-        tool_name,
-        "Bash" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit"
-    )
+    if tool_name.starts_with("mcp__arroba__") || tool_name.starts_with("arroba.") {
+        return false;
+    }
+    !(event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
+        && event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions"))
 }
 
 pub(super) fn format_claude_permission_message(event: &Value) -> String {
@@ -244,9 +339,7 @@ fn format_claude_tool_input(input: &Value) -> String {
 pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let compact = normalized.replace(' ', "");
-    (normalized.contains("Bash command") || compact.contains("Bashcommand"))
-        && (normalized.contains("Do you want to proceed?")
-            || compact.contains("Doyouwanttoproceed?"))
+    (normalized.contains("Do you want to proceed?") || compact.contains("Doyouwanttoproceed?"))
         && (normalized.contains("1. Yes") || compact.contains("1.Yes"))
         && (normalized.contains("3. No") || compact.contains("3.No"))
 }
@@ -360,11 +453,22 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
             || claude_headless_bypass_confirmation_visible(&normalized))
 }
 
-pub(super) fn claude_headless_prompt_waiting_in_composer(text: &str) -> bool {
+pub(super) fn claude_headless_prompt_waiting_in_composer(
+    text: &str,
+    expected_prompt: &str,
+) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
     let compact = normalized_lower.replace(' ', "");
-    normalized_lower.contains("[pasted text")
+    let expected = normalize_claude_rendered_permission_text(expected_prompt)
+        .trim()
+        .to_ascii_lowercase();
+    let expected_compact = expected.replace(' ', "");
+    let direct_prompt_waiting = !expected.is_empty()
+        && (normalized_lower.trim_end().ends_with(&expected)
+            || compact.trim_end().ends_with(&expected_compact));
+    direct_prompt_waiting
+        || normalized_lower.contains("[pasted text")
         || compact.contains("[pastedtext")
         || normalized_lower.contains("paste again to expand")
         || compact.contains("pasteagaintoexpand")

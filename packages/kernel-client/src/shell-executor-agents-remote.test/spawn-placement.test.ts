@@ -83,6 +83,7 @@ test("executeShellCommand resolves machine spawn to a ready provider kernel", as
             machine_id: "machine-1",
             accepting_remote_leases: true,
             available_providers: ["codex"],
+            provider_accounts: [{ provider: "codex", state: "configured" }],
           }],
         },
       }
@@ -141,7 +142,7 @@ test("executeShellCommand rejects machine spawn when no ready kernel supports th
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
 
-test("executeShellCommand rejects machine spawn when provider account is not authenticated", async () => {
+test("executeShellCommand rejects machine spawn when provider account is not usable", async () => {
   const requests: Record<string, unknown>[] = []
   const fake = fakeClient((request) => {
     requests.push(request)
@@ -173,7 +174,7 @@ test("executeShellCommand rejects machine spawn when provider account is not aut
   const result = await executeShellCommand(parseShellCommand("agent spawn qa --machine machine-1"), context, { client: fake.client })
 
   assert.equal(result.ok, false)
-  assert.match(result.message ?? "", /no ready worker kernel with an authenticated codex account/)
+  assert.match(result.message ?? "", /no ready worker kernel with a usable codex account/)
   assert.match(result.message ?? "", /next: run \/machine kernels machine-1; configure\/import or refresh the codex account, or choose another worker/)
   assert.deepEqual(requests, [{ ListRemoteMachineKernels: { machine_ref: "machine-1" } }])
 })
@@ -438,4 +439,3 @@ test("executeShellCommand creates and starts a headed slice for agent spawn", as
   })
   assert.deepEqual(result.contextUpdates, { agentId: "agent-slice" })
 })
-

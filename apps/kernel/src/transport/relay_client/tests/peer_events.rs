@@ -35,7 +35,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap"),
     ));
-    let (session_id, agent_id, attachment_id, daemon_public_key) = {
+    let (session_id, agent_id, attachment_id, prompt_id, daemon_public_key) = {
         let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
@@ -47,10 +47,23 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
                 ClientCapabilityLevel::InteractiveStructured,
             ))
             .expect("attachment should attach");
+        let prompt = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(agent.id()),
+                "remote prompt",
+                Vec::new(),
+            )
+            .expect("remote prompt should submit");
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = prompt else {
+            panic!("remote prompt should be active");
+        };
         (
             session.id().to_string(),
             agent.id().to_string(),
             attachment.id().to_string(),
+            prompt.id().to_string(),
             relay_crypto::public_key_from_private_key_base64(&app.config().relay_private_key)
                 .expect("daemon public key should derive"),
         )
@@ -71,6 +84,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
+            home_prompt_id: Some(prompt_id),
         }],
     })
     .expect("peer event should serialize");

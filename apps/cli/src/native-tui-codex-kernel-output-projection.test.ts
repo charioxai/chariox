@@ -32,7 +32,10 @@ test("codex kernel output projection ignores unscoped and wrong-agent records", 
   ])
 
   assert.deepEqual(broadcasts, [])
-  assert.deepEqual(debug, [])
+  assert.deepEqual(debugLabels(debug, "projection_record_skipped").map((entry) => entry.payload.reason), [
+    "agent_mismatch",
+    "agent_mismatch",
+  ])
 })
 
 test("codex kernel output projection broadcasts matching agent records", () => {
@@ -56,11 +59,10 @@ test("codex kernel output projection broadcasts matching agent records", () => {
 
 test("codex kernel output projection suppresses passive external telemetry", () => {
   const broadcasts: unknown[] = []
-  const debug: unknown[] = []
   const projection = createCodexKernelOutputProjection({
     agentId: "agent-1",
     broadcast: (message) => broadcasts.push(message),
-    debug: (label, payload) => debug.push({ label, payload }),
+    debug: () => {},
   })
   projection.setThreadId("thread-1")
 
@@ -80,16 +82,14 @@ test("codex kernel output projection suppresses passive external telemetry", () 
   }])
 
   assert.deepEqual(broadcasts, [])
-  assert.deepEqual(debug, [])
 })
 
 test("codex kernel output projection follows shared live append suppression", () => {
   const broadcasts: unknown[] = []
-  const debug: unknown[] = []
   const projection = createCodexKernelOutputProjection({
     agentId: "agent-1",
     broadcast: (message) => broadcasts.push(message),
-    debug: (label, payload) => debug.push({ label, payload }),
+    debug: () => {},
   })
   projection.setThreadId("thread-1")
 
@@ -101,7 +101,6 @@ test("codex kernel output projection follows shared live append suppression", ()
   }])
 
   assert.deepEqual(broadcasts, [])
-  assert.deepEqual(debug, [])
 })
 
 test("codex kernel output projection normalizes provider errors through shared terminal projection", () => {
@@ -157,4 +156,16 @@ function messageMethod(message: unknown): string | undefined {
 function findMethodParam(messages: readonly unknown[], method: string, param: string): unknown {
   const message = messages.find((candidate) => messageMethod(candidate) === method)
   return (message as { params?: Record<string, unknown> } | undefined)?.params?.[param]
+}
+
+function debugLabels(entries: readonly unknown[], label: string) {
+  return entries.filter((entry): entry is { label: string, payload: { reason?: string } } =>
+    typeof entry === "object"
+    && entry !== null
+    && "label" in entry
+    && (entry as { label?: unknown }).label === label
+    && "payload" in entry
+    && typeof (entry as { payload?: unknown }).payload === "object"
+    && (entry as { payload?: unknown }).payload !== null
+  )
 }

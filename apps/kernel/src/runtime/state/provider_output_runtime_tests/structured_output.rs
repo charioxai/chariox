@@ -1,5 +1,102 @@
 use super::*;
 
+async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
+    state: crate::provider::ProviderRunState,
+) {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-pending-structured-output",
+            "worktree-pending-structured-output",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-pending-structured-output",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "zen",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-pending-structured-output",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-pending-output".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-runtime".to_string()),
+        },
+    );
+    match state {
+        crate::provider::ProviderRunState::Parked => run.mark_parked(),
+        crate::provider::ProviderRunState::Ended => run.mark_ended(),
+        other => panic!("unsupported terminal test state: {other:?}"),
+    }
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    let expected = crate::terminal::TerminalOutputRecord {
+        record_id: None,
+        timestamp_ms: 1_000,
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: Some(agent.id().to_string()),
+        prompt_id: None,
+        prompt_origin: None,
+        source_attachment_id: None,
+        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+        merge_key: None,
+        recipient_attachment_ids: vec![attachment.id().to_string()],
+        pending_recipient_attachment_ids: vec![attachment.id().to_string()],
+        bytes: b"completed output".to_vec(),
+        external_observation_metadata: None,
+    };
+    let output_store = app.structured_output_record_store();
+    output_store.append(run.id().to_string(), vec![expected.clone()]);
+    output_store.schedule_next_poll(run.id().to_string(), 2_000);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let records = runtime
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
+        .await
+        .expect("owned provider output pump should succeed");
+
+    assert_eq!(records, vec![expected], "state was {state:?}");
+    assert_eq!(output_store.poll_due_at_ms(run.id()), None);
+    assert!(output_store.take(run.id()).is_empty());
+}
+
+#[tokio::test]
+async fn owned_output_pump_drains_completed_pending_output_after_run_quiesces() {
+    assert_owned_output_pump_drains_pending_record_after_run_state_change(
+        crate::provider::ProviderRunState::Parked,
+    )
+    .await;
+    assert_owned_output_pump_drains_pending_record_after_run_state_change(
+        crate::provider::ProviderRunState::Ended,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())

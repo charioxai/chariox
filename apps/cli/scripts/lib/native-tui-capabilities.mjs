@@ -17,11 +17,10 @@ export async function installNativeDrillCapabilities({
   workspace,
   options,
   markers,
+  workerClient = null,
+  syncWorkerCapabilityFiles = null,
 }) {
   if (!options.includeMcpSkills) return null
-  if (options.hetznerWorker) {
-    throw new Error("--include-mcp-skills is not implemented for --hetzner-worker yet; use same-host standard remote or home-managed slice")
-  }
   const normalizedProvider = provider.replaceAll(/[^a-z0-9_-]/gi, "-").toLowerCase()
   const suffix = `${process.pid}-${Date.now()}`
   const mcpName = `native-${normalizedProvider}-${suffix}-node`
@@ -34,21 +33,34 @@ export async function installNativeDrillCapabilities({
     markers.nativeSkill,
     markers.arrobaSkill,
   )
+  if (options.hetznerWorker) {
+    if (!workerClient || !syncWorkerCapabilityFiles) {
+      throw new Error("Hetzner MCP/skill validation requires a relay worker client and remote file sync")
+    }
+    await syncWorkerCapabilityFiles({ mcpServerPath, skillSource })
+  }
   await homeClient.send(installMcpServerRequest(workspace, mcpConfig))
   const installedSkill = unwrapVariant(
     await homeClient.send(installSkillRequest(workspace, skillSource)),
     "SkillInstalled",
   ).skill
 
-  if (options.standardHomeWorker && workerKernelUrl) {
-    const workerClient = new LocalIpcClient(workerKernelUrl, {
+  if (options.standardHomeWorker && (workerClient || workerKernelUrl)) {
+    const targetWorkerClient = workerClient ?? new LocalIpcClient(workerKernelUrl, {
       kernelPingIntervalMs: 60_000,
       kernelMaxMissedPongs: 10,
     })
     try {
-      await workerClient.send(installMcpServerRequest(workspace, mcpConfig))
+      await targetWorkerClient.send(installMcpServerRequest(workspace, mcpConfig))
+      const workerSkill = unwrapVariant(
+        await targetWorkerClient.send(installSkillRequest(workspace, skillSource)),
+        "SkillInstalled",
+      ).skill
+      if (workerSkill?.name !== installedSkill?.name) {
+        throw new Error(`worker skill install returned ${workerSkill?.name ?? "no name"}; expected ${installedSkill?.name ?? skillName}`)
+      }
     } finally {
-      await workerClient.close().catch(() => {})
+      if (!workerClient) await targetWorkerClient.close().catch(() => {})
     }
   }
 

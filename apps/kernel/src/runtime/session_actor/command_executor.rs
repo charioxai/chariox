@@ -54,6 +54,21 @@ impl SessionRuntimeCommandExecutor {
             &self.terminal_stream,
             &request,
         ) {
+            let result = match result {
+                Ok(response) => {
+                    let LocalDaemonRequest::PollRuntimeNotices(request) = &request else {
+                        unreachable!("projected runtime notices require a notice poll");
+                    };
+                    self.store
+                        .record_terminal_attachment_heartbeat(
+                            &request.session_id,
+                            &request.attachment_id,
+                        )
+                        .await
+                        .map(|()| response)
+                }
+                Err(error) => Err(error),
+            };
             let projection_action = if result.is_ok() {
                 session_id_for_projection_refresh(&result)
                     .and_then(|session_id| self.session_projection.get(&session_id))

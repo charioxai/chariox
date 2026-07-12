@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::provider::ProviderRunState;
 use crate::session::PromptQueueItem;
 use crate::transport::flow_control;
 
@@ -64,6 +65,9 @@ impl<'a> KernelAgentService<'a> {
                     return Ok(None);
                 }
             };
+            if self.app.providers.get_run(&provider_run_id)?.state() == ProviderRunState::Starting {
+                return Ok(None);
+            }
             let (_session, next_candidate) = self.activate_next_queued_prompt_for_mirror(
                 session_id,
                 &target_agent_id,
@@ -113,50 +117,79 @@ impl<'a> KernelAgentService<'a> {
                 continue;
             }
 
-            let active = self
-                .app
-                .prompt_owner_mark_active_prompt_running(session_id, &target_agent_id)?;
-            self.app.spawn_user_prompt_history_append_with_prompt_id(
-                session_id,
-                &source_attachment_id,
-                active.target_agent_id(),
-                active.prompt(),
-                active.attachments(),
-                active.id(),
-                active.workflow_run_id(),
-                active.workflow_node_run_id(),
-            )?;
-            self.app.echo_promoted_queued_prompt_to_attachments(
+            let active = self.finish_promoted_queued_prompt_start(
                 session_id,
                 &provider_run_id,
-                active.id(),
-                &source_attachment_id,
-                active.prompt(),
-                active.attachments(),
-            );
-            let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-            self.app
-                .agents
-                .note_prompt_sent_at(&target_agent_id, prompt_sent_at_ms)?;
-            self.app
-                .sessions
-                .note_prompt_sent(session_id, &target_agent_id, prompt_sent_at_ms)?;
-            if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
-                (active.workflow_run_id(), active.workflow_node_run_id())
-            {
-                self.app.sessions_mut().mark_workflow_turn_dispatched(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                )?;
-            }
-            crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
-                self.app, session_id, &active,
+                &target_agent_id,
+                next.id(),
             )?;
             flow_control::note_prompt_started(self.app, &provider_run_id);
-            crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
             return Ok(Some(active));
         }
+    }
+
+    pub(super) fn finish_promoted_queued_prompt_start(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let active = self
+            .app
+            .prompt_owner_mark_active_prompt_running(session_id, agent_id)?;
+        if active.id() != expected_prompt_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "finish promoted queued prompt",
+                message: format!(
+                    "expected active prompt `{expected_prompt_id}` but prompt owner activated `{}`",
+                    active.id()
+                ),
+            });
+        }
+        let source_attachment_id = self
+            .app
+            .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+        self.app.spawn_user_prompt_history_append_with_prompt_id(
+            session_id,
+            &source_attachment_id,
+            active.target_agent_id(),
+            active.prompt(),
+            active.attachments(),
+            active.prompt_origin(),
+            active.id(),
+            active.workflow_run_id(),
+            active.workflow_node_run_id(),
+        )?;
+        self.app.echo_promoted_queued_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            active.id(),
+            &source_attachment_id,
+            active.prompt(),
+            active.attachments(),
+        );
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        self.app
+            .agents
+            .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;
+        self.app
+            .sessions
+            .note_prompt_sent(session_id, agent_id, prompt_sent_at_ms)?;
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (active.workflow_run_id(), active.workflow_node_run_id())
+        {
+            self.app.sessions_mut().mark_workflow_turn_dispatched(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+        }
+        crate::app::workflow_runtime::start_workflow_prompt_from_runtime(
+            self.app, session_id, &active,
+        )?;
+        crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id)?;
+        Ok(active)
     }
 
     fn peek_next_queued_prompt(
@@ -205,8 +238,29 @@ impl<'a> KernelAgentService<'a> {
         ),
         DaemonError,
     > {
-        let expected_prompt_id = expected_next.map(PromptQueueItem::id);
         let prompt_id = self.app.sessions_mut().reserve_prompt_id();
+        self.activate_next_queued_prompt_for_mirror_with_prompt_id(
+            session_id,
+            agent_id,
+            expected_next,
+            prompt_id,
+        )
+    }
+
+    pub(super) fn activate_next_queued_prompt_for_mirror_with_prompt_id(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        expected_next: Option<&PromptQueueItem>,
+        prompt_id: String,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Option<crate::session::PromptQueueItem>,
+        ),
+        DaemonError,
+    > {
+        let expected_prompt_id = expected_next.map(PromptQueueItem::id);
         let next = self
             .app
             .prompt_owner_activate_next_queued_prompt_with_prompt_id(

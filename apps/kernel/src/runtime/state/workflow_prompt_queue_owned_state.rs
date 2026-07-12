@@ -7,12 +7,12 @@ impl KernelRuntimeOwnedState {
         &self,
         now_ms: u64,
     ) -> WorkflowPromptDispatches {
-        let plans = match self
+        let collection = match self
             .session_store
             .write()
-            .collect_due_workflow_watchdog_invocations(now_ms)
+            .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
         {
-            Ok(plans) => plans,
+            Ok(collection) => collection,
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.runtime",
@@ -23,18 +23,16 @@ impl KernelRuntimeOwnedState {
             }
         };
 
+        let mut changed_session_ids = collection.changed_session_ids;
         let mut dispatches = WorkflowPromptDispatches::default();
-        for plan in plans {
+        for plan in collection.plans {
             let session_id = plan.session_id.clone();
             let watchdog_id = plan.watchdog_id.clone();
+            changed_session_ids.insert(session_id.clone());
             match self.workflow_start_watchdog_tick_plan(plan) {
                 Ok(next_dispatches) => dispatches.extend(next_dispatches),
                 Err(error) => {
-                    let _ = self.session_store.write().mark_workflow_watchdog_failed(
-                        &session_id,
-                        &watchdog_id,
-                        error.to_string(),
-                    );
+                    self.mark_workflow_watchdog_launch_failed(&session_id, &watchdog_id, &error);
                     self.record_notice(
                         &session_id,
                         None,
@@ -45,6 +43,7 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        self.persist_workflow_watchdog_sessions(changed_session_ids);
         dispatches
     }
 
@@ -52,37 +51,28 @@ impl KernelRuntimeOwnedState {
         &self,
         plan: crate::session::WorkflowWatchdogTickPlan,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
-        let should_start = {
-            let session = self.session_store.get_session(&plan.session_id)?;
-            let watchdog = session
-                .workflow_watchdog(&plan.watchdog_id)
-                .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
-                    session_id: plan.session_id.clone(),
-                    workflow_id: plan.workflow_id.clone(),
-                    reference: plan.watchdog_id.clone(),
-                    message: "workflow watchdog was not found",
-                })?;
-            watchdog.enabled()
-                && !watchdog
-                    .max_wakeups()
-                    .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
-        };
+        let should_start = self
+            .session_store
+            .read()
+            .workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?;
         if !should_start {
             return Ok(WorkflowPromptDispatches::default());
         }
-        let queued_prompt = self.session_store.write().enqueue_workflow_prompt(
-            &plan.session_id,
-            &plan.workflow_id,
-            &plan.endpoint_id,
-            Some(plan.invocation_prompt.clone()),
-            plan.queue_id.as_deref(),
-            crate::session::WorkflowQueuedPromptSource::Scheduled,
-            Some(plan.watchdog_id.clone()),
-        )?;
+        if plan.enqueue_prompt {
+            self.session_store.write().enqueue_workflow_prompt(
+                &plan.session_id,
+                &plan.workflow_id,
+                &plan.endpoint_id,
+                Some(plan.invocation_prompt.clone()),
+                plan.queue_id.as_deref(),
+                crate::session::WorkflowQueuedPromptSource::Scheduled,
+                Some(plan.watchdog_id.clone()),
+            )?;
+        }
         if self
             .session_store
-            .get_session(&plan.session_id)?
-            .has_active_workflow_run()
+            .read()
+            .session_has_active_workflow_run(&plan.session_id)?
         {
             let _ = self
                 .session_store
@@ -90,27 +80,20 @@ impl KernelRuntimeOwnedState {
                 .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
             return Ok(WorkflowPromptDispatches::default());
         }
-        match self.workflow_invoke_queued_prompt(&plan.session_id, queued_prompt.clone()) {
-            Ok((_, dispatches)) => Ok(dispatches),
-            Err(error) => {
-                let _ = self.session_store.write().mark_workflow_watchdog_failed(
-                    &plan.session_id,
-                    &plan.watchdog_id,
-                    error.to_string(),
-                );
-                self.record_notice(
-                    &plan.session_id,
-                    None,
-                    self.attachment_store
-                        .list_session_attachment_ids(&plan.session_id),
-                    format!(
-                        "Queued workflow watchdog prompt `{}` failed: {error}",
-                        queued_prompt.id()
-                    ),
-                );
-                Err(error)
-            }
+        let outcome = self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
+        if self
+            .session_store
+            .read()
+            .has_queued_workflow_prompt_for_watchdog(&plan.session_id, &plan.watchdog_id)?
+        {
+            let _ = self
+                .session_store
+                .write()
+                .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
         }
+        Ok(outcome
+            .map(|(_, dispatches)| dispatches)
+            .unwrap_or_default())
     }
 
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
@@ -165,14 +148,32 @@ impl KernelRuntimeOwnedState {
                 WorkflowPromptDispatches::default(),
             ));
         }
-        self.workflow_start_next_queued_prompt_for_response(session_id)?
-            .ok_or_else(|| DaemonError::WorkflowLaunchRejected {
-                session_id: session_id.to_string(),
-                workflow_id: workflow.id().to_string(),
-                endpoint_id: endpoint.id().to_string(),
-                message: "workflow prompt was enqueued but no dispatchable queue item was found"
-                    .to_string(),
-            })
+        if let Some(outcome) = self.workflow_start_next_queued_prompt_for_response(session_id)? {
+            return Ok(outcome);
+        }
+        if self
+            .session_store
+            .read()
+            .list_queued_workflow_prompts(session_id)?
+            .iter()
+            .any(|candidate| candidate.id() == queued_prompt.id())
+        {
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                    queued_prompt,
+                    workflow,
+                    endpoint,
+                },
+                WorkflowPromptDispatches::default(),
+            ));
+        }
+        Err(DaemonError::WorkflowLaunchRejected {
+            session_id: session_id.to_string(),
+            workflow_id: workflow.id().to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            message: "workflow prompt was enqueued but no dispatchable queue item was found"
+                .to_string(),
+        })
     }
 
     pub(super) fn workflow_invoke_queued_prompt(
@@ -206,6 +207,13 @@ impl KernelRuntimeOwnedState {
                 queued_prompt.prompt().map(str::to_string),
                 queued_prompt.publication_invocation().cloned(),
             )?;
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+            let _ = self.session_store.write().mark_workflow_watchdog_invoked(
+                session_id,
+                watchdog_id,
+                workflow_run.id(),
+            );
+        }
         let dispatches = match self.workflow_schedule_entry_node(session_id, &workflow_run) {
             Ok(dispatches) => dispatches,
             Err(error) => {
@@ -233,13 +241,6 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
-        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-            let _ = self.session_store.write().mark_workflow_watchdog_invoked(
-                session_id,
-                watchdog_id,
-                workflow_run.id(),
-            );
-        }
         Ok((
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
                 workflow_run,
@@ -281,11 +282,7 @@ impl KernelRuntimeOwnedState {
                 Ok(outcome) => return Ok(Some(outcome)),
                 Err(error) => {
                     if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-                        let _ = self.session_store.write().mark_workflow_watchdog_failed(
-                            session_id,
-                            watchdog_id,
-                            error.to_string(),
-                        );
+                        self.mark_workflow_watchdog_launch_failed(session_id, watchdog_id, &error);
                     }
                     self.record_notice(
                         session_id,
@@ -374,11 +371,7 @@ impl KernelRuntimeOwnedState {
                 Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
                 Err(error) => {
                     if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-                        let _ = self.session_store.write().mark_workflow_watchdog_failed(
-                            session_id,
-                            watchdog_id,
-                            error.to_string(),
-                        );
+                        self.mark_workflow_watchdog_launch_failed(session_id, watchdog_id, &error);
                     }
                     self.record_notice(
                         session_id,
@@ -394,4 +387,71 @@ impl KernelRuntimeOwnedState {
             }
         }
     }
+
+    fn mark_workflow_watchdog_launch_failed(
+        &self,
+        session_id: &str,
+        watchdog_id: &str,
+        error: &DaemonError,
+    ) {
+        let mut sessions = self.session_store.write();
+        if workflow_watchdog_failure_is_terminal(error) {
+            let _ = sessions.mark_workflow_watchdog_failed_and_disable(
+                session_id,
+                watchdog_id,
+                error.to_string(),
+            );
+        } else {
+            let _ =
+                sessions.mark_workflow_watchdog_failed(session_id, watchdog_id, error.to_string());
+        }
+    }
+
+    fn persist_workflow_watchdog_sessions(&self, session_ids: BTreeSet<String>) {
+        for session_id in session_ids {
+            let session = match self.session_snapshot(&session_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime",
+                        "workflow schedule session projection failed",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = self.durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.clone()),
+                serde_json::json!({
+                    "session": &session,
+                    "reason": "workflow_schedule_tick",
+                }),
+            ) {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow schedule session persistence failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+}
+
+fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::WorkflowNotFound { .. }
+            | DaemonError::WorkflowEndpointNotFound { .. }
+            | DaemonError::WorkflowNodeNotFound { .. }
+            | DaemonError::WorkflowNodeAgentMissing { .. }
+            | DaemonError::InvalidWorkflowGraphReference { .. }
+            | DaemonError::AgentNotFound { .. }
+    )
 }

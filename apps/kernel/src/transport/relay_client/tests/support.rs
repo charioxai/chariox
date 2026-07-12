@@ -14,9 +14,9 @@ pub(super) use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 pub(super) use crate::config::DaemonConfig;
 pub(super) use crate::local::{
     AttachToSessionRequest, DetachFromSessionRequest, FocusAgentRequest, GetSessionStateRequest,
-    ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse, ResizeTerminalRequest,
-    ResolveSessionRequest, RespondToInteractionRequest, UpdateSessionConfigRequest,
-    ValidateWorkflowHandoffRequest,
+    LaunchProviderRunRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ResizeTerminalRequest, ResolveSessionRequest, RespondToInteractionRequest,
+    UpdateSessionConfigRequest, ValidateWorkflowHandoffRequest,
 };
 pub(super) use crate::runtime::command::KernelCommand;
 pub(super) use crate::session::CreateSessionRequest;
@@ -29,6 +29,26 @@ pub(super) use std::sync::OnceLock;
 pub(super) async fn relay_client_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
+
+pub(super) fn run_async_with_large_test_stack<F, Fut>(name: &'static str, test: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap_or_else(|error| panic!("{name} tokio runtime should build: {error}"))
+                .block_on(test());
+        })
+        .unwrap_or_else(|error| panic!("{name} test thread should spawn: {error}"))
+        .join()
+        .unwrap_or_else(|error| std::panic::resume_unwind(error));
 }
 
 pub(super) fn create_test_session(app: &mut DaemonApp, workspace: &str, worktree: &str) -> String {

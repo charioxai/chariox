@@ -14,10 +14,12 @@ test("builds stable generated matrix names manifest", () => {
 
   assert.equal(manifest.schema, DRILL_GENERATED_MATRIX_NAMES_SCHEMA)
   assert.deepEqual(manifest.matrices, [
+    { name: "browser-terminal-resilience-matrix", repo: "cloud" },
     { name: "cloud-slice-runtime-matrix", repo: "cloud" },
     { name: "native-provider-tui-matrix", repo: "oss" },
     { name: "remote-agent-runtime-matrix", repo: "oss" },
     { name: "remote-home-extension-matrix", repo: "oss" },
+    { name: "runtime-resilience-chaos-matrix", repo: "oss" },
     { name: "slice-runtime-matrix", repo: "oss" },
     { name: "workspace-live-sync-matrix", repo: "oss" },
   ])
@@ -51,6 +53,6 @@ test("rejects generated matrix name manifest drift", () => {
         ? { ...matrix, repo: "oss" }
         : matrix),
     }),
-    /matrices\[0\] has invalid repo "oss"/,
+    /matrices\[1\] has invalid repo "oss"/,
   )
 })

@@ -70,6 +70,76 @@ fn provider_processes_list_and_teardown_safe_idle_managed_runs() {
 }
 
 #[test]
+fn removing_claude_native_process_cleans_hook_files() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-remote-native-cleanup-test-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms(),
+    ));
+    let context_response_dir = root.join("hook-context-responses");
+    let permission_response_dir = root.join("permission-responses");
+    std::fs::create_dir_all(&context_response_dir).expect("context response dir should exist");
+    std::fs::create_dir_all(&permission_response_dir)
+        .expect("permission response dir should exist");
+    let events_file = root.join("events.jsonl");
+    let context_file = root.join("hidden-context.txt");
+    std::fs::write(&events_file, "").expect("events file should exist");
+    std::fs::write(&context_file, "").expect("context file should exist");
+    let request = LaunchProviderRequest::new(
+        "session-claude-cleanup",
+        "claude",
+        "claude",
+        "default",
+        "claude-sonnet",
+    );
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-claude-cleanup",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude:native-tui".to_string(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+                    context_response_dir.display().to_string(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+                    permission_response_dir.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .spawn_for_launch(&run)
+        .expect("Claude native process should start");
+
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .remove_run(run.id())
+        .expect("Claude native process should stop");
+
+    assert!(!root.exists(), "Claude native hook root should be removed");
+}
+
+#[test]
 fn provider_process_gc_reaps_idle_managed_run() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

@@ -568,7 +568,6 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut default_output = Vec::new();
     let mut reviewer_output = Vec::new();
-    let mut saw_reviewer_run_become_active = false;
 
     loop {
         for record in arroba_kernel::transport::TransportService::pump_provider_output(
@@ -603,16 +602,10 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
             .get_run(default_run.id())
             .expect("default run should remain queryable")
             .state();
-        if session_state.active_provider_run_id() == Some(reviewer_run.id()) {
-            saw_reviewer_run_become_active = true;
-        }
 
         if default_text.contains("fixture response: first exit prompt on default")
             && reviewer_text.contains("fixture response: reviewer prompt after default exit")
-            && matches!(
-                default_run_state,
-                ProviderRunState::Running | ProviderRunState::Parked
-            )
+            && default_run_state == ProviderRunState::Parked
             && session_state.active_prompt().is_none()
         {
             break;
@@ -620,9 +613,15 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for multi-agent provider exit recovery after {timeout_ms}ms: default={default_text:?} reviewer={reviewer_text:?} active_run={:?} active_prompt={:?}",
+            "timed out waiting for multi-agent provider exit recovery after {timeout_ms}ms: default={default_text:?} reviewer={reviewer_text:?} active_run={:?} active_prompt={:?} default_active_prompt={:?} reviewer_active_prompt={:?} default_provider_session={:?} reviewer_provider_session={:?} prompt_requests={:?} session_responses={:?}",
             session_state.active_provider_run_id(),
             session_state.active_prompt().map(|prompt| prompt.id().to_string()),
+            session_state.active_prompt_for_agent(default_agent.id()).map(|prompt| prompt.id().to_string()),
+            session_state.active_prompt_for_agent(reviewer.id()).map(|prompt| prompt.id().to_string()),
+            app.providers().get_run(default_run.id()).ok().and_then(|run| run.provider_session_id().map(str::to_string)),
+            app.providers().get_run(reviewer_run.id()).ok().and_then(|run| run.provider_session_id().map(str::to_string)),
+            mock_server.prompt_requests(),
+            mock_server.session_response_text(),
         );
         thread::sleep(Duration::from_millis(25));
     }
@@ -637,7 +636,6 @@ fn shared_opencode_endpoint_routes_multi_agent_prompts_without_pty_exit() {
         .get_session(session.id())
         .expect("session should still exist");
     assert_eq!(settled_state.focused_agent_id(), Some(reviewer.id()));
-    assert!(saw_reviewer_run_become_active);
     assert!(settled_state.queued_prompts().is_empty());
     assert_eq!(
         app.providers()

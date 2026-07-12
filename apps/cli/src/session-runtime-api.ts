@@ -63,5 +63,9 @@ export async function resizeSessionTerminal(client: LocalIpcClient, sessionId: s
   if (!process.stdout.isTTY || !process.stdout.columns || !process.stdout.rows) {
     return
   }
-  await client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, process.stdout.columns, process.stdout.rows))
+  try {
+    await client.send<Record<string, unknown>>(resizeTerminalRequest(sessionId, process.stdout.columns, process.stdout.rows))
+  } catch {
+    // Terminal sizing is advisory; runtime polling owns connection recovery.
+  }
 }

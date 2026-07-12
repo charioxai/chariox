@@ -371,4 +371,12 @@ async fn relay_subscription_emits_replay_gap_and_snapshot_for_stale_cursor() {
         snapshot.1["session"]["id"],
         serde_json::json!(created_session_id)
     );
+
+    let resumed = decrypt_relay_event_from_channel(&mut event_rx, &subscription_private_key).await;
+    assert_eq!(resumed.0, second.event_id + 3);
+    assert_eq!(resumed.1["event"], serde_json::json!("transport_resumed"));
+    assert_eq!(
+        resumed.1["resumed_from_event_id"],
+        serde_json::json!(first.event_id)
+    );
 }

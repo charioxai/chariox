@@ -5,9 +5,7 @@ import { extractPromptInputHistoryEntries } from "@arroba/kernel-client/prompt-h
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
-import {
-  resolveAttachTimeProviderLaunch,
-} from "@arroba/kernel-client/session-lifecycle-state"
+import { settleAttachProviderRun } from "./attach-provider-run.js"
 import { sessionHistoryCursorForVisibleAgent } from "@arroba/kernel-client/session-history-outline"
 
 import type {
@@ -136,50 +134,48 @@ export async function bootstrapSession(
   }
 
   const attachment = await deps.attachToSession(client, session.id, options.clientId)
-  const attachedSession = await deps.getSessionState(client, session.id)
-  let providerRun: RuntimeProviderRun | null = null
-  const launchDecision = resolveAttachTimeProviderLaunch(attachedSession, {
-    provider: options.provider ?? "opencode",
-    model: options.model,
-    effort: options.effort,
-  }, createdSession)
-  switch (launchDecision.action) {
-    case "launch_provider_run":
-      providerRun = await deps.launchProviderRun(
-        client,
-        session.id,
-        launchDecision.launch.provider,
-        options.accountProfile,
-        launchDecision.launch.model,
-        launchDecision.launch.effort,
-        launchDecision.targetAgentId,
-      )
-      break
-    case "load_provider_run":
-      providerRun = await deps.tryGetProviderRun(client, launchDecision.providerRunId, deps.logger)
-      break
-    case "skip_launch":
-      if (launchDecision.reason === "no_visible_agents") {
-        deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
-          session_id: session.id,
-          focused_agent_id: attachedSession.focused_agent_id,
-        })
-      } else if (launchDecision.reason === "missing_focused_agent") {
-        deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
-          session_id: session.id,
-          focused_agent_id: attachedSession.focused_agent_id,
-        })
-      } else if (launchDecision.reason === "remote_backed_agent") {
-        deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
-          session_id: session.id,
-          agent_id: launchDecision.targetAgent?.id ?? null,
-          worker_kernel_id: launchDecision.targetAgent?.remote_execution?.worker_kernel_id ?? null,
-        })
-      }
-      break
-    default: {
-      const exhaustive: never = launchDecision
-      throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
+  let attachedSession = await deps.getSessionState(client, session.id)
+  const providerSettlement = await settleAttachProviderRun(
+    attachedSession,
+    {
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    },
+    options.accountProfile,
+    createdSession,
+    {
+      launchProviderRun: (sessionId, provider, accountProfile, model, effort, targetAgentId) =>
+        deps.launchProviderRun(client, sessionId, provider, accountProfile, model, effort, targetAgentId),
+      getSessionState: (sessionId) => deps.getSessionState(client, sessionId),
+      tryGetProviderRun: (providerRunId) => deps.tryGetProviderRun(client, providerRunId, deps.logger),
+    },
+  )
+  attachedSession = providerSettlement.session
+  const providerRun: RuntimeProviderRun | null = providerSettlement.providerRun
+  if (providerSettlement.action === "skipped") {
+    if (providerSettlement.recoveredRemotePlacement) {
+      deps.logger?.info?.("recovered attach-time provider launch after agent moved remote", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+      })
+    } else if (providerSettlement.reason === "no_visible_agents") {
+      deps.logger?.warn("skipping provider launch because no agents are visible to this client", {
+        session_id: session.id,
+        focused_agent_id: attachedSession.focused_agent_id,
+      })
+    } else if (providerSettlement.reason === "missing_focused_agent") {
+      deps.logger?.warn("skipping provider launch because focused agent is not visible to this client", {
+        session_id: session.id,
+        focused_agent_id: attachedSession.focused_agent_id,
+      })
+    } else if (providerSettlement.reason === "remote_backed_agent") {
+      deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+        worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
+      })
     }
   }
   await deps.catchUpAttachedSession(client, session.id, attachment.id, attachedSession, deps.logger)

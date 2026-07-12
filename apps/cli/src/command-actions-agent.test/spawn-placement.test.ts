@@ -303,6 +303,13 @@ test("agent spawn with machine can use the worker default directory", async () =
   const spawnCalls: Array<{ worktreeId: string | undefined; machineRef: string | undefined }> = []
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-worker",
+      machine_id: "machine-worker",
+      accepting_remote_leases: true,
+      available_providers: ["opencode"],
+      provider_accounts: [{ provider: "opencode:anthropic", state: "configured" }],
+    }],
     spawnAgent: async (provider: string, alias?: string, model?: string, _effort?: string, worktreeId?: string, machineRef?: string) => {
       spawnCalls.push({ worktreeId, machineRef })
       const agent = makeAgent({
@@ -417,7 +424,7 @@ test("agent spawn with machine names workers without provider CLIs", async () =>
   assert.equal(flashedMessage, "remote machine worker has no accepting kernel with provider CLIs; next: configure provider CLIs on kernel kernel-worker or choose another worker")
 })
 
-test("agent spawn with machine blocks workers without authenticated provider accounts", async () => {
+test("agent spawn with machine blocks workers without a usable provider account", async () => {
   let spawnCount = 0
   let flashedMessage = ""
   const handlers = createCommandActionHandlers(makeCommandDeps({
@@ -443,7 +450,7 @@ test("agent spawn with machine blocks workers without authenticated provider acc
   })
 
   assert.equal(spawnCount, 0)
-  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with authenticated provider accounts; next: configure/import or refresh provider accounts on kernel kernel-worker or choose another worker")
+  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with a usable opencode account; next: configure/import or refresh the opencode account on kernel kernel-worker or choose another worker")
 })
 
 test("agent spawn with machine prefers account recovery when selected provider is present but unauthenticated", async () => {
@@ -477,7 +484,7 @@ test("agent spawn with machine prefers account recovery when selected provider i
   })
 
   assert.equal(spawnCount, 0)
-  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with an authenticated opencode account; next: configure/import or refresh the opencode account on kernel kernel-opencode or choose another worker")
+  assert.equal(flashedMessage, "remote machine worker has no ready worker kernel with a usable opencode account; next: configure/import or refresh the opencode account on kernel kernel-opencode or choose another worker")
 })
 
 test("agent spawn with machine blocks unknown worker readiness", async () => {
@@ -581,4 +588,3 @@ test("agent spawn with machine forwards remote git worktree placement", async ()
   assert.equal(launchCount, 0)
   assert.equal(flashedMessage, "spawned agent agent-2 (review) · remote machine-worker")
 })
-

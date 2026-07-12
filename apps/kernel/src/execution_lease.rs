@@ -68,7 +68,22 @@ pub struct LeasedAgent {
     pub projected_completion_keys: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projected_output_history_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_home_prompt_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_home_steer_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replayable_completion: Option<LeasedCompletionReplay>,
     pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedCompletionReplay {
+    pub provider_run_id: String,
+    pub message_id: String,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +133,9 @@ impl LeasedAgent {
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
+            active_home_prompt_id: None,
+            applied_home_steer_ids: Vec::new(),
+            replayable_completion: None,
             created_at_ms: unix_epoch_ms(),
         }
     }

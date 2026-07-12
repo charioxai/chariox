@@ -77,6 +77,248 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
 }
 
 #[test]
+fn leased_prompt_submit_replays_the_active_run_for_the_same_home_prompt_id() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-idempotent-submit",
+            "agent-home-idempotent-submit",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "session-idempotent-submit".to_string(),
+        home_agent_id: "agent-home-idempotent-submit".to_string(),
+        home_prompt_id: "home-prompt-idempotent".to_string(),
+        home_turn_id: "home-prompt-idempotent".to_string(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: Some(PromptOrigin::Arroba),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "idempotent remote prompt".to_string(),
+    };
+
+    let (first_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "idempotent remote prompt\n",
+            Vec::new(),
+            None,
+            Some(git_context.clone()),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("first leased prompt should submit");
+    let PromptSubmissionOutcome::Started {
+        prompt: first_prompt,
+    } = first_outcome
+    else {
+        panic!("first leased prompt should start");
+    };
+
+    let (replayed_run_id, replayed_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "idempotent remote prompt\n",
+            Vec::new(),
+            None,
+            Some(git_context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("duplicate leased prompt should replay its accepted result");
+    let PromptSubmissionOutcome::Started {
+        prompt: replayed_prompt,
+    } = replayed_outcome
+    else {
+        panic!("duplicate leased prompt should replay the active outcome");
+    };
+
+    assert_eq!(replayed_run_id, first_run_id);
+    assert_eq!(replayed_prompt.id(), first_prompt.id());
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queue count should load"),
+        0,
+    );
+}
+
+#[test]
+fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-queue-recovery",
+            "agent-home-queue-recovery",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let (_provider_run_id, first) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "first leased prompt\n", Vec::new())
+        .expect("first leased prompt should submit");
+    assert!(matches!(first, PromptSubmissionOutcome::Started { .. }));
+    let (_provider_run_id, second) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "second leased prompt\n", Vec::new())
+        .expect("second leased prompt should submit");
+    assert!(matches!(second, PromptSubmissionOutcome::Queued { .. }));
+
+    app.prompt_owner_complete_active_prompt_only(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+    )
+    .expect("completion race should leave the first prompt settled");
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .is_none());
+
+    let recovered = RemoteLeaseRuntime::new(&mut app)
+        .recover_idle_leased_prompt_queue(&leased_agent.id)
+        .expect("idle leased queue recovery should succeed")
+        .expect("queued prompt should be promoted");
+    assert_eq!(recovered.prompt(), "second leased prompt\n");
+    assert!(app
+        .prompt_owner_peek_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queued prompt state should load")
+        .is_none());
+    assert_eq!(
+        app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .expect("recovered prompt should be active")
+        .id(),
+        recovered.id()
+    );
+}
+
+#[test]
+fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-starting-provider",
+            "agent-home-starting-provider",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let prepared = RemoteLeaseRuntime::new(&mut app)
+        .prepare_leased_prompt_submission(
+            &leased_agent.id,
+            "queued while provider starts\n",
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should prepare");
+    let request = match &prepared.provider_run {
+        crate::app::PreparedLeasedProviderRun::LaunchRequired(request) => request.clone(),
+        crate::app::PreparedLeasedProviderRun::Ready(_) => {
+            panic!("first leased prompt should require a provider launch")
+        }
+    };
+    let started = app
+        .start_provider_launch(request)
+        .expect("provider launch should enter starting state");
+    let (_provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .finish_prepared_leased_prompt_submission(prepared, started.run.id().to_string())
+        .expect("prompt should queue behind provider startup");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Queued { .. }));
+
+    let recovered = RemoteLeaseRuntime::new(&mut app)
+        .recover_idle_leased_prompt_queue(&leased_agent.id)
+        .expect("startup queue recovery should defer cleanly");
+    assert!(recovered.is_none());
+    assert_eq!(
+        app.prompt_owner_peek_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("queued prompt state should load")
+        .expect("startup must not drop the queued prompt")
+        .prompt(),
+        "queued while provider starts\n"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .is_none());
+}
+
+#[test]
 fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -134,6 +376,286 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     assert!(completions
         .iter()
         .any(|completion| completion.message_id == "assistant-msg-1"));
+}
+
+#[test]
+fn leased_projection_does_not_complete_a_running_turn_without_turn_evidence() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+    app.prompt_owner_complete_active_prompt_only(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+    )
+    .expect("the simulated startup visibility gap should settle the backing prompt");
+
+    let projection = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("projection drain should succeed");
+    if let Some((_target, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) = projection
+    {
+        assert!(
+            completions.is_empty(),
+            "a running provider needs output or an explicit completion before home may settle"
+        );
+    }
+}
+
+#[test]
+fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let home_prompt_id = "home-prompt-1";
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "remote leased prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-1".to_string(),
+                home_agent_id: "agent-home-1".to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "remote leased prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    app.terminal_mut().record_assistant_message_completion(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        vec![leased_agent.backing_attachment_id.clone()],
+        "assistant-msg-1",
+        1234,
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("backing prompt should settle");
+
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("first projection drain should succeed")
+        .expect("first projection should carry completion");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        completions: first_completions,
+        ..
+    } = first.1;
+    assert!(!first_completions.is_empty());
+    assert!(first_completions
+        .iter()
+        .all(|completion| { completion.home_prompt_id.as_deref() == Some(home_prompt_id) }));
+
+    let replay = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("recovery projection drain should succeed")
+        .expect("a lost completion should remain replayable");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        completions: replayed_completions,
+        ..
+    } = replay.1;
+    assert_eq!(replayed_completions.len(), 1);
+    assert_eq!(
+        replayed_completions[0].home_prompt_id.as_deref(),
+        Some(home_prompt_id)
+    );
+
+    let replay_again = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("second recovery projection drain should succeed")
+        .expect("completion replay should remain available until home settles");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        completions: replayed_again,
+        ..
+    } = replay_again.1;
+    assert_eq!(replayed_again, replayed_completions);
+}
+
+#[test]
+fn native_completion_does_not_reuse_prior_home_prompt_identity() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let home_prompt_id = "home-prompt-1";
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "home-origin prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-1".to_string(),
+                home_agent_id: "agent-home-1".to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "home-origin prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("home prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("home prompt should complete");
+
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("home completion projection should succeed")
+        .expect("home completion should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = first.1;
+    assert!(completions
+        .iter()
+        .all(|completion| completion.home_prompt_id.as_deref() == Some(home_prompt_id)));
+    assert!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent.id)
+            .expect("leased agent should remain registered")
+            .active_home_prompt_id
+            .is_none(),
+        "the completed home prompt identity must not leak into a later turn",
+    );
+
+    let native = app
+        .record_native_prompt_started_with_attachments(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_attachment_id,
+            "native-terminal-attachment",
+            &leased_agent.backing_agent_id,
+            "native-origin prompt",
+            Vec::new(),
+        )
+        .expect("native prompt should be recorded");
+    assert!(matches!(native, PromptSubmissionOutcome::Started { .. }));
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("native prompt should complete");
+
+    let second = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("native completion projection should succeed")
+        .expect("native prompt and completion should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        prompts,
+        completions,
+        ..
+    } = second.1;
+    assert_eq!(prompts.len(), 1);
+    assert!(!completions.is_empty());
+    assert!(
+        completions
+            .iter()
+            .all(|completion| completion.home_prompt_id.is_none()),
+        "native-origin completion must not carry a stale home prompt identity",
+    );
 }
 
 #[test]
@@ -201,6 +723,79 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
         1,
         "current provider output should settle non-workflow leased prompts"
     );
+}
+
+#[test]
+fn leased_projection_does_not_promote_passive_external_observation_to_prompt_or_output() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let provider_run_id = "provider-run-1";
+    for (kind, text, turn_id) in [
+        (
+            crate::history::SessionHistoryEntryKind::UserPrompt,
+            "passive provider prompt",
+            "turn-user",
+        ),
+        (
+            crate::history::SessionHistoryEntryKind::ProviderOutput,
+            "passive provider output",
+            "turn-output",
+        ),
+    ] {
+        app.append_history_entry(
+            &leased_agent.backing_session_id,
+            crate::history::SessionHistoryEntry::external_provider_observed(
+                &leased_agent.backing_session_id,
+                Some(provider_run_id),
+                &leased_agent.backing_agent_id,
+                kind,
+                text,
+                "codex",
+                "thread-1",
+                Some(turn_id.to_string()),
+                None,
+            ),
+        );
+    }
+
+    let projection = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, provider_run_id, false)
+        .expect("projection drain should succeed");
+    if let Some((
+        _target,
+        RelayPeerEvent::LeasedRuntimeProjection {
+            prompts,
+            output_chunks,
+            ..
+        },
+    )) = projection
+    {
+        assert!(prompts.is_empty());
+        assert!(output_chunks.is_empty());
+    }
 }
 
 #[test]

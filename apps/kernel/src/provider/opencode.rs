@@ -7,6 +7,7 @@ use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchRe
 
 use self::mcp_config::runtime_mcp_env;
 use self::ports::resolve_opencode_launch_port;
+use super::executable_resolution::ExecutableResolutionState;
 
 mod catalog_endpoint;
 mod mcp_config;
@@ -15,6 +16,8 @@ mod ports;
 pub use catalog_endpoint::{ensure_opencode_catalog_endpoint, opencode_catalog_endpoint};
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
+static OPENCODE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
+    ExecutableResolutionState::new("opencode");
 const OPENCODE_BIND_HOST_OVERRIDE: &str = "ARROBA_OPENCODE_BIND_HOST";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
@@ -24,21 +27,21 @@ pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
 
 fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
     if let Some(path) = env::var_os(OPENCODE_ENV_OVERRIDE).map(PathBuf::from) {
-        return resolve_candidate(path, true).ok_or_else(|| {
-            DaemonError::ProviderExecutableNotFound {
+        return OPENCODE_EXECUTABLE_RESOLUTION
+            .resolve(|| resolve_candidate(path.clone(), true))
+            .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
                 adapter_key: "opencode".to_string(),
                 executable: env::var(OPENCODE_ENV_OVERRIDE)
                     .unwrap_or_else(|_| "opencode".to_string()),
-            }
-        });
+            });
     }
 
-    resolve_candidate(PathBuf::from("opencode"), false).ok_or_else(|| {
-        DaemonError::ProviderExecutableNotFound {
+    OPENCODE_EXECUTABLE_RESOLUTION
+        .resolve(|| resolve_candidate(PathBuf::from("opencode"), false))
+        .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "opencode".to_string(),
             executable: "opencode".to_string(),
-        }
-    })
+        })
 }
 
 pub fn plan_opencode_launch(

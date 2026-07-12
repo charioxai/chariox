@@ -23,8 +23,13 @@ impl WorkspaceLiveSyncJournal {
         store: &crate::durable_state::DurableKernelStateStore,
     ) -> Result<Self, DaemonError> {
         let journal = Self::default();
-        for event in store.load_events_after(0)? {
-            journal.restore_durable_event(&event)?;
+        for kind in [
+            "workspace_live_sync.change_recorded",
+            "workspace_live_sync.target_results_recorded",
+        ] {
+            for event in store.load_events_by_kind(kind)? {
+                journal.restore_durable_event(&event)?;
+            }
         }
         Ok(journal)
     }

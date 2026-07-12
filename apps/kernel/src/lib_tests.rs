@@ -76,7 +76,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -155,7 +155,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -187,6 +187,10 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
             prompt_summary: "edit a file".to_string(),
         }),
         required_mcps: Vec::new(),
+        required_skills: Some(vec![crate::transport::relay_peer::RequiredRemoteSkill {
+            name: "review".to_string(),
+            version_hash: "skill-hash-1".to_string(),
+        }]),
         remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
     };
     let snapshot = serde_json::json!([spawn, submit]);
@@ -218,11 +222,18 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         snapshot.pointer("/1/git_context/external_provider_turn_id"),
         Some(&serde_json::json!("codex-turn-1"))
     );
+    assert_eq!(
+        snapshot.pointer("/1/required_skills/0/name"),
+        Some(&serde_json::json!("review"))
+    );
 }
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
-    assert_eq!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION, 6);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
 
     let launch_request =
         LaunchProviderRequest::new("worker-session-1", "codex", "codex", "default", "gpt-5.5")
@@ -254,6 +265,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         completions: vec![RelayProjectedCompletion {
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,
+            home_prompt_id: Some("home-prompt-1".to_string()),
         }],
     };
     let mut snapshot =
@@ -273,18 +285,112 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
         snapshot.pointer("/provider_run/resume_state/codex_thread_id"),
         Some(&serde_json::json!("thread-1"))
     );
+    assert_eq!(
+        snapshot.pointer("/completions/0/home_prompt_id"),
+        Some(&serde_json::json!("home-prompt-1"))
+    );
     let serialized =
         serde_json::to_string(&snapshot).expect("leased runtime projection should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c0dd05f046436c73aa3d85300e813eb87a700034decae92ae102b180a9a34f6a"
+        "c0cc261015a3dd203b462d597d4260554fe8217e58144e4342ae7b174e27be30"
+    );
+}
+
+#[test]
+fn relay_peer_provider_terminal_resize_shape_is_versioned() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
+
+    let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
+        leased_agent_id: "leased-agent-1".to_string(),
+        provider_run_id: "worker-provider-run-1".to_string(),
+        cols: 80,
+        rows: 24,
+    };
+    let response = RelayPeerResponse::LeasedProviderTerminalResized {
+        provider_run_id: "worker-provider-run-1".to_string(),
+        cols: 80,
+        rows: 24,
+    };
+    assert_eq!(
+        serde_json::to_value((request, response))
+            .expect("terminal resize relay shape should encode"),
+        serde_json::json!([
+            {
+                "kind": "resize_leased_provider_terminal",
+                "leased_agent_id": "leased-agent-1",
+                "provider_run_id": "worker-provider-run-1",
+                "cols": 80,
+                "rows": 24
+            },
+            {
+                "kind": "leased_provider_terminal_resized",
+                "provider_run_id": "worker-provider-run-1",
+                "cols": 80,
+                "rows": 24
+            }
+        ])
+    );
+}
+
+#[test]
+fn relay_peer_queued_prompt_steer_shape_is_versioned() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        10
+    );
+
+    let request = RelayPeerRequest::SteerLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        steer_id: "home-queued-prompt-2".to_string(),
+        target_home_prompt_id: "home-active-prompt-1".to_string(),
+        prompt: "steer the active turn".to_string(),
+        hidden_system_context: "hidden steering context".to_string(),
+        attachments: vec![crate::transport::relay_peer::RelayPromptAttachment {
+            url: "file:///tmp/steer.txt".to_string(),
+            mime: "text/plain".to_string(),
+            filename: Some("steer.txt".to_string()),
+            contents_base64: Some("c3RlZXI=".to_string()),
+        }],
+        required_skills: Some(vec![crate::transport::relay_peer::RequiredRemoteSkill {
+            name: "review".to_string(),
+            version_hash: "skill-hash-1".to_string(),
+        }]),
+    };
+    let response = RelayPeerResponse::LeasedPromptSteered {
+        provider_run_id: "worker-provider-run-1".to_string(),
+        steer_id: "home-queued-prompt-2".to_string(),
+        replayed: false,
+    };
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/kind"),
+        Some(&serde_json::json!("steer_leased_prompt"))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/target_home_prompt_id"),
+        Some(&serde_json::json!("home-active-prompt-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/kind"),
+        Some(&serde_json::json!("leased_prompt_steered"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("remote queued prompt steer should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "37d71e28b26468ad2e53f85c139b50156b9c20cbe7b9d6009d7337714b4f54d6"
     );
 }
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

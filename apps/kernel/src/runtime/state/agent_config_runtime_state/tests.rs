@@ -110,6 +110,143 @@ async fn agent_config_update_still_blocks_active_prompt_owner() {
 }
 
 #[tokio::test]
+async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    let relay_url = "ws://127.0.0.1:1".to_string();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("relay-token".to_string());
+    let home_public_key = config.relay_public_key.clone();
+    let target_config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, session_id, agent_id) = agent_config_runtime_with_config(config).await;
+    app.lock()
+        .await
+        .agents_mut()
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-1".to_string(),
+                worker_machine_id: "machine-1".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+            },
+        )
+        .expect("agent should bind to remote execution");
+
+    let relay_state = {
+        let app = app.lock().await;
+        app.relay_client_state()
+    };
+    let (outgoing_tx, mut priority_rx, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(4);
+    {
+        let mut relay_state = relay_state.write().await;
+        relay_state.test_set_connected_sender(outgoing_tx, relay_url);
+        relay_state.remember_peer_public_key("worker-1", target_config.relay_public_key.clone());
+    }
+
+    let update = tokio::spawn({
+        let runtime = runtime.clone();
+        let session_id = session_id.clone();
+        let agent_id = agent_id.clone();
+        async move {
+            runtime
+                .update_agent_config(
+                    &session_id,
+                    &agent_id,
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    Some(Some(crate::provider::AgentExecutionMode::Plan)),
+                    Some(Some(crate::provider::AgentPermissionLevel::Required)),
+                    None,
+                    None,
+                )
+                .await
+        }
+    });
+
+    let envelope = tokio::time::timeout(std::time::Duration::from_millis(500), priority_rx.recv())
+        .await
+        .expect("config update should use the connected relay instead of opening metadata sockets")
+        .expect("connected relay request should be queued");
+    let arroba_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        target,
+        encrypted_request,
+    } = envelope
+    else {
+        panic!("expected a daemon peer request");
+    };
+    assert_eq!(target.daemon_id.as_deref(), Some("worker-1"));
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &target_config.relay_private_key,
+        &encrypted_request,
+    )
+    .expect("worker should decrypt config request");
+    assert!(matches!(
+        serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(
+            &decrypted.plaintext
+        )
+        .expect("config request should decode"),
+        crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id,
+            execution_mode: crate::provider::AgentExecutionMode::Plan,
+            permission_level: crate::provider::AgentPermissionLevel::Required,
+        } if leased_agent_id == "leased-agent-1"
+    ));
+
+    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedAgentConfigUpdated {
+        leased_agent: crate::execution_lease::LeasedAgent {
+            id: "leased-agent-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            home_agent_id: agent_id.clone(),
+            provider: "dev-stub".to_string(),
+            model: None,
+            effort: None,
+            execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
+            permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+            backing_session_id: "worker-session-1".to_string(),
+            backing_agent_id: "worker-agent-1".to_string(),
+            backing_attachment_id: "worker-attachment-1".to_string(),
+            projected_prompt_ids: Vec::new(),
+            projected_completion_keys: Vec::new(),
+            projected_output_history_keys: Vec::new(),
+            active_home_prompt_id: None,
+            applied_home_steer_ids: Vec::new(),
+            replayable_completion: None,
+            created_at_ms: 1,
+        },
+    };
+    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &target_config.relay_private_key,
+        &home_public_key,
+        &serde_json::to_vec(&response).expect("config response should encode"),
+    )
+    .expect("worker should encrypt config response");
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        "worker-1".to_string(),
+        encrypted_response,
+    )
+    .await;
+
+    let updated = update
+        .await
+        .expect("config update task should join")
+        .expect("config update should complete through the connected relay");
+    assert_eq!(
+        updated.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Plan)
+    );
+    assert_eq!(
+        updated.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Required)
+    );
+}
+
+#[tokio::test]
 async fn agent_profile_update_still_blocks_active_prompt_owner() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
@@ -130,8 +267,13 @@ async fn agent_profile_update_still_blocks_active_prompt_owner() {
 }
 
 async fn agent_config_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
-    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
-        .expect("daemon bootstrap should succeed");
+    agent_config_runtime_with_config(crate::config::DaemonConfig::for_tests()).await
+}
+
+async fn agent_config_runtime_with_config(
+    config: crate::config::DaemonConfig,
+) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-1",

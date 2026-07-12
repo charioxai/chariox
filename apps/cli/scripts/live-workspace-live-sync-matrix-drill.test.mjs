@@ -32,7 +32,13 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
       reportPath,
       "--artifact-index",
       artifactIndexPath,
-    ])
+    ], {
+      env: {
+        ...process.env,
+        ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL: "codex-test-model",
+        ARROBA_WORKSPACE_LIVE_SYNC_OPENCODE_MODEL: "opencode/free-test-model",
+      },
+    })
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
     const scenarioIds = report.scenarios.map((scenario) => scenario.id)
@@ -71,6 +77,8 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.equal(report.metadata.providers, "codex,opencode")
     assert.equal(report.metadata.defaultModel, "per-provider")
     assert.equal(report.metadata.providerModelOverrides, "codex,opencode")
+    assert.equal(report.metadata.codexModelId, "codex-test-model")
+    assert.equal(report.metadata.opencodeModelId, "opencode/free-test-model")
     assert.equal(report.metadata.providerAccountAliases, "codex=work_codex,opencode=zen")
     assert.equal(report.metadata.includeRemote, true)
     assert.equal(report.metadata.includeHetzner, true)
@@ -80,6 +88,7 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.match(stdout, /dry-run local-managed-codex classification=workspace-live-sync-conflict/)
     assert.match(stdout, /dry-run remote-tracked-restart-codex classification=relay-target-freshness/)
     assert.match(stdout, /dry-run remote-permission-opencode classification=kernel-authority/)
+    assert(opencodeRemote.args.includes("opencode=opencode/free-test-model"))
     assert.equal(artifactIndex.metadata.matrix, "workspace-live-sync-matrix")
     assert.equal(artifactIndex.metadata.dryRun, true)
     assert.equal(artifactIndex.metadata.generatedMatrixNames, "workspace-live-sync-matrix")

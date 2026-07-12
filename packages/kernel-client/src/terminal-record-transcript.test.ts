@@ -10,6 +10,7 @@ import {
   terminalRecordPromptHistoryText,
   terminalRecordProviderStatusShouldRender,
   terminalRecordShouldRenderInAgentPane,
+  terminalRecordIsSteeringPrompt,
   terminalRecordTranscriptProjection,
   terminalRecordTranscriptMetadata,
   transcriptEntryWithTerminalMetadata,
@@ -332,6 +333,23 @@ test("terminalRecordTranscriptProjection maps transcript roles, merge keys, and 
   assert.equal(userPrompt.renderInAgentPane, true)
   assert.equal(userPrompt.append, false)
   assert.equal(userPrompt.replace, false)
+
+  const steeringPrompt = terminalRecordTranscriptProjection({
+    kind: "prompt_echo",
+    merge_key: "steering-prompt:prompt-1",
+  }, "steer now", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => false,
+  })
+  assert.equal(steeringPrompt.steeringPrompt, true)
+  assert.equal(terminalRecordIsSteeringPrompt({
+    kind: "prompt_echo",
+    merge_key: "steering-prompt:prompt-1",
+  }), true)
+  assert.equal(terminalRecordIsSteeringPrompt({
+    kind: "provider_output",
+    merge_key: "steering-prompt:prompt-1",
+  }), false)
 
   const assistant = terminalRecordTranscriptProjection({
     kind: "provider_output",

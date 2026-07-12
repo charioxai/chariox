@@ -22,6 +22,7 @@ async fn direct_session_lane_resolution_rejects_warmed_missing_session_without_l
     let _locked_app = app.lock().await;
     let request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: "missing-session".to_string(),
+        provider_run_id: None,
         cols: 80,
         rows: 24,
     });

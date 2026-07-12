@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -77,7 +78,7 @@ async function buildBinary(manifestPath, binName) {
   if (result.code !== 0) {
     throw new Error(`${binName} build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return path.join(path.dirname(manifestPath), 'target/debug', binName)
+  return await resolveBuiltBinary(path.join(path.dirname(manifestPath), 'target/debug', binName), manifestPath, binName)
 }
 
 async function buildKernelClient() {
@@ -99,6 +100,7 @@ function daemonEnv({ baseEnv, ports, rootDir, relayToken, daemonId, daemonAlias,
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(opencodePort),
     ARROBA_CODEX_PORT: String(codexPort),
+    ARROBA_PROVIDER_DEV_STUB: '1',
     ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
     ARROBA_RELAY_TOKEN: relayToken,
     ARROBA_DAEMON_ID: daemonId,

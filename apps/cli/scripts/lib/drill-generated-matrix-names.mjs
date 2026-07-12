@@ -1,17 +1,20 @@
 export const DRILL_GENERATED_MATRIX_NAMES = Object.freeze([
+  "browser-terminal-resilience-matrix",
   "cloud-slice-runtime-matrix",
   "native-provider-tui-matrix",
   "remote-agent-runtime-matrix",
   "remote-home-extension-matrix",
+  "runtime-resilience-chaos-matrix",
   "slice-runtime-matrix",
   "workspace-live-sync-matrix",
 ])
 
 export const DRILL_GENERATED_MATRIX_NAMES_BY_REPO = Object.freeze({
-  cloud: Object.freeze(["cloud-slice-runtime-matrix"]),
+  cloud: Object.freeze(["browser-terminal-resilience-matrix", "cloud-slice-runtime-matrix"]),
   oss: Object.freeze([
     "native-provider-tui-matrix",
     "remote-agent-runtime-matrix",
+    "runtime-resilience-chaos-matrix",
     "remote-home-extension-matrix",
     "slice-runtime-matrix",
     "workspace-live-sync-matrix",

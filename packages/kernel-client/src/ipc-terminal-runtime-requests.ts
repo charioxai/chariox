@@ -31,10 +31,16 @@ export function storeTransferredFileRequest(sessionId: string, attachmentId: str
   }
 }
 
-export function resizeTerminalRequest(sessionId: string, cols: number, rows: number) {
+export function resizeTerminalRequest(
+  sessionId: string,
+  cols: number,
+  rows: number,
+  providerRunId?: string | null,
+) {
   return {
     ResizeTerminal: {
       session_id: sessionId,
+      provider_run_id: providerRunId ?? null,
       cols,
       rows,
     },

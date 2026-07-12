@@ -944,6 +944,7 @@ async fn resize_terminal_validates_owned_session_state_without_app_lock() {
 
     let request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session_id.clone(),
+        provider_run_id: None,
         cols: 120,
         rows: 40,
     });

@@ -16,6 +16,15 @@ test('classifies provider account and billing failures', () => {
   )
 })
 
+test('classifies provider account model limitations before provider marker timeouts', () => {
+  const text = [
+    'Error: timed out waiting for marker THREAD_TRANSFER_WORKER_CODEX_28090_1783606899611; ordered_match=false',
+    `{"type":"error","status":400,"error":{"message":"The 'gpt-5.2-codex' model is not supported when using Codex with a ChatGPT account."}}`,
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'provider-account')
+})
+
 test('classifies provider authentication failures', () => {
   const text = 'Token refresh failed: 401'
 
@@ -24,6 +33,10 @@ test('classifies provider authentication failures', () => {
     formatDrillChildFailure('remote workspace live sync drill', 1, null, '', text),
     /Provider authentication blocked validation/,
   )
+})
+
+test('classifies expired provider logins', () => {
+  assert.equal(classifyDrillChildFailure('provider authentication failed: Login expired'), 'provider-auth')
 })
 
 test('redacts token-shaped values from formatted child output tails', () => {
@@ -46,6 +59,16 @@ test('classifies local test harness prerequisite failures', () => {
     formatDrillChildFailure('matrix drill', 1, null, '', text),
     /Local drill prerequisites or build tooling blocked validation/,
   )
+})
+
+test('classifies Docker slice image build failures as test harness failures', () => {
+  const text = [
+    'docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile -t arroba-slice-linux:0.1.0 . exited with code 101',
+    'stdout tail:',
+    "error: couldn't read `src/../../../examples/workflow-code/prompt-chaining.js`: No such file or directory",
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'test-harness')
 })
 
 test('classifies cloud deployment runtime failures', () => {
@@ -111,6 +134,22 @@ test('classifies runtime state timeouts', () => {
   assert.match(
     formatDrillChildFailure('runtime drill', 1, null, '', text),
     /Runtime state did not converge/,
+  )
+})
+
+test('classifies provider thread marker timeouts as provider runtime failures', () => {
+  const text = [
+    'Error: timed out waiting for marker THREAD_TRANSFER_WORKER_CODEX_83612_1783605777388; ordered_match=false',
+    'compact:',
+    'fallback_compact:',
+    'raw_compact:',
+    'at waitForHistoryOutputMarker (apps/cli/scripts/lib/live-provider-thread-transfer-runtime.mjs:806:9)',
+  ].join('\n')
+
+  assert.equal(classifyDrillChildFailure(text), 'provider-error')
+  assert.match(
+    formatDrillChildFailure('provider thread transfer drill', 1, null, '', text),
+    /Provider runtime did not complete the drill/,
   )
 })
 

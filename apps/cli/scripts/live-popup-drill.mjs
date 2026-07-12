@@ -6,7 +6,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { historyOutlineText } from './lib/drill-history-outline.mjs'
+import { historyOutlineContiguousText } from './lib/drill-history-outline.mjs'
+import { makeAvailablePorts, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -77,13 +78,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function makePorts() {
-  const kernelPort = 50000 + Math.floor(Math.random() * 1000)
+async function makePorts() {
+  const available = await makeAvailablePorts()
   return {
-    kernelPort,
-    mcpPort: kernelPort + 1000,
-    opencodePort: kernelPort + 2000,
-    codexPort: kernelPort + 2001,
+    kernelPort: available.kernelPort,
+    mcpPort: available.mcpPort,
+    opencodePort: available.openCodePort,
+    codexPort: available.codexPort,
   }
 }
 
@@ -105,9 +106,10 @@ async function run(command, args, options = {}) {
 
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
-  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
+  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
-  const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
+  let kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel').catch(() => null)
   if (!cliReady) {
     log('build-cli')
     const result = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
@@ -115,12 +117,13 @@ async function ensureCliBuilt() {
       throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
     }
   }
-  if (!kernelReady) {
+  if (!kernelBinary) {
     log('build-kernel')
-    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+    const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
     if (result.code !== 0) {
       throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
     }
+    kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel')
   }
   return { cliDist, kernelBinary }
 }
@@ -297,7 +300,7 @@ async function waitForHistoryText(client, sessionId, agentId, needle, timeoutMs,
       await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 8)),
       'SessionHistoryOutline',
     )
-    const text = historyOutlineText(history)
+    const text = historyOutlineContiguousText(history)
     if (text.includes(needle)) {
       return text
     }
@@ -332,7 +335,7 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   const automationSocket = path.join(os.tmpdir(), `arroba-popup-auto-${process.pid}-${Date.now()}.sock`)
-  const ports = makePorts()
+  const ports = await makePorts()
   const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
@@ -364,6 +367,7 @@ async function main() {
 
     if (!options.noSpawnDaemon) {
       daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+      daemon.on('error', (error) => log('kernel-spawn-error', { message: error.message }))
     }
     await waitForKernel(kernelUrl)
     log('kernel-ready', { kernelUrl })

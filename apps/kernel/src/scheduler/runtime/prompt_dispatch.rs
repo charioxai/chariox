@@ -47,7 +47,8 @@ pub(super) fn dispatch_workflow_prompt(
             );
         let workflow_context = crate::app::RemoteWorkflowTurnContextResolver::new(app)
             .remote_workflow_turn_context_for_prompt(session_id, target_agent_id, prompt)?;
-        let remote_extension_manifest = app.remote_extension_manifest_for_agent(&target_agent)?;
+        let (required_mcps, required_skills, remote_extension_manifest) =
+            app.remote_prompt_capabilities_for_agent(&target_agent)?;
         let response =
             app.block_on_relay_future(send_peer_request_via_temporary_connection_with_timeout(
                 app.config(),
@@ -80,7 +81,8 @@ pub(super) fn dispatch_workflow_prompt(
                             prompt.attachments(),
                         ),
                     }),
-                    required_mcps: Vec::new(),
+                    required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 },
                 LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,

@@ -14,6 +14,10 @@ const CLOUD_CONTEXT_OWNER_OVERRIDES = Object.freeze({
   "relay-cloud-transport-only": Object.freeze(["cloud-deployment", "runtime-network"]),
 })
 
+export function normalizeCloudRuntimeAuthorityInvariantId(invariantId) {
+  return CLOUD_INVARIANT_ALIASES[invariantId] ?? invariantId
+}
+
 export async function verifyDrillRuntimeAuthorityRegistryParity({ cloudRoot }) {
   const cloudRegistryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-authority-invariants.mjs")
   let cloudModule
@@ -25,13 +29,33 @@ export async function verifyDrillRuntimeAuthorityRegistryParity({ cloudRoot }) {
   if (typeof cloudModule.cloudRuntimeAuthorityManifest !== "function") {
     throw new Error(`runtime authority registry parity requires cloudRuntimeAuthorityManifest in ${cloudRegistryPath}`)
   }
+  const failures = cloudRuntimeAuthorityCompatibilityFailures(
+    cloudModule.cloudRuntimeAuthorityManifest(),
+    "Cloud runtime authority registry",
+  )
+  if (failures.length > 0) {
+    throw new Error(`runtime authority registry parity failed: ${failures.join("; ")}`)
+  }
+}
+
+export function validateCloudCompatibleDrillRuntimeAuthorityManifest(
+  manifest,
+  source = "Cloud runtime authority manifest",
+) {
+  const failures = cloudRuntimeAuthorityCompatibilityFailures(manifest, source)
+  if (failures.length > 0) {
+    throw new Error(`${source} is incompatible with OSS runtime authority: ${failures.join("; ")}`)
+  }
+}
+
+function cloudRuntimeAuthorityCompatibilityFailures(manifest, source) {
   const ossInvariants = runtimeAuthorityInvariantMap(
     drillRuntimeAuthorityManifest(),
     "OSS runtime authority registry",
   )
   const cloudInvariants = runtimeAuthorityInvariantMap(
-    cloudModule.cloudRuntimeAuthorityManifest(),
-    "Cloud runtime authority registry",
+    manifest,
+    source,
     { aliases: CLOUD_INVARIANT_ALIASES },
   )
   const failures = []
@@ -56,9 +80,7 @@ export async function verifyDrillRuntimeAuthorityRegistryParity({ cloudRoot }) {
       failures.push(`${id}: unknown in OSS runtime authority registry`)
     }
   }
-  if (failures.length > 0) {
-    throw new Error(`runtime authority registry parity failed: ${failures.join("; ")}`)
-  }
+  return failures
 }
 
 function runtimeAuthorityInvariantMap(manifest, source, { aliases = {} } = {}) {

@@ -220,6 +220,7 @@ pub(super) async fn handle_daemon_peer_request(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         } => {
             let launched = router
@@ -233,6 +234,7 @@ pub(super) async fn handle_daemon_peer_request(
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
                 .await;
@@ -272,6 +274,34 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ResizeLeasedProviderTerminal {
+            leased_agent_id,
+            provider_run_id,
+            cols,
+            rows,
+        } => {
+            let resized = router
+                .relay_resize_leased_provider_terminal(
+                    &leased_agent_id,
+                    &provider_run_id,
+                    cols,
+                    rows,
+                )
+                .await;
+            match resized {
+                Ok(()) => RelayPeerResponse::LeasedProviderTerminalResized {
+                    provider_run_id,
+                    cols,
+                    rows,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,
@@ -279,6 +309,7 @@ pub(super) async fn handle_daemon_peer_request(
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         } => {
             let submitted = router
@@ -289,6 +320,7 @@ pub(super) async fn handle_daemon_peer_request(
                     workflow_context,
                     git_context,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
                 .await;
@@ -326,6 +358,62 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::SteerLeasedPrompt {
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            prompt,
+            hidden_system_context,
+            attachments,
+            required_skills,
+        } => {
+            let steered = router
+                .relay_steer_leased_prompt(
+                    &leased_agent_id,
+                    &steer_id,
+                    &target_home_prompt_id,
+                    &prompt,
+                    &hidden_system_context,
+                    attachments,
+                    required_skills,
+                )
+                .await;
+            match steered {
+                Ok((provider_run_id, replayed)) => {
+                    if let Err(error) = emit_leased_projection_event(
+                        router,
+                        outgoing_tx,
+                        &leased_agent_id,
+                        &provider_run_id,
+                        true,
+                    )
+                    .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.relay",
+                            "failed to emit leased runtime projection after steer",
+                            serde_json::json!({
+                                "leased_agent_id": leased_agent_id,
+                                "provider_run_id": provider_run_id,
+                                "steer_id": steer_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                    RelayPeerResponse::LeasedPromptSteered {
+                        provider_run_id,
+                        steer_id,
+                        replayed,
+                    }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::DrainLeasedRuntimeProjection {
             leased_agent_id,
             provider_run_id,
@@ -336,6 +424,7 @@ pub(super) async fn handle_daemon_peer_request(
                     &leased_agent_id,
                     &provider_run_id,
                     pump_output,
+                    true,
                 )
                 .await;
             match drained {

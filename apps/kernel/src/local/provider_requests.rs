@@ -267,9 +267,11 @@ fn remote_native_provider_run_response(
     let Some(remote_execution) = agent.remote_execution().cloned() else {
         return Ok(None);
     };
-    let required_mcps =
-        required_remote_mcps_for_native_provider_launch(app, &request.session_id, &agent)?;
-    let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
+    let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
+    let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
+    let remote_extension_manifest = app
+        .remote_extension_manifest_for_agent(&agent)?
+        .without_mcp_tools();
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
         &relay_config,
@@ -288,6 +290,7 @@ fn remote_native_provider_run_response(
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
+            required_skills: Some(required_skills),
             remote_extension_manifest,
         },
     ))?;
@@ -341,40 +344,6 @@ fn remote_native_provider_run_response(
             message: format!("unexpected remote native provider launch response: {other:?}"),
         }),
     }
-}
-
-fn required_remote_mcps_for_native_provider_launch(
-    app: &DaemonApp,
-    session_id: &str,
-    agent: &crate::agent::AgentInstance,
-) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
-    if agent.remote_execution().is_some() {
-        return Ok(Vec::new());
-    }
-    let mcp_grants = agent.mcp_grants();
-    if mcp_grants.is_empty() {
-        return Ok(Vec::new());
-    }
-    let _ = app.sessions().get_session(session_id)?;
-    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
-        .map(|root| vec![root])
-        .unwrap_or_default();
-    let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
-    mcp_grants
-        .iter()
-        .map(|grant| {
-            let config = registry
-                .get(grant)?
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "launch remote native provider run",
-                    message: format!("MCP `{grant}` is granted but is not installed"),
-                })?;
-            Ok(crate::transport::relay_peer::RequiredRemoteMcp {
-                definition_hash: config.definition_hash()?,
-                config,
-            })
-        })
-        .collect()
 }
 
 pub(crate) fn launch_provider_request_from_local(

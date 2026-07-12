@@ -434,11 +434,13 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes_inner(
     let process_before_teardown = app
         .list_provider_processes(None)
         .expect("processes should list");
-    assert_eq!(process_before_teardown.len(), 1);
-    assert_eq!(
-        process_before_teardown[0].owner_provider_run_ids,
-        vec![local_run.id().to_string(), peer_run.id().to_string()]
-    );
+    assert_eq!(process_before_teardown.len(), 2);
+    assert!(process_before_teardown
+        .iter()
+        .any(|process| process.owner_provider_run_ids == vec![local_run.id().to_string()]));
+    assert!(process_before_teardown
+        .iter()
+        .any(|process| process.owner_provider_run_ids == vec![peer_run.id().to_string()]));
 
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
@@ -452,10 +454,11 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes_inner(
     match list_response {
         LocalDaemonResponse::ProviderProcessesListed { processes } => {
             assert_eq!(processes.len(), 1);
-            assert!(!processes[0].teardown_safe);
+            assert!(processes[0].teardown_safe);
+            assert!(processes[0].teardown_blockers.is_empty());
             assert_eq!(
-                processes[0].teardown_blockers,
-                vec!["shared with another user"]
+                processes[0].owner_provider_run_ids,
+                vec![peer_run.id().to_string()]
             );
         }
         _ => panic!("unexpected list response"),
@@ -474,9 +477,10 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes_inner(
 
     match teardown_response {
         LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
-            assert!(
-                processes.is_empty(),
-                "caller must not tear down a shared process with another user's active run"
+            assert_eq!(processes.len(), 1);
+            assert_eq!(
+                processes[0].owner_provider_run_ids,
+                vec![peer_run.id().to_string()]
             );
         }
         _ => panic!("unexpected teardown response"),
@@ -489,7 +493,7 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes_inner(
     assert_eq!(remaining.len(), 1);
     assert_eq!(
         remaining[0].owner_provider_run_ids,
-        vec![local_run.id().to_string(), peer_run.id().to_string()]
+        vec![local_run.id().to_string()]
     );
 }
 

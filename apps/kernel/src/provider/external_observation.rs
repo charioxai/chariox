@@ -143,6 +143,10 @@ pub(crate) fn clean_provider_prompt(prompt: String) -> Option<String> {
     if prompt.is_empty()
         || prompt.starts_with("# AGENTS.md instructions")
         || prompt.starts_with("<environment_context>")
+        || prompt.starts_with("<recommended_plugins>")
+        || prompt.starts_with("<skills_instructions>")
+        || prompt.starts_with("<apps_instructions>")
+        || prompt.starts_with("<plugins_instructions>")
         || prompt.starts_with("Native provider execution is enabled")
     {
         return None;

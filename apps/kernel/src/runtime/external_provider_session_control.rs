@@ -45,11 +45,12 @@ use self::import::*;
 use self::poller::*;
 pub(crate) use self::poller::{
     execute_external_provider_session_request,
+    refresh_attached_external_provider_histories_for_runtime_session,
     refresh_attached_external_provider_histories_for_session,
 };
 use self::targets::*;
 
-const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
+const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;

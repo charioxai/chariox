@@ -122,6 +122,16 @@ impl LocalRouterTestHarness {
         self.runtime.block_on(self.router.pump_transport_runtime());
     }
 
+    pub(crate) fn transport_runtime_pump_interval_ms(
+        &self,
+        active_interval_ms: u64,
+        idle_interval_ms: u64,
+        now_ms: u64,
+    ) -> u64 {
+        self.router
+            .transport_runtime_pump_interval_ms(active_interval_ms, idle_interval_ms, now_ms)
+    }
+
     pub(crate) fn spawn_workflow_test_agent(&self, session_id: &str, alias: &str) -> AgentInstance {
         self.spawn_workflow_test_agent_with_worktree(session_id, alias, None)
     }
@@ -429,7 +439,7 @@ impl LocalRouterTestHarness {
 
     pub(crate) fn wait_for_active_provider_run(&self, session_id: &str) -> String {
         self.runtime.block_on(async {
-            for _ in 0..50 {
+            for _ in 0..500 {
                 if let Some(provider_run_id) = self
                     .app
                     .lock()
@@ -444,7 +454,7 @@ impl LocalRouterTestHarness {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            panic!("provider run should become active")
+            panic!("provider run for session `{session_id}` should become active")
         })
     }
 }

@@ -324,6 +324,38 @@ impl TerminalStreamStore {
         record
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn fan_out_prompt_output_with_merge_key(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        prompt_id: &str,
+        prompt_origin: Option<PromptOrigin>,
+        source_attachment_id: &str,
+        merge_key: Option<String>,
+        recipient_attachment_ids: Vec<String>,
+        bytes: &[u8],
+    ) -> TerminalOutputRecord {
+        let record = self
+            .shard(session_id)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .fan_out_prompt_output_with_merge_key(
+                session_id,
+                provider_run_id,
+                agent_id,
+                prompt_id,
+                prompt_origin,
+                source_attachment_id,
+                merge_key,
+                recipient_attachment_ids,
+                bytes,
+            );
+        self.record_change_for_record(&record);
+        record
+    }
+
     pub fn record_notice(
         &self,
         session_id: &str,

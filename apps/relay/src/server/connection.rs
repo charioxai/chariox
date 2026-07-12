@@ -30,6 +30,7 @@ const RELAY_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 const RELAY_CONNECTION_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const RELAY_PONG_TIMEOUT: Duration = Duration::from_secs(15);
+const RELAY_WEBSOCKET_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) async fn handle_connection(
     stream: TcpStream,
@@ -50,6 +51,7 @@ pub(crate) async fn handle_connection(
     let mut writer_task = Some(tokio::spawn(async move {
         while let Some(message) = outgoing_rx.recv().await {
             if writer.send(message).await.is_err() {
+                let _ = writer.flush().await;
                 break;
             }
         }
@@ -843,7 +845,10 @@ pub(crate) async fn handle_connection(
                     }
                 }
                 Message::Pong(_) => {}
-                Message::Close(_) => break,
+                Message::Close(frame) => {
+                    let _ = outgoing_tx.try_send(Message::Close(frame));
+                    break;
+                }
                 _ => {}
             }
         }
@@ -936,9 +941,14 @@ pub(crate) async fn handle_connection(
             .await;
     }
     drop(outgoing_tx);
-    if let Some(writer_task) = writer_task {
-        writer_task.abort();
-        let _ = writer_task.await;
+    if let Some(mut writer_task) = writer_task {
+        if tokio::time::timeout(RELAY_WEBSOCKET_CLOSE_TIMEOUT, &mut writer_task)
+            .await
+            .is_err()
+        {
+            writer_task.abort();
+            let _ = writer_task.await;
+        }
     }
     connection_result
 }

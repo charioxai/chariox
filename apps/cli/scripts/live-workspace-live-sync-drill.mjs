@@ -4,10 +4,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { parseArgs, printHelp } from './lib/workspace-live-sync-drill-options.mjs'
-import { assertFileBytes, assertFileContent, initGitWorktree, initManagedTargetWorkspace, initTrackedWorkspace, loadCliModules, makePorts, modelForProvider, resolveBinary, resolveRemoteWorkerKernelRef, runAfterFixtureCommand, sleep, spawnWorkspaceLiveSyncPhaseAgents, terminateChild, waitForLocalDaemon, wrapClientSendWithTimeout } from './lib/workspace-live-sync-drill-runtime.mjs'
-import { assertFilesAbsent, assertManagedTargetFanout, managedTargetFanoutSnapshot, waitForCompletionCount, waitForFilesAbsent, waitForHistoryOutputMarkers, waitForManagedToolExpectationsAndFiles, waitForPromptPhase } from './lib/workspace-live-sync-drill-waiters.mjs'
+import { assertFileBytes, assertFileContent, fileExists, initGitWorktree, initManagedTargetWorkspace, initTrackedWorkspace, loadCliModules, makePorts, modelForProvider, resolveBinary, resolveRemoteWorkerKernelRef, runAfterFixtureCommand, sleep, spawnWorkspaceLiveSyncPhaseAgents, terminateChild, unwrap, unwrapVariant, waitForLocalDaemon, workspaceLiveSyncMoveSourceName, workspaceLiveSyncSpawnAgentRequest, workspaceLiveSyncToolNames, wrapClientSendWithTimeout } from './lib/workspace-live-sync-drill-runtime.mjs'
+import { assertFilesAbsent, assertManagedTargetFanout, managedTargetFanoutSnapshot, waitForAgentsIdle, waitForCompletionCount, waitForCompletionsAndFiles, waitForFilesAbsent, waitForHistoryNotices, waitForHistoryOutputMarkers, waitForManagedToolExpectationsAndFiles, waitForPromptPhase } from './lib/workspace-live-sync-drill-waiters.mjs'
 import { runLiveCollisionAndExternalChecks } from './lib/workspace-live-sync-drill-collision-scenarios.mjs'
 import { runTrackedWorkspaceLiveSyncDrill } from './lib/workspace-live-sync-drill-scenarios.mjs'
+import {
+  prepareWorkspaceLiveSyncDaemonEnvironment,
+  removeWorkspaceLiveSyncProviderProfile,
+} from './lib/workspace-live-sync-drill-environment.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -100,11 +104,10 @@ async function main() {
   } = requests
 
   let daemonChild = null
+  let daemonProfile = null
   let kernelUrl = options.kernel
   const startedAt = Date.now()
   const historyDir = options.historyDir ?? path.join(rootDir, 'history')
-  const xdgConfigHome = path.join(rootDir, 'xdg-config')
-  const xdgStateHome = path.join(rootDir, 'xdg-state')
   let succeeded = false
   if (options.spawnDaemon) {
     const ports = makePorts()
@@ -114,19 +117,24 @@ async function main() {
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
     )
+    const daemonId = `workspace-live-sync-drill-${process.pid}-${Date.now()}`
+    daemonProfile = await prepareWorkspaceLiveSyncDaemonEnvironment({
+      rootDir,
+      daemonId,
+      providers: options.providers,
+    })
     daemonChild = spawn(daemonBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
+        ...daemonProfile.env,
         ARROBA_KERNEL_PORT: String(ports.kernelPort),
         ARROBA_MCP_PORT: String(ports.mcpPort),
         ARROBA_OPENCODE_PORT: String(ports.opencodePort),
         ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `workspace-live-sync-drill-${process.pid}-${Date.now()}`,
+        ARROBA_DAEMON_ID: daemonId,
         ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
         ARROBA_SESSION_HISTORY_DIR: historyDir,
-        XDG_CONFIG_HOME: xdgConfigHome,
-        XDG_STATE_HOME: xdgStateHome,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -391,8 +399,8 @@ async function main() {
     }
 
     for (const { provider, agent } of agents) {
-      const written = `${provider}-workspace-live-sync-write-ok: seed-value-42\n`
-      const edited = `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`
+      const written = `${provider}-workspace-live-sync-write-ok: seed-value-42`
+      const edited = `${provider}-workspace-live-sync-edit-ok: seed-value-42`
       const sourceName = workspaceLiveSyncMoveSourceName(provider)
       const patchInitial = provider === 'opencode' ? `source-start-${provider}\n` : `patch-start-${provider}\n`
       const patchMoved = provider === 'opencode' ? patchInitial : `patch-moved-${provider}\n`
@@ -420,6 +428,7 @@ async function main() {
           'Use only the Arroba MCP/runtime tools for file I/O.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
           `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
+          'The content_text value must end at seed-value-42; do not append a newline or a literal backslash-n sequence.',
           `Only after both steps succeed and outputs/${provider}.txt exists, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_TEXT_WRITE_DONE and nothing else.`,
           `If any workspace live sync tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop.`,
         ].join('\n'),
@@ -439,8 +448,8 @@ async function main() {
           'This is a live Arroba workspace live sync positive text edit smoke test.',
           'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
           'Use only the Arroba MCP/runtime tools for file I/O.',
-          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"} and remember the returned snapshot_id.`,
-          `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id from step 1.`,
+          `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"}. Use the snapshot_id returned by this call for outputs/${provider}.txt.`,
+          `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id returned in step 1. Do not reuse the seed.txt snapshot or any snapshot from an earlier turn.`,
           `Only after the edit succeeds and outputs/${provider}.txt contains the new text, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_TEXT_EDIT_DONE and nothing else.`,
           `If any workspace live sync tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop.`,
         ].join('\n'),
@@ -569,7 +578,7 @@ async function main() {
     for (const provider of options.providers) {
       await assertFileContent(
         path.join(outputsDir, `${provider}.txt`),
-        `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`,
+        `${provider}-workspace-live-sync-edit-ok: seed-value-42`,
       )
       await assertFileContent(
         path.join(outputsDir, `${provider}-moved.txt`),
@@ -949,6 +958,7 @@ async function main() {
     }
     await client.close().catch(() => {})
     await terminateChild(daemonChild)
+    await removeWorkspaceLiveSyncProviderProfile(daemonProfile).catch(() => {})
     await finalizeDrillArtifacts({
       rootDir,
       passed: succeeded,

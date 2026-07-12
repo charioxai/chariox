@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
+import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
+import { fatalProviderOutput, terminalProviderOutputSnapshot } from './lib/remote-machine-runtime-output.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -174,15 +177,6 @@ function spawnProcess(command, args, options) {
   return spawn(command, args, { ...options, stdio: ['ignore', 'ignore', 'inherit'] })
 }
 
-async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
-}
-
 async function terminateChild(child, signal = 'SIGTERM') {
   if (!child || child.exitCode != null) return
   child.kill(signal)
@@ -258,6 +252,23 @@ async function waitForCompletion(eventLog, timeoutMs, baselineCount = 0) {
     await sleep(100)
   }
   throw new Error('timed out waiting for assistant completion')
+}
+
+async function waitForProviderOutputMarker(eventLog, agentId, marker, timeoutMs, pollMs) {
+  const started = Date.now()
+  let snapshot = terminalProviderOutputSnapshot(eventLog, agentId)
+  while (Date.now() - started < timeoutMs) {
+    const fatalOutput = fatalProviderOutput(snapshot)
+    if (fatalOutput) throw new Error(`provider failed before output marker ${marker}: ${fatalOutput}`)
+    if (snapshot.providerText.includes(marker)) return snapshot
+    await sleep(pollMs)
+    snapshot = terminalProviderOutputSnapshot(eventLog, agentId)
+  }
+  throw new Error(
+    `timed out waiting for provider output marker ${marker}; records=${snapshot.recordCount}\n`
+      + `output=${snapshot.providerText.slice(-4000)}\n`
+      + `statuses=${snapshot.statuses.join('\n').slice(-4000)}`,
+  )
 }
 
 async function main() {
@@ -345,6 +356,16 @@ async function main() {
     opencodePort: ports.workerOpenCodePort,
     codexPort: ports.workerCodexPort,
   })
+  await Promise.all([
+    writeIsolatedKernelConfig({
+      xdgConfigHome: homeEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(rootDir, 'home-kernel-storage'),
+    }),
+    writeIsolatedKernelConfig({
+      xdgConfigHome: workerEnv.XDG_CONFIG_HOME,
+      storageRoot: path.join(rootDir, 'worker-kernel-storage'),
+    }),
+  ])
 
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
@@ -373,12 +394,12 @@ async function main() {
       endSessionRequest,
       submitPromptRequest,
     } } = await loadCliModules(cliRuntimeDir))
-    const relayBinary = await resolveBinary(
+    const relayBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
       'arroba-relay',
     )
-    const daemonBinary = await resolveBinary(
+    const daemonBinary = await resolveBuiltBinary(
       path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
@@ -469,22 +490,13 @@ async function main() {
       }],
     ))
 
-    const started = Date.now()
-    while (Date.now() - started < options.timeoutMs / 3) {
-      if ((eventLog.filter((event) => event.event === 'terminal_output')).length > 0) break
-      await sleep(options.pollMs)
-    }
-
-    let completeResponse = null
-    try {
-      completeResponse = unwrapVariant(
-        await client.send({ CompletePrompt: { session_id: sessionId } }),
-        'PromptCompleted',
-      )
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes('has no active prompt')) throw error
-    }
+    const firstPromptOutput = await waitForProviderOutputMarker(
+      eventLog,
+      remoteAgent.id,
+      'REMOTE_MACHINE_OK',
+      options.timeoutMs,
+      options.pollMs,
+    )
     const firstCompletionEvent = await waitForCompletion(eventLog, options.timeoutMs, 0)
 
     await client.send(submitPromptRequest(
@@ -541,10 +553,11 @@ async function main() {
         rowCount: cliDisplay?.rowCount ?? 0,
       },
       firstPrompt: {
-        completePromptResponse: completeResponse?.completion?.completed?.id ?? null,
+        outputMarker: 'REMOTE_MACHINE_OK',
+        outputMarkerObserved: true,
         completionEventMessageId: firstCompletionEvent.message_id ?? null,
         terminalOutputEvents: eventLog.filter((event) => event.event === 'terminal_output').length,
-        pumpedOutputRecords: 0,
+        providerOutputRecords: firstPromptOutput.recordCount,
       },
       secondPrompt: {
         cancelledPromptId: cancelled?.cancellation?.prompt?.id ?? cancelled?.prompt?.id ?? null,

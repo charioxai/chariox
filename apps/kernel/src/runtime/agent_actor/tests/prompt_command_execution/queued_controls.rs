@@ -265,6 +265,13 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
+    let steering_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-steering-owned-queued-prompt",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("steering attachment should attach");
     launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
     let active_prompt = PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
@@ -306,7 +313,7 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
     let prompt_state_owner = app.prompt_state_owner();
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
-    let attachment_id = attachment.id().to_string();
+    let attachment_id = steering_attachment.id().to_string();
     let app = Arc::new(Mutex::new(app));
     let runtime = AgentRuntime::new(
         owned_runtime_state(&app).await,
@@ -360,5 +367,32 @@ async fn prompt_steer_queued_removes_queue_entry_without_settling_active_prompt(
             .map(|queued| queued.is_empty())
             .unwrap_or(true),
         "steered queued prompt should be removed from the session queue"
+    );
+    let source_records = app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .drain_output_records(&session_id, attachment.id());
+    let steering_merge_key = crate::history::steering_prompt_merge_key(queued_prompt.id());
+    assert!(
+        source_records.iter().any(|record| {
+            record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                && record.prompt_id.as_deref() == Some(queued_prompt.id())
+                && record.merge_key.as_deref() == Some(steering_merge_key.as_str())
+                && record.source_attachment_id.as_deref() == Some(attachment.id())
+                && String::from_utf8_lossy(&record.bytes).contains(queued_prompt.prompt())
+        }),
+        "steered queued prompt should be echoed to the other attachment"
+    );
+    let steering_records = app
+        .lock()
+        .await
+        .terminal_stream_store()
+        .drain_output_records(&session_id, steering_attachment.id());
+    assert!(
+        steering_records
+            .iter()
+            .all(|record| { record.merge_key.as_deref() != Some(steering_merge_key.as_str()) }),
+        "steering attachment already receives the prompt in its command response"
     );
 }

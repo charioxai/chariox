@@ -106,26 +106,29 @@ impl<'a> ProviderOutputPump<'a> {
                 .context
                 .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
         {
-            self.context
+            return Ok(self
+                .context
                 .pending_structured_output_records
-                .clear(request.provider_run_id);
-            return Ok(Vec::new());
+                .take_and_stop_polling(request.provider_run_id));
         }
         let mut provider_run = self
             .context
             .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
         if provider_run.state() == ProviderRunState::Ended {
-            self.context
+            return Ok(self
+                .context
                 .pending_structured_output_records
-                .clear(request.provider_run_id);
-            return Ok(Vec::new());
+                .take_and_stop_polling(request.provider_run_id));
         }
         if provider_run.state() == ProviderRunState::Parked {
             if !self
                 .context
                 .provider_run_has_active_prompt(request.session_id, &provider_run)?
             {
-                return Ok(Vec::new());
+                return Ok(self
+                    .context
+                    .pending_structured_output_records
+                    .take_and_stop_polling(request.provider_run_id));
             }
             provider_run = self
                 .context
@@ -163,10 +166,10 @@ impl<'a> ProviderOutputPump<'a> {
                     .context
                     .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
                 {
-                    self.context
+                    return Ok(self
+                        .context
                         .pending_structured_output_records
-                        .clear(request.provider_run_id);
-                    return Ok(Vec::new());
+                        .take_and_stop_polling(request.provider_run_id));
                 }
                 return Err(error);
             }
@@ -387,16 +390,18 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let mut provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == ProviderRunState::Parked {
             if !self.provider_run_has_active_prompt(session_id, &provider_run)? {
-                return Ok(Vec::new());
+                return Ok(self
+                    .pending_structured_output_records
+                    .take_and_stop_polling(provider_run_id));
             }
             provider_run = self.resume_detached_provider_run(provider_run_id)?;
         }
         if provider_run.endpoint_mode() != AgentEndpointMode::External {
             if let Err(error) = self.drain_pty_output(provider_run_id) {
                 if self.reconcile_provider_run_exit(session_id, provider_run_id)? {
-                    self.pending_structured_output_records
-                        .clear(provider_run_id);
-                    return Ok(Vec::new());
+                    return Ok(self
+                        .pending_structured_output_records
+                        .take_and_stop_polling(provider_run_id));
                 }
                 if !matches!(error, DaemonError::PtyProcessNotFound { .. }) {
                     return Err(error);
@@ -469,7 +474,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     match reconcile_result {
                         Ok(true) => {
                             self.pending_structured_output_records
-                                .clear(&provider_run_id);
+                                .stop_polling(&provider_run_id);
                             continue;
                         }
                         Ok(false) if is_requested_run => return Err(error),

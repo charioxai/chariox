@@ -2,11 +2,15 @@ import { spawn, execFile } from "node:child_process"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
+import {
+  resolveBuiltBinarySync,
+  terminateMatchingProcesses,
+} from "./lib/drill-runtime-helpers.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -17,6 +21,7 @@ import {
   getSessionHistoryOutlineRequest,
   listAgentsRequest,
   pumpTerminalOutputRequest,
+  setUserConfigValueRequest,
 } from "../dist/ipc-requests.js"
 
 const execFileAsync = promisify(execFile)
@@ -24,7 +29,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
 const marker = `NTPERM_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
 function parseArgs(argv) {
@@ -76,6 +85,15 @@ async function waitForDaemon(kernelUrl, workspace, worktree) {
     }
   }
   throw new Error("kernel did not become ready")
+}
+
+async function disableWorkspaceLiveSync(kernelUrl) {
+  const client = new LocalIpcClient(kernelUrl)
+  try {
+    await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 async function waitForFileMatch(file, pattern, timeoutMs = 90_000) {
@@ -153,44 +171,78 @@ async function waitForNamedAgent(client, sessionId, alias) {
   throw new Error(`timed out waiting for agent ${alias}`)
 }
 
-async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, markerText, timeoutMs = 240_000) {
+async function readHistoryEntriesFromDisk(historyDir, agentId) {
+  const files = await readdir(historyDir).catch(() => [])
+  const entries = []
+  for (const file of files.filter((entry) => entry.endsWith(".jsonl"))) {
+    const text = await readFile(path.join(historyDir, file), "utf8").catch(() => "")
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line)
+        if (!agentId || entry?.agent_id === agentId) entries.push(entry)
+      } catch {
+        // Ignore partially written history lines while the provider is still streaming.
+      }
+    }
+  }
+  return entries
+}
+
+function historyOutputText(entries, agentId) {
+  return entries
+    .filter((entry) =>
+      entry?.agent_id === agentId
+        && (entry.kind === "provider_output" || entry.kind === "assistant")
+    )
+    .map((entry) => entry.text ?? "")
+    .join("")
+}
+
+async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, markerText, historyDir, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
     const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
-    const text = entries
-      .filter((entry) =>
-        entry?.agent_id === agentId
-          && (entry.kind === "provider_output" || entry.kind === "assistant")
-      )
-      .map((entry) => entry.text ?? "")
-      .join("")
+    const text = historyOutputText(entries, agentId)
     if (text.includes(markerText)) return text
+    const diskText = historyOutputText(await readHistoryEntriesFromDisk(historyDir, agentId), agentId)
+    if (diskText.includes(markerText)) return diskText
     await sleep(1_000)
   }
   throw new Error(`timed out waiting for history marker ${markerText}`)
 }
 
-async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, filePath, timeoutMs = 240_000) {
+function findCompletedProviderTool(entries, agentId, filePath) {
+  let lastMatch = null
+  for (const entry of entries) {
+    if (!entry || entry.kind !== "provider_tool" || entry.agent_id !== agentId || typeof entry.text !== "string") continue
+    let update = null
+    try {
+      update = JSON.parse(entry.text)
+    } catch {
+      continue
+    }
+    const command = String(update.input?.command ?? update.input?.cmd ?? "")
+    const output = typeof update.output === "string" ? update.output : JSON.stringify(update.output ?? {})
+    if (!entry.text.includes(filePath) && !command.includes(filePath) && !output.includes(filePath)) continue
+    lastMatch = update
+    if (update.status === "completed") return { completed: update, lastMatch }
+  }
+  return { completed: null, lastMatch }
+}
+
+async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, filePath, historyDir, timeoutMs = 240_000) {
   const deadline = Date.now() + timeoutMs
   let lastMatch = null
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
-    const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
-    for (const entry of entries) {
-      if (!entry || entry.kind !== "provider_tool" || entry.agent_id !== agentId || typeof entry.text !== "string") continue
-      let update = null
-      try {
-        update = JSON.parse(entry.text)
-      } catch {
-        continue
-      }
-      const command = String(update.input?.command ?? update.input?.cmd ?? "")
-      const output = typeof update.output === "string" ? update.output : JSON.stringify(update.output ?? {})
-      if (!entry.text.includes(filePath) && !command.includes(filePath) && !output.includes(filePath)) continue
-      lastMatch = update
-      if (update.status === "completed") return update
-    }
+    const projected = findCompletedProviderTool(await loadAgentHistoryEntries(client, sessionId, agentId), agentId, filePath)
+    lastMatch = projected.lastMatch ?? lastMatch
+    if (projected.completed) return projected.completed
+    const fromDisk = findCompletedProviderTool(await readHistoryEntriesFromDisk(historyDir, agentId), agentId, filePath)
+    lastMatch = fromDisk.lastMatch ?? lastMatch
+    if (fromDisk.completed) return fromDisk.completed
     await sleep(1_000)
   }
   throw new Error(`timed out waiting for completed provider tool touching ${filePath}; last=${JSON.stringify(lastMatch)}`)
@@ -357,6 +409,31 @@ function permissionPrompt(provider, markerText, filePath, content) {
     : `Use the shell to run \`${shellCommand}\`. After the command succeeds, reply with exactly ${markerText}.`
 }
 
+async function verifyProviderPrerequisites(provider) {
+  if (provider !== "claude") return
+  let stdout = ""
+  let stderr = ""
+  try {
+    const result = await execFileAsync("claude", ["auth", "status"], {
+      maxBuffer: 1024 * 1024,
+    })
+    stdout = result.stdout
+    stderr = result.stderr
+  } catch (error) {
+    stdout = error?.stdout ?? ""
+    stderr = error?.stderr ?? ""
+  }
+  let status = null
+  try {
+    status = JSON.parse(stdout)
+  } catch {
+    throw new Error(`Claude auth status was not JSON: ${(stdout || stderr).slice(0, 4000)}`)
+  }
+  if (status?.loggedIn !== true) {
+    throw new Error(`Claude provider account is not logged in: authMethod=${status?.authMethod ?? "unknown"} apiProvider=${status?.apiProvider ?? "unknown"}`)
+  }
+}
+
 async function runProvider(provider, options) {
   const root = path.join("/tmp", `arb-native-perm-${provider}-${process.pid}-${Date.now()}`)
   const kernelPort = makePort()
@@ -369,6 +446,7 @@ async function runProvider(provider, options) {
   const logs = {
     nativeDir: path.join(root, "native-screen"),
     cliDir: path.join(root, "arroba-cli-screen"),
+    historyDir: path.join(root, "history"),
     native: path.join(root, "native-screen", "screenlog.0"),
     cli: path.join(root, "arroba-cli-screen", "screenlog.0"),
     proxy: path.join(root, "native.proxy.log"),
@@ -382,14 +460,18 @@ async function runProvider(provider, options) {
     arrobaPrompt: `/tmp/arroba-${provider}-arroba-permission-${process.pid}.txt`,
   }
   const automationSocket = path.join("/tmp", `arb-${provider}-perm-cli-${process.pid}.sock`)
+  const sessionAlias = `native-permission-${provider}-${marker}`
+  const observerClientId = `native-tui-permission-observer-${provider}-${process.pid}`
   let daemon = null
   let client = null
+  let providerScreen = null
   let succeeded = false
   let failure = null
   try {
     await prepareDrillArtifacts(root)
     await mkdir(logs.nativeDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
+    await verifyProviderPrerequisites(provider)
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
       env: {
@@ -400,11 +482,12 @@ async function runProvider(provider, options) {
         ARROBA_CODEX_PORT: String(kernelPort + 2001),
         ARROBA_DAEMON_ID: `native-tui-permission-${provider}-${process.pid}`,
         ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        ARROBA_SESSION_HISTORY_DIR: logs.historyDir,
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForDaemon(kernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(kernelUrl)
 
     const nativeArgs = [
       cliPath,
@@ -412,7 +495,7 @@ async function runProvider(provider, options) {
       "--kernel-url",
       kernelUrl,
       "--alias",
-      `native-permission-${provider}-${marker}`,
+      sessionAlias,
       "--agent-alias",
       alias,
       "--workspace",
@@ -460,7 +543,7 @@ async function runProvider(provider, options) {
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
     if (provider === "claude") {
-      await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)
+      providerScreen = (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
     }
 
     client = new LocalIpcClient(kernelUrl)
@@ -477,7 +560,7 @@ async function runProvider(provider, options) {
       "--session",
       sessionId,
       "--client-id",
-      `native-tui-permission-observer-${provider}-${process.pid}`,
+      observerClientId,
       "--automation-socket",
       automationSocket,
       "--provider",
@@ -494,15 +577,15 @@ async function runProvider(provider, options) {
       const nativeRun = runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, nativePrompt)
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
       await nativeRun
-      await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
-      await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
+      await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt, logs.historyDir)
+      await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt, logs.historyDir)
       await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
       await waitForAgentIdle(automationSocket, alias)
       console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
-      if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt)
-      if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt)
+      if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt, logs.historyDir)
+      if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt, logs.historyDir)
       if (provider === "claude") await waitForFileContent(files.nativePrompt, `native-${provider}`)
       else await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
       await waitForAgentIdle(automationSocket, alias)
@@ -514,8 +597,8 @@ async function runProvider(provider, options) {
       command: `prompt ${alias} ${permissionPrompt(provider, markers.arrobaPrompt, files.arrobaPrompt, `arroba-${provider}`)}`,
     })
     const arrobaInteraction = await answerPermissionFromCli(automationSocket, alias)
-    if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.arrobaPrompt)
-    if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.arrobaPrompt)
+    if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.arrobaPrompt, logs.historyDir)
+    if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.arrobaPrompt, logs.historyDir)
     if (provider === "claude") await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`)
     else await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`, 5_000).catch(() => {})
     console.log(JSON.stringify({ provider, direction: "arroba_cli_to_provider", interaction: arrobaInteraction.title ?? arrobaInteraction.message }))
@@ -526,9 +609,23 @@ async function runProvider(provider, options) {
     failure = error
     throw error
   } finally {
+    let processCleanupFailure = null
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
     await screenQuit(screenCli)
+    if (providerScreen) await screenQuit(providerScreen)
+    const processCleanup = await terminateMatchingProcesses([
+      automationSocket,
+      sessionAlias,
+      observerClientId,
+    ]).catch((error) => ({ signaled: [], killed: [], remaining: [], error }))
+    if (processCleanup.error || processCleanup.remaining.length > 0) {
+      processCleanupFailure = new Error(processCleanup.error
+        ? `permission drill process cleanup failed: ${processCleanup.error.message ?? processCleanup.error}`
+        : `permission drill left run-owned processes: ${processCleanup.remaining.join(", ")}`)
+      succeeded = false
+      failure ??= processCleanupFailure
+    }
     if (daemon && daemon.exitCode == null) {
       daemon.kill("SIGTERM")
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
@@ -553,6 +650,7 @@ async function runProvider(provider, options) {
     }
     await rm(files.nativePrompt, { force: true }).catch(() => {})
     await rm(files.arrobaPrompt, { force: true }).catch(() => {})
+    if (processCleanupFailure) throw processCleanupFailure
   }
 }
 
@@ -560,9 +658,21 @@ async function main() {
   const options = parseArgs(process.argv.slice(2))
   const results = []
   for (const provider of options.providers) {
-    results.push(await runProvider(provider, options))
+    try {
+      results.push(await runProvider(provider, options))
+    } catch (error) {
+      results.push({
+        provider,
+        status: "failed",
+        error: error?.message ?? String(error),
+      })
+    }
   }
-  console.log(JSON.stringify({ status: "ok", results }, null, 2))
+  const failures = results.filter((entry) => entry.status !== "ok")
+  console.log(JSON.stringify({ status: failures.length === 0 ? "ok" : "failed", results }, null, 2))
+  if (failures.length > 0) {
+    process.exitCode = 1
+  }
 }
 
 main().catch((error) => {

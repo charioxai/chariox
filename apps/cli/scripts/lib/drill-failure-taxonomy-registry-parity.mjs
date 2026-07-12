@@ -22,14 +22,31 @@ export async function verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }) {
   if (typeof cloudModule.cloudFailureTaxonomyManifest !== "function") {
     throw new Error(`failure taxonomy registry parity requires cloudFailureTaxonomyManifest in ${cloudRegistryPath}`)
   }
+  const failures = cloudFailureTaxonomyCompatibilityFailures(
+    cloudModule.cloudFailureTaxonomyManifest(),
+    "Cloud failure taxonomy registry",
+  )
+  if (failures.length > 0) {
+    throw new Error(`failure taxonomy registry parity failed: ${failures.join("; ")}`)
+  }
+}
+
+export function validateCloudCompatibleDrillFailureTaxonomyManifest(
+  manifest,
+  source = "Cloud failure taxonomy manifest",
+) {
+  const failures = cloudFailureTaxonomyCompatibilityFailures(manifest, source)
+  if (failures.length > 0) {
+    throw new Error(`${source} is incompatible with OSS failure taxonomy: ${failures.join("; ")}`)
+  }
+}
+
+function cloudFailureTaxonomyCompatibilityFailures(manifest, source) {
   const ossClassifications = failureClassificationMap(
     drillFailureTaxonomyManifest(),
     "OSS failure taxonomy registry",
   )
-  const cloudClassifications = failureClassificationMap(
-    cloudModule.cloudFailureTaxonomyManifest(),
-    "Cloud failure taxonomy registry",
-  )
+  const cloudClassifications = failureClassificationMap(manifest, source)
   const failures = []
   for (const [kind] of Object.entries(ossClassifications)) {
     if (!cloudClassifications[kind]) {
@@ -49,9 +66,7 @@ export async function verifyDrillFailureTaxonomyRegistryParity({ cloudRoot }) {
       failures.push(`${kind}: missing OSS failure taxonomy manifest entry`)
     }
   }
-  if (failures.length > 0) {
-    throw new Error(`failure taxonomy registry parity failed: ${failures.join("; ")}`)
-  }
+  return failures
 }
 
 function failureClassificationMap(manifest, source) {

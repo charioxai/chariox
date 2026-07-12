@@ -15,6 +15,12 @@ pub(super) type ForwardedWorkspaceLiveSyncResult = Result<
     DaemonError,
 >;
 
+enum RemoteWorkspaceLiveSyncInvocationDisposition {
+    Execute,
+    Return(RemoteWorkspaceLiveSyncInvocationResult),
+    Wait(tokio::sync::watch::Receiver<Option<RemoteWorkspaceLiveSyncInvocationResult>>),
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn dispatch_forwarded_workspace_live_sync_runtime_tool_call(
         &self,
@@ -43,7 +49,10 @@ impl KernelRuntimeState {
         if !workspace_live_sync_workspace_identities_match(&home_identity, &worker_identity) {
             return Ok(remote_workspace_not_coordinated_result());
         }
-        if let Some(cached) = self
+        let permission_level = self
+            .effective_permission_level_for_agent(&context.home_session_id, &context.home_agent_id)
+            .await?;
+        match self
             .begin_remote_workspace_live_sync_invocation(
                 &context,
                 &metadata,
@@ -53,7 +62,13 @@ impl KernelRuntimeState {
             )
             .await?
         {
-            return Ok(cached);
+            RemoteWorkspaceLiveSyncInvocationDisposition::Execute => {}
+            RemoteWorkspaceLiveSyncInvocationDisposition::Return(cached) => return Ok(cached),
+            RemoteWorkspaceLiveSyncInvocationDisposition::Wait(completion_rx) => {
+                return self
+                    .wait_for_remote_workspace_live_sync_invocation(completion_rx)
+                    .await;
+            }
         }
         let workspace_context = WorkspaceLiveSyncWorkspaceContext {
             root: home_root,
@@ -62,10 +77,7 @@ impl KernelRuntimeState {
             identity_changed: false,
             valid: true,
         };
-        let permission_level = self
-            .effective_permission_level_for_agent(&context.home_session_id, &context.home_agent_id)
-            .await?;
-        if let Some(result) = self
+        let permission_result = self
             .maybe_gate_workspace_live_sync_mutation(
                 &context.home_session_id,
                 Some(&context.home_agent_id),
@@ -73,8 +85,16 @@ impl KernelRuntimeState {
                 tool_name.as_str(),
                 &arguments,
             )
-            .await?
-        {
+            .await;
+        let permission_result = match permission_result {
+            Ok(result) => result,
+            Err(error) => {
+                self.forget_remote_workspace_live_sync_invocation(&context, &metadata, &tool_name)
+                    .await;
+                return Err(error);
+            }
+        };
+        if let Some(result) = permission_result {
             let forwarded_result = (result, artifact_states);
             self.complete_remote_workspace_live_sync_invocation(
                 &context,
@@ -279,13 +299,7 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: &serde_json::Value,
         artifact_states: &[crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState],
-    ) -> Result<
-        Option<(
-            crate::transport::runtime_tools::RuntimeToolResult,
-            Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
-        )>,
-        DaemonError,
-    > {
+    ) -> Result<RemoteWorkspaceLiveSyncInvocationDisposition, DaemonError> {
         let key = remote_workspace_live_sync_invocation_key(context, metadata, tool_name);
         let request_fingerprint =
             remote_workspace_live_sync_request_fingerprint(tool_name, arguments, artifact_states)?;
@@ -295,29 +309,55 @@ impl KernelRuntimeState {
             .lock()
             .await;
         let Some(existing) = invocations.get(&key) else {
+            let (completion_tx, _) = tokio::sync::watch::channel(None);
             invocations.insert(
                 key,
                 RemoteWorkspaceLiveSyncInvocationState {
                     request_fingerprint,
                     result: None,
+                    completion_tx,
                     finalized: false,
                 },
             );
-            return Ok(None);
+            return Ok(RemoteWorkspaceLiveSyncInvocationDisposition::Execute);
         };
         if existing.request_fingerprint != request_fingerprint {
-            return Ok(Some(remote_workspace_live_sync_duplicate_rejected_result(
-                metadata,
-                "workspace live sync invocation metadata was reused with different tool arguments or initial artifact state",
-            )));
+            return Ok(RemoteWorkspaceLiveSyncInvocationDisposition::Return(
+                remote_workspace_live_sync_duplicate_rejected_result(
+                    metadata,
+                    "workspace live sync invocation metadata was reused with different tool arguments or initial artifact state",
+                ),
+            ));
         }
         if let Some(result) = &existing.result {
-            return Ok(Some(result.clone()));
+            return Ok(RemoteWorkspaceLiveSyncInvocationDisposition::Return(
+                result.clone(),
+            ));
         }
-        Ok(Some(remote_workspace_live_sync_duplicate_rejected_result(
-            metadata,
-            "workspace live sync invocation is already in flight on the home kernel",
-        )))
+        Ok(RemoteWorkspaceLiveSyncInvocationDisposition::Wait(
+            existing.completion_tx.subscribe(),
+        ))
+    }
+
+    async fn wait_for_remote_workspace_live_sync_invocation(
+        &self,
+        mut completion_rx: tokio::sync::watch::Receiver<
+            Option<RemoteWorkspaceLiveSyncInvocationResult>,
+        >,
+    ) -> ForwardedWorkspaceLiveSyncResult {
+        loop {
+            if let Some(result) = completion_rx.borrow().clone() {
+                return Ok(result);
+            }
+            completion_rx
+                .changed()
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "wait for forwarded workspace live sync invocation",
+                    message: "the original workspace live sync invocation ended before publishing a result"
+                        .to_string(),
+                })?;
+        }
     }
 
     async fn complete_remote_workspace_live_sync_invocation(
@@ -337,7 +377,8 @@ impl KernelRuntimeState {
             .lock()
             .await;
         if let Some(existing) = invocations.get_mut(&key) {
-            existing.result = Some(result);
+            existing.result = Some(result.clone());
+            existing.completion_tx.send_replace(Some(result));
         }
     }
 

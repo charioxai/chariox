@@ -1,8 +1,47 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
+
+    let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
+        session_id: "session-1".to_string(),
+        provider_run_id: Some("provider-run-2".to_string()),
+        cols: 80,
+        rows: 24,
+    });
+    assert_eq!(
+        serde_json::to_value(request).expect("provider-targeted terminal resize should encode"),
+        serde_json::json!({
+            "ResizeTerminal": {
+                "session_id": "session-1",
+                "provider_run_id": "provider-run-2",
+                "cols": 80,
+                "rows": 24
+            }
+        })
+    );
+
+    let legacy: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "ResizeTerminal": {
+            "session_id": "session-1",
+            "cols": 120,
+            "rows": 40
+        }
+    }))
+    .expect("legacy active-provider resize should still decode");
+    assert!(matches!(
+        legacy,
+        LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
+            provider_run_id: None,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
     assert_eq!(
@@ -79,7 +118,7 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -115,7 +154,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -163,7 +202,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let active_cancel_request =
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
@@ -319,7 +358,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(8),
@@ -403,7 +442,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 237);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 238);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),

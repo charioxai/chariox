@@ -220,6 +220,8 @@ impl<'a> KernelSessionService<'a> {
                         "agent": &agent,
                     }),
                 )?;
+                let _ =
+                    KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
                 return Ok(agent);
             }
         }
@@ -234,6 +236,7 @@ impl<'a> KernelSessionService<'a> {
                 "agent": &agent,
             }),
         )?;
+        let _ = KernelSessionReadService::new(self.app).session_snapshot(agent.session_id())?;
         Ok(agent)
     }
 

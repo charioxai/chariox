@@ -8,6 +8,14 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
     );
 }
 
+#[test]
+fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-enqueues-into-a-disabled-workflow-queue-without-launching",
+        local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_inner,
+    );
+}
+
 fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: fn()) {
     let handle = std::thread::Builder::new()
         .name(name.to_string())
@@ -238,6 +246,114 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
     };
     assert_eq!(cancelled.id(), second_run.id());
     assert_eq!(format!("{:?}", cancelled.status()), "Stopped");
+}
+
+fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_inner() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-disabled-queue", "worktree-disabled-queue"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = harness.spawn_workflow_test_agent(session.id(), "disabled-queue-agent");
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("disabled-queue-workflow".to_string()),
+        }))
+        .expect("workflow create should succeed")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = harness.add_workflow_test_node(session.id(), workflow.id(), agent.id());
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+
+    match harness
+        .dispatch(LocalDaemonRequest::UpdateWorkflowPromptQueue(
+            UpdateWorkflowPromptQueueRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: Some(workflow.id().to_string()),
+                queue_ref: "default".to_string(),
+                alias: None,
+                priority: None,
+                enabled: Some(false),
+            },
+        ))
+        .expect("default workflow queue should be disabled")
+    {
+        LocalDaemonResponse::WorkflowPromptQueueUpdated { queue, .. } => {
+            assert!(!queue.enabled());
+        }
+        _ => panic!("unexpected local response"),
+    }
+
+    let queued_prompt = match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                prompt: Some("hold this prompt".to_string()),
+                queue_ref: Some("default".to_string()),
+                publication_invocation: None,
+            },
+        ))
+        .expect("disabled workflow queue invocation should enqueue")
+    {
+        LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => queued_prompt,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(queued_prompt.prompt(), Some("hold this prompt"));
+    assert_eq!(
+        queued_prompt.status(),
+        crate::session::WorkflowQueuedPromptStatus::Queued
+    );
+
+    let workflow_runs = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: Some(workflow.id().to_string()),
+            },
+        ))
+        .expect("workflow runs should list")
+    {
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(workflow_runs.is_empty());
+
+    let queued_prompts = match harness
+        .dispatch(LocalDaemonRequest::ListQueuedWorkflowPrompts(
+            ListQueuedWorkflowPromptsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("queued workflow prompts should list")
+    {
+        LocalDaemonResponse::QueuedWorkflowPromptsListed { queued_prompts } => queued_prompts,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(queued_prompts, vec![queued_prompt]);
 }
 
 fn wait_for_workflow_run_status(

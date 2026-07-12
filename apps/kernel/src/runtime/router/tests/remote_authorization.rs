@@ -181,8 +181,11 @@ fn remote_home_invocation_router_with_active_prompt(
         "active remote prompt",
         PromptStatus::Queued,
     );
-    app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
-        .expect("active prompt should be recorded");
+    assert!(matches!(
+        app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+            .expect("active prompt should be recorded"),
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id,
         home_session_id: session_id,

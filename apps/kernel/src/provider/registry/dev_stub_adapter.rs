@@ -10,7 +10,7 @@ use super::AgentEndpointAdapter;
 
 mod scripts;
 
-use scripts::{dev_stub_pty_args, dev_stub_pty_env, is_dev_stub_unique_pty_model};
+use scripts::{dev_stub_pty_args, dev_stub_pty_env};
 
 #[derive(Debug, Default)]
 pub(super) struct DevStubAdapter;
@@ -39,17 +39,11 @@ impl AgentEndpointAdapter for DevStubAdapter {
             // host's PTY limit. Each worker multiplexes its synthetic runs through one process,
             // matching structured providers that multiplex many logical sessions per server.
             "stub-pty:distributed-scale".to_string()
-        } else if is_dev_stub_unique_pty_model(request.model.as_str()) {
-            format!(
-                "stub-pty:{}:{}",
-                request.session_id,
-                request
-                    .agent_id
-                    .as_deref()
-                    .unwrap_or(request.model.as_str())
-            )
         } else {
-            format!("stub-pty:{}", request.session_id)
+            request.agent_id.as_deref().map_or_else(
+                || format!("stub-pty:{}", request.session_id),
+                |agent_id| format!("stub-pty:{}:{agent_id}", request.session_id),
+            )
         };
         Ok(ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
@@ -72,6 +66,71 @@ impl AgentEndpointAdapter for DevStubAdapter {
     fn resume(&self, _run: &RuntimeProviderRun) {}
 
     fn terminate(&self, _run: &RuntimeProviderRun) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_bound_stub_runs_use_distinct_pty_targets_within_a_session() {
+        let first = DEV_STUB_ADAPTER
+            .connect(
+                &LaunchProviderRequest::new(
+                    "session-1",
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "native-tui-idle",
+                )
+                .with_agent_id("agent-1"),
+            )
+            .expect("first stub launch should plan");
+        let second = DEV_STUB_ADAPTER
+            .connect(
+                &LaunchProviderRequest::new(
+                    "session-1",
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id("agent-2"),
+            )
+            .expect("second stub launch should plan");
+
+        assert_eq!(
+            first.pty_target.as_deref(),
+            Some("stub-pty:session-1:agent-1")
+        );
+        assert_eq!(
+            second.pty_target.as_deref(),
+            Some("stub-pty:session-1:agent-2")
+        );
+    }
+
+    #[test]
+    fn distributed_scale_stub_runs_share_the_scale_pty() {
+        for agent_id in ["agent-1", "agent-2"] {
+            let launch = DEV_STUB_ADAPTER
+                .connect(
+                    &LaunchProviderRequest::new(
+                        "session-1",
+                        "dev-stub",
+                        "dev-stub",
+                        "default",
+                        DISTRIBUTED_SCALE_SHARED_PTY_MODEL,
+                    )
+                    .with_agent_id(agent_id),
+                )
+                .expect("distributed scale stub launch should plan");
+
+            assert_eq!(
+                launch.pty_target.as_deref(),
+                Some("stub-pty:distributed-scale")
+            );
+        }
+    }
 }
 
 #[cfg(test)]

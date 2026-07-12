@@ -28,6 +28,7 @@
     "tui-remote-owner:cloud-hetzner-drill": "pnpm run build && node scripts/live-tui-remote-owner-cloud-hetzner-drill.mjs",
     "validation:focused-runtime-gate": "node scripts/drill-focused-runtime-gate.mjs --matrix-root .artifacts/drill-matrices --require-complete",
     "validation:distributed-runtime-gate": "node scripts/drill-distributed-runtime-gate.mjs --include-default-artifacts --include-default-failures --require-generated-matrix-registry-parity --require-runtime-signal-registry-parity --require-failure-taxonomy-registry-parity --require-complete",
+    "runtime-resilience:chaos-matrix-drill": "node scripts/live-runtime-resilience-chaos-matrix-drill.mjs",
     "slice:lifecycle-drill": "pnpm run build && node scripts/live-slice-lifecycle-drill.mjs",
     "script-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-drill.mjs",
     "script-extension-agent:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-agent-drill.mjs",

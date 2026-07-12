@@ -124,6 +124,90 @@ impl DaemonApp {
         Ok(crate::extension::RemoteExtensionManifest { tools })
     }
 
+    pub(crate) fn required_remote_mcps_for_native_provider_launch(
+        &self,
+        agent: &AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
+        let mcp_grants = agent.mcp_grants();
+        if mcp_grants.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.sessions.get_session(agent.session_id())?;
+        let registry =
+            crate::mcp::ArrobaMcpRegistry::new(app_mcp_registry_roots(session.workspace_id()));
+        mcp_grants
+            .iter()
+            .map(|grant| {
+                let config = registry
+                    .get(grant)?
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "remote native provider capabilities",
+                        message: format!("MCP `{grant}` is granted but is not installed"),
+                    })?;
+                Ok(crate::transport::relay_peer::RequiredRemoteMcp {
+                    definition_hash: config.definition_hash()?,
+                    config,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn required_remote_skills_for_native_provider_launch(
+        &self,
+        agent: &AgentInstance,
+    ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteSkill>, DaemonError> {
+        let skill_grants = agent.skill_grants();
+        if skill_grants.is_empty() {
+            return Ok(Vec::new());
+        }
+        let session = self.sessions.get_session(agent.session_id())?;
+        let registry = crate::skill::ArrobaSkillRegistry::new(app_skill_registry_roots(
+            session.workspace_id(),
+        ));
+        skill_grants
+            .iter()
+            .map(|grant| {
+                let package =
+                    registry
+                        .package(grant)?
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "remote native provider capabilities",
+                            message: format!("skill `{grant}` is granted but is not installed"),
+                        })?;
+                Ok(crate::transport::relay_peer::RequiredRemoteSkill {
+                    name: package.metadata.name,
+                    version_hash: package.version_hash,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn remote_prompt_capabilities_for_agent(
+        &self,
+        agent: &AgentInstance,
+    ) -> Result<
+        (
+            Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+            Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+            crate::extension::RemoteExtensionManifest,
+        ),
+        DaemonError,
+    > {
+        let manifest = self.remote_extension_manifest_for_agent(agent)?;
+        let native_provider_run = self
+            .provider_run_projection
+            .get_for_agent(agent.session_id(), agent.id())
+            .is_some_and(|run| !run.client_interface().is_arroba());
+        if native_provider_run {
+            return Ok((
+                self.required_remote_mcps_for_native_provider_launch(agent)?,
+                Some(self.required_remote_skills_for_native_provider_launch(agent)?),
+                manifest.without_mcp_tools(),
+            ));
+        }
+        Ok((Vec::new(), None, manifest))
+    }
+
     pub(crate) fn kernel_ref_is_local(&self, kernel_ref: &str) -> bool {
         let kernel_ref = kernel_ref.trim();
         !kernel_ref.is_empty()
@@ -193,6 +277,7 @@ impl DaemonApp {
             daemon_id: Some(worker_kernel.kernel_id.clone()),
             daemon_alias: None,
         };
+        self.remember_remote_worker_public_key(&relay_config, worker_kernel);
         let (lease, relay_peer_protocol_version) =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
                 &relay_config,
@@ -686,6 +771,28 @@ impl DaemonApp {
         }
         config
     }
+
+    fn remember_remote_worker_public_key(
+        &self,
+        relay_config: &DaemonConfig,
+        worker_kernel: &RelayKernelPresence,
+    ) {
+        let Some(relay_url) = relay_config.relay_url.clone() else {
+            return;
+        };
+        let relay_state = self.relay_client_state();
+        let kernel_id = worker_kernel.kernel_id.clone();
+        let public_key = worker_kernel.public_key.clone();
+        let _ = self.block_on_relay_future(async move {
+            let mut state = relay_state.write().await;
+            if state.connected()
+                && state.connected_relay_url().as_deref() == Some(relay_url.as_str())
+            {
+                state.remember_peer_public_key(kernel_id, public_key);
+            }
+            Ok(())
+        });
+    }
 }
 
 fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
@@ -718,11 +825,32 @@ fn app_script_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     roots
 }
 
+fn app_skill_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    #[cfg(not(test))]
+    let _ = workspace_id;
+    #[cfg(test)]
+    if !workspace_id.trim().is_empty() {
+        roots.push(crate::skill::ArrobaSkillRegistry::project_root(
+            workspace_id,
+        ));
+    }
+    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
+        roots.push(root);
+    }
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use crate::agent::RemoteAgentBinding;
     use crate::app::DaemonApp;
     use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
+        RuntimeProviderRun,
+    };
+    use crate::session::CreateSessionRequest;
 
     fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
@@ -743,6 +871,104 @@ mod tests {
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: Some(42),
         }
+    }
+
+    #[test]
+    fn native_remote_prompt_routes_granted_mcp_as_worker_requirement_only() {
+        let workspace = std::env::temp_dir().join(format!(
+            "arroba-native-remote-prompt-capabilities-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&workspace).expect("workspace should create");
+        let mcp_name = format!(
+            "native-remote-prompt-mcp-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let mcp = crate::mcp::ArrobaMcpServerConfig::stdio(
+            &mcp_name,
+            std::env::current_exe()
+                .expect("current test executable should resolve")
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
+            &workspace,
+        )])
+        .install(&mcp)
+        .expect("project MCP should install");
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let workspace_id = workspace.to_string_lossy().to_string();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(&workspace_id, &workspace_id))
+            .expect("session should create");
+        let agent = app
+            .agents()
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("worker-provider-run-1".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to worker");
+        let agent = app
+            .agents()
+            .grant_mcp(agent.id(), mcp_name.clone())
+            .expect("MCP grant should apply");
+
+        let (required_mcps, required_skills, manifest) = app
+            .remote_prompt_capabilities_for_agent(&agent)
+            .expect("Arroba prompt capabilities should resolve");
+        assert!(required_mcps.is_empty());
+        assert!(required_skills.is_none());
+        assert_eq!(
+            manifest.home_proxy_mcp_server_names().collect::<Vec<_>>(),
+            vec![mcp_name.as_str()]
+        );
+
+        let request = LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_agent_id(agent.id())
+        .with_client_interface(ProviderClientInterface::NativeTui);
+        app.update_provider_run_projection(RuntimeProviderRun::new(
+            "leased:leased-agent-1:worker-provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "claude:claude:claude-sonnet-4-6".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(workspace.clone()),
+                structured_endpoint: None,
+            },
+        ));
+
+        let (required_mcps, required_skills, manifest) = app
+            .remote_prompt_capabilities_for_agent(&agent)
+            .expect("native prompt capabilities should resolve");
+        assert_eq!(required_mcps.len(), 1);
+        assert_eq!(required_mcps[0].config.name, mcp_name);
+        assert!(required_skills.is_some_and(|skills| skills.is_empty()));
+        assert!(manifest.home_proxy_mcp_server_names().next().is_none());
+
+        std::fs::remove_dir_all(workspace).expect("workspace should clean up");
     }
 
     #[test]

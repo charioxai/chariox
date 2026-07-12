@@ -1,5 +1,6 @@
+import net from "node:net"
 import path from "node:path"
-import { readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
@@ -11,6 +12,7 @@ import {
   getSessionStateRequest,
   listAgentsRequest,
   listRemoteMachinesRequest,
+  listSessionsRequest,
   pumpTerminalOutputRequest,
 } from "../../dist/ipc-requests.js"
 import {
@@ -19,18 +21,22 @@ import {
   waitForProviderRunMcpGrant,
 } from "./native-tui-capabilities.mjs"
 import {
+  copyLocalPathToHetzner,
   ensureExecutionDirectory,
   removeExecutionFile,
   shellQuote,
   waitForExecutionFileContent,
 } from "./native-tui-remote-execution.mjs"
 import {
+  providerAuthFailureFromTerminalText,
   resolveCommandPath,
   screenQuit,
   screenStuff,
   startScreen,
+  terminateMatchingProcesses,
   waitForFileMatch,
   waitForLogOccurrences,
+  waitForScreenMatch,
 } from "./drill-runtime-helpers.mjs"
 import {
   runNativeCodexPrompt,
@@ -135,6 +141,31 @@ async function automationRequest(socketPath, request) {
   })
 }
 
+async function waitForAutomationReady(socketPath, cliLogDir, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      await automationRequest(socketPath, { action: "ping" })
+      return
+    } catch (error) {
+      lastError = error
+      await sleep(250)
+    }
+  }
+  const structuredLogDir = path.join(cliLogDir, ".arroba", "logs")
+  const structuredLogs = await readdir(structuredLogDir).catch(() => [])
+  const latestLog = structuredLogs.sort().at(-1)
+  const logTail = latestLog
+    ? (await readFile(path.join(structuredLogDir, latestLog), "utf8").catch(() => "")).slice(-4_000)
+    : ""
+  throw new Error([
+    `observer automation socket did not become ready within ${timeoutMs}ms: ${socketPath}`,
+    `last connection error: ${lastError?.message ?? "none"}`,
+    logTail ? `observer log tail:\n${logTail}` : "observer emitted no structured log",
+  ].join("\n"))
+}
+
 async function fireAutomationRequest(socketPath, request) {
   await new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath)
@@ -171,6 +202,17 @@ async function waitForNamedAgents(client, sessionId, aliases) {
   throw new Error(`timed out waiting for agents ${aliases.join(", ")}; saw ${agents.map((agent) => agent.alias ?? agent.id).join(", ")}`)
 }
 
+async function waitForSessionByAlias(client, alias, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const sessions = unwrap(await client.send(listSessionsRequest()), "SessionsListed").sessions ?? []
+    const session = sessions.find((candidate) => candidate.alias === alias)
+    if (session) return session
+    await sleep(250)
+  }
+  throw new Error(`timed out waiting for run-owned session ${alias}`)
+}
+
 async function waitForActiveProviderRun(client, sessionId) {
   const deadline = Date.now() + 90_000
   while (Date.now() < deadline) {
@@ -182,27 +224,60 @@ async function waitForActiveProviderRun(client, sessionId) {
   throw new Error("timed out waiting for an active provider run")
 }
 
-async function waitForHistoryMarkers(client, sessionId, attachmentId, agents, expectedByAgent) {
+async function waitForHistoryMarkers(
+  client,
+  sessionId,
+  attachmentId,
+  agents,
+  expectedByAgent,
+  { onPending } = {},
+) {
   const deadline = Date.now() + 300_000
+  let lastHistories = {}
+  let lastMissing = {}
   while (Date.now() < deadline) {
     await client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
     let ok = true
     const histories = {}
+    const missing = {}
     for (const agent of agents) {
-      const entries = await loadAgentHistoryEntries(client, sessionId, agent.id, 20)
+      const entries = await loadAgentHistoryEntries(client, sessionId, agent.id, 200)
       histories[agent.alias] = {
         all: entries.map((entry) => entry.text ?? "").join("\n"),
         prompts: entries.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.text ?? "").join("\n"),
         outputs: entries.filter((entry) => entry.kind !== "user_prompt").map((entry) => entry.text ?? "").join(""),
       }
+      const providerAuthFailure = providerAuthFailureFromTerminalText(histories[agent.alias].outputs)
+      if (providerAuthFailure) {
+        throw new Error(`provider authentication failed for ${agent.alias}: ${providerAuthFailure}`)
+      }
       const expected = expectedByAgent[agent.alias] ?? {}
-      for (const marker of expected.prompts ?? []) ok &&= histories[agent.alias].prompts.includes(marker)
-      for (const marker of expected.outputs ?? []) ok &&= histories[agent.alias].outputs.includes(marker)
+      for (const marker of expected.prompts ?? []) {
+        if (!histories[agent.alias].prompts.includes(marker)) {
+          ok = false
+          missing[agent.alias] ??= []
+          missing[agent.alias].push(`prompt:${marker}`)
+        }
+      }
+      for (const marker of expected.outputs ?? []) {
+        if (!histories[agent.alias].outputs.includes(marker)) {
+          ok = false
+          missing[agent.alias] ??= []
+          missing[agent.alias].push(`output:${marker}`)
+        }
+      }
     }
     if (ok) return histories
+    lastHistories = histories
+    lastMissing = missing
+    await onPending?.({ histories, missing })
     await sleep(1_000)
   }
-  throw new Error("timed out waiting for all history markers")
+  const seen = Object.fromEntries(Object.entries(lastHistories).map(([alias, history]) => [
+    alias,
+    { promptBytes: history.prompts.length, outputBytes: history.outputs.length },
+  ]))
+  throw new Error(`timed out waiting for all history markers; missing=${JSON.stringify(lastMissing)}; seen=${JSON.stringify(seen)}`)
 }
 
 function badgeSnapshotForAlias(snapshot, alias) {
@@ -228,12 +303,20 @@ async function waitForInteraction(socketPath, alias, timeoutMs = 120_000) {
   while (Date.now() < deadline) {
     const snapshot = await automationRequest(socketPath, { action: "snapshot" })
     last = snapshot
-    const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
-    const interaction = snapshot.interactions?.find((entry) => entry.agentId === agent?.id && entry.kind === "permission")
-    if (agent && interaction) return { snapshot, agent, interaction }
+    const pending = permissionInteractionForAlias(snapshot, alias)
+    if (pending) return pending
     await sleep(250)
   }
   throw new Error(`timed out waiting for permission interaction for ${alias}; last=${JSON.stringify(last)}`)
+}
+
+export function permissionInteractionForAlias(snapshot, alias) {
+  const agent = snapshot.session?.agents?.find((entry) => entry.alias === alias)
+  if (!agent) return null
+  const interaction = snapshot.interactions?.find((entry) =>
+    entry.agentId === agent.id && entry.kind === "permission"
+  )
+  return interaction ? { snapshot, agent, interaction } : null
 }
 
 async function waitForInteractionFocused(socketPath, interactionId, timeoutMs = 20_000) {
@@ -262,8 +345,7 @@ async function waitForInteractionCleared(socketPath, interactionId, timeoutMs = 
   throw new Error(`timed out waiting for interaction ${interactionId} to clear; last=${JSON.stringify(last)}`)
 }
 
-async function answerPermissionFromCli(socketPath, alias) {
-  const pending = await waitForInteraction(socketPath, alias)
+async function submitPermissionFromCli(socketPath, pending) {
   if (!pending.interaction.focused) {
     await automationRequest(socketPath, {
       action: "workspace_shell_exec",
@@ -288,8 +370,32 @@ async function answerPermissionFromCli(socketPath, alias) {
   return pending.interaction
 }
 
+async function answerPermissionFromCli(socketPath, alias) {
+  return submitPermissionFromCli(socketPath, await waitForInteraction(socketPath, alias))
+}
+
+async function answerPermissionIfPresentFromCli(socketPath, alias) {
+  const snapshot = await automationRequest(socketPath, { action: "snapshot" })
+  const pending = permissionInteractionForAlias(snapshot, alias)
+  return pending ? submitPermissionFromCli(socketPath, pending) : null
+}
+
 async function waitForClaudeProviderRunId(logFile) {
   return (await waitForFileMatch(logFile, /provider run:\s+([^\s]+)/, 90_000)).match[1]
+}
+
+async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const text = await readFile(logFile, "utf8").catch(() => "")
+    if (/Update available!/.test(text) && /Skip/.test(text)) {
+      await screenStuff(screenName, "2\r")
+      await sleep(500)
+      return true
+    }
+    await sleep(250)
+  }
+  return false
 }
 
 async function waitForProviderToolCompletion(client, sessionId, attachmentId, agentId, matcher, timeoutMs = 240_000) {
@@ -323,9 +429,11 @@ async function loadAgentHistoryEntries(client, sessionId, agentId, latestPromptC
   const entries = []
   const agent = outline.agents?.find((entry) => entry.agent_id === agentId)
   for (const turn of agent?.turns ?? []) {
+    if (turn.user_prompt?.entry) entries.push(turn.user_prompt.entry)
     for (const row of turn.entries ?? []) {
       if (row?.entry) entries.push(row.entry)
     }
+    if (turn.summary?.entry) entries.push(turn.summary.entry)
     for (const blob of turn.blobs ?? []) {
       const content = unwrap(
         await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blob.blob_id)),
@@ -375,12 +483,22 @@ function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   })
 }
 
+export async function attachSubscribedTerminalClient(client, sessionId, clientId) {
+  const attachment = unwrap(
+    await client.send(attachToSessionRequest(sessionId, clientId)),
+    "SessionAttached",
+  ).attachment
+  await client.subscribeToKernelEvents(sessionId, attachment.id)
+  return attachment
+}
+
 export async function runProviderScenario({
   provider,
   root,
   relayUrl,
   relayToken,
   targetDaemonAlias,
+  workerDaemonAlias = null,
   workerKernelUrl = null,
   machineRef = null,
   sliceRef = null,
@@ -391,6 +509,7 @@ export async function runProviderScenario({
 }) {
   const scenarioRoot = path.join(root, provider)
   const remotePlacement = Boolean(machineRef || sliceRef)
+  const sessionAlias = `remote-native-${provider}-${process.pid}`
   const screenA = `arroba-rnt-${provider}-a-${process.pid}`
   const screenB = `arroba-rnt-${provider}-b-${process.pid}`
   const screenCli = `arroba-rnt-${provider}-cli-${process.pid}`
@@ -440,6 +559,8 @@ export async function runProviderScenario({
     nativeB: path.join(scenarioRoot, "native-b-run.log"),
     proxyA: path.join(scenarioRoot, "native-a.proxy.log"),
     proxyB: path.join(scenarioRoot, "native-b.proxy.log"),
+    renderedA: path.join(scenarioRoot, "native-a-rendered.txt"),
+    renderedB: path.join(scenarioRoot, "native-b-rendered.txt"),
   }
   const automationSocket = path.join("/tmp", `arb-rnt-${provider}-${process.pid}.sock`)
   let client = null
@@ -450,17 +571,31 @@ export async function runProviderScenario({
     await mkdir(logs.bDir, { recursive: true })
     await mkdir(logs.cliDir, { recursive: true })
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
-    nativeCapabilities = await installNativeDrillCapabilities({
-      homeClient: client,
-      workerKernelUrl,
-      provider,
-      scenarioRoot,
-      workspace,
-      options,
-      markers,
-    })
-    await client.close().catch(() => {})
-    client = null
+    const capabilityWorkerClient = options.hetznerWorker && workerDaemonAlias
+      ? relayClient(relayUrl, relayToken, workerDaemonAlias)
+      : null
+    try {
+      nativeCapabilities = await installNativeDrillCapabilities({
+        homeClient: client,
+        workerKernelUrl,
+        workerClient: capabilityWorkerClient,
+        syncWorkerCapabilityFiles: options.hetznerWorker
+          ? async ({ mcpServerPath, skillSource }) => {
+            await copyLocalPathToHetzner(options, mcpServerPath, mcpServerPath)
+            await copyLocalPathToHetzner(options, skillSource, skillSource, { recursive: true })
+          }
+          : null,
+        provider,
+        scenarioRoot,
+        workspace,
+        options,
+        markers,
+      })
+    } finally {
+      await capabilityWorkerClient?.close().catch(() => {})
+      await client.close().catch(() => {})
+      client = null
+    }
 
     await startScreen(screenA, logs.aDir, "bun", [
       cliPath,
@@ -472,7 +607,7 @@ export async function runProviderScenario({
       "--target-daemon-alias",
       targetDaemonAlias,
       "--alias",
-      `remote-native-${provider}-${process.pid}`,
+      sessionAlias,
       "--agent-alias",
       aliases[0],
       "--workspace",
@@ -496,7 +631,14 @@ export async function runProviderScenario({
       ARROBA_CLAUDE_NATIVE_DEBUG: "1",
       ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
-    sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    client = relayClient(relayUrl, relayToken, targetDaemonAlias)
+    sessionId = (await waitForSessionByAlias(client, sessionAlias)).id
+    await client.close().catch(() => {})
+    client = null
+    const bannerSessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    if (bannerSessionId !== sessionId) {
+      throw new Error(`native TUI banner session ${bannerSessionId} did not match run-owned session ${sessionId}`)
+    }
 
     await startScreen(screenB, logs.bDir, "bun", [
       cliPath,
@@ -553,10 +695,11 @@ export async function runProviderScenario({
     }
 
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
-    const attachment = unwrap(
-      await client.send(attachToSessionRequest(sessionId, `remote-native-${provider}-drill-${process.pid}`)),
-      "SessionAttached",
-    ).attachment
+    const attachment = await attachSubscribedTerminalClient(
+      client,
+      sessionId,
+      `remote-native-${provider}-drill-${process.pid}`,
+    )
     const agents = await waitForNamedAgents(client, sessionId, aliases)
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
@@ -592,15 +735,7 @@ export async function runProviderScenario({
       provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
       ...(provider === "codex" ? ["--effort", "high"] : []),
     ], process.env)
-    for (let attempt = 0; attempt < 80; attempt += 1) {
-      try {
-        await automationRequest(automationSocket, { action: "ping" })
-        break
-      } catch (error) {
-        if (attempt === 79) throw error
-        await sleep(250)
-      }
-    }
+    await waitForAutomationReady(automationSocket, logs.cliDir)
     const snapshot = await automationRequest(automationSocket, {
       action: "wait_for",
       sessionId,
@@ -668,10 +803,10 @@ export async function runProviderScenario({
       await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
       await sleep(1_000)
       for (const expected of [markers.arrobaA, markers.nativeA]) {
-        await waitForFileMatch(logs.a, new RegExp(expected), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(expected), 90_000)
       }
       for (const expected of [markers.arrobaB, markers.nativeB]) {
-        await waitForFileMatch(logs.b, new RegExp(expected), 90_000)
+        await waitForScreenMatch(screenB, logs.renderedB, new RegExp(expected), 90_000)
       }
     } else if (provider === "claude") {
       const providerRunB = await waitForClaudeProviderRunId(logs.b)
@@ -697,8 +832,8 @@ export async function runProviderScenario({
       if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
         throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
       }
-      await waitForFileMatch(logs.b, new RegExp(markers.nativeB), 90_000)
-      await waitForFileMatch(logs.b, new RegExp(markers.arrobaB), 90_000)
+      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.nativeB), 90_000)
+      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.arrobaB), 90_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
@@ -720,6 +855,13 @@ export async function runProviderScenario({
     if (nativeCapabilities) {
       let nativeSkillCheck = "validated"
       let skillPromptContext = "validated_native_and_arroba_origin"
+      const capabilityPermissionInteractionIds = new Set()
+      const settleCapabilityPermission = provider === "claude" && options.includePermissions
+        ? async () => {
+          const interaction = await answerPermissionIfPresentFromCli(automationSocket, aliases[0])
+          if (interaction) capabilityPermissionInteractionIds.add(interaction.id)
+        }
+        : undefined
       if (provider !== "claude") {
         const nativeSkillPrompt = `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`
         if (provider === "opencode") {
@@ -730,7 +872,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
           command: `agent focus ${agents[0].id}`,
@@ -742,7 +884,7 @@ export async function runProviderScenario({
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         })
-        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
       } else {
         const providerRunA = await waitForClaudeProviderRunId(logs.a)
         await sendClaudeRenderedPromptViaKernelInput(
@@ -754,8 +896,8 @@ export async function runProviderScenario({
         )
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
-        })
-        await waitForFileMatch(logs.a, new RegExp(markers.nativeSkill), 90_000)
+        }, { onPending: settleCapabilityPermission })
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
           command: `agent focus ${agents[0].id}`,
@@ -766,8 +908,8 @@ export async function runProviderScenario({
         })
         await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
-        })
-        await waitForFileMatch(logs.a, new RegExp(markers.arrobaSkill), 90_000)
+        }, { onPending: settleCapabilityPermission })
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
         const claudeScreenLog = await readFile(logs.a, "utf8").catch(() => "")
         if (claudeScreenLog.includes("Full instructions for explicitly requested Arroba skills")) {
           throw new Error("Claude native TUI displayed hidden Arroba skill context")
@@ -779,6 +921,7 @@ export async function runProviderScenario({
         providerRunMcpConfig: provider === "codex" && !remotePlacement ? "not directly observable before local codex bind" : "validated",
         skillPromptContext,
         nativeSkillCheck,
+        capabilityPermissionInteractions: capabilityPermissionInteractionIds.size,
       }
     }
 
@@ -827,9 +970,9 @@ export async function runProviderScenario({
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
-      await waitForFileMatch(logs.a, new RegExp(markers.nativeAttachment), 60_000)
+      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /native-attach/, 60_000)
+        await waitForScreenMatch(screenA, logs.renderedA, /native-attach/, 60_000)
       }
 
       await automationRequest(automationSocket, {
@@ -852,9 +995,9 @@ export async function runProviderScenario({
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
         [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
       })
-      await waitForFileMatch(logs.a, new RegExp(markers.arrobaAttachment), 60_000)
+      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaAttachment), 60_000)
       if (provider === "claude") {
-        await waitForFileMatch(logs.a, /arroba-attach/, 60_000)
+        await waitForScreenMatch(screenA, logs.renderedA, /arroba-attach/, 60_000)
       }
       extendedChecks.attachments = "validated"
     }
@@ -971,10 +1114,32 @@ export async function runProviderScenario({
     }
   } finally {
     await cleanupNativeDrillCapabilities(workspace, nativeCapabilities)
-    if (client) await client.close().catch(() => {})
     await screenQuit(screenA)
     await screenQuit(screenB)
     await screenQuit(screenCli)
+    await terminateMatchingProcesses([
+      relayToken,
+      automationSocket,
+      screenA,
+      screenB,
+      screenCli,
+      `remote-native-${provider}-${process.pid}`,
+      `arroba-remote-native-observer-${provider}-${process.pid}`,
+    ])
+    if (sessionId) {
+      let ended = false
+      if (client) {
+        ended = await client.send(endSessionRequest(sessionId)).then(() => true).catch(() => false)
+      }
+      if (!ended) {
+        const cleanupClient = relayClient(relayUrl, relayToken, targetDaemonAlias)
+        await cleanupClient.send(endSessionRequest(sessionId)).catch((error) => {
+          console.error(`remote native TUI session cleanup failed: ${error.message}`)
+        })
+        await cleanupClient.close().catch(() => {})
+      }
+    }
+    if (client) await client.close().catch(() => {})
     await rm(automationSocket, { force: true }).catch(() => {})
   }
 }

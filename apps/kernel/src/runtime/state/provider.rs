@@ -60,49 +60,48 @@ impl KernelRuntimeOwnedState {
             .get_session(&session_id)?
             .active_provider_run_id()
             .map(str::to_owned);
-        let previous_active_run_id = active_run_id
-            .as_deref()
-            .and_then(|run_id| self.provider_store.get_run(run_id).ok())
-            .filter(|run| run.agent_instance_id() == request.agent_id.as_deref())
-            .map(|run| run.id().to_string());
+        let previous_active_run_id = active_run_id;
 
         if let Some(active_run_id) = previous_active_run_id.as_deref() {
-            let active_run = self.provider_store.get_run(active_run_id)?;
-            match active_run.state() {
-                crate::provider::ProviderRunState::Ended => {
-                    self.session_store
-                        .set_active_provider_run(&session_id, None)?;
-                    self.provider_store.clear_runtime(active_run_id);
-                }
-                crate::provider::ProviderRunState::Starting => {
-                    if active_run.client_interface().is_arroba() {
-                        let outcome = self
-                            .provider_store
-                            .terminate_run_provider_only(&session_id, active_run_id)?;
-                        self.clear_active_provider_run_session_pointer(
-                            &session_id,
-                            outcome.run().id(),
-                        )?;
-                        self.provider_run_projection.update(outcome.into_run());
+            let (active_run, locally_owned) =
+                self.provider_run_for_activation(&session_id, active_run_id)?;
+            if locally_owned && active_run.agent_instance_id() == request.agent_id.as_deref() {
+                match active_run.state() {
+                    crate::provider::ProviderRunState::Ended => {
+                        self.session_store
+                            .set_active_provider_run(&session_id, None)?;
+                        self.provider_store.clear_runtime(active_run_id);
                     }
-                }
-                crate::provider::ProviderRunState::Running => {
-                    if active_run.client_interface().is_arroba()
-                        && !self.provider_run_has_active_prompt(&session_id, &active_run)?
-                    {
-                        let outcome = self
-                            .provider_store
-                            .park_run_provider_only(&session_id, active_run_id)?;
-                        self.clear_active_provider_run_session_pointer(
-                            &session_id,
-                            outcome.run().id(),
-                        )?;
-                        self.provider_run_projection.update(outcome.into_run());
+                    crate::provider::ProviderRunState::Starting => {
+                        if active_run.client_interface().is_arroba() {
+                            let outcome = self
+                                .provider_store
+                                .terminate_run_provider_only(&session_id, active_run_id)?;
+                            self.clear_active_provider_run_session_pointer(
+                                &session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
                     }
-                }
-                crate::provider::ProviderRunState::Parked => {
-                    self.session_store
-                        .set_active_provider_run(&session_id, None)?;
+                    crate::provider::ProviderRunState::Running => {
+                        if active_run.client_interface().is_arroba()
+                            && !self.provider_run_has_active_prompt(&session_id, &active_run)?
+                        {
+                            let outcome = self
+                                .provider_store
+                                .park_run_provider_only(&session_id, active_run_id)?;
+                            self.clear_active_provider_run_session_pointer(
+                                &session_id,
+                                outcome.run().id(),
+                            )?;
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
+                    }
+                    crate::provider::ProviderRunState::Parked => {
+                        self.session_store
+                            .set_active_provider_run(&session_id, None)?;
+                    }
                 }
             }
         }
@@ -129,39 +128,61 @@ impl KernelRuntimeOwnedState {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             if active_run_id != run_id {
-                let active_run = self.provider_store.get_run(active_run_id)?;
-                match active_run.state() {
-                    crate::provider::ProviderRunState::Running => {
-                        if active_run.client_interface().is_arroba()
-                            && !self.provider_run_has_active_prompt(session_id, &active_run)?
-                        {
+                let (active_run, locally_owned) =
+                    self.provider_run_for_activation(session_id, active_run_id)?;
+                if locally_owned {
+                    match active_run.state() {
+                        crate::provider::ProviderRunState::Running => {
+                            if active_run.client_interface().is_arroba()
+                                && !self.provider_run_has_active_prompt(session_id, &active_run)?
+                            {
+                                let outcome = self
+                                    .provider_store
+                                    .park_run_provider_only(session_id, active_run_id)?;
+                                self.clear_active_provider_run_session_pointer(
+                                    session_id,
+                                    outcome.run().id(),
+                                )?;
+                                self.provider_run_projection.update(outcome.into_run());
+                            }
+                        }
+                        crate::provider::ProviderRunState::Starting => {
                             let outcome = self
                                 .provider_store
-                                .park_run_provider_only(session_id, active_run_id)?;
+                                .terminate_run_provider_only(session_id, active_run_id)?;
                             self.clear_active_provider_run_session_pointer(
                                 session_id,
                                 outcome.run().id(),
                             )?;
                             self.provider_run_projection.update(outcome.into_run());
                         }
-                    }
-                    crate::provider::ProviderRunState::Starting => {
-                        let outcome = self
-                            .provider_store
-                            .terminate_run_provider_only(session_id, active_run_id)?;
-                        self.clear_active_provider_run_session_pointer(
-                            session_id,
-                            outcome.run().id(),
-                        )?;
-                        self.provider_run_projection.update(outcome.into_run());
-                    }
-                    crate::provider::ProviderRunState::Parked
-                    | crate::provider::ProviderRunState::Ended => {
-                        self.session_store
-                            .set_active_provider_run(session_id, None)?;
+                        crate::provider::ProviderRunState::Parked
+                        | crate::provider::ProviderRunState::Ended => {
+                            self.session_store
+                                .set_active_provider_run(session_id, None)?;
+                        }
                     }
                 }
             }
+        }
+
+        let (target_run, locally_owned) = self.provider_run_for_activation(session_id, run_id)?;
+        if !locally_owned {
+            if !matches!(
+                target_run.state(),
+                crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+            ) {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id: run_id.to_string(),
+                    state: target_run.state(),
+                    operation: "restore projected provider run",
+                });
+            }
+            self.session_store
+                .set_active_provider_run(session_id, Some(run_id.to_string()))?;
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(target_run);
         }
 
         let outcome = self
@@ -172,6 +193,34 @@ impl KernelRuntimeOwnedState {
         let run = outcome.into_run();
         self.provider_run_projection.update(run.clone());
         Ok(run)
+    }
+
+    fn provider_run_for_activation(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(crate::provider::RuntimeProviderRun, bool), DaemonError> {
+        let result = match self.provider_store.get_run(provider_run_id) {
+            Ok(run) => Ok((run, true)),
+            Err(DaemonError::ProviderRunNotFound { .. }) => self
+                .provider_run_projection
+                .get(provider_run_id)
+                .map(|run| (run, false))
+                .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                }),
+            Err(error) => Err(error),
+        };
+        result.and_then(|(run, locally_owned)| {
+            if run.session_id() == session_id {
+                Ok((run, locally_owned))
+            } else {
+                Err(DaemonError::ProviderRunNotInSession {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                })
+            }
+        })
     }
 
     pub(super) fn finish_provider_launch_success(

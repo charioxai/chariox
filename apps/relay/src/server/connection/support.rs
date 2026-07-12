@@ -601,7 +601,9 @@ pub(super) async fn resolve_target_daemon_key(
         .daemons
         .iter()
         .filter(|(key, registration)| {
-            key.realm_id == realm_id && registration.daemon_alias.as_ref() == Some(alias)
+            key.realm_id == realm_id
+                && registration.daemon_alias.as_ref() == Some(alias)
+                && crate::registry::daemon_registration_is_kernel_target(registration)
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;

@@ -78,7 +78,7 @@ impl KernelRuntimeState {
         let projected_snapshot = match self.read_only_session_snapshot_projection_for_attachment(
             &session_id,
             &attachment_id,
-            0,
+            self.session_projection_change_sequence(),
         ) {
             Ok(snapshot) => Box::new(
                 (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
@@ -242,6 +242,7 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
@@ -260,6 +261,7 @@ impl KernelRuntimeState {
                 structured_endpoint,
                 provider_session_id,
                 required_mcps,
+                required_skills,
                 remote_extension_manifest,
             )
         })
@@ -288,6 +290,26 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn resize_relay_leased_provider_terminal(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let provider_run_id = provider_run_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).resize_leased_provider_terminal(
+                &leased_agent_id,
+                &provider_run_id,
+                cols,
+                rows,
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn submit_relay_leased_prompt(
         &self,
         leased_agent_id: &str,
@@ -296,10 +318,24 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
+        let replay_leased_agent_id = leased_agent_id.clone();
+        let replay_git_context = git_context.clone();
+        if let Some(replayed) = self
+            .with_app_side_effect(move |app| {
+                RemoteLeaseRuntime::new(app).replay_active_leased_prompt_submission(
+                    &replay_leased_agent_id,
+                    replay_git_context.as_ref(),
+                )
+            })
+            .await?
+        {
+            return Ok(replayed);
+        }
         let prepared = self
             .with_app_side_effect(move |app| {
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
@@ -309,6 +345,7 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context,
                     required_mcps,
+                    required_skills,
                     remote_extension_manifest,
                 )
             })
@@ -328,6 +365,75 @@ impl KernelRuntimeState {
                 .finish_prepared_leased_prompt_submission(prepared, provider_run_id)
         })
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn steer_relay_leased_prompt(
+        &self,
+        leased_agent_id: &str,
+        steer_id: &str,
+        target_home_prompt_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+        attachments: Vec<RelayPromptAttachment>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    ) -> Result<(String, bool), DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        let steer_id = steer_id.to_string();
+        let target_home_prompt_id = target_home_prompt_id.to_string();
+        let prompt = prompt.to_string();
+        let hidden_system_context = hidden_system_context.to_string();
+        loop {
+            let provider_run_id = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).leased_agent_provider_run_id(&leased_agent_id)
+                })
+                .await?
+                .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: format!("leased-agent:{leased_agent_id}"),
+                })?;
+            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
+            let (prepared_provider_run_id, dispatch) = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).prepare_leased_prompt_steer(
+                        &leased_agent_id,
+                        &steer_id,
+                        &target_home_prompt_id,
+                        &prompt,
+                        &hidden_system_context,
+                        attachments.clone(),
+                        required_skills.clone(),
+                    )
+                })
+                .await?;
+            if prepared_provider_run_id != provider_run_id {
+                continue;
+            }
+            let Some(dispatch) = dispatch else {
+                return Ok((provider_run_id, true));
+            };
+            let reserved = self
+                .with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app).reserve_leased_prompt_steer(
+                        &leased_agent_id,
+                        &steer_id,
+                        &target_home_prompt_id,
+                    )
+                })
+                .await?;
+            if !reserved {
+                return Ok((provider_run_id, true));
+            }
+            if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                self.with_app_side_effect(|app| {
+                    RemoteLeaseRuntime::new(app)
+                        .rollback_leased_prompt_steer(&leased_agent_id, &steer_id);
+                })
+                .await;
+                return Err(error);
+            }
+            return Ok((provider_run_id, false));
+        }
     }
 
     pub(crate) async fn ensure_relay_remote_skill_packages(
@@ -423,14 +529,16 @@ impl KernelRuntimeState {
         leased_agent_id: &str,
         provider_run_id: &str,
         pump_output: bool,
+        replay_settled_completion: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).drain_leased_runtime_projection(
+            RemoteLeaseRuntime::new(app).drain_leased_runtime_projection_with_recovery(
                 &leased_agent_id,
                 &provider_run_id,
                 pump_output,
+                replay_settled_completion,
             )
         })
         .await

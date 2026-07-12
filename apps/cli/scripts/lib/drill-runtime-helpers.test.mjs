@@ -1,8 +1,150 @@
 import assert from "node:assert/strict"
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises"
 import net from "node:net"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 
-import { formatDrillCommandLine, runLogged, waitForCondition, waitForTcpPort } from "./drill-runtime-helpers.mjs"
+import {
+  findMatchingProcessIdsFromPsOutput,
+  formatDrillCommandLine,
+  makeAvailablePorts,
+  makePorts,
+  providerAuthFailureFromTerminalText,
+  resolveBuiltBinary,
+  resolveBuiltBinarySync,
+  runLogged,
+  waitForCondition,
+  waitForTcpPort,
+  withDevStubProviderInventory,
+} from "./drill-runtime-helpers.mjs"
+import { cleanupHostedCloudIdentity } from "./live-hosted-cloud-relay-drill-helpers.mjs"
+
+test("hosted Cloud cleanup offlines kernels, revokes identities, and logs out without exposing the session", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: {
+      accountId: "account-1",
+      accountSlug: "hosted-cleanup",
+      realmId: "realm-1",
+    },
+    cloudSessionToken: "session-1",
+    clientIds: ["client-1", "client-1"],
+    machineIds: ["machine-1"],
+    kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+    baseUrl: "https://cloud.example",
+    post: async (url, body) => { calls.push({ url, body }) },
+    logger: (event, details) => { logs.push({ event, details }) },
+  })
+
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+    "https://cloud.example/auth/logout",
+  ])
+  assert.equal(calls[0].body.status, "OFFLINE")
+  assert.equal(calls[3].body.sessionToken, "session-1")
+  assert.deepEqual(logs, [{
+    event: "cloud-identity-cleanup",
+    details: {
+      accountSlug: "hosted-cleanup",
+      clients: ["client-1"],
+      machines: ["machine-1"],
+      kernels: ["kernel-1"],
+      logout: true,
+    },
+  }])
+  assert.doesNotMatch(JSON.stringify(logs), /session-1/)
+})
+
+test("hosted Cloud cleanup attempts revocation and logout after an earlier cleanup failure", async () => {
+  const calls = []
+  await assert.rejects(
+    () => cleanupHostedCloudIdentity({
+      profile: { accountId: "account-1", accountSlug: "hosted-cleanup", realmId: "realm-1" },
+      cloudSessionToken: "session-1",
+      clientIds: ["client-1"],
+      machineIds: ["machine-1"],
+      kernelPresences: [{ machineId: "machine-1", kernelId: "kernel-1" }],
+      baseUrl: "https://cloud.example",
+      post: async (url) => {
+        calls.push(url)
+        if (url.endsWith("/kernels/presence")) throw new Error("presence rejected")
+      },
+      logger: () => {},
+    }),
+    /hosted Cloud identity cleanup failed/,
+  )
+  assert.deepEqual(calls, [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+    "https://cloud.example/auth/logout",
+  ])
+})
+
+test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {
+  const source = { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "0" }
+  const enabled = withDevStubProviderInventory(source)
+
+  assert.deepEqual(enabled, { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "1" })
+  assert.equal(source.ARROBA_PROVIDER_DEV_STUB, "0")
+})
+
+test("available port selection retries when another host rejects the first candidate", async () => {
+  const candidates = [makePorts(32000), makePorts(36000)]
+  const checked = []
+  const selected = await makeAvailablePorts({
+    candidateFactory: () => candidates[checked.length],
+    localAvailability: async () => true,
+    additionalAvailability: async (ports) => {
+      checked.push(ports)
+      return checked.length > 1
+    },
+    maxAttempts: candidates.length,
+  })
+
+  assert.deepEqual(checked, candidates)
+  assert.equal(selected, candidates[1])
+})
+
+test("built binary resolution chooses the newest Cargo target candidate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-binary-"))
+  const manifestPath = path.join(root, "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "arroba-kernel")
+  const workspaceBinary = path.join(root, "target", "debug", "arroba-kernel")
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(workspaceBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(workspaceBinary, "current")
+    await utimes(crateBinary, new Date(1_000), new Date(1_000))
+    await utimes(workspaceBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
+
+    await utimes(crateBinary, new Date(3_000), new Date(3_000))
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("detects ANSI-rendered provider authentication failures", () => {
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[8BLogin\x1b[9Gexpired\x1b[17G \u00b7 Please run /login"),
+    "Login expired",
+  )
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[93C\x1b[35BNot\x1b[98Glogged\x1b[105Gin \u00b7 Run /login"),
+    "Not logged in",
+  )
+  assert.equal(providerAuthFailureFromTerminalText("CLAUDECHARLIE"), null)
+})
 
 test("formatDrillCommandLine quotes replayable command diagnostics", () => {
   assert.equal(
@@ -94,6 +236,50 @@ test("waitForTcpPort reports the last reachability observation", async () => {
   await assert.rejects(
     () => waitForTcpPort(port, "127.0.0.1", 5),
     /last_observation=/,
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput finds run-owned drill processes", () => {
+  const psOutput = `
+  101 /usr/bin/login -fq user /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js opencode --relay-token remote-native-token-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  102 /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js --client-id arroba-remote-native-observer-opencode-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  103 /Applications/Codex.app/Contents/MacOS/Codex
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "remote-native-token-4242",
+      "/tmp/arb-rnt-opencode-4242.sock",
+    ], 999),
+    [101, 102],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput ignores the current process", () => {
+  const psOutput = `
+  201 node apps/cli/scripts/live-remote-native-tui-drill.mjs --relay-token remote-native-token-4242
+  202 bun /repo/apps/cli/dist/index.js codex --relay-token remote-native-token-4242
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, ["remote-native-token-4242"], 201),
+    [202],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patterns", () => {
+  const psOutput = `
+  301 screen -dmS arroba-rnt-codex-a-4242 -L bun /repo/apps/cli/dist/index.js
+  302 screen -dmS unrelated -L node server.js
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "",
+      null,
+      /arroba-rnt-codex-[ab]-4242/,
+    ], 999),
+    [301],
   )
 })
 

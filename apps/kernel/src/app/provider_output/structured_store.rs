@@ -21,6 +21,12 @@ impl StructuredOutputRecordStore {
             .unwrap_or_default()
     }
 
+    pub(crate) fn take_and_stop_polling(&self, provider_run_id: &str) -> Vec<TerminalOutputRecord> {
+        let records = self.take(provider_run_id);
+        self.stop_polling(provider_run_id);
+        records
+    }
+
     pub(crate) fn append(&self, provider_run_id: String, records: Vec<TerminalOutputRecord>) {
         if records.is_empty() {
             return;
@@ -94,6 +100,10 @@ impl StructuredOutputRecordStore {
             .lock()
             .expect("structured output record store poisoned")
             .remove(provider_run_id);
+        self.stop_polling(provider_run_id);
+    }
+
+    pub(crate) fn stop_polling(&self, provider_run_id: &str) {
         self.next_poll_due_at_ms
             .lock()
             .expect("structured output poll schedule poisoned")

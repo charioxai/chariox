@@ -6,6 +6,7 @@ mod codex;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
+mod executable_resolution;
 mod external_observation;
 mod launch_contract;
 mod mcp_proxy;
@@ -76,7 +77,9 @@ pub(crate) use run_actor::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
-pub(crate) use runtime_run::projected_leased_provider_run_id;
+pub(crate) use runtime_run::{
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+};
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
@@ -179,7 +182,30 @@ pub(crate) fn provider_batch_launch_concurrency_limit(
 }
 
 pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
-    providers.retain(|provider| provider != "dev-stub");
+    retain_public_inventory_providers_with_dev_stub_policy(
+        providers,
+        dev_stub_public_inventory_enabled(),
+    );
+}
+
+fn dev_stub_public_inventory_enabled() -> bool {
+    std::env::var("ARROBA_PROVIDER_DEV_STUB")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn retain_public_inventory_providers_with_dev_stub_policy(
+    providers: &mut Vec<String>,
+    include_dev_stub: bool,
+) {
+    if !include_dev_stub {
+        providers.retain(|provider| provider != "dev-stub");
+    }
 }
 
 pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> bool {
@@ -236,6 +262,7 @@ mod tests {
         provider_run_supports_selection_sync, provider_run_uses_claude_native_bridge,
         provider_run_uses_runtime_structured_utility_prompt,
         provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
+        retain_public_inventory_providers_with_dev_stub_policy,
         run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
         ProviderClientInterface, ProviderLaunchResult, RuntimeProviderRun,
     };
@@ -405,6 +432,19 @@ mod tests {
         retain_public_inventory_providers(&mut providers);
 
         assert_eq!(providers, vec!["codex", "opencode"]);
+    }
+
+    #[test]
+    fn public_inventory_provider_visibility_can_include_dev_stub_for_drills() {
+        let mut providers = vec![
+            "codex".to_string(),
+            "dev-stub".to_string(),
+            "opencode".to_string(),
+        ];
+
+        retain_public_inventory_providers_with_dev_stub_policy(&mut providers, true);
+
+        assert_eq!(providers, vec!["codex", "dev-stub", "opencode"]);
     }
 
     #[test]

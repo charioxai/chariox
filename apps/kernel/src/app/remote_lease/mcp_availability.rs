@@ -236,6 +236,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             || std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
                 .filter(|value| !value.is_empty())
                 .is_none()
+            || !worker_is_home_managed_slice()
         {
             return Ok(());
         }
@@ -334,4 +335,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect()
     }
+}
+
+fn worker_is_home_managed_slice() -> bool {
+    std::env::var("ARROBA_SLICE_MACHINE_ID")
+        .ok()
+        .is_some_and(|machine_id| machine_id.starts_with("slice:"))
 }

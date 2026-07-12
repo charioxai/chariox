@@ -231,6 +231,7 @@ async fn resize_without_active_run_uses_warmed_projection_without_app_lock() {
     let app_guard = app.lock().await;
     let resize_request = LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
         session_id: session_id.clone(),
+        provider_run_id: None,
         cols: 120,
         rows: 40,
     });

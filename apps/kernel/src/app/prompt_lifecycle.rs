@@ -148,7 +148,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
             session_id,
             provider_run_id,
             attachment_id,
-            provider_prompt.as_bytes(),
+            &crate::app::terminal_input::provider_prompt_input(&provider_prompt),
         )
     }
 }
@@ -237,7 +237,7 @@ pub(crate) struct KernelPromptCancellation {
 pub(crate) struct KernelQueuedPromptSteer {
     pub(crate) prompt: PromptQueueItem,
     pub(crate) session: crate::session::RuntimeSession,
-    pub(crate) dispatch: KernelPromptDispatch,
+    pub(crate) dispatch: Option<KernelPromptDispatch>,
 }
 
 pub(crate) struct KernelQueuedPromptCancellation {
@@ -280,6 +280,7 @@ impl DaemonApp {
         &mut self,
         session_id: &str,
         attachment_id: &str,
+        history_source_attachment_id: &str,
         target_agent_id: &str,
         prompt: &str,
         attachments: Vec<crate::session::PromptAttachment>,
@@ -287,6 +288,7 @@ impl DaemonApp {
         crate::app::KernelAgentService::new(self).record_native_prompt_started(
             session_id,
             attachment_id,
+            history_source_attachment_id,
             target_agent_id,
             prompt,
             attachments,

@@ -8,6 +8,10 @@ import os from "node:os"
 import { promisify } from "node:util"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import {
+  isolatedKernelConfigToml,
+  writeIsolatedKernelConfig,
+} from "./lib/drill-kernel-storage.mjs"
+import {
   runProviderScenario,
   waitForLocalDaemon,
   waitForRelayTarget,
@@ -28,6 +32,7 @@ import {
   listAgentsRequest,
   listRemoteMachinesRequest,
   pumpTerminalOutputRequest,
+  setUserConfigValueRequest,
   startSliceRequest,
 } from "../dist/ipc-requests.js"
 import {
@@ -36,17 +41,27 @@ import {
   waitForProviderRunMcpGrant,
 } from "./lib/native-tui-capabilities.mjs"
 import {
+  assertHetznerTcpPortAvailable,
+  copyHetznerDirectoryToLocal,
   ensureExecutionDirectory,
+  hetznerNativeRuntimeTempDir,
+  prepareHetznerClaudeWorkspaceTrust,
   prepareHetznerWorktree,
   remoteEnvCommand,
   removeExecutionFile,
+  removeHetznerNativeRuntimePaths,
+  removeHetznerWorktree,
+  restoreHetznerClaudeWorkspaceTrust,
   shellQuote,
   sshArgs,
+  stopHetznerProcessByEnv,
+  stopHetznerRuntimeBeforeClaudeTrustRestore,
   waitForExecutionFileContent,
 } from "./lib/native-tui-remote-execution.mjs"
 import {
   assertBinary,
   makeAvailablePorts,
+  resolveBuiltBinarySync,
   resolveCommandPath,
   runLogged,
   screenQuit,
@@ -68,8 +83,16 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+const kernelBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/Cargo.toml"),
+  "arroba-kernel",
+)
+const relayBinary = resolveBuiltBinarySync(
+  path.join(repoRoot, "apps/relay/target/debug/arroba-relay"),
+  path.join(repoRoot, "apps/relay/Cargo.toml"),
+  "arroba-relay",
+)
 const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
 const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
@@ -84,6 +107,37 @@ function unwrap(response, variant) {
 
 function unwrapVariant(response, variant) {
   return unwrap(response, variant)
+}
+
+async function disableWorkspaceLiveSync(kernelUrl) {
+  if (!kernelUrl) return
+  const client = new LocalIpcClient(kernelUrl, {
+    kernelPingIntervalMs: 60_000,
+    kernelMaxMissedPongs: 10,
+  })
+  try {
+    await client.send(setUserConfigValueRequest("providers.workspace_live_sync", "off"))
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function hetznerNativePortsAreAvailable(options, ports) {
+  for (const [label, port] of [
+    ["relay", ports.relayPort],
+    ["worker kernel", ports.workerKernelPort],
+    ["worker MCP", ports.workerMcpPort],
+  ]) {
+    try {
+      await assertHetznerTcpPortAvailable(options, port, `Hetzner ${label} port`)
+    } catch (error) {
+      if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) {
+        return false
+      }
+      throw error
+    }
+  }
+  return true
 }
 
 function parseArgs(argv) {
@@ -201,7 +255,28 @@ async function syncHetznerCodexAuth(options) {
   await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
 }
 
-async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers, relayUrl, relayToken }) {
+async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
+  const localConfigPath = path.join(root, "hetzner-worker-config.toml")
+  const remoteConfigDir = path.posix.join(remoteRuntimeRoot, "xdg-config", "arroba")
+  await writeFile(
+    localConfigPath,
+    isolatedKernelConfigToml(path.posix.join(remoteRuntimeRoot, "worker-kernel-storage")),
+    { mode: 0o600 },
+  )
+  await execFileAsync("ssh", sshArgs(options, `mkdir -p ${shellQuote(remoteConfigDir)}`))
+  await execFileAsync("scp", [
+    "-i",
+    options.hetznerKey,
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    localConfigPath,
+    `${options.hetznerHost}:${path.posix.join(remoteConfigDir, "config.toml")}`,
+  ])
+}
+
+async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, providers }) {
   const client = new LocalIpcClient(homeKernelUrl, {
     kernelPingIntervalMs: 60_000,
     kernelMaxMissedPongs: 10,
@@ -218,7 +293,12 @@ async function createHomeManagedLocalDockerSlice({ homeKernelUrl, workspace, pro
     for (const provider of providers) {
       await client.send(importSliceProviderAuthRequest(started.id, provider))
     }
-    await waitForRelayTarget(relayUrl, relayToken, started.worker_kernel_ref, started.worker_kernel_id ?? null)
+    if (!started.worker_kernel_id) {
+      throw new Error(`started managed slice ${started.id} did not discover its worker kernel`)
+    }
+    if (!started.worker_kernel_ref) {
+      throw new Error(`started managed slice ${started.id} did not expose its worker kernel reference`)
+    }
     return started
   } finally {
     await client.close().catch(() => {})
@@ -270,14 +350,31 @@ async function main() {
     printHelp()
     return
   }
-  const root = path.join("/tmp", `arb-remote-native-tui-${process.pid}-${Date.now()}`)
-  const ports = await makeAvailablePorts()
+  const runId = `${process.pid}-${Date.now()}`
+  const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
+  const ports = await makeAvailablePorts({
+    additionalAvailability: options.hetznerWorker
+      ? (candidate) => hetznerNativePortsAreAvailable(options, candidate)
+      : undefined,
+  })
   const relayToken = `remote-native-token-${process.pid}`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const targetDaemonAlias = `remote-native-home-${process.pid}`
   const workerDaemonAlias = `remote-native-worker-${process.pid}`
   const workerMachineAlias = `remote-native-worker-machine-${process.pid}`
+  const homeDaemonId = `remote-native-home-${runId}`
+  const workerDaemonId = `remote-native-worker-${runId}`
+  const remoteRuntimeParent = `/tmp/arb-remote-native-tui-${process.pid}`
+  const remoteRuntimeRoot = options.hetznerWorker
+    ? `/tmp/arb-remote-native-tui-${runId}`
+    : null
+  const remoteClaudeTrustStatePath = remoteRuntimeRoot
+    ? path.posix.join(remoteRuntimeRoot, "claude-workspace-trust.json")
+    : null
+  const remoteTempDir = remoteRuntimeRoot
+    ? hetznerNativeRuntimeTempDir(remoteRuntimeRoot)
+    : null
   const workerKernelUrl = options.hetznerWorker ? null : `ws://127.0.0.1:${ports.workerKernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
@@ -286,12 +383,19 @@ async function main() {
   const xdgStateHome = path.join(root, "xdg-state")
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
+  const homeCapabilityRoot = path.join(root, "home-capabilities")
+  const workerCapabilityRoot = options.hetznerWorker
+    ? path.posix.join(remoteRuntimeRoot, "worker-capabilities")
+    : path.join(root, "worker-capabilities")
   const sliceBuildImagePolicy = process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
   const rustMinStack = process.env.RUST_MIN_STACK ?? "16777216"
   let relay = null
   let relayTunnel = null
   let kernel = null
   let workerKernel = null
+  let hetznerWorktreePrepared = false
+  let hetznerClaudeTrustPrepared = false
+  let hetznerClaudeTrustRestoreFailure = null
   const managedSlices = []
   let succeeded = false
   let failure = null
@@ -304,24 +408,35 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
-    if (options.homeManagedSliceLocalDocker) {
-      await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
-      const configDir = path.join(xdgConfigHome, "arroba")
-      await mkdir(configDir, { recursive: true })
-      await writeFile(path.join(configDir, "config.toml"), [
-        "version = 1",
-        "",
+    await writeIsolatedKernelConfig({
+      xdgConfigHome,
+      storageRoot: path.join(root, "home-kernel-storage"),
+      extraToml: options.homeManagedSliceLocalDocker ? [
         "[slices]",
         `root = ${JSON.stringify(path.join(root, "slices"))}`,
         "",
         "[slices.linux]",
         `docker_image = ${JSON.stringify(defaultLocalDockerSliceImage)}`,
         `build_image = ${JSON.stringify(sliceBuildImagePolicy === "always" ? "auto" : sliceBuildImagePolicy)}`,
-        "",
-      ].join("\n"))
+      ] : [],
+    })
+    if (options.standardHomeWorker && !options.hetznerWorker) {
+      await writeIsolatedKernelConfig({
+        xdgConfigHome: path.join(root, "worker-xdg-config"),
+        storageRoot: path.join(root, "worker-kernel-storage"),
+      })
+    }
+    if (options.homeManagedSliceLocalDocker) {
+      await prebuildLocalDockerSliceImageIfNeeded(sliceBuildImagePolicy)
     }
     if (options.hetznerWorker) {
       await prepareHetznerWorktree(options, worktree)
+      hetznerWorktreePrepared = true
+      if (options.providers.includes("claude")) {
+        await prepareHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+        hetznerClaudeTrustPrepared = true
+      }
+      await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
@@ -392,46 +507,49 @@ async function main() {
         ARROBA_CODEX_PORT: String(ports.codexPort),
         ARROBA_RELAY_URL: relayUrl,
         ARROBA_RELAY_TOKEN: relayToken,
-        ARROBA_DAEMON_ID: `remote-native-home-${process.pid}-${Date.now()}`,
+        ARROBA_DAEMON_ID: homeDaemonId,
         ARROBA_DAEMON_ALIAS: targetDaemonAlias,
         ARROBA_MACHINE_ID: `remote-native-machine-${process.pid}`,
         ARROBA_MACHINE_ALIAS: targetDaemonAlias,
         ARROBA_ACCEPT_REMOTE_LEASES: "0",
         ARROBA_DAEMON_SOCKET: path.join(root, "home.sock"),
         ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
         RUST_MIN_STACK: rustMinStack,
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
     await waitForLocalDaemon(homeKernelUrl, workspace, worktree)
+    await disableWorkspaceLiveSync(homeKernelUrl)
     await waitForRelayTarget(relayUrl, relayToken, targetDaemonAlias)
     if (options.standardHomeWorker) {
       if (options.hetznerWorker) {
-        const remoteRoot = `/tmp/arb-remote-native-tui-${process.pid}-${Date.now()}`
         workerKernel = spawn("ssh", sshArgs(options, remoteEnvCommand({
           ARROBA_REMOTE_REPO: options.hetznerRepo,
           RUST_MIN_STACK: rustMinStack,
           PATH: `/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
           HOME: "/root",
-          XDG_CONFIG_HOME: "/root/.config",
-          XDG_STATE_HOME: "/root/.local/state",
-          XDG_DATA_HOME: "/root/.local/share",
-          XDG_CACHE_HOME: "/root/.cache",
+          XDG_CONFIG_HOME: path.posix.join(remoteRuntimeRoot, "xdg-config"),
+          XDG_STATE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-state"),
+          XDG_DATA_HOME: path.posix.join(remoteRuntimeRoot, "xdg-data"),
+          XDG_CACHE_HOME: path.posix.join(remoteRuntimeRoot, "xdg-cache"),
           CODEX_HOME: "/root/.codex",
           OPENCODE_CONFIG_DIR: "/root/.config/opencode",
-          ARROBA_LOG_DIR: path.posix.join(remoteRoot, "worker-logs"),
+          ARROBA_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
           ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
           ARROBA_MCP_PORT: String(ports.workerMcpPort),
           ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
           ARROBA_RELAY_TOKEN: relayToken,
-          ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+          ARROBA_DAEMON_ID: workerDaemonId,
           ARROBA_DAEMON_ALIAS: workerDaemonAlias,
           ARROBA_MACHINE_ID: workerMachineAlias,
           ARROBA_MACHINE_ALIAS: workerMachineAlias,
           ARROBA_ACCEPT_REMOTE_LEASES: "1",
-          ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
-          ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
-        }, `mkdir -p /tmp/arb-remote-native-tui-${process.pid} && ./apps/kernel/target/debug/arroba-kernel`)), {
+          ARROBA_DAEMON_SOCKET: path.posix.join(remoteRuntimeRoot, "worker.sock"),
+          ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRuntimeRoot, "worker-history"),
+          ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
+          TMPDIR: remoteTempDir,
+        }, `mkdir -p ${shellQuote(remoteRuntimeParent)} && ./apps/kernel/target/debug/arroba-kernel`)), {
           stdio: ["ignore", "ignore", "inherit"],
         })
       } else {
@@ -451,18 +569,20 @@ async function main() {
             ARROBA_MCP_PORT: String(ports.workerMcpPort),
             ARROBA_RELAY_URL: relayUrl,
             ARROBA_RELAY_TOKEN: relayToken,
-            ARROBA_DAEMON_ID: `remote-native-worker-${process.pid}-${Date.now()}`,
+            ARROBA_DAEMON_ID: workerDaemonId,
             ARROBA_DAEMON_ALIAS: workerDaemonAlias,
             ARROBA_MACHINE_ID: workerMachineAlias,
             ARROBA_MACHINE_ALIAS: workerMachineAlias,
             ARROBA_ACCEPT_REMOTE_LEASES: "1",
             ARROBA_DAEMON_SOCKET: path.join(root, "worker.sock"),
             ARROBA_SESSION_HISTORY_DIR: path.join(root, "worker-history"),
+            ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
             RUST_MIN_STACK: rustMinStack,
           },
           stdio: ["ignore", "ignore", "inherit"],
         })
         await waitForLocalDaemon(workerKernelUrl, workspace, worktree)
+        await disableWorkspaceLiveSync(workerKernelUrl)
       }
       await waitForRelayTarget(relayUrl, relayToken, workerDaemonAlias)
       await waitForRemoteMachine(relayUrl, relayToken, targetDaemonAlias, workerMachineAlias)
@@ -476,8 +596,6 @@ async function main() {
           homeKernelUrl,
           workspace,
           providers: [provider],
-          relayUrl,
-          relayToken,
         })
         managedSlices.push(providerSlice)
       }
@@ -487,6 +605,7 @@ async function main() {
         relayUrl,
         relayToken,
         targetDaemonAlias,
+        workerDaemonAlias: options.standardHomeWorker ? workerDaemonAlias : null,
         workerKernelUrl,
         machineRef: options.standardHomeWorker ? workerMachineAlias : null,
         sliceRef: providerSlice ? providerSlice.id : null,
@@ -529,22 +648,67 @@ async function main() {
     throw error
   } finally {
     const preserveFailedRun = !succeeded && options.keepArtifactsOnFailure
-    if (!preserveFailedRun) {
-      for (const slice of managedSlices.splice(0)) {
-        await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
-          console.error(`home-managed slice cleanup failed: ${error.message}`)
-        })
-      }
+    for (const slice of managedSlices.splice(0)) {
+      await deleteHomeManagedSlice(homeKernelUrl, slice.id).catch((error) => {
+        console.error(`home-managed slice cleanup failed: ${error.message}`)
+      })
     }
     await terminateChild(workerKernel)
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
+    if (options.hetznerWorker) {
+      await stopHetznerRuntimeBeforeClaudeTrustRestore({
+        stopWorker: () => stopHetznerProcessByEnv(options, {
+          ARROBA_DAEMON_ID: workerDaemonId,
+          ARROBA_RELAY_TOKEN: relayToken,
+        }),
+        stopRelay: () => stopHetznerProcessByEnv(options, {
+          ARROBA_RELAY_PORT: String(ports.relayPort),
+          ARROBA_RELAY_TOKEN: relayToken,
+        }),
+        restoreTrust: hetznerClaudeTrustPrepared
+          ? () => restoreHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
+          : null,
+      }).then(() => {
+        hetznerClaudeTrustPrepared = false
+      }).catch((error) => {
+        hetznerClaudeTrustRestoreFailure = error
+        console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
+      })
+      if (preserveFailedRun && remoteRuntimeRoot) {
+        await copyHetznerDirectoryToLocal(
+          options,
+          path.posix.join(remoteRuntimeRoot, "worker-logs"),
+          path.join(root, "remote-worker-logs"),
+        ).catch((error) => {
+          console.error(`Hetzner worker log collection failed: ${error.message}`)
+        })
+      }
+      const removableRuntimePaths = [remoteRuntimeParent]
+      if (!hetznerClaudeTrustRestoreFailure) {
+        removableRuntimePaths.push(remoteRuntimeRoot)
+      } else {
+        console.error(`Hetzner Claude workspace trust restoration state kept at ${remoteClaudeTrustStatePath}`)
+      }
+      await removeHetznerNativeRuntimePaths(options, removableRuntimePaths)
+      if (hetznerWorktreePrepared) {
+        await removeHetznerWorktree(options, worktree)
+      }
+    }
+    const finalFailure = hetznerClaudeTrustRestoreFailure
+      ? new AggregateError(
+        failure && failure !== hetznerClaudeTrustRestoreFailure
+          ? [failure, hetznerClaudeTrustRestoreFailure]
+          : [hetznerClaudeTrustRestoreFailure],
+        `Hetzner Claude workspace trust restoration failed; state remains at ${remoteClaudeTrustStatePath}`,
+      )
+      : failure
     await finalizeDrillArtifacts({
       rootDir: root,
-      passed: succeeded,
+      passed: succeeded && !hetznerClaudeTrustRestoreFailure,
       preserveOnFailure: options.keepArtifactsOnFailure,
-      failure,
+      failure: finalFailure,
       metadata: {
         drill: "remote-native-tui",
         providers: options.providers.join(","),
@@ -564,9 +728,9 @@ async function main() {
     })
     if (preserveFailedRun) {
       console.error(`remote native TUI drill artifacts kept at ${root}`)
-      for (const slice of managedSlices) {
-        console.error(`home-managed slice ${slice.id} left running`)
-      }
+    }
+    if (hetznerClaudeTrustRestoreFailure) {
+      throw finalFailure
     }
   }
 }

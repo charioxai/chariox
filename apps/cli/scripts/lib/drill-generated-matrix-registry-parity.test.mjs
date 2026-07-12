@@ -103,7 +103,7 @@ test("rejects duplicate Cloud generated matrix names", async () => {
 
     await assert.rejects(
       verifyDrillGeneratedMatrixRegistryParity({ cloudRoot }),
-      /Cloud generated matrix registry\.matrices\[6\] duplicates matrix "workspace-live-sync-matrix"/,
+      /Cloud generated matrix registry\.matrices\[8\] duplicates matrix "workspace-live-sync-matrix"/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })

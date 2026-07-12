@@ -18,7 +18,12 @@ impl SessionRuntimeStore {
     ) {
         let result = self
             .state
-            .resize_terminal(&request.session_id, request.cols, request.rows)
+            .resize_terminal(
+                &request.session_id,
+                request.provider_run_id.as_deref(),
+                request.cols,
+                request.rows,
+            )
             .await
             .map(|()| LocalDaemonResponse::TerminalResized {
                 session_id: request.session_id,
@@ -59,19 +64,34 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = match self
-            .state
-            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
-            .await
-        {
-            Ok(()) => Ok(LocalDaemonResponse::RuntimeNotices {
+        let result = async {
+            self.state
+                .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+                .await?;
+            self.record_terminal_attachment_heartbeat(&request.session_id, &request.attachment_id)
+                .await?;
+            Ok(LocalDaemonResponse::RuntimeNotices {
                 notices: self
                     .state
                     .drain_notice_records(&request.session_id, &request.attachment_id)
                     .await,
-            }),
-            Err(error) => Err(error),
-        };
+            })
+        }
+        .await;
         self.with_session_projection_action_result(result).await
+    }
+
+    pub(in crate::runtime::session_actor) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.state
+            .record_terminal_attachment_heartbeat(
+                session_id,
+                attachment_id,
+                crate::session::unix_epoch_ms(),
+            )
+            .await
     }
 }

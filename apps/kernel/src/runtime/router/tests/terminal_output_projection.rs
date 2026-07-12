@@ -67,7 +67,6 @@ async fn missing_terminal_output_attachment_uses_warmed_projection_without_app_l
         .dispatch(list_command, list_request)
         .await
         .expect("initial list should warm session projection");
-
     let app_guard = app.lock().await;
     let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
         session_id: session_id.clone(),
@@ -134,6 +133,10 @@ async fn terminal_output_without_active_run_drains_store_without_app_lock() {
         .dispatch(list_command, list_request)
         .await
         .expect("initial list should warm session projection");
+    router
+        .record_terminal_attachment_heartbeat(&session_id, attachment.id(), 0)
+        .await
+        .expect("test heartbeat should be recorded");
 
     let app_guard = app.lock().await;
     let pump_request = LocalDaemonRequest::PumpTerminalOutput(PumpTerminalOutputRequest {
@@ -161,6 +164,18 @@ async fn terminal_output_without_active_run_drains_store_without_app_lock() {
         }
         _ => panic!("unexpected pump response"),
     }
+    router
+        .runtime_state()
+        .sweep_stale_terminal_attachments(30_000)
+        .await;
+    assert_eq!(
+        router
+            .runtime_state()
+            .attachment_session_id(attachment.id())
+            .await
+            .expect("projected pump should refresh the attachment heartbeat"),
+        session_id
+    );
 }
 
 #[test]

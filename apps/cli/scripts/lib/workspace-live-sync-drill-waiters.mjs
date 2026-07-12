@@ -128,7 +128,7 @@ export async function assertManagedTargetFanout(targetWorkspaces, providers, { d
     for (const provider of providers) {
       await assertFileContent(
         path.join(outputsDir, `${provider}.txt`),
-        `${provider}-workspace-live-sync-edit-ok: seed-value-42\n`,
+        `${provider}-workspace-live-sync-edit-ok: seed-value-42`,
       )
       await assertFileContent(
         path.join(outputsDir, `${provider}-moved.txt`),

@@ -495,6 +495,16 @@ pub(crate) fn projected_leased_provider_run_id(
     format!("leased:{leased_agent_id}:{worker_provider_run_id}")
 }
 
+pub(crate) fn worker_provider_run_id_from_projected_leased_id(
+    leased_agent_id: &str,
+    projected_provider_run_id: &str,
+) -> Option<String> {
+    projected_provider_run_id
+        .strip_prefix(&format!("leased:{leased_agent_id}:"))
+        .filter(|worker_provider_run_id| !worker_provider_run_id.is_empty())
+        .map(str::to_string)
+}
+
 fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
     match state {
         ProviderRunState::Running => 3,
@@ -538,7 +548,10 @@ impl ProviderRunTokenUsage {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{projected_leased_provider_run_id, RuntimeProviderRun};
+    use super::{
+        projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+        RuntimeProviderRun,
+    };
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
     };
@@ -622,5 +635,28 @@ mod tests {
         assert_eq!(projected_run.id(), projected_id);
         assert_eq!(projected_run.session_id(), "home-session");
         assert_eq!(projected_run.agent_instance_id(), Some("home-agent-1"));
+    }
+
+    #[test]
+    fn projected_leased_provider_run_ids_recover_worker_id() {
+        assert_eq!(
+            worker_provider_run_id_from_projected_leased_id(
+                "home-agent-1",
+                "leased:home-agent-1:provider-run-1",
+            )
+            .as_deref(),
+            Some("provider-run-1"),
+        );
+        assert_eq!(
+            worker_provider_run_id_from_projected_leased_id(
+                "home-agent-2",
+                "leased:home-agent-1:provider-run-1",
+            ),
+            None,
+        );
+        assert_eq!(
+            worker_provider_run_id_from_projected_leased_id("home-agent-1", "provider-run-1"),
+            None,
+        );
     }
 }

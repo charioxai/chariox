@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 6;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -89,6 +89,12 @@ pub struct RemoteNativeInteractionContext {
 pub struct RequiredRemoteMcp {
     pub config: ArrobaMcpServerConfig,
     pub definition_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredRemoteSkill {
+    pub name: String,
+    pub version_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +275,8 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -281,6 +289,12 @@ pub enum RelayPeerRequest {
         attachment_id: String,
         data_base64: String,
     },
+    ResizeLeasedProviderTerminal {
+        leased_agent_id: String,
+        provider_run_id: String,
+        cols: u16,
+        rows: u16,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
@@ -292,11 +306,25 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
         )]
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    },
+    SteerLeasedPrompt {
+        leased_agent_id: String,
+        steer_id: String,
+        target_home_prompt_id: String,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        hidden_system_context: String,
+        #[serde(default)]
+        attachments: Vec<RelayPromptAttachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -432,9 +460,19 @@ pub enum RelayPeerResponse {
     LeasedNativeProviderInputSent {
         byte_count: usize,
     },
+    LeasedProviderTerminalResized {
+        provider_run_id: String,
+        cols: u16,
+        rows: u16,
+    },
     LeasedPromptSubmitted {
         provider_run_id: String,
         outcome: PromptSubmissionOutcome,
+    },
+    LeasedPromptSteered {
+        provider_run_id: String,
+        steer_id: String,
+        replayed: bool,
     },
     LeasedRuntimeProjectionDrained {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -525,6 +563,8 @@ pub struct RelayProjectedOutputChunk {
 pub struct RelayProjectedCompletion {
     pub message_id: String,
     pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_prompt_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -98,10 +98,35 @@ pub(super) fn outline_blobs_from_events(
                 .is_some_and(|entry| !entry.is_external_provider_observed_state_signal())
         })
         .collect::<Vec<_>>();
-    candidates
-        .chunks(MAX_OUTLINE_EVENTS_PER_BLOB)
-        .filter_map(outline_blob_from_event_group)
-        .collect()
+    let mut blobs = Vec::new();
+    for group in outline_blob_event_groups(&candidates) {
+        blobs.extend(
+            group
+                .chunks(MAX_OUTLINE_EVENTS_PER_BLOB)
+                .filter_map(outline_blob_from_event_group),
+        );
+    }
+    blobs
+}
+
+fn outline_blob_event_groups<'a>(events: &[&'a HistoryEvent]) -> Vec<Vec<&'a HistoryEvent>> {
+    let mut groups = Vec::<Vec<&HistoryEvent>>::new();
+    for event in events {
+        let kind = event.to_session_history_entry().map(|entry| entry.kind);
+        let same_kind = groups
+            .last()
+            .and_then(|group| group.first())
+            .and_then(|first| first.to_session_history_entry().map(|entry| entry.kind))
+            == kind;
+        if same_kind {
+            if let Some(group) = groups.last_mut() {
+                group.push(*event);
+            }
+        } else {
+            groups.push(vec![*event]);
+        }
+    }
+    groups
 }
 
 fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHistoryOutlineBlob> {

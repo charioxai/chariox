@@ -6,9 +6,6 @@ import process from "node:process"
 import { setTimeout as sleep } from "node:timers/promises"
 
 import { LocalIpcClient } from "../ipc.js"
-import {
-  sendTerminalInputRequest,
-} from "../ipc-requests.js"
 import { promptAttachmentTransferIsForced } from "../prompt-attachment-transfer.js"
 import { grantNativeCapabilities } from "./capability-grants.js"
 import {
@@ -31,9 +28,11 @@ import {
   startClaudeScreen,
 } from "./claude-tui-launcher.js"
 import {
+  createClaudeRemoteRenderedReadiness,
   forwardClaudeRemoteRenderedStdin,
   installClaudeRemoteRenderedResizeForwarder,
   startClaudeRemoteRenderedPumpLoop,
+  submitClaudeRemoteRenderedInitialPrompt,
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
 import { startNativeKernelPumpLoop } from "./native-kernel-pump.js"
@@ -204,10 +203,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       submitPrompt: tui.submitPrompt,
       debug: debugNativeClaude,
     })
-    pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
-      intervalMs: 500,
-      pollRuntimeNotices: false,
-    })
+    pump = startNativeKernelPumpLoop(client, session.id, attachment.id)
     if (options.initialPrompt) {
       await sleep(1_000)
       await tui.submitPrompt(options.initialPrompt)
@@ -378,6 +374,7 @@ async function runClaudeRemoteRendered(
   let pump: { stop: () => void } | null = null
   let disposeEvents: (() => void) | null = null
   let restoreStdin: (() => void) | null = null
+  let restoreResize: (() => void) | null = null
   try {
     const created = options.sessionRef
       ? null
@@ -396,6 +393,7 @@ async function runClaudeRemoteRendered(
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     const launched = await launchClaudeRemoteRenderedRun(client, session.id, agent.id, options.model, options.effort)
     const run = await waitForClaudeProviderRunReady(client, launched.id)
+    const readiness = createClaudeRemoteRenderedReadiness()
 
     const sliceInventory = agent.remote_execution
       ? await loadNativeTuiSliceInventory(client)
@@ -415,10 +413,18 @@ async function runClaudeRemoteRendered(
 
     disposeEvents = client.onKernelEvent((event) => {
       if (event.event !== "terminal_output") return
-      writeClaudeRemoteRenderedTerminalRecords(event.records, run.id)
+      readiness.observe(event.records, run.id, agent.id)
+      writeClaudeRemoteRenderedTerminalRecords(event.records, run.id, agent.id)
     })
     await client.subscribeToKernelEvents(session.id, attachment.id)
-    pump = startClaudeRemoteRenderedPumpLoop(client, session.id, attachment.id, run.id)
+    pump = startClaudeRemoteRenderedPumpLoop(
+      client,
+      session.id,
+      attachment.id,
+      run.id,
+      agent.id,
+      (records) => readiness.observe(records, run.id, agent.id),
+    )
     restoreStdin = forwardClaudeRemoteRenderedStdin({
       client,
       sessionId: session.id,
@@ -429,19 +435,20 @@ async function runClaudeRemoteRendered(
       inlineLocalAttachments: Boolean(options.relayUrl) || Boolean(options.machineRef) || Boolean(options.sliceRef) || promptAttachmentTransferIsForced(),
       debug: debugNativeClaude,
     })
-    installClaudeRemoteRenderedResizeForwarder(client, session.id)
+    restoreResize = installClaudeRemoteRenderedResizeForwarder(client, session.id, run.id)
     if (options.initialPrompt) {
-      await sleep(2_000)
-      await client.send<Record<string, unknown>>(
-        sendTerminalInputRequest(session.id, attachment.id, options.initialPrompt, run.id),
-      )
-      await sleep(500)
-      await client.send<Record<string, unknown>>(
-        sendTerminalInputRequest(session.id, attachment.id, "\r", run.id),
-      )
+      await submitClaudeRemoteRenderedInitialPrompt({
+        client,
+        sessionId: session.id,
+        attachmentId: attachment.id,
+        providerRunId: run.id,
+        prompt: options.initialPrompt,
+        readiness,
+      })
     }
     await waitForClaudeRemoteRenderedRunExit(client, run.id)
   } finally {
+    restoreResize?.()
     restoreStdin?.()
     disposeEvents?.()
     pump?.stop()

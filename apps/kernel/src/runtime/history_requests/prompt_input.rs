@@ -219,6 +219,7 @@ mod tests {
         sequence: u64,
         entry: &SessionHistoryEntry,
     ) {
+        assert_eq!(store.reserve_sequence(), sequence);
         store
             .append(&HistoryEvent::transcript(
                 sequence,

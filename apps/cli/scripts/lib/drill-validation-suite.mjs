@@ -72,6 +72,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-generated-matrix-registry-parity.test.mjs",
   "apps/cli/scripts/lib/drill-history-outline.test.mjs",
   "apps/cli/scripts/lib/drill-json-discovery.test.mjs",
+  "apps/cli/scripts/lib/drill-kernel-storage.test.mjs",
   "apps/cli/scripts/lib/drill-matrix-report.test.mjs",
   "apps/cli/scripts/lib/drill-matrix-runner.test.mjs",
   "apps/cli/scripts/lib/drill-matrix-statuses.test.mjs",
@@ -103,11 +104,19 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/drill-validation-statuses.test.mjs",
   "apps/cli/scripts/lib/drill-validation-suite.test.mjs",
   "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
+  "apps/cli/scripts/lib/live-remote-native-tui-drill-scenario.test.mjs",
+  "apps/cli/scripts/lib/native-tui-capabilities.test.mjs",
+  "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
   "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
+  "apps/cli/scripts/lib/remote-machine-runtime-output.test.mjs",
+  "apps/cli/scripts/lib/runtime-mcp-rejection-assertions.test.mjs",
+  "apps/cli/scripts/lib/slice-provider-port-bridge.test.mjs",
+  "apps/cli/scripts/lib/workspace-live-sync-drill-environment.test.mjs",
   "apps/cli/scripts/lib/workspace-live-sync-fixtures.test.mjs",
   "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
   "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
   "apps/cli/scripts/live-remote-home-extension-matrix-drill.test.mjs",
+  "apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.test.mjs",
   "apps/cli/scripts/live-slice-runtime-matrix-drill.test.mjs",
   "apps/cli/scripts/live-workspace-live-sync-matrix-drill.test.mjs",
 ])
@@ -171,6 +180,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/live-native-provider-tui-matrix-drill.test.mjs",
       "apps/cli/scripts/live-remote-agent-runtime-matrix-drill.test.mjs",
       "apps/cli/scripts/live-remote-home-extension-matrix-drill.test.mjs",
+      "apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.test.mjs",
       "apps/cli/scripts/live-slice-runtime-matrix-drill.test.mjs",
       "apps/cli/scripts/live-workspace-live-sync-matrix-drill.test.mjs",
       "apps/cli/scripts/lib/drill-distributed-runtime-evidence.test.mjs",
@@ -203,12 +213,20 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-cli-args.test.mjs",
       "apps/cli/scripts/lib/drill-environment-presets.test.mjs",
       "apps/cli/scripts/lib/drill-history-outline.test.mjs",
+      "apps/cli/scripts/lib/drill-kernel-storage.test.mjs",
       "apps/cli/scripts/lib/drill-provider-profiles.test.mjs",
       "apps/cli/scripts/lib/drill-runtime-helpers.test.mjs",
       "apps/cli/scripts/lib/drill-secrets.test.mjs",
       "apps/cli/scripts/lib/drill-time.test.mjs",
       "apps/cli/scripts/lib/focused-runtime-fixtures.test.mjs",
+      "apps/cli/scripts/lib/live-remote-native-tui-drill-scenario.test.mjs",
+      "apps/cli/scripts/lib/native-tui-capabilities.test.mjs",
+      "apps/cli/scripts/lib/native-tui-remote-execution.test.mjs",
       "apps/cli/scripts/lib/remote-home-extension-hetzner-helpers.test.mjs",
+      "apps/cli/scripts/lib/remote-machine-runtime-output.test.mjs",
+      "apps/cli/scripts/lib/runtime-mcp-rejection-assertions.test.mjs",
+      "apps/cli/scripts/lib/slice-provider-port-bridge.test.mjs",
+      "apps/cli/scripts/lib/workspace-live-sync-drill-environment.test.mjs",
     ]),
   },
   {
@@ -640,6 +658,7 @@ async function collectDrillValidationSuiteTestPaths(dir, rootDir, found) {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name)
     if (entry.isDirectory()) {
+      if (entry.name.endsWith(".test")) continue
       await collectDrillValidationSuiteTestPaths(fullPath, rootDir, found)
     } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
       found.push(path.relative(rootDir, fullPath).split(path.sep).join("/"))

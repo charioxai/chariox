@@ -11,6 +11,10 @@ use crate::transport::relay_peer::RequiredRemoteMcp;
 
 use super::RemoteLeaseRuntime;
 
+fn leased_native_source_attachment_id(leased_agent_id: &str, attachment_id: &str) -> String {
+    format!("remote-native:{leased_agent_id}:{attachment_id}")
+}
+
 impl<'a> RemoteLeaseRuntime<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn launch_leased_native_provider_run(
@@ -24,6 +28,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
+        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         let leased_agent = self
@@ -34,6 +39,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
+        if let Some(required_skills) = required_skills.as_deref() {
+            self.apply_required_remote_skills(&leased_agent, required_skills)?;
+        }
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             &leased_agent,
@@ -107,7 +115,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         provider_run_id: &str,
-        _attachment_id: &str,
+        attachment_id: &str,
         data_base64: &str,
     ) -> Result<usize, DaemonError> {
         let leased_agent = self
@@ -148,13 +156,49 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 message: format!("data_base64 is not valid base64: {error}"),
             })?;
         let byte_count = bytes.len();
-        self.app.send_terminal_input(
-            provider_run.session_id(),
-            &leased_agent.backing_attachment_id,
-            Some(provider_run_id),
-            &bytes,
-        )?;
+        let source_attachment_id =
+            leased_native_source_attachment_id(leased_agent_id, attachment_id);
+        crate::app::terminal_input::ProviderTerminalInput::new(self.app)
+            .send_remote_provider_input(
+                provider_run.session_id(),
+                provider_run_id,
+                &source_attachment_id,
+                &bytes,
+            )?;
         Ok(byte_count)
+    }
+
+    pub(crate) fn resize_leased_provider_terminal(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        let provider_run = self.app.providers.get_run(provider_run_id)?;
+        if provider_run.session_id() != leased_agent.backing_session_id
+            || provider_run.agent_instance_id() != Some(leased_agent.backing_agent_id.as_str())
+        {
+            return Err(DaemonError::ProviderRunNotInSession {
+                session_id: leased_agent.backing_session_id,
+                provider_run_id: provider_run_id.to_string(),
+            });
+        }
+        let backing_session_id = provider_run.session_id().to_string();
+        crate::app::KernelSessionService::new(self.app).resize_provider_terminal(
+            &backing_session_id,
+            provider_run_id,
+            cols,
+            rows,
+        )
     }
 }
 
@@ -180,6 +224,7 @@ mod tests {
             std::process::id()
         ));
         std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        std::env::set_var("ARROBA_SLICE_MACHINE_ID", "slice:native-provider-test");
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
@@ -228,18 +273,54 @@ mod tests {
                 None,
                 None,
                 vec![required],
+                Some(Vec::new()),
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("native run should launch");
+        let colliding_attachment_id = leased_agent.backing_attachment_id.clone();
+        let byte_count = runtime
+            .send_leased_native_provider_input(
+                &leased_agent.id,
+                run.id(),
+                &colliding_attachment_id,
+                "eA==",
+            )
+            .expect("native input should be sent");
+        assert_eq!(byte_count, 1);
+        runtime
+            .resize_leased_provider_terminal(&leased_agent.id, run.id(), 80, 24)
+            .expect("native provider terminal should resize");
+        drop(runtime);
 
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
         assert!(!run.client_interface().is_arroba());
+        let expected_source_attachment_id = format!(
+            "remote-native:{}:{}",
+            leased_agent.id, colliding_attachment_id
+        );
+        assert_eq!(
+            app.terminal()
+                .input_records()
+                .last()
+                .map(|record| record.source_attachment_id.as_str()),
+            Some(expected_source_attachment_id.as_str())
+        );
+        assert_ne!(
+            app.terminal()
+                .input_records()
+                .last()
+                .map(|record| record.source_attachment_id.as_str()),
+            Some(leased_agent.backing_attachment_id.as_str()),
+            "home attachment ids must not collide with the worker backing attachment",
+        );
+        assert_eq!(app.pty().size(run.id()), Some((80, 24)));
         assert!(crate::mcp::ArrobaMcpRegistry::user_root()
             .expect("isolated user MCP root should resolve")
             .join("browser.json")
             .exists());
         std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&isolation_root);
     }
@@ -305,6 +386,7 @@ mod tests {
                 None,
                 None,
                 Vec::new(),
+                Some(Vec::new()),
                 manifest.clone(),
             )
             .expect("native run should launch");
@@ -313,5 +395,79 @@ mod tests {
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "home_browser");
         let _ = std::fs::remove_dir_all(&worktree);
+    }
+
+    #[test]
+    fn standard_home_worker_does_not_install_required_mcp_payload() {
+        let _guard = crate::env_lock::lock();
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let worktree = std::env::temp_dir().join(format!(
+            "arroba-standard-native-provider-mcp-test-{}",
+            std::process::id()
+        ));
+        let isolation_root = std::env::temp_dir().join(format!(
+            "arroba-standard-native-provider-mcp-isolation-test-{}",
+            std::process::id()
+        ));
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        std::fs::create_dir_all(&worktree).expect("worktree should create");
+        let mut runtime = RemoteLeaseRuntime::new(&mut app);
+        let lease = runtime
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "local-user",
+            )
+            .expect("lease should create");
+        let leased_agent = runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .expect("leased agent should create");
+        let mcp = ArrobaMcpServerConfig::stdio(
+            "browser",
+            std::env::current_exe()
+                .expect("current test executable should resolve")
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        let required = RequiredRemoteMcp {
+            definition_hash: mcp.definition_hash().expect("hash should compute"),
+            config: mcp,
+        };
+
+        let result = runtime.launch_leased_native_provider_run(
+            &leased_agent.id,
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+            None,
+            None,
+            None,
+            vec![required],
+            Some(Vec::new()),
+            crate::extension::RemoteExtensionManifest::default(),
+        );
+
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&isolation_root);
+        let error = result.expect_err("standard worker must require a preinstalled MCP");
+        assert!(error.to_string().contains("missing on worker"));
     }
 }

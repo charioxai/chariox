@@ -4,7 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import { verifyDrillFailureTaxonomyRegistryParity } from "./drill-failure-taxonomy-registry-parity.mjs"
+import {
+  validateCloudCompatibleDrillFailureTaxonomyManifest,
+  verifyDrillFailureTaxonomyRegistryParity,
+} from "./drill-failure-taxonomy-registry-parity.mjs"
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 
 test("accepts Cloud failure taxonomy classifications known by OSS", async () => {
@@ -23,6 +26,28 @@ test("accepts Cloud failure taxonomy classifications known by OSS", async () => 
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("accepts Cloud contextual diagnostics in embedded artifact manifests", () => {
+  const manifest = drillFailureTaxonomyManifest()
+  const contextual = {
+    ...manifest,
+    classifications: manifest.classifications.map((classification) => {
+      if (classification.kind === "cloud-runtime") {
+        return { ...classification, nextAction: "inspect hosted Cloud deployment logs, then rerun the scenario" }
+      }
+      if (classification.kind === "docker-runtime") {
+        return {
+          ...classification,
+          owner: "worker-kernel",
+          nextAction: "inspect the slice container logs, then rerun the scenario",
+        }
+      }
+      return classification
+    }),
+  }
+
+  assert.doesNotThrow(() => validateCloudCompatibleDrillFailureTaxonomyManifest(contextual))
 })
 
 test("rejects missing Cloud failure classifications required by OSS diagnostics", async () => {

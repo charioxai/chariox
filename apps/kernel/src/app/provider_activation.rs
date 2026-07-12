@@ -69,42 +69,45 @@ impl ProviderRunActivationState {
             .map(str::to_owned);
 
         if let Some(active_run_id) = previous_active_run_id.as_deref() {
-            let active_run = app.providers.get_run(active_run_id)?;
-            match active_run.state() {
-                ProviderRunState::Ended => {
-                    app.sessions.set_active_provider_run(&session_id, None)?;
-                    app.providers.clear_runtime(active_run_id);
-                }
-                ProviderRunState::Starting => {
-                    if active_run.client_interface().is_arroba() {
-                        let outcome = app
-                            .providers
-                            .terminate_run_provider_only(&session_id, active_run_id)?;
-                        clear_active_provider_run_session_pointer(
-                            app,
-                            &session_id,
-                            outcome.run().id(),
-                        )?;
-                        app.update_provider_run_projection(outcome.into_run());
+            let (active_run, locally_owned) =
+                Self::provider_run_for_activation(app, &session_id, active_run_id)?;
+            if locally_owned {
+                match active_run.state() {
+                    ProviderRunState::Ended => {
+                        app.sessions.set_active_provider_run(&session_id, None)?;
+                        app.providers.clear_runtime(active_run_id);
                     }
-                }
-                ProviderRunState::Running => {
-                    if active_run.client_interface().is_arroba()
-                        && !app.provider_run_has_active_prompt(&session_id, &active_run)?
-                    {
-                        let outcome = app
-                            .providers
-                            .park_run_provider_only(&session_id, active_run_id)?;
-                        clear_active_provider_run_session_pointer(
-                            app,
-                            &session_id,
-                            outcome.run().id(),
-                        )?;
-                        app.update_provider_run_projection(outcome.into_run());
+                    ProviderRunState::Starting => {
+                        if active_run.client_interface().is_arroba() {
+                            let outcome = app
+                                .providers
+                                .terminate_run_provider_only(&session_id, active_run_id)?;
+                            clear_active_provider_run_session_pointer(
+                                app,
+                                &session_id,
+                                outcome.run().id(),
+                            )?;
+                            app.update_provider_run_projection(outcome.into_run());
+                        }
                     }
-                }
-                ProviderRunState::Parked => {
-                    app.sessions.set_active_provider_run(&session_id, None)?;
+                    ProviderRunState::Running => {
+                        if active_run.client_interface().is_arroba()
+                            && !app.provider_run_has_active_prompt(&session_id, &active_run)?
+                        {
+                            let outcome = app
+                                .providers
+                                .park_run_provider_only(&session_id, active_run_id)?;
+                            clear_active_provider_run_session_pointer(
+                                app,
+                                &session_id,
+                                outcome.run().id(),
+                            )?;
+                            app.update_provider_run_projection(outcome.into_run());
+                        }
+                    }
+                    ProviderRunState::Parked => {
+                        app.sessions.set_active_provider_run(&session_id, None)?;
+                    }
                 }
             }
         }
@@ -179,13 +182,27 @@ impl ProviderRunActivationState {
 
         if let Some(active_run_id) = active_run_id.as_deref() {
             if active_run_id != run_id {
-                let active_run = app.providers.get_run(active_run_id)?;
-                match active_run.state() {
-                    ProviderRunState::Running => {
-                        if !app.provider_run_has_active_prompt(session_id, &active_run)? {
+                let (active_run, locally_owned) =
+                    Self::provider_run_for_activation(app, session_id, active_run_id)?;
+                if locally_owned {
+                    match active_run.state() {
+                        ProviderRunState::Running => {
+                            if !app.provider_run_has_active_prompt(session_id, &active_run)? {
+                                let outcome = app
+                                    .providers
+                                    .park_run_provider_only(session_id, active_run_id)?;
+                                clear_active_provider_run_session_pointer(
+                                    app,
+                                    session_id,
+                                    outcome.run().id(),
+                                )?;
+                                app.update_provider_run_projection(outcome.into_run());
+                            }
+                        }
+                        ProviderRunState::Starting => {
                             let outcome = app
                                 .providers
-                                .park_run_provider_only(session_id, active_run_id)?;
+                                .terminate_run_provider_only(session_id, active_run_id)?;
                             clear_active_provider_run_session_pointer(
                                 app,
                                 session_id,
@@ -193,23 +210,31 @@ impl ProviderRunActivationState {
                             )?;
                             app.update_provider_run_projection(outcome.into_run());
                         }
-                    }
-                    ProviderRunState::Starting => {
-                        let outcome = app
-                            .providers
-                            .terminate_run_provider_only(session_id, active_run_id)?;
-                        clear_active_provider_run_session_pointer(
-                            app,
-                            session_id,
-                            outcome.run().id(),
-                        )?;
-                        app.update_provider_run_projection(outcome.into_run());
-                    }
-                    ProviderRunState::Parked | ProviderRunState::Ended => {
-                        app.sessions.set_active_provider_run(session_id, None)?;
+                        ProviderRunState::Parked | ProviderRunState::Ended => {
+                            app.sessions.set_active_provider_run(session_id, None)?;
+                        }
                     }
                 }
             }
+        }
+
+        let (target_run, locally_owned) =
+            Self::provider_run_for_activation(app, session_id, run_id)?;
+        if !locally_owned {
+            if !matches!(
+                target_run.state(),
+                ProviderRunState::Starting | ProviderRunState::Running
+            ) {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id: run_id.to_string(),
+                    state: target_run.state(),
+                    operation: "restore projected provider run",
+                });
+            }
+            app.sessions
+                .set_active_provider_run(session_id, Some(run_id.to_string()))?;
+            let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
+            return Ok(target_run);
         }
 
         let outcome = app.providers.resume_run_provider_only(session_id, run_id)?;
@@ -218,5 +243,33 @@ impl ProviderRunActivationState {
         let run = outcome.into_run();
         app.update_provider_run_projection(run.clone());
         Ok(run)
+    }
+
+    fn provider_run_for_activation(
+        app: &DaemonApp,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(RuntimeProviderRun, bool), DaemonError> {
+        let result = match app.providers.get_run(provider_run_id) {
+            Ok(run) => Ok((run, true)),
+            Err(DaemonError::ProviderRunNotFound { .. }) => app
+                .provider_run_projection
+                .get(provider_run_id)
+                .map(|run| (run, false))
+                .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                }),
+            Err(error) => Err(error),
+        };
+        result.and_then(|(run, locally_owned)| {
+            if run.session_id() == session_id {
+                Ok((run, locally_owned))
+            } else {
+                Err(DaemonError::ProviderRunNotInSession {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run_id.to_string(),
+                })
+            }
+        })
     }
 }

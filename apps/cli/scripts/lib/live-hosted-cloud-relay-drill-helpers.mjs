@@ -3,6 +3,7 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { resolveBuiltBinary } from "./drill-runtime-helpers.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
@@ -126,10 +127,11 @@ export async function closeClient(client, label) {
 }
 
 export async function buildKernelIfNeeded() {
+  const manifest = path.join(repoRoot, "apps/kernel/Cargo.toml")
   const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
+  const result = await run("cargo", ["build", "--manifest-path", manifest, "--bin", "arroba-kernel"])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return binary
+  return await resolveBuiltBinary(binary, manifest, "arroba-kernel")
 }
 
 export async function resolveExecutable(command) {
@@ -248,6 +250,64 @@ export async function postJson(url, body, headers = {}) {
     throw new Error(`POST ${url} failed with ${response.status}: ${await response.text()}`)
   }
   return response.json().catch(() => null)
+}
+
+export async function cleanupHostedCloudIdentity({
+  profile,
+  cloudSessionToken = profile?.cloudSessionToken,
+  clientIds = [],
+  machineIds = [],
+  kernelPresences = [],
+  reason = "hosted Cloud drill cleanup",
+  logout = true,
+  baseUrl = apiUrl,
+  post = postJson,
+  logger = log,
+}) {
+  assert(profile?.accountId, "hosted Cloud cleanup requires an account id", profile)
+  const uniqueClientIds = [...new Set(clientIds.filter(Boolean))]
+  const uniqueMachineIds = [...new Set(machineIds.filter(Boolean))]
+  const presences = kernelPresences.filter((presence) => presence?.machineId && presence?.kernelId)
+  const cleanupErrors = []
+
+  for (const presence of presences) {
+    await post(`${baseUrl}/kernels/presence`, {
+      ...(cloudSessionToken ? { sessionToken: cloudSessionToken } : {}),
+      accountId: profile.accountId,
+      realmId: profile.realmId,
+      machineId: presence.machineId,
+      kernelId: presence.kernelId,
+      status: "OFFLINE",
+    }).catch((error) => cleanupErrors.push(error))
+  }
+  for (const clientId of uniqueClientIds) {
+    await post(`${baseUrl}/clients/revoke`, {
+      accountId: profile.accountId,
+      clientId,
+      reason,
+    }).catch((error) => cleanupErrors.push(error))
+  }
+  for (const machineId of uniqueMachineIds) {
+    await post(`${baseUrl}/machines/revoke`, {
+      accountId: profile.accountId,
+      machineId,
+      reason,
+    }).catch((error) => cleanupErrors.push(error))
+  }
+  if (logout && cloudSessionToken) {
+    await post(`${baseUrl}/auth/logout`, { sessionToken: cloudSessionToken })
+      .catch((error) => cleanupErrors.push(error))
+  }
+  logger("cloud-identity-cleanup", {
+    accountSlug: profile.accountSlug,
+    clients: uniqueClientIds,
+    machines: uniqueMachineIds,
+    kernels: presences.map((presence) => presence.kernelId),
+    logout: Boolean(logout && cloudSessionToken),
+  })
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, "hosted Cloud identity cleanup failed")
+  }
 }
 
 export async function createPairingToken({ accountId, userId, subjectKind }) {

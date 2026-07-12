@@ -3,20 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Arroba Connectivity Reliability Plan</title>
+  <title>Arroba Runtime Resilience And Recovery Plan</title>
   <style>
     :root {
       color-scheme: light;
-      --ink: #141513;
-      --muted: #596158;
-      --paper: #f8f6ef;
+      --ink: #111418;
+      --muted: #5d6673;
+      --paper: #f6f4ed;
       --panel: #fffdf7;
       --line: #d8d2c4;
-      --line-strong: #9d927e;
-      --green: #0d6b57;
+      --line-strong: #928774;
+      --green: #0b6b53;
       --red: #a23a28;
       --amber: #9a6517;
       --blue: #225f84;
+      --violet: #6554a3;
       --shadow: 0 18px 48px rgba(30, 26, 18, 0.10);
       --mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
       --sans: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
@@ -30,8 +31,8 @@
     body {
       margin: 0;
       background:
-        linear-gradient(90deg, rgba(20, 21, 19, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
-        linear-gradient(0deg, rgba(20, 21, 19, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
+        linear-gradient(90deg, rgba(17, 20, 24, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
+        linear-gradient(0deg, rgba(17, 20, 24, 0.035) 1px, transparent 1px) 0 0 / 32px 32px,
         var(--paper);
       color: var(--ink);
       font-family: var(--sans);
@@ -52,7 +53,7 @@
 
     header {
       display: grid;
-      grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+      grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.85fr);
       gap: 28px;
       align-items: stretch;
       border-top: 6px solid var(--ink);
@@ -60,26 +61,26 @@
     }
 
     h1 {
+      max-width: 11ch;
+      margin: 0 0 18px;
       font-family: var(--serif);
-      font-size: clamp(2.4rem, 6vw, 5.4rem);
+      font-size: clamp(2.35rem, 6vw, 5.2rem);
       line-height: 0.95;
       letter-spacing: 0;
-      margin: 0 0 18px;
-      max-width: 10ch;
     }
 
     h2 {
-      font-family: var(--serif);
-      font-size: clamp(1.6rem, 3vw, 2.4rem);
-      line-height: 1.08;
       margin: 0 0 16px;
+      font-family: var(--serif);
+      font-size: clamp(1.55rem, 3vw, 2.35rem);
+      line-height: 1.08;
       letter-spacing: 0;
     }
 
     h3 {
+      margin: 0 0 10px;
       font-size: 1rem;
       line-height: 1.2;
-      margin: 0 0 10px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
@@ -98,46 +99,51 @@
     }
 
     code {
+      padding: 0.1rem 0.25rem;
+      border: 1px solid rgba(17, 20, 24, 0.08);
+      border-radius: 4px;
+      background: rgba(17, 20, 24, 0.06);
       font-family: var(--mono);
       font-size: 0.92em;
-      background: rgba(20, 21, 19, 0.06);
-      border: 1px solid rgba(20, 21, 19, 0.08);
-      border-radius: 4px;
-      padding: 0.1rem 0.25rem;
     }
 
     .dek {
-      max-width: 720px;
+      max-width: 760px;
       color: var(--muted);
       font-size: 1.15rem;
     }
 
     .stamp {
+      min-height: 292px;
+      padding: 20px;
       background: var(--ink);
       color: var(--paper);
-      padding: 20px;
+      box-shadow: var(--shadow);
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      min-height: 280px;
-      box-shadow: var(--shadow);
     }
 
     .stamp strong {
+      color: #d8d2c4;
       font-size: 0.85rem;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: #d8d2c4;
     }
 
     .stamp p {
       margin: 0;
       font-family: var(--serif);
-      font-size: 1.55rem;
-      line-height: 1.13;
+      font-size: 1.5rem;
+      line-height: 1.15;
+    }
+
+    section {
+      margin-top: 54px;
     }
 
     .summary-grid,
+    .result-grid,
     .two-col,
     .phase-grid,
     .evidence-grid {
@@ -150,10 +156,12 @@
       margin-top: 30px;
     }
 
-    .two-col {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    .result-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 18px;
     }
 
+    .two-col,
     .phase-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -162,16 +170,12 @@
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
-    section {
-      margin-top: 54px;
-    }
-
     .card,
     .callout,
     .phase,
     .evidence {
-      background: var(--panel);
       border: 1px solid var(--line);
+      background: var(--panel);
       box-shadow: var(--shadow);
     }
 
@@ -183,8 +187,8 @@
     }
 
     .callout {
-      border-left: 7px solid var(--green);
       padding: 20px 22px;
+      border-left: 7px solid var(--green);
       border-radius: 5px;
     }
 
@@ -194,10 +198,10 @@
 
     .metric .num {
       display: block;
-      font-family: var(--serif);
-      font-size: 2.2rem;
-      line-height: 1;
       margin-bottom: 8px;
+      font-family: var(--serif);
+      font-size: 2.15rem;
+      line-height: 1;
     }
 
     .metric p,
@@ -223,22 +227,23 @@
     .red { border-top-color: var(--red); }
     .amber { border-top-color: var(--amber); }
     .blue { border-top-color: var(--blue); }
+    .violet { border-top-color: var(--violet); }
 
     .matrix {
       width: 100%;
+      border: 1px solid var(--line);
       border-collapse: collapse;
       background: var(--panel);
-      border: 1px solid var(--line);
       box-shadow: var(--shadow);
       overflow: hidden;
     }
 
     .matrix th,
     .matrix td {
-      text-align: left;
-      vertical-align: top;
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
     }
 
     .matrix th {
@@ -260,54 +265,88 @@
       margin-top: 18px;
     }
 
-    .node {
-      border: 1px solid var(--line-strong);
-      background: rgba(255, 253, 247, 0.72);
-      padding: 12px;
+    .flow div {
       min-height: 92px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-top: 4px solid var(--blue);
       border-radius: 6px;
-      position: relative;
+      background: var(--panel);
+      box-shadow: var(--shadow);
     }
 
-    .node:after {
-      content: ">";
-      position: absolute;
-      right: -13px;
-      top: 50%;
-      transform: translateY(-50%);
-      color: var(--line-strong);
-      font-family: var(--mono);
-    }
-
-    .node:last-child:after {
-      display: none;
-    }
-
-    .node strong {
+    .flow strong {
       display: block;
       margin-bottom: 6px;
     }
 
-    .node span {
-      color: var(--muted);
-      font-size: 0.9rem;
-    }
-
-    .checklist li {
-      margin-bottom: 10px;
-    }
-
-    .foot {
-      margin-top: 60px;
-      padding-top: 18px;
-      border-top: 1px solid var(--line-strong);
+    .flow span {
       color: var(--muted);
       font-size: 0.92rem;
     }
 
-    @media (max-width: 900px) {
+    .note {
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .status-strip {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 15px 18px;
+      border: 1px solid #8ab7a8;
+      border-left: 7px solid var(--green);
+      border-radius: 5px;
+      background: #edf7f2;
+    }
+
+    .status-strip strong {
+      color: var(--green);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .result-card {
+      min-height: 150px;
+      padding: 18px;
+      border-top: 4px solid var(--green);
+      background: var(--ink);
+      color: var(--paper);
+    }
+
+    .result-card .num {
+      display: block;
+      margin-bottom: 8px;
+      font-family: var(--serif);
+      font-size: 2.35rem;
+      line-height: 1;
+    }
+
+    .result-card p {
+      margin: 0;
+      color: #d8d2c4;
+      font-size: 0.9rem;
+    }
+
+    .outcome {
+      color: var(--green);
+    }
+
+    .warning {
+      border-left-color: var(--amber);
+      background: #fff8e8;
+    }
+
+    .compact li + li {
+      margin-top: 5px;
+    }
+
+    @media (max-width: 860px) {
       header,
       .summary-grid,
+      .result-grid,
       .two-col,
       .phase-grid,
       .evidence-grid,
@@ -315,21 +354,63 @@
         grid-template-columns: 1fr;
       }
 
-      .stamp {
-        min-height: 180px;
+      h1 {
+        max-width: 100%;
       }
 
-      .node:after {
-        content: "v";
-        right: 16px;
-        top: auto;
-        bottom: -18px;
-        transform: none;
+      .status-strip {
+        align-items: flex-start;
+        flex-direction: column;
       }
+    }
 
+    @media (max-width: 620px) {
       .matrix {
         display: block;
-        overflow-x: auto;
+      }
+
+      .matrix thead {
+        display: none;
+      }
+
+      .matrix tbody,
+      .matrix tr,
+      .matrix td {
+        display: block;
+        width: 100%;
+      }
+
+      .matrix tr {
+        padding: 6px 0;
+        border-bottom: 2px solid var(--line-strong);
+      }
+
+      .matrix tr:last-child {
+        border-bottom: 0;
+      }
+
+      .matrix td {
+        display: grid;
+        grid-template-columns: minmax(88px, 0.36fr) minmax(0, 1fr);
+        gap: 10px;
+        padding: 8px 10px;
+        border-bottom: 0;
+        overflow-wrap: anywhere;
+        font-size: 0.84rem;
+      }
+
+      .matrix td::before {
+        content: attr(data-label);
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      code {
+        white-space: normal;
+        overflow-wrap: anywhere;
       }
     }
   </style>
@@ -338,453 +419,601 @@
   <main class="page">
     <header>
       <div>
-        <h1>Connectivity Reliability Plan</h1>
+        <h1>Runtime Resilience Plan And Execution Record</h1>
         <p class="dek">
-          A plan for making Arroba stable when connected, graceful when disconnected,
-          and self-healing across Cloud, relay, kernel, browser, TUI, worker, and
-          provider boundaries without exposing the complexity to users.
+          Implemented cross-repo program for making <code>arroba</code> and <code>arroba-cloud</code> recover smoothly from lost
+          connections, relay outages, kernel and worker restarts, Cloud service interruptions, slice disruptions,
+          and collaborator disconnects across web and TUI terminals.
         </p>
       </div>
       <aside class="stamp">
-        <strong>Operating principle</strong>
-        <p>Connectivity and efficiency come first. Cloud bootstraps. Relay routes. Kernel owns runtime truth. Clients recover quietly.</p>
+        <strong>Executed through 2026-07-12</strong>
+        <p>
+          Distributed runtime gate passed. The tested user paths reconnect, replay, reconcile, and repair state without
+          losing prompts, duplicating turns, erasing transcripts, or getting stuck.
+        </p>
       </aside>
     </header>
 
-    <div class="summary-grid">
-      <div class="card metric green">
+    <section class="summary-grid" aria-label="Plan summary">
+      <article class="card metric green">
         <span class="num">1</span>
-        <h3>Runtime Authority</h3>
-        <p>The kernel remains authoritative for sessions, prompts, provider runs, history, and recovery.</p>
-      </div>
-      <div class="card metric blue">
+        <h3>Kernel Authority</h3>
+        <p>All recovery keeps the kernel as runtime authority for sessions, agents, provider runs, prompts, history, permissions, and workflows.</p>
+      </article>
+      <article class="card metric blue">
         <span class="num">2</span>
-        <h3>Transport Only</h3>
-        <p>The relay admits scoped peers and forwards opaque encrypted packets. It does not inspect runtime payloads.</p>
-      </div>
-      <div class="card metric amber">
+        <h3>Terminals</h3>
+        <p>Validate web terminal, local TUI, remote/orphan TUI, native provider TUI, and mixed web plus TUI observers.</p>
+      </article>
+      <article class="card metric amber">
         <span class="num">3</span>
-        <h3>Recoverable Commands</h3>
-        <p>Every user action that can cross a broken socket needs a stable command id and durable reconciliation.</p>
-      </div>
-      <div class="card metric red">
+        <h3>Runtime Fabrics</h3>
+        <p>Use isolated local relay/kernel/server ports for local drills and the Hetzner machine for remote workers and collaboration.</p>
+      </article>
+      <article class="card metric red">
         <span class="num">4</span>
-        <h3>Chaos Proof</h3>
-        <p>CI and drills must kill each layer mid-turn and prove no duplicate prompts, lost turns, or stuck UI.</p>
-      </div>
-    </div>
-
-    <section>
-      <h2>Target User Experience</h2>
-      <div class="callout">
-        <p>
-          The user should see a small number of states: <code>Connected</code>,
-          <code>Reconnecting</code>, <code>Resyncing</code>, and
-          <code>Action needed</code>. Drafts, selected session, pending prompt
-          state, and visible transcript should survive ordinary disconnects.
-          Users should not need to know whether Cloud, relay, kernel, worker, or
-          the browser event socket caused the disruption unless the next action is
-          different.
-        </p>
-      </div>
+        <h3>Evidence</h3>
+        <p>Every fix gets matrix reports, artifacts, screenshots when possible, resource samples, cleanup proof, and gate coverage.</p>
+      </article>
     </section>
 
-    <section>
-      <h2>Current Implementation Snapshot</h2>
-      <div class="evidence-grid">
-        <article class="evidence">
-          <span class="tag">Relay</span>
-          <h3>Good Liveness Basics</h3>
-          <p>
-            The relay has bounded outgoing queues, handshake and idle timeouts,
-            ping/pong, daemon replacement on reconnect, and retryable
-            target-not-connected errors.
-          </p>
-          <p><a href="../apps/relay/src/server/connection.rs">apps/relay/src/server/connection.rs</a></p>
+    <section id="execution-record">
+      <div class="status-strip">
+        <div>
+          <strong>Implementation complete</strong>
+          <p>All five acceptance criteria are satisfied for the executed matrix. No skipped or dry-run result is counted as evidence.</p>
+        </div>
+        <code>distributed-runtime-gate: passed</code>
+      </div>
+
+      <div class="result-grid" aria-label="Execution results">
+        <article class="result-card">
+          <span class="num">7/7</span>
+          <h3>Component Loss</h3>
+          <p>Kernel, relay, worker, provider, and collaborator recovery rows passed live.</p>
         </article>
-        <article class="evidence">
-          <span class="tag">Kernel</span>
-          <h3>Replay And Backpressure</h3>
-          <p>
-            The kernel WebSocket transport has event IDs, replay gap events,
-            snapshots, command result dedupe, inbound limits, ping, and
-            slow-consumer closes.
-          </p>
-          <p><a href="../apps/kernel/src/runtime_transport.rs">apps/kernel/src/runtime_transport.rs</a></p>
+        <article class="result-card">
+          <span class="num">13</span>
+          <h3>Runtime Signals</h3>
+          <p>Every required signal and all seven owning subsystems covered.</p>
         </article>
-        <article class="evidence">
-          <span class="tag">Cloud</span>
-          <h3>Thin Bootstrap</h3>
-          <p>
-            Cloud selects fresh relay targets, mints scoped short-lived tokens,
-            and stays out of the runtime packet path.
-          </p>
-          <p><a href="../../arroba-cloud/apps/api/src/browser-relay-kernel-service.ts">arroba-cloud/apps/api/src/browser-relay-kernel-service.ts</a></p>
+        <article class="result-card">
+          <span class="num">6/6</span>
+          <h3>Native Claude</h3>
+          <p>Auth, permission, remote, slice, transcript, and Hetzner rows passed live.</p>
         </article>
-        <article class="evidence">
-          <span class="tag">Browser</span>
-          <h3>Event Resume</h3>
-          <p>
-            The browser event socket resumes subscriptions from the last event id
-            with exponential backoff and persisted session cursors.
-          </p>
-          <p><a href="../../arroba-cloud/apps/web/src/kernel/browser-kernel-reconnect-controller.ts">arroba-cloud/apps/web/src/kernel/browser-kernel-reconnect-controller.ts</a></p>
-        </article>
-        <article class="evidence">
-          <span class="tag">Presence</span>
-          <h3>Freshness Filtering</h3>
-          <p>
-            Cloud target selection already rejects stale heartbeats and explains
-            missing, invalid, stale, offline, and fresh states.
-          </p>
-          <p><a href="../../arroba-cloud/apps/api/src/relay-target-freshness.ts">arroba-cloud/apps/api/src/relay-target-freshness.ts</a></p>
-        </article>
-        <article class="evidence">
-          <span class="tag">Health</span>
-          <h3>Diagnostic Counters</h3>
-          <p>
-            Kernel health tracks active connections, subscriptions, emitted
-            events, replay gaps, overloads, duplicate commands, queue overflows,
-            and slow consumers.
-          </p>
-          <p><a href="../apps/kernel/src/runtime/projection/transport_health.rs">apps/kernel/src/runtime/projection/transport_health.rs</a></p>
+        <article class="result-card">
+          <span class="num">81</span>
+          <h3>Live Sync Checks</h3>
+          <p>Expanded direct and relay web/TUI latency checks all stayed within budget; 18 screenshots were inspected.</p>
         </article>
       </div>
     </section>
 
     <section>
-      <h2>Reliability Gaps</h2>
-      <div class="two-col">
-        <div class="card">
-          <h3>State Recovery</h3>
-          <ul>
-            <li>In-flight browser control requests are rejected on socket close instead of reconciled automatically.</li>
-            <li>Kernel command result dedupe is in-memory and limited to 512 entries.</li>
-            <li>Event bodies are retained in a small in-memory window, so longer disconnects fall back to replay gaps and snapshots.</li>
-            <li>Relay registry, pending requests, and subscriptions are in-memory, so relay HA requires clean client and kernel rebootstrap.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>Liveness Isolation</h3>
-          <ul>
-            <li>The kernel relay heartbeat loop also does token refresh checks, inventory refresh scheduling, leased projection pumping, and Cloud presence publishing.</li>
-            <li>Slow consumers are closed correctly, but control, ping, and terminal deltas still need clearer priority lanes.</li>
-            <li>Cloud presence relies on kernel writes plus freshness, but should be resilient when explicit offline writes fail.</li>
-            <li>Remote worker rebind and lease recovery need a first-class lifecycle, not ad hoc operator repair.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Landed Hardening Baseline</h2>
-      <div class="two-col">
-        <div class="card">
-          <h3>Relay And Endpoint Recovery</h3>
-          <ul>
-            <li>Relay liveness stays healthy during drain while readiness reports draining and exposes runtime load counters.</li>
-            <li>Draining relays refuse new runtime admissions with HTTP 503 and <code>Retry-After</code> in headers and JSON bodies while health checks keep returning drain status.</li>
-            <li>Relay endpoint configuration accepts explicit health states and rejects unsupported states at startup/readiness.</li>
-            <li>Cloud treats configured relay endpoint sets as authoritative and ranks them by health so healthy alternates precede draining or stale relay URLs.</li>
-            <li>Cloud readiness and browser bootstrap fail closed before token minting when configured endpoint sets have no relay that admits new runtime sockets.</li>
-          </ul>
-        </div>
-        <div class="card">
-          <h3>Client And Authority Recovery</h3>
-          <ul>
-            <li>Browser bootstrap treats non-empty Cloud relay endpoint sets as authoritative instead of appending legacy URLs.</li>
-            <li>Browser bootstrap filters draining, stale, offline, and revoked relay endpoints out of reconnect candidates.</li>
-            <li>Browser reconnect skips cooling relay endpoints when any non-cooling alternate is available.</li>
-            <li>Browser relay handshake failures close their provisional WebSocket immediately so malformed relay frames cannot leave orphaned connections behind.</li>
-            <li>Browser control requests, replay sends, and event subscriptions require an open WebSocket before writing so closed-socket races fail fast into retry/reconnect instead of hanging until timeout.</li>
-            <li>Browser event reconnect skips subscriptions removed during async resume so closed views do not receive stale recovery events.</li>
-            <li>Browser token refresh is best effort before actual expiry, so temporary Cloud outages do not block reconnect while the current relay token is still valid.</li>
-            <li>Browser control replay keeps stable command IDs and restores pending state when a replay send fails before leaving the socket.</li>
-            <li>Authority invariant summary gates cover Cloud and OSS runtime boundaries so relay and Cloud stay out of kernel-owned runtime truth.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Reference Architecture</h2>
-      <p class="dek">
-        Keep the existing authority boundary, but add durable recovery contracts and
-        isolated liveness lanes around it.
-      </p>
-      <div class="flow" aria-label="Connectivity topology">
-        <div class="node">
-          <strong>Client</strong>
-          <span>Browser, local TUI, remote TUI, iOS, Android. Owns drafts and reconnect UI.</span>
-        </div>
-        <div class="node">
-          <strong>Cloud</strong>
-          <span>Auth, tokens, membership, relay endpoint set, target freshness.</span>
-        </div>
-        <div class="node">
-          <strong>Relay</strong>
-          <span>Scoped admission, opaque packet routing, drain and HA signals.</span>
-        </div>
-        <div class="node">
-          <strong>Kernel</strong>
-          <span>Durable command ledger, event log, sessions, agents, provider state.</span>
-        </div>
-        <div class="node">
-          <strong>Worker</strong>
-          <span>Remote or slice execution, leases, provider adapters, home rebind.</span>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>Implementation Plan</h2>
-      <div class="phase-grid">
-        <article class="phase">
-          <span class="tag">Phase 1</span>
-          <h3>Durable Kernel Recovery</h3>
-          <p>
-            Add a persistent transport command ledger keyed by stable command id.
-            Store fingerprint, status, response or error, first accepted time,
-            settlement marker, session, attachment, and agent. Add
-            <code>command.status</code> and make duplicate requests return the
-            known result or an accepted-observe-events state.
-          </p>
-          <ul>
-            <li>Persist command ids for create, attach, launch, prompt, cancel, workflow, and mutation requests.</li>
-            <li>Make browser and TUI retry through command status, not blind resubmission.</li>
-            <li>Use protocol version and snapshot tests if serialized shapes change.</li>
-          </ul>
-        </article>
-
-        <article class="phase">
-          <span class="tag">Phase 2</span>
-          <h3>Durable Event Replay</h3>
-          <p>
-            Replace short in-memory event body retention with a bounded persistent
-            event log per session and attachment. Keep event IDs monotonic across
-            restarts and retain enough bodies for normal offline periods.
-          </p>
-          <ul>
-            <li>Retain by bytes and time, for example 24 hours or 50 MB per active session.</li>
-            <li>Keep replay gaps as a fallback, not the common path.</li>
-            <li>Rebuild terminal deltas from history where possible before falling back to snapshots.</li>
-          </ul>
-        </article>
-
-        <article class="phase">
-          <span class="tag">Phase 3</span>
-          <h3>Liveness Lane Split</h3>
-          <p>
-            Separate socket liveness from application work. Heartbeats, pings,
-            pongs, close frames, and minimal registration updates must not wait on
-            Cloud presence, provider pumping, inventory refresh, workspace sync,
-            or long app locks.
-          </p>
-          <ul>
-            <li>Create dedicated actors or queues for socket liveness, presence, event projection, command dispatch, and inventory refresh.</li>
-            <li>Make Cloud presence publish best effort and jittered.</li>
-            <li>Prioritize ping, close, subscribe ack, and command response frames over terminal deltas.</li>
-          </ul>
-        </article>
-
-        <article class="phase">
-          <span class="tag">Phase 4</span>
-          <h3>Unified Client Supervisor</h3>
-          <p>
-            Browser and TUI clients need one supervisor that owns bootstrap,
-            control socket, event socket, token refresh, pending command
-            reconciliation, subscription resume, target drift, and user-facing
-            status.
-          </p>
-          <ul>
-            <li>Persist pending command ids locally until resolved or reconciled.</li>
-            <li>Resubscribe before replaying pending command reconciliation.</li>
-            <li>Expose only connected, reconnecting, resyncing, and action-needed states to UI.</li>
-          </ul>
-        </article>
-
-        <article class="phase">
-          <span class="tag">Phase 5</span>
-          <h3>Relay HA And Drain</h3>
-          <p>
-            Cloud should return a relay endpoint set instead of a single URL.
-            Relay nodes should publish healthy, degraded, and draining status.
-            Tokens should remain scoped to a realm and be accepted across that
-            realm's relay pool.
-          </p>
-          <ul>
-            <li>Add endpoint ranking by region, freshness, drain state, and failure history.</li>
-            <li>Make clients and kernels reconnect to another relay without user action.</li>
-            <li>Keep relay stateless with respect to runtime truth.</li>
-          </ul>
-        </article>
-
-        <article class="phase">
-          <span class="tag">Phase 6</span>
-          <h3>Remote Worker Rebind</h3>
-          <p>
-            Persist home-worker lease binding, active worker provider run id,
-            prompt delivery state, last projected runtime state, and manifest sync
-            state. On reconnect, rebind before accepting new prompts to that
-            remote agent.
-          </p>
-          <ul>
-            <li>Mark remote agents degraded while worker state is unknown.</li>
-            <li>Block new prompts with a precise recovery action when rebind fails.</li>
-            <li>Automatically sync remote extension manifests after worker reconnect.</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <section>
-      <h2>Chaos Test Matrix</h2>
+      <h2>Verified Execution Coverage</h2>
       <table class="matrix">
         <thead>
           <tr>
-            <th>Failure</th>
-            <th>Injection</th>
-            <th>Expected Recovery</th>
-            <th>Assertions</th>
+            <th>Surface</th>
+            <th>Executed Drills</th>
+            <th>Result</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td>Browser event socket closes mid-turn</td>
-            <td>Close the event WebSocket after prompt acceptance and before first assistant delta.</td>
-            <td>Reconnect, refresh token if needed, resubscribe from last event id, replay missed events.</td>
-            <td>No duplicate prompt. Transcript complete. UI leaves reconnecting automatically.</td>
+            <td>Local runtime and terminals</td>
+            <td>Kernel websocket drop, durable kernel restart, relay restart, stale relay target rejection, local TUI/web parity, browser reconnect, permission interaction, and native Codex TUI.</td>
+            <td><strong class="outcome">Passed</strong>. Prompts, completions, transcript projection, pending state, and history remained consistent.</td>
           </tr>
           <tr>
-            <td>Browser control socket closes before response</td>
-            <td>Close control socket after command write but before response frame.</td>
-            <td>Reconnect, query command status, return accepted or completed result.</td>
-            <td>Command executes once. Pending UI resolves. Retry does not fork session or prompt.</td>
+            <td>Same-host remote workers</td>
+            <td>Seven remote-agent scenarios, lease repair, home authority, collaborator projection, Codex/OpenCode resume, live Claude dispatch, remote native TUI, and transcript parity.</td>
+            <td><strong class="outcome">Passed</strong>. Worker restarts and reordered queues recovered through the home kernel path.</td>
           </tr>
           <tr>
-            <td>Relay process dies mid-turn</td>
-            <td>Kill relay while kernel and browser are active.</td>
-            <td>Kernel reconnects and registers. Browser reconnects and resumes subscriptions.</td>
-            <td>Cloud target becomes stale then fresh. Turn completes without user intervention.</td>
+            <td>Docker slices</td>
+            <td>Slice lifecycle/auth/session/agent/UI matrix, Cloud slice contracts, Codex, OpenCode, and Claude native/headless turns, real relay disconnect, and browser cookie/localStorage/IndexedDB restore.</td>
+            <td><strong class="outcome">Passed</strong>. Containers and volumes were removed after execution.</td>
           </tr>
           <tr>
-            <td>Cloud API unavailable after bootstrap</td>
-            <td>Stop Cloud while runtime sockets remain open.</td>
-            <td>Existing runtime continues. Token refresh waits and retries out of band.</td>
-            <td>Prompt and output continue. UI does not claim runtime is lost.</td>
+            <td>Hetzner and collaboration</td>
+            <td>Single-user and four-user Claude collaborator agents, private/transparent/full scopes, home-extension authority, collaborator reconnect, native provider TUI, and managed/tracked/permission Workspace Live Sync.</td>
+            <td><strong class="outcome">Passed</strong>. No run-owned Hetzner process or temporary root remains.</td>
           </tr>
           <tr>
-            <td>Cloud API unavailable before bootstrap</td>
-            <td>Stop Cloud before browser opens relay terminal.</td>
-            <td>Client shows action-needed only for bootstrap. Existing local state remains intact.</td>
-            <td>No draft loss. No fake runtime errors. Retry succeeds when Cloud returns.</td>
+            <td>Hosted Cloud staging</td>
+            <td>Browser relay/kernel reconnect, second-kernel reconnect, single-user remote agent, and collaborator remote agent over the hosted <code>wss://</code> relay.</td>
+            <td><strong class="outcome">Passed</strong>. Runtime traffic stayed browser-to-relay-to-kernel; Cloud remained bootstrap/control plane.</td>
           </tr>
           <tr>
-            <td>Kernel restarts mid-turn</td>
-            <td>Restart kernel while provider has recoverable resume state.</td>
-            <td>Client reconnects, command ledger and event log reconcile, provider resumes or reports exact action.</td>
-            <td>No duplicate provider run unless explicitly required and marked. Session state coherent.</td>
-          </tr>
-          <tr>
-            <td>Worker kernel dies during leased prompt</td>
-            <td>Kill remote or slice worker while home has an active remote agent prompt.</td>
-            <td>Home marks remote degraded, rebinds when worker returns, or blocks new prompts with recovery action.</td>
-            <td>Home session does not settle incorrectly. Extension calls remain blocked until manifest sync is healthy.</td>
-          </tr>
-          <tr>
-            <td>Slow consumer overload</td>
-            <td>Throttle browser reads or set tiny outgoing queue while producing terminal output.</td>
-            <td>Kernel closes slow event consumer, client reconnects, replays or snapshots.</td>
-            <td>Pings and control responses are not starved. Health counters increment.</td>
-          </tr>
-          <tr>
-            <td>Network latency and packet loss</td>
-            <td>Inject 5s, 30s, and 2m latency plus packet loss at relay boundary.</td>
-            <td>Heartbeat state transitions to reconnecting only when appropriate and recovers automatically.</td>
-            <td>No false completed prompts. Backoff has jitter. Status messages stay simple.</td>
-          </tr>
-          <tr>
-            <td>Relay node draining</td>
-            <td>Mark relay A draining and then close connections.</td>
-            <td>Clients and kernels reconnect to relay B from Cloud endpoint set.</td>
-            <td>No manual target selection. Runtime resumes through the new relay.</td>
+            <td>Providers</td>
+            <td>Live Codex, OpenCode, and Claude local/remote/slice turns, provider thread resume, external-session import, permissions, transcript parity, and provider-account health.</td>
+            <td><strong class="outcome">Passed</strong>. Refreshed Claude credentials were validated in live native, headless, Hetzner, collaboration, web/TUI popup, and remote dispatch drills.</td>
           </tr>
         </tbody>
       </table>
     </section>
 
     <section>
-      <h2>Test Layers</h2>
+      <h2>Implemented Recovery Fixes</h2>
       <div class="two-col">
-        <div class="card">
-          <h3>Unit And Contract Tests</h3>
-          <ul class="checklist">
-            <li>Durable command ledger returns identical results for duplicate command ids.</li>
-            <li>Command id conflict rejects a reused id with a different fingerprint.</li>
-            <li>Event replay survives kernel restart and reports gap only outside retention.</li>
-            <li>Heartbeat loop keeps schedule when Cloud presence publish hangs.</li>
-            <li>Slow consumer close does not block ping, close, subscribe ack, or command responses.</li>
-            <li>Cloud target selection rejects stale, revoked, draining, and missing-heartbeat targets.</li>
-            <li>Browser supervisor coalesces reconnect attempts and refreshes bootstrap once.</li>
+        <article class="card">
+          <h3>Runtime And Provider State</h3>
+          <ul class="compact">
+            <li>Recovered remote native terminal projection after relay disconnects and provider executable updates.</li>
+            <li>Preserved leased prompts that arrive while providers start, including reordered queues and canonical prompt identity.</li>
+            <li>Required explicit completion evidence before settling remote turns and bounded status recovery reads.</li>
+            <li>Kept remote prompt projection drains alive through active turns and coalesced dispatch wakeups without losing retries.</li>
+            <li>Transferred live Claude authentication into managed Linux slices without printing or persisting temporary credentials.</li>
+            <li>Restored Workspace Live Sync launch policy, permission calls, status propagation, provider fixtures, and worker cleanup.</li>
+            <li>Protected kernel-owned provider descendants while removing stale run-owned provider processes.</li>
+            <li>Exposed TUI workflow deletion through the existing kernel-owned workflow design operation so web and TUI deletion reconcile over one authority path.</li>
           </ul>
+        </article>
+        <article class="card">
+          <h3>Transport, Slice, And Harness</h3>
+          <ul class="compact">
+            <li>Added runtime and browser resilience matrices with shared taxonomy, signal ownership, artifact, and parity contracts.</li>
+            <li>Added a Docker-gateway-only TCP bridge so native TUIs reach loopback-only provider servers inside slices without exposing unauthenticated provider ports.</li>
+            <li>Resolved Cargo binaries from both per-app and workspace target layouts across local, Cloud, staging, slice, and Hetzner drills.</li>
+            <li>Enabled <code>dev-stub</code> inventory only in hosted drill kernels after public inventory hardening.</li>
+            <li>Hardened failure preservation, process cleanup, free-port allocation, checkout parity, and evidence ownership.</li>
+            <li>Hydrated published-workflow routes from kernel-backed session state after hard reload and refreshed them from live session and workflow-run events.</li>
+            <li>Resolved fresh workflow action menus from the same kernel-backed route store used by the sidebar instead of depending on lagging waiting-room inventory.</li>
+            <li>Expanded the shared two-client drill across provider, model, variant, mode, permission, queues, steering, cancellation, interactions, workflow runs, publications, hard remounts, and deletion in both directions.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Visual And Terminal Evidence</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Evidence</th>
+            <th>Location</th>
+            <th>Validation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Codex web terminal</td>
+            <td><code>.artifacts/external-provider-sessions-web-terminal/20260709T220339Z</code></td>
+            <td>12 screenshots inspected across import, queued turn, completion, reload, and restored history.</td>
+          </tr>
+          <tr>
+            <td>OpenCode web terminal</td>
+            <td><code>.artifacts/external-provider-sessions-web-terminal/20260709T220612Z</code></td>
+            <td>12 screenshots inspected with the same workflow and stable terminal state.</td>
+          </tr>
+          <tr>
+            <td>Docker browser state</td>
+            <td><code>.artifacts/m20-docker-slice-browser-state/20260710T114730Z</code></td>
+            <td>Six screenshots inspected before/after restore; cookie, localStorage, IndexedDB, and webmail state survived.</td>
+          </tr>
+          <tr>
+            <td>Two-client web and TUI</td>
+            <td><code>.artifacts/web-tui-sync-final/hetzner-3557-claude-popup-cloud327</code></td>
+            <td>Eight screenshots cover queues, permissions resolved from either client, real Claude user requests, and workflow synchronization; all 31 checks stayed within budget.</td>
+          </tr>
+          <tr>
+            <td>Expanded two-client Freeform and workflows</td>
+            <td><span><code>.artifacts/resilience-closure-20260712/two-client-expanded-direct-full-pass-5</code> and <code>two-client-expanded-relay-full-pass-1</code></span></td>
+            <td>Direct passed 38 latency checks with a 432 ms maximum; relay passed 43 with a 1,547 ms maximum, including a real relay stop/start. No budget failed. Eighteen screenshots cover queueing, permission resolution from either client, disconnect/recovery, workflow runs, publications, hard remount, and synchronized deletion.</td>
+          </tr>
+          <tr>
+            <td>Claude native and remote</td>
+            <td><span><code>.artifacts/resilience-closure-20260712/native-claude-*.json</code> and <code>remote-claude-*.json</code></span></td>
+            <td>Final reruns close the initial defects: native matrix 6/6, remote matrix 5/5, headless slice passed, and four-user Hetzner collaboration passed.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout" style="margin-top: 18px;">
+        <h3>Claude Live Validation</h3>
+        <p>
+          After credential refresh, live Claude validation passed provider auth, permission projection, transcript parity,
+          remote and slice native TUI, headless slice, remote dispatch, Hetzner native TUI, four-user collaboration, and
+          bidirectional web/TUI user-request resolution. Initial failed rows remain preserved as root-cause evidence and
+          are superseded by the named final rerun artifacts.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Current Grounding</h2>
+      <div class="two-col">
+        <article class="callout">
+          <h3>Existing OSS Coverage</h3>
+          <p>
+            <code>arroba</code> already has tests and live drills for kernel websocket replay gaps, event replay after
+            websocket restart, command idempotency, local kernel restart persistence, remote leased-agent restart,
+            hosted terminal pairing, TUI/web parity, native provider TUI, slice lifecycle, remote runtime, and
+            distributed validation gates.
+          </p>
+        </article>
+        <article class="callout">
+          <h3>Existing Cloud Coverage</h3>
+          <p>
+            <code>arroba-cloud</code> already has browser kernel reconnect modules, heartbeat watchdogs, subscription
+            and replay tests, local browser/kernel drills, hosted browser relay smoke, stale target checks, slice
+            browser E2E drills, Playwright screenshot hooks, and Cloud validation artifacts.
+          </p>
+        </article>
+      </div>
+      <p class="note">
+        If technical issues appear during implementation, compare first with the existing drills for guidance:
+        <code>live-local-restart-drill.mjs</code>, <code>live-remote-restart-drill.mjs</code>,
+        <code>live-kernel-reconnect-drill.mjs</code>, <code>live-hosted-cloud-relay-drill.mjs</code>,
+        <code>live-tui-web-parity-visual-session.mjs</code>, <code>staging-browser-relay-kernel-smoke.mjs</code>,
+        and the existing remote, slice, workspace live sync, and native TUI matrices.
+      </p>
+    </section>
+
+    <section>
+      <h2>Recovery Contract</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Failure</th>
+            <th>Expected Behavior</th>
+            <th>Hard Failure Condition</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Browser, TUI, or kernel websocket drops</td>
+            <td>Reconnect with backoff, resubscribe from last event id, replay missed events, keep transcript and prompt state.</td>
+            <td>Lost prompt, duplicated completion, stale pending state, or transcript reset.</td>
+          </tr>
+          <tr>
+            <td>Relay process drops and restarts</td>
+            <td>Kernel, browser, TUI, and workers reconnect and re-register; stale relay subscriptions close and recover.</td>
+            <td>Dead subscription socket, stale target selected, or active turn marooned.</td>
+          </tr>
+          <tr>
+            <td>Home kernel restarts</td>
+            <td>Durable session, agents, grants, history, prompt delivery state, provider resume state, and remote bindings restore.</td>
+            <td>State loss, wrong authority path, duplicate provider submission, or unreconciled active prompt.</td>
+          </tr>
+          <tr>
+            <td>Worker kernel or slice worker restarts</td>
+            <td>Home detects stale lease, selects fresh worker presence, repairs binding, and continues through the kernel-owned prompt path.</td>
+            <td>Old lease remains active, worker output disappears, or session forks into a parallel authority path.</td>
+          </tr>
+          <tr>
+            <td>Cloud API or web server restarts</td>
+            <td>Browser keeps runtime transcript state, refreshes bootstrap/token when needed, and continues via relay after service returns.</td>
+            <td>Cloud becomes hot-path proxy, browser loses session, or token refresh cannot recover cleanly.</td>
+          </tr>
+          <tr>
+            <td>Provider process exits or kernel dies mid-turn</td>
+            <td>Resume provider thread when provider resume state supports it; otherwise surface a structured recoverable retry state.</td>
+            <td>Silent corruption, duplicated prompt, hidden failed state, or stale active provider run.</td>
+          </tr>
+          <tr>
+            <td>Collaborator disconnects</td>
+            <td>Other participants continue; reconnecting collaborator catches up without gaining extra authority or losing visibility.</td>
+            <td>Authority widening, missing transcript, duplicate prompt, or private state leak.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Implementation Milestones</h2>
+      <div class="phase-grid">
+        <article class="phase green">
+          <span class="tag">Milestone 1</span>
+          <h3>Cross-Repo Matrix Scaffold</h3>
+          <p>
+            Add generated matrices for OSS runtime chaos and Cloud browser-terminal resilience. Register them in both
+            generated-matrix registries, parity checks, distributed gate wiring, artifact index metadata, runtime signal
+            coverage, and failure taxonomy reporting.
+          </p>
+        </article>
+        <article class="phase blue">
+          <span class="tag">Milestone 2</span>
+          <h3>Reusable Chaos Harness</h3>
+          <p>
+            Build helpers to allocate unused local ports, launch relay/kernel/Cloud/web/browser/TUI processes, inject
+            drops and restarts, record screenshots and TUI snapshots, sample resources, preserve failure artifacts, and
+            clean run-owned local and Hetzner state.
+          </p>
+        </article>
+        <article class="phase amber">
+          <span class="tag">Milestone 3</span>
+          <h3>Runtime Recovery Fixes</h3>
+          <p>
+            Fix issues exposed by drills in kernel durable state, prompt delivery idempotency, provider resume handling,
+            relay subscription invalidation, stale presence rejection, remote lease repair, slice reconciliation, and
+            command/result replay.
+          </p>
+        </article>
+        <article class="phase violet">
+          <span class="tag">Milestone 4</span>
+          <h3>Terminal Parity</h3>
+          <p>
+            Ensure web terminal and TUI terminal present the same user experience under outages: stable transcript,
+            stable pending/working state, recoverable status, no duplicate output, and screenshots or automation
+            snapshots for evidence.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Fault Injection Matrix</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Axis</th>
+            <th>Required Coverage</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Providers</td>
+            <td><code>dev-stub</code> for exhaustive cheap chaos, then live <code>codex</code>, <code>opencode</code>, and <code>claude</code>/<code>claude-headless</code>.</td>
+            <td>Provider-run lifecycle, provider resume ids, output, completion, and auth classification.</td>
+          </tr>
+          <tr>
+            <td>Terminals</td>
+            <td>Local TUI, remote/orphan TUI, browser terminal, native provider TUI, and mixed same-session observers.</td>
+            <td>Terminal captures, automation snapshots, browser screenshots, and matching completion/output counters.</td>
+          </tr>
+          <tr>
+            <td>Topologies</td>
+            <td>Local direct, local browser through local Cloud and relay, local Docker slice, Hetzner worker, Hetzner collaborator, and hosted Cloud smoke.</td>
+            <td>Matrix reports with deployment presets: <code>local</code>, <code>same-host-remote</code>, <code>self-hosted-relay</code>, <code>hetzner</code>, <code>hosted-cloud</code>.</td>
+          </tr>
+          <tr>
+            <td>Faults</td>
+            <td>Socket drop, relay restart, kernel restart, worker restart, slice restart, Cloud API/web restart, token rotation, replay gap, backpressure, collaborator drop.</td>
+            <td>Exactly one prompt acceptance, exactly one completion, ordered output, replay/resume counts, and no stale target selection.</td>
+          </tr>
+          <tr>
+            <td>State surfaces</td>
+            <td>Sessions, attachments, prompt queues, provider runs, workflow runs, permissions, MCP/skill/connector grants, workspace live sync, slices, and history.</td>
+            <td>Before/after snapshots and assertions that authority remains kernel-owned.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Execution Flow</h2>
+      <div class="flow">
+        <div>
+          <strong>1. Baseline</strong>
+          <span>Run existing reconnect, restart, remote, Cloud, and parity drills to capture current behavior.</span>
         </div>
-        <div class="card">
-          <h3>End-To-End Drills</h3>
-          <ul class="checklist">
-            <li>Local browser, local relay, local kernel, dev-stub provider, event socket kill.</li>
-            <li>Hosted Cloud bootstrap, hosted relay, local kernel, Cloud API outage after bootstrap.</li>
-            <li>Remote TUI through relay with relay restart and retained event replay.</li>
-            <li>Remote worker leased agent prompt with worker kill and rebind.</li>
-            <li>Slice-backed native TUI with relay interruption and extension manifest resync.</li>
-            <li>Two-user shared session with member token refresh and non-member denial during reconnect.</li>
-            <li>Relay HA endpoint rotation from draining relay to healthy relay.</li>
-          </ul>
+        <div>
+          <strong>2. Scaffold</strong>
+          <span>Add dry-run matrices and artifact wiring, then verify registry and runtime signal parity.</span>
+        </div>
+        <div>
+          <strong>3. Inject</strong>
+          <span>Run fault scenarios locally on unused ports and remotely on Hetzner with isolated run ids.</span>
+        </div>
+        <div>
+          <strong>4. Fix</strong>
+          <span>Make narrow runtime or client fixes where drills prove a concrete recovery gap.</span>
+        </div>
+        <div>
+          <strong>5. Gate</strong>
+          <span>Run validation suites, generated matrices, distributed runtime gate, and artifact summaries.</span>
         </div>
       </div>
     </section>
 
     <section>
-      <h2>Operational Metrics</h2>
-      <div class="summary-grid">
-        <div class="card">
-          <h3>Reconnect</h3>
-          <p>Time from close to subscribed, attempts, selected relay endpoint, token refresh time, and failure reason.</p>
-        </div>
-        <div class="card">
-          <h3>Replay</h3>
-          <p>Last cursor, replayed count, gap count, snapshot fallback count, retained bytes, and oldest retained event age.</p>
-        </div>
-        <div class="card">
-          <h3>Backpressure</h3>
-          <p>Queue depth, overflow count, slow-consumer close count, dropped/coalesced snapshot count, and priority-lane latency.</p>
-        </div>
-        <div class="card">
-          <h3>Presence</h3>
-          <p>Kernel heartbeat age, Cloud publish latency, relay endpoint health, drain status, and stale target selection denials.</p>
-        </div>
+      <h2>Local And Hetzner Setup</h2>
+      <div class="two-col">
+        <article class="card">
+          <h3>Local Isolated Runtime</h3>
+          <ul>
+            <li>Use unused ports for relay, home kernel, worker kernel, Cloud API, web server, MCP, Codex, and OpenCode ports.</li>
+            <li>Use temporary <code>HOME</code>, <code>XDG_CONFIG_HOME</code>, <code>XDG_STATE_HOME</code>, daemon sockets, and history dirs per run.</li>
+            <li>Run local relay and kernels directly from the current checkout.</li>
+            <li>Do not disturb shared staging or developer-owned services during destructive local chaos tests.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Hetzner Remote Runtime</h3>
+          <ul>
+            <li>Use the configured Hetzner machine for remote worker and collaborator scenarios.</li>
+            <li>Prepare a run-id-scoped remote root, workspace, home, state, runtime, and session-history directories.</li>
+            <li>Verify remote checkout version, build artifacts, provider auth readiness, disk space, and free ports before running live provider turns.</li>
+            <li>Always delete run-owned remote roots and terminate run-id-tagged kernel/provider processes on success.</li>
+          </ul>
+        </article>
       </div>
     </section>
 
     <section>
-      <h2>Sequencing</h2>
+      <h2>Resource Monitoring And Cleanup</h2>
+      <div class="evidence-grid">
+        <article class="evidence">
+          <h3>Samples</h3>
+          <p>
+            Record CPU, RSS, process tree, open ports, disk usage, Docker/slice state, artifact sizes, queue lengths,
+            reconnect counts, replay gaps, and runtime signal owners.
+          </p>
+        </article>
+        <article class="evidence">
+          <h3>Limits</h3>
+          <p>
+            Assert idle CPU returns to a bounded range, queues do not grow without limit, backpressure does not drop
+            required frames, and long-lived sockets do not churn in baseline runs.
+          </p>
+        </article>
+        <article class="evidence">
+          <h3>Cleanup</h3>
+          <p>
+            Prove no run-owned relay, kernel, provider, node, browser, Docker slice, SSH tunnel, temp dir, or Hetzner
+            process remains after successful runs.
+          </p>
+        </article>
+      </div>
+      <table class="matrix" style="margin-top: 18px;">
+        <thead>
+          <tr>
+            <th>Host</th>
+            <th>Final Sample</th>
+            <th>Cleanup Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Local macOS</td>
+            <td>36 GiB filesystem availability with the shared data volume at 92% in the final audit. In the expanded direct run, kernel/relay/web RSS was 82,688/7,904/58,592 KiB; in relay mode it was 99,824/9,168/63,680 KiB. Active-run CPU samples were 64.1/2.6/0% and 88.3/4.2/0.1%, respectively.</td>
+            <td>No run-owned relay, kernel, provider, TUI observer, browser, SSH tunnel, screen session, temporary failure root, or listening port remained. Cleanup removed 5,817 Rust build files (4.5 GiB) and about 692 MiB of Cloud dependencies/build output. Pre-existing relay/kernel PIDs were not touched.</td>
+          </tr>
+          <tr>
+            <td>Local Docker</td>
+            <td>Zero drill containers and zero matching drill volumes after native TUI and browser-state runs.</td>
+            <td>Slice containers, home volumes, provider bridge processes, and failed native-slice roots were removed.</td>
+          </tr>
+          <tr>
+            <td>Hetzner</td>
+            <td>2.6 GiB memory available; 5.5 GiB disk available. Root filesystem baseline is 93% used.</td>
+            <td>No run-owned process or temporary root remained. Three unrelated long-lived publication containers were observed and deliberately left untouched.</td>
+          </tr>
+          <tr>
+            <td>Hosted Cloud</td>
+            <td>All four staging scenarios completed against the Caddy-fronted <code>wss://</code> relay.</td>
+            <td>Runtime sessions ended, kernel presence was marked offline, client and machine credentials were revoked, and browser/cloud session tokens were logged out. Legacy pre-fix drill identities received the same revocation cleanup.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Validation Commands</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>Commands</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>OSS unit and integration</td>
+            <td>
+              <code>cargo test --manifest-path apps/kernel/Cargo.toml</code><br>
+              <code>cargo test --manifest-path apps/relay/Cargo.toml</code><br>
+              <code>pnpm --filter @arroba/cli run build</code>
+            </td>
+          </tr>
+          <tr>
+            <td>Cloud unit and browser tests</td>
+            <td>
+              <code>pnpm --filter @arroba-cloud/web run test</code><br>
+              <code>pnpm --filter @arroba-cloud/api run test</code><br>
+              <code>pnpm run validation:suite</code>
+            </td>
+          </tr>
+          <tr>
+            <td>Focused live drills</td>
+            <td>
+              <code>pnpm --filter @arroba/cli run local-restart:drill</code><br>
+              <code>pnpm --filter @arroba/cli run remote-restart:drill</code><br>
+              <code>pnpm --filter @arroba/cli run tui-web-parity:visual-session</code><br>
+              <code>pnpm run smoke:hosted-browser-relay-kernel</code>
+            </td>
+          </tr>
+          <tr>
+            <td>New resilience matrices</td>
+            <td>
+              <code>node apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.mjs --dry-run --include-hetzner</code><br>
+              <code>node scripts/browser-terminal-resilience-matrix.mjs --dry-run --include-hosted-cloud</code>
+            </td>
+          </tr>
+          <tr>
+            <td>Release gate</td>
+            <td>
+              <code>node apps/cli/scripts/drill-distributed-runtime-gate.mjs --no-default-roots --matrix-root .artifacts/final-resilience-evidence/gate-matrices --artifact-index ... --require-generated-matrix-registry-parity --require-failure-taxonomy-registry-parity --require-runtime-signal-registry-parity --require-runtime-authority-registry-parity --require-complete</code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="result-grid" aria-label="Validation results">
+        <article class="result-card">
+          <span class="num">79</span>
+          <h3>OSS Test Files</h3>
+          <p>589 validation assertions passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">36</span>
+          <h3>Cloud Test Files</h3>
+          <p>Every committed validation test is registered and passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">6,764</span>
+          <h3>Core Assertions</h3>
+          <p>Kernel, relay, CLI, 3,218 Cloud web, and 66 Cloud API assertions passed.</p>
+        </article>
+        <article class="result-card">
+          <span class="num">0</span>
+          <h3>Gate Gaps</h3>
+          <p>No missing matrix, scenario, signal, owner, deployment, or provenance.</p>
+        </article>
+      </div>
+      <p class="note" style="margin-top: 14px;">
+        Final closure evidence: <code>.artifacts/resilience-closure-20260712</code>, plus the final web/TUI and
+        component-loss manifests in the resilience recovery worktree.
+      </p>
+    </section>
+
+    <section>
+      <h2>Commit And Push Cadence</h2>
+      <div class="callout">
+        <p>
+          Create or switch to a <code>codex/</code> branch before editing, especially because the current OSS worktree
+          may be detached. Commit and push every time there is meaningful progress: matrix scaffold, local recovery
+          fixes, remote/Hetzner fixes, web/TUI parity fixes, resource cleanup, and final gate evidence.
+        </p>
+        <p>
+          Keep commits scoped. Do not mix unrelated Cloud worktree modifications into resilience commits. If a protocol
+          shape changes, bump the shared daemon protocol version, update protocol snapshot/hash tests, adjust minimum
+          supported protocol versions only where required, and add a focused drill.
+        </p>
+        <p>
+          Execution followed the commit cadence on dedicated OSS and Cloud continuation branches. Final checkpoints
+          include remote projection recovery, live Claude slice and native TUI support, deterministic provider lifecycle
+          drills, exhaustive validation registries, and restored Cloud lint gates. Task-owned Cloud dirty files were
+          isolated in <code>arroba-cloud-resilience-validation</code>; the original dirty checkout was left untouched.
+          The workflow deletion checkpoint is <code>3fea076a2</code>, the expanded Cloud synchronization checkpoint is
+          <code>759871f0</code>, and both continuation branches were pushed to origin.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Acceptance Criteria</h2>
       <ol>
-        <li>Land durable command ledger and command status, because it prevents duplicate user actions after any control-socket failure.</li>
-        <li>Land durable event replay, because it turns most reconnects into exact replay instead of snapshot repair.</li>
-        <li>Split liveness lanes, because heartbeat starvation is the fastest path to unnecessary WebSocket disconnects.</li>
-        <li>Unify browser and TUI reconnect supervisors around the same recovery vocabulary.</li>
-        <li>Add remote worker rebind and manifest resync recovery.</li>
-        <li>Add relay endpoint sets, drain, and HA rotation after the single-relay chaos drills are green.</li>
+        <li><strong class="outcome">Met.</strong> All targeted local, web, TUI, remote, slice, native TUI, collaborator, and provider scenarios pass, including the refreshed live Claude rows.</li>
+        <li><strong class="outcome">Met.</strong> No tested outage loses prompts, duplicates prompts or completions, erases transcript state, or leaves a terminal stuck in pending/working state.</li>
+        <li><strong class="outcome">Met.</strong> Browser screenshots and TUI automation show consistent user experience before, during, and after recovery where visual validation is possible.</li>
+        <li><strong class="outcome">Met.</strong> Hetzner and local cleanup audits show no run-owned processes, temp roots, ports, Docker slices, or volumes left behind.</li>
+        <li><strong class="outcome">Met.</strong> The distributed runtime gate accepts all generated matrix evidence with matrix, failure taxonomy, runtime signal, and runtime authority registry parity.</li>
       </ol>
     </section>
-
-    <footer class="foot">
-      <p>
-        Scope note: this plan intentionally keeps Cloud as bootstrap and control
-        plane only. Any protocol shape changes must follow the repository
-        protocol change rule: version bump, snapshot/hash tests, client minimum
-        version update where needed, and focused drills.
-      </p>
-    </footer>
   </main>
+  <script>
+    for (const table of document.querySelectorAll(".matrix")) {
+      const labels = Array.from(table.querySelectorAll("thead th"), (cell) => cell.textContent.trim())
+      for (const row of table.querySelectorAll("tbody tr")) {
+        Array.from(row.children, (cell, index) => {
+          cell.dataset.label = labels[index] ?? ""
+        })
+      }
+    }
+  </script>
 </body>
 </html>

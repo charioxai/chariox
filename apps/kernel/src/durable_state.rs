@@ -210,6 +210,54 @@ impl DurableKernelStateStore {
         Ok(events)
     }
 
+    pub fn load_events_by_kind(&self, kind: &str) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        let connection = self.lock_connection("durable_state.load_events_by_kind")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
+                 FROM durable_state_events
+                 WHERE kind = ?1
+                 ORDER BY sequence ASC",
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.load_events_by_kind",
+                message: error.to_string(),
+            })?;
+        let mut rows =
+            statement
+                .query(params![kind])
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.load_events_by_kind",
+                    message: error.to_string(),
+                })?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.load_events_by_kind",
+            message: error.to_string(),
+        })? {
+            let payload_json =
+                row.get::<_, String>(5)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.load_events_by_kind",
+                        message: error.to_string(),
+                    })?;
+            events.push(DurableStateEvent {
+                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
+                event_id: row.get::<_, String>(1).unwrap_or_default(),
+                kind: row.get::<_, String>(2).unwrap_or_default(),
+                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
+                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
+                payload: serde_json::from_str(&payload_json).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "durable_state.decode_event",
+                        message: error.to_string(),
+                    }
+                })?,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn load_subject_events(
         &self,
         subject_id: &str,
@@ -1142,6 +1190,52 @@ mod tests {
                 .latest_snapshot_sequence()
                 .expect("latest snapshot sequence should load"),
             second.sequence
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn durable_state_store_loads_only_events_of_requested_kind() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-event-kind-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+
+        let first = store
+            .append_event(
+                "workspace_live_sync.change_recorded",
+                Some("session-1".to_string()),
+                serde_json::json!({"value": 1}),
+            )
+            .expect("first matching event should append");
+        store
+            .append_event(
+                "session.updated",
+                Some("session-1".to_string()),
+                serde_json::json!({"large_unrelated_value": "x".repeat(1_000_000)}),
+            )
+            .expect("unrelated event should append");
+        let second = store
+            .append_event(
+                "workspace_live_sync.change_recorded",
+                Some("session-2".to_string()),
+                serde_json::json!({"value": 2}),
+            )
+            .expect("second matching event should append");
+
+        assert_eq!(
+            store
+                .load_events_by_kind("workspace_live_sync.change_recorded")
+                .expect("matching events should load"),
+            vec![first, second]
         );
 
         let _ = std::fs::remove_file(&path);

@@ -240,6 +240,7 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
             panic!("subscription unavailable: {message}")
         }
     };
+    let initial_activity_revision = initial_snapshot.metadata.last_event_id;
     let interaction = RuntimeInteraction::new(
         "interaction-subscription-1",
         &agent_id,
@@ -278,6 +279,15 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
                 .as_ref()
                 .as_ref()
                 .expect("runtime interaction should change subscription snapshot");
+            assert_eq!(
+                snapshot.metadata.last_event_id,
+                router.session_projection_change_sequence(),
+                "subscription snapshots must carry the current monotonic activity revision",
+            );
+            assert!(
+                snapshot.metadata.last_event_id > initial_activity_revision,
+                "updated subscription snapshots must advance beyond the previous activity revision",
+            );
             assert_eq!(snapshot.session.active_interactions().len(), 1);
             assert_eq!(
                 snapshot.session.active_interactions()[0].id(),

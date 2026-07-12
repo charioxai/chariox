@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { resolveBuiltBinary } from './drill-runtime-helpers.mjs'
 
 export async function loadCliModules(runtimeDir, cliRoot) {
   const [{ transformAsync }, tsPreset] = await Promise.all([
@@ -36,12 +37,7 @@ export function makePorts() {
 }
 
 export async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
-  }
+  return await resolveBuiltBinary(binaryPath, manifestPath, binName)
 }
 
 export async function terminateChild(child, signal = 'SIGTERM') {

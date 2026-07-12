@@ -271,6 +271,22 @@ impl RuntimeSession {
         self.workflow_queued_prompts.remove(index)
     }
 
+    pub fn remove_queued_workflow_prompts_for_watchdog(
+        &mut self,
+        watchdog_id: &str,
+    ) -> Vec<WorkflowQueuedPrompt> {
+        let mut removed = Vec::new();
+        self.workflow_queued_prompts.retain(|prompt| {
+            if prompt.watchdog_id() == Some(watchdog_id) {
+                removed.push(prompt.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
     pub fn clear_workflow_queue(&mut self, queue_id: &str) -> Vec<WorkflowQueuedPrompt> {
         let mut removed = Vec::new();
         let mut kept = VecDeque::new();

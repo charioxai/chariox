@@ -76,3 +76,28 @@ test("native provider TUI matrix rejects Hetzner scenario without opt-in", async
     },
   )
 })
+
+test("native provider TUI matrix narrows scenario commands and metadata to selected providers", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-native-provider-selection-"))
+  const reportPath = path.join(rootDir, "matrix.json")
+  try {
+    await execFile(process.execPath, [
+      scriptPath,
+      "--dry-run",
+      "--only",
+      "permission-visibility,remote-native-tui",
+      "--providers",
+      "codex",
+      "--report",
+      reportPath,
+    ])
+    const report = JSON.parse(await readFile(reportPath, "utf8"))
+    assert.equal(report.metadata.providers, "codex")
+    for (const scenario of report.scenarios) {
+      const providerIndex = scenario.args.indexOf("--providers")
+      assert.equal(scenario.args[providerIndex + 1], "codex")
+    }
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})

@@ -696,7 +696,10 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
     hello: "relay",
   })
   assert.equal(response.ok, true)
-  assert.deepEqual(response.echoed, { hello: "relay" })
+  assert.deepEqual(response.echoed, {
+    command_id: receivedFrames[1]?.request_id,
+    request: { hello: "relay" },
+  })
   assert.equal(receivedFrames[0]?.kind, "client_connect")
   assert.equal(receivedFrames[1]?.kind, "client_request")
   assert.equal(receivedFrames[0]?.auth_token, "secret")

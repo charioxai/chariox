@@ -4,6 +4,8 @@ import { access, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { finalizeDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
+import { sanitizeDrillMetadata } from './lib/drill-secrets.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -124,17 +126,6 @@ function printHelp() {
   ].join('\n'))
 }
 
-function makePorts() {
-  const base = 45000 + Math.floor(Math.random() * 1000)
-  return {
-    relayPort: base,
-    kernelPort: base + 1000,
-    mcpPort: base + 2000,
-    opencodePort: base + 3000,
-    codexPort: base + 3001,
-  }
-}
-
 function makeChildrenEnv(ports, rootDir) {
   const daemonId = `relay-drill-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-drill-${process.pid}`
@@ -165,7 +156,7 @@ function makeChildrenEnv(ports, rootDir) {
       ...process.env,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+      ARROBA_OPENCODE_PORT: String(ports.openCodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
       ARROBA_RELAY_TOKEN: daemonRelayToken,
@@ -189,7 +180,7 @@ function unwrapVariant(resp, ...keys) {
 
 function logStep(name, details = null) {
   if (details == null) console.log(`[relay-drill] ${name}`)
-  else console.log(`[relay-drill] ${name}`, JSON.stringify(details))
+  else console.log(`[relay-drill] ${name}`, JSON.stringify(sanitizeDrillMetadata(details)))
 }
 
 function nowStamp() {
@@ -200,7 +191,7 @@ async function waitForLocalDaemon(kernelUrl, workspace, worktree) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     const probe = new LocalIpcClient(kernelUrl)
     try {
-      const session = unwrap(await probe.send(createSessionRequest(workspace, worktree)), 'SessionCreated').session
+      const session = unwrap(await probe.send(createSessionRequest(workspace, worktree, undefined, undefined, null, 'off')), 'SessionCreated').session
       await probe.send(endSessionRequest(session.id)).catch(() => {})
       await probe.close()
       return
@@ -267,14 +258,16 @@ function spawnProcess(command, args, options) {
 }
 
 async function resolveBinary(binaryPath, manifestPath, binName) {
-  try {
-    await access(binaryPath)
-    return binaryPath
-  } catch {
-    throw new Error(
-      `missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`,
-    )
+  const workspaceBinaryPath = path.join(repoRoot, 'target', 'debug', binName)
+  for (const candidate of [binaryPath, workspaceBinaryPath]) {
+    try {
+      await access(candidate)
+      return candidate
+    } catch {}
   }
+  throw new Error(
+    `missing built binary ${binaryPath} or ${workspaceBinaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`,
+  )
 }
 
 async function terminateChild(child, signal = 'SIGTERM') {
@@ -304,7 +297,7 @@ async function main() {
     return
   }
 
-  const ports = makePorts()
+  const ports = await makeAvailablePorts()
   const rootDir = path.join(cliRoot, '.artifacts', 'relay-runtime', nowStamp())
   await rm(rootDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(rootDir, { recursive: true })
@@ -363,7 +356,7 @@ async function main() {
     await waitForRelayTarget(relayUrl, envs.relayToken, envs.daemonAlias)
 
     localClient = new LocalIpcClient(kernelUrl)
-    const created = unwrap(await localClient.send(createSessionRequest(options.workspace, options.worktree)), 'SessionCreated')
+    const created = unwrap(await localClient.send(createSessionRequest(options.workspace, options.worktree, undefined, undefined, null, 'off')), 'SessionCreated')
     sessionId = created.session.id
     const defaultAgentId = created.agent.id
     logStep('local_session_created', { sessionId, defaultAgentId })

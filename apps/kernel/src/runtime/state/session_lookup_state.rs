@@ -70,7 +70,11 @@ impl KernelRuntimeState {
             .session_store
             .list_sessions()
             .into_iter()
-            .filter_map(|session| self.owned.session_snapshot_without_projection_update(session.id()).ok())
+            .filter_map(|session| {
+                self.owned
+                    .session_snapshot_without_projection_update(session.id())
+                    .ok()
+            })
             .collect()
     }
 

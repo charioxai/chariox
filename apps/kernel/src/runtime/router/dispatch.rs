@@ -41,6 +41,22 @@ impl CommandRouter {
             .await
         {
             Ok(Some(response)) => {
+                if let Some((session_id, attachment_id)) =
+                    projected_terminal_output_attachment(&request)
+                {
+                    if let Err(error) = self
+                        .record_terminal_attachment_heartbeat(
+                            session_id,
+                            attachment_id,
+                            crate::session::unix_epoch_ms(),
+                        )
+                        .await
+                    {
+                        let result = Err(error);
+                        log_command_completed(&command_trace, &result);
+                        return result;
+                    }
+                }
                 let result = Ok(response);
                 log_command_completed(&command_trace, &result);
                 return result;
@@ -75,5 +91,14 @@ impl CommandRouter {
         let result = self.redact_result_for_user(result, &caller_user_id);
         log_command_completed(&command_trace, &result);
         result
+    }
+}
+
+fn projected_terminal_output_attachment(request: &LocalDaemonRequest) -> Option<(&str, &str)> {
+    match request {
+        LocalDaemonRequest::PumpTerminalOutput(request) => {
+            Some((&request.session_id, &request.attachment_id))
+        }
+        _ => None,
     }
 }

@@ -700,7 +700,11 @@ pub(super) async fn emit_replay_gap_snapshot(
     attachment_id: &str,
 ) {
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
-    let snapshot = router.session_snapshot_projection_for_attachment(session_id, attachment_id, 0);
+    let snapshot = router.session_snapshot_projection_for_attachment(
+        session_id,
+        attachment_id,
+        router.session_projection_change_sequence(),
+    );
     match snapshot {
         Ok(projection) => {
             let _ = emit_kernel_event(

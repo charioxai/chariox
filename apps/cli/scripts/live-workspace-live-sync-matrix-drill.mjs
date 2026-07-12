@@ -34,8 +34,9 @@ const localPermissionDrill = path.join(scriptDir, 'live-workspace-live-sync-perm
 const remotePermissionDrill = path.join(scriptDir, 'live-remote-workspace-live-sync-permission-drill.mjs')
 
 const codexModelId = process.env.ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.5'
+const opencodeModelId = process.env.ARROBA_WORKSPACE_LIVE_SYNC_OPENCODE_MODEL ?? process.env.ARROBA_OPENCODE_MODEL ?? 'opencode/gpt-5.2'
 const CODEX_MODEL = ['--provider-model', `codex=${codexModelId}`]
-const OPENCODE_MODEL = ['--provider-model', 'opencode=opencode/gpt-5.2']
+const OPENCODE_MODEL = ['--provider-model', `opencode=${opencodeModelId}`]
 const REQUIRED_SCENARIOS = new Set(workspaceLiveSyncRequiredScenarioIds())
 
 const MATRIX = [
@@ -180,6 +181,8 @@ function printHelp() {
     'Environment:',
     '  ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL  Codex model for Codex scenarios; defaults to gpt-5.5',
     '  ARROBA_CODEX_MODEL                      Fallback Codex model override',
+    '  ARROBA_WORKSPACE_LIVE_SYNC_OPENCODE_MODEL  OpenCode model for OpenCode scenarios; defaults to opencode/gpt-5.2',
+    '  ARROBA_OPENCODE_MODEL                      Fallback OpenCode model override',
     '',
     'Scenario ids:',
     ...MATRIX.map((item) => `  ${item.id.padEnd(31)} ${item.description}`),
@@ -270,7 +273,7 @@ function providerMetadataFor(selected, options) {
     .sort()
   const providerModels = {}
   if (providers.includes('codex')) providerModels.codex = codexModelId
-  if (providers.includes('opencode')) providerModels.opencode = 'opencode/gpt-5.2'
+  if (providers.includes('opencode')) providerModels.opencode = opencodeModelId
   return providerProfileMetadata({
     providers,
     defaultModel: 'per-provider',
@@ -310,6 +313,7 @@ async function main() {
         ...(options.includeHetzner ? ['hetzner', 'self-hosted-relay'] : []),
       ], { hetznerPassthrough: options.passthrough }),
       codexModelId,
+      opencodeModelId,
     },
   })
   const failed = results.filter((result) => !result.ok)

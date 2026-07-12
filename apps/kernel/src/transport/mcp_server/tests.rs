@@ -679,8 +679,15 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     assert!(!root.join("final.txt").exists());
 }
 
-#[tokio::test]
-async fn mcp_http_tools_call_lists_and_requests_capabilities() {
+#[test]
+fn mcp_http_tools_call_lists_and_requests_capabilities() {
+    run_mcp_server_large_stack_test(
+        "mcp-http-tools-call-lists-and-requests-capabilities",
+        mcp_http_tools_call_lists_and_requests_capabilities_inner,
+    );
+}
+
+async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
     let root = std::env::temp_dir().join(format!(
         "arroba-capability-mcp-test-{}",
         std::time::SystemTime::now()

@@ -28,6 +28,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
         pump_output: bool,
     ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+        self.drain_leased_runtime_projection_with_recovery(
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            false,
+        )
+    }
+
+    pub(crate) fn drain_leased_runtime_projection_with_recovery(
+        &mut self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+        pump_output: bool,
+        replay_settled_completion: bool,
+    ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
         let leased_agent = self
             .app
             .leased_agents
@@ -44,8 +59,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
-        let had_output_history_before_pump =
-            self.leased_provider_run_has_output_history(&leased_agent, provider_run_id)?;
+        let home_prompt_id = leased_agent.active_home_prompt_id.clone();
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
@@ -143,6 +157,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|record| RelayProjectedCompletion {
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
+                home_prompt_id: home_prompt_id.clone(),
             })
             .collect::<Vec<_>>();
         completions.retain(|completion| {
@@ -167,10 +182,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &backing_session,
                 Some(&leased_agent.backing_agent_id),
             )?;
-            for entry in history_entries
-                .into_iter()
-                .filter(|entry| entry.kind == SessionHistoryEntryKind::UserPrompt)
-            {
+            for entry in history_entries.into_iter().filter(|entry| {
+                entry.kind == SessionHistoryEntryKind::UserPrompt
+                    && !entry.is_external_provider_observed()
+            }) {
                 let prompt_history_key = format!(
                     "history:{}:{}:{}",
                     entry
@@ -226,10 +241,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let current_batch_has_provider_output = output_chunks
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput);
-        let has_settleable_output_history = had_output_history_before_pump
-            || current_batch_has_provider_output
-            || (output_chunks.is_empty()
-                && self.leased_provider_run_has_output_history(&leased_agent, provider_run_id)?);
+        let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        let requires_explicit_completion = leased_provider_requires_explicit_completion(
+            &leased_agent.provider,
+            provider_run.as_ref(),
+        );
+        let has_settleable_output_history =
+            current_batch_has_provider_output && !requires_explicit_completion;
+        let provider_run_ended = provider_run
+            .as_ref()
+            .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
         let should_complete_from_history = completions.is_empty()
             && prompts.is_empty()
             && backing_active_prompt
@@ -268,7 +289,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
         }
-        if completions.is_empty() && (settled_quiet || !backing_prompt_active) {
+        if completions.is_empty()
+            && !backing_prompt_active
+            && (settled_quiet || has_settleable_output_history || provider_run_ended)
+        {
             let message_id = leased_synthetic_completion_message_id(
                 &leased_agent,
                 provider_run_id,
@@ -287,6 +311,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 completions.push(RelayProjectedCompletion {
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
+                    home_prompt_id: home_prompt_id.clone(),
                 });
             }
         }
@@ -318,8 +343,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         agent.projected_completion_keys.push(completion_key);
                     }
                 }
+                if let Some(completion) = completions.last() {
+                    agent.replayable_completion =
+                        Some(crate::execution_lease::LeasedCompletionReplay {
+                            provider_run_id: provider_run_id.to_string(),
+                            message_id: completion.message_id.clone(),
+                            completed_at_ms: completion.completed_at_ms,
+                            home_prompt_id: completion.home_prompt_id.clone(),
+                        });
+                }
+                if agent.active_home_prompt_id.as_deref() == home_prompt_id.as_deref() {
+                    agent.active_home_prompt_id = None;
+                    agent.applied_home_steer_ids.clear();
+                }
             }
             self.app.leased_workflow_turns.remove(provider_run_id);
+        }
+        if replay_settled_completion && completions.is_empty() && !backing_prompt_active {
+            if let Some(replay) = leased_agent
+                .replayable_completion
+                .as_ref()
+                .filter(|replay| replay.provider_run_id == provider_run_id)
+            {
+                completions.push(RelayProjectedCompletion {
+                    message_id: replay.message_id.clone(),
+                    completed_at_ms: replay.completed_at_ms,
+                    home_prompt_id: replay.home_prompt_id.clone(),
+                });
+            }
         }
         if !projected_output_history_keys.is_empty() {
             if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
@@ -361,6 +412,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         provider_run_id: &str,
     ) -> Result<bool, DaemonError> {
+        let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        if leased_provider_requires_explicit_completion(
+            &leased_agent.provider,
+            provider_run.as_ref(),
+        ) {
+            return Ok(false);
+        }
         let Some(active_prompt) = self.app.prompt_owner_active_prompt_for_agent(
             &leased_agent.backing_session_id,
             &leased_agent.backing_agent_id,
@@ -386,24 +444,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(true)
     }
 
-    fn leased_provider_run_has_output_history(
-        &mut self,
-        leased_agent: &LeasedAgent,
-        provider_run_id: &str,
-    ) -> Result<bool, DaemonError> {
-        let session = self
-            .app
-            .sessions
-            .get_session(&leased_agent.backing_session_id)?;
-        let entries = self
-            .app
-            .load_session_history_entries(&session, Some(&leased_agent.backing_agent_id))?;
-        Ok(entries.into_iter().any(|entry| {
-            entry.provider_run_id.as_deref() == Some(provider_run_id)
-                && entry.kind == SessionHistoryEntryKind::ProviderOutput
-        }))
-    }
-
     fn leased_provider_run_output_history_chunks(
         &mut self,
         leased_agent: &LeasedAgent,
@@ -421,6 +461,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .filter(|entry| {
                 entry.provider_run_id.as_deref() == Some(provider_run_id)
                     && entry.kind == SessionHistoryEntryKind::ProviderOutput
+                    && !entry.is_external_provider_observed()
             })
             .map(|entry| RelayProjectedOutputChunk {
                 kind: TerminalOutputKind::ProviderOutput,
@@ -461,6 +502,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     initial_liveness_already_checked: false,
                 },
             )?;
+            let _ = self.recover_idle_leased_prompt_queue(&leased_agent.id)?;
             if let Some(event) =
                 self.drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)?
             {
@@ -468,6 +510,47 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         Ok(events)
+    }
+
+    pub(crate) fn recover_idle_leased_prompt_queue(
+        &mut self,
+        leased_agent_id: &str,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let started = self.app.advance_next_queued_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
+        if let Some(prompt) = started.as_ref() {
+            crate::logging::info_with_fields(
+                "daemon.remote_prompt_dispatch",
+                "recovered idle leased prompt queue",
+                serde_json::json!({
+                    "leased_agent_id": leased_agent.id,
+                    "session_id": leased_agent.backing_session_id,
+                    "agent_id": leased_agent.backing_agent_id,
+                    "prompt_id": prompt.id(),
+                }),
+            );
+        }
+        Ok(started)
     }
 
     pub(crate) fn project_remote_runtime_projection(
@@ -530,7 +613,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         let recipient_attachment_ids = self.app.attachments.list_session_attachment_ids(session_id);
-        let saw_completion = !completions.is_empty();
         for prompt in prompts {
             self.project_remote_native_prompt_started(
                 session_id,
@@ -559,7 +641,25 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 notice.clone(),
             );
         }
-        for completion in completions {
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        let matching_completions = active_prompt
+            .as_ref()
+            .map(|active_prompt| {
+                completions
+                    .into_iter()
+                    .filter(|completion| {
+                        completion
+                            .home_prompt_id
+                            .as_deref()
+                            .is_none_or(|prompt_id| prompt_id == active_prompt.id())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let saw_completion = !matching_completions.is_empty();
+        for completion in matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
                 provider_run_id,
@@ -580,10 +680,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 self.harvest_remote_completion_observations(remote_execution, provider_run_id);
             }
         }
-        if let Some(active_prompt) = self
-            .app
-            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
-        {
+        if let Some(active_prompt) = active_prompt {
             let workflow_output_ready = active_prompt.workflow_run_id().is_some()
                 && crate::app::workflow_runtime::workflow_prompt_has_completion_output_from_runtime(
                     self.app,
@@ -832,6 +929,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
+fn leased_provider_requires_explicit_completion(
+    provider: &str,
+    worker_provider_run: Option<&crate::provider::RuntimeProviderRun>,
+) -> bool {
+    if worker_provider_run.is_some_and(crate::provider::provider_run_uses_claude_native_bridge) {
+        return true;
+    }
+    let adapter_key = crate::provider::adapter_key_for_provider(provider);
+    crate::provider::ExternalProviderObservationPolicy::for_provider(adapter_key)
+        .uses_explicit_completion()
+}
+
 fn leased_provider_run_completion_key(
     leased_agent: &LeasedAgent,
     provider_run_id: &str,
@@ -902,4 +1011,317 @@ fn stable_prompt_hash(text: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod explicit_completion_tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderClientInterface, ProviderLaunchResult,
+        RuntimeProviderRun,
+    };
+    use crate::session::PromptSubmissionOutcome;
+
+    fn provider_run(
+        id: &str,
+        session_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        client_interface: ProviderClientInterface,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            session_id,
+            adapter_key,
+            provider,
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_agent_id(agent_id)
+        .with_client_interface(client_interface);
+        RuntimeProviderRun::new(
+            id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: format!("{adapter_key}:{provider}:claude-sonnet-4-6"),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+
+    #[test]
+    fn commentary_output_does_not_complete_an_explicit_codex_turn() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("sonnet".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+            .expect("leased prompt should submit");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        app.leased_agents
+            .get_mut(&leased_agent.id)
+            .expect("leased agent should remain registered")
+            .provider = "codex".to_string();
+        app.terminal_mut().fan_out_output(
+            &leased_agent.backing_session_id,
+            &provider_run_id,
+            Some(&leased_agent.backing_agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("commentary-output".to_string()),
+            vec![leased_agent.backing_attachment_id.clone()],
+            b"Running the requested command.",
+        );
+
+        let first = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("commentary projection should succeed")
+            .expect("commentary output should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            output_chunks,
+            completions,
+            ..
+        } = first.1;
+        assert_eq!(output_chunks.len(), 1);
+        assert!(completions.is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
+
+        app.terminal_mut().record_assistant_message_completion(
+            &leased_agent.backing_session_id,
+            &provider_run_id,
+            Some(&leased_agent.backing_agent_id),
+            vec![leased_agent.backing_attachment_id.clone()],
+            "assistant-msg-explicit",
+            1234,
+        );
+        let second = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+            .expect("explicit completion projection should succeed")
+            .expect("explicit completion should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = second.1;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].message_id, "assistant-msg-explicit");
+    }
+
+    #[test]
+    fn native_prompt_keeps_home_attachment_provenance_in_worker_projection() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let provider_run = RemoteLeaseRuntime::new(&mut app)
+            .launch_leased_native_provider_run(
+                &leased_agent.id,
+                "managed-dev-stub",
+                "managed-dev-stub",
+                "default",
+                "default",
+                None,
+                None,
+                None,
+                Vec::new(),
+                Some(Vec::new()),
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("native provider run should launch");
+        let outcome = app
+            .record_native_prompt_started_with_attachments(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+                "home-native-attachment",
+                &leased_agent.backing_agent_id,
+                "native prompt from home TUI",
+                Vec::new(),
+            )
+            .expect("native prompt should be recorded");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
+            .expect("native prompt projection should succeed")
+            .expect("native prompt should produce a projection");
+        let RelayPeerEvent::LeasedRuntimeProjection { prompts, .. } = projection.1;
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].text, "native prompt from home TUI\n");
+    }
+
+    #[test]
+    fn claude_headless_leased_runs_require_explicit_completion() {
+        let headless = provider_run(
+            "provider-run-headless-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude-headless",
+            ProviderClientInterface::Arroba,
+        );
+        let structured = provider_run(
+            "provider-run-structured-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude",
+            ProviderClientInterface::Arroba,
+        );
+        assert!(leased_provider_requires_explicit_completion(
+            "claude",
+            Some(&headless),
+        ));
+        assert!(!leased_provider_requires_explicit_completion(
+            "claude",
+            Some(&structured),
+        ));
+    }
+
+    #[test]
+    fn claude_native_tui_leased_runs_require_explicit_completion() {
+        let run = provider_run(
+            "provider-run-native-claude",
+            "session-1",
+            "agent-1",
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        assert!(crate::provider::provider_run_uses_claude_native_bridge(
+            &run
+        ));
+        assert!(leased_provider_requires_explicit_completion(
+            "claude",
+            Some(&run),
+        ));
+    }
+
+    #[test]
+    fn claude_native_composer_output_does_not_complete_a_leased_prompt() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let mut provider_run = provider_run(
+            "provider-run-native-claude",
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        provider_run.mark_running();
+        app.providers_mut()
+            .insert_run_for_test(provider_run.clone());
+        let outcome = app
+            .record_native_prompt_started_with_attachments(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_attachment_id,
+                "home-native-attachment",
+                &leased_agent.backing_agent_id,
+                "prompt waiting for Enter",
+                Vec::new(),
+            )
+            .expect("native prompt should be recorded");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+        app.terminal_mut().fan_out_output(
+            &leased_agent.backing_session_id,
+            provider_run.id(),
+            Some(&leased_agent.backing_agent_id),
+            TerminalOutputKind::ProviderOutput,
+            Some("composer-redraw".to_string()),
+            vec![leased_agent.backing_attachment_id.clone()],
+            b"prompt waiting for Enter",
+        );
+
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, provider_run.id(), false)
+            .expect("composer projection should succeed")
+            .expect("composer output should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projection.1;
+        assert!(completions.is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
+    }
 }

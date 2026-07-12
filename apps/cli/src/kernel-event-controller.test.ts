@@ -433,6 +433,33 @@ test("visible prompt echo carries kernel prompt identity into transcript entry",
   assert.equal(appended[0]?.sourceAttachmentId, "attachment-1")
 })
 
+test("visible cross-client steering echo stays inside the active turn", () => {
+  const appended: Array<Omit<TranscriptEntry, "id">> = []
+  const { deps } = createDeps({
+    resolveTerminalRecordAgentId: () => "agent-a",
+    appendEntry: (entry: Omit<TranscriptEntry, "id">) => {
+      appended.push(entry)
+    },
+  })
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
+    agent_id: "agent-a",
+    prompt_id: "prompt-steered",
+    source_attachment_id: "attachment-2",
+    kind: "prompt_echo",
+    merge_key: "steering-prompt:prompt-steered",
+    bytes: [...Buffer.from("steer this\n", "utf8")],
+  })
+
+  assert.equal(appended.length, 1)
+  assert.equal(appended[0]?.role, "user")
+  assert.equal(appended[0]?.text, "steer this")
+  assert.equal(appended[0]?.turnTracking, "none")
+  assert.equal(appended[0]?.promptId, "prompt-steered")
+})
+
 test("visible external observed output carries kernel observation metadata into transcript entries", () => {
   const chunks: Array<{
     role: TranscriptEntry["role"]

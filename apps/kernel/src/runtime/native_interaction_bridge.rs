@@ -16,6 +16,8 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::session::{RuntimeInteraction, RuntimeInteractionKind};
 use crate::transport::relay_peer::RemoteNativeInteractionContext;
 
+const REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER: Duration = Duration::from_secs(15);
+
 struct RuntimeStateNativeInteractionBridge {
     handle: Handle,
     state: KernelRuntimeState,
@@ -36,8 +38,12 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
                 .await
         })?;
         if let Some((config, target_daemon_id, context)) = remote_target {
+            let response_timeout = remote_native_interaction_response_timeout(
+                &interaction,
+                config.relay_request_timeout_ms,
+            );
             let response = self.handle.block_on(async move {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                     &config,
                     arroba_relay::protocol::ClientTarget {
                         daemon_id: Some(target_daemon_id),
@@ -47,6 +53,7 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
                         context,
                         interaction,
                     },
+                    response_timeout,
                 )
                 .await
             })?;
@@ -78,6 +85,17 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             reply: resolution.reply,
         })
     }
+}
+
+fn remote_native_interaction_response_timeout(
+    interaction: &RuntimeInteraction,
+    relay_request_timeout_ms: u64,
+) -> Duration {
+    interaction
+        .timeout_sec()
+        .map(Duration::from_secs)
+        .map(|timeout| timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER))
+        .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms))
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
@@ -171,4 +189,45 @@ async fn request_runtime_interaction_with_timeout(
         choice_id: resolution.choice_id,
         reply: resolution.reply,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{RuntimeInteractionChoice, RuntimeInteractionLevel};
+
+    fn interaction(timeout_sec: Option<u64>) -> RuntimeInteraction {
+        RuntimeInteraction::new(
+            "interaction-1",
+            "agent-1",
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            None,
+            "Approve?",
+            Vec::<RuntimeInteractionChoice>::new(),
+            None,
+            timeout_sec,
+            None,
+        )
+    }
+
+    #[test]
+    fn remote_response_timeout_outlives_the_user_interaction_deadline() {
+        assert_eq!(
+            remote_native_interaction_response_timeout(&interaction(Some(300)), 60_000),
+            Duration::from_secs(315)
+        );
+        assert_eq!(
+            remote_native_interaction_response_timeout(&interaction(Some(5)), 60_000),
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn remote_response_timeout_uses_relay_default_without_interaction_deadline() {
+        assert_eq!(
+            remote_native_interaction_response_timeout(&interaction(None), 42_000),
+            Duration::from_secs(42)
+        );
+    }
 }

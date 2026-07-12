@@ -116,6 +116,19 @@ pub(super) async fn replay_recent_relay_events(
                 attachment_id,
             )
             .await?;
+            emit_relay_event(
+                router,
+                outgoing_tx,
+                subscription_id,
+                client_public_key,
+                event_runtime,
+                &event_stream_id,
+                KernelEvent::TransportResumed {
+                    session_id: session_id.to_string(),
+                    resumed_from_event_id: Some(cursor),
+                },
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -169,7 +182,11 @@ async fn emit_relay_replay_gap_snapshot(
     attachment_id: &str,
 ) -> Result<(), DaemonError> {
     let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
-    let snapshot = router.session_snapshot_projection_for_attachment(session_id, attachment_id, 0);
+    let snapshot = router.session_snapshot_projection_for_attachment(
+        session_id,
+        attachment_id,
+        router.session_projection_change_sequence(),
+    );
     match snapshot {
         Ok(projection) => {
             emit_relay_event(

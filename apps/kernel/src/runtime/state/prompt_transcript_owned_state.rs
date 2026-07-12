@@ -604,7 +604,24 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let provider_run = self
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .or_else(|| self.provider_run_projection.get(provider_run_id))
+            .or_else(|| {
+                self.provider_run_projection
+                    .get_for_agent(session_id, agent_id)
+            });
+        if let Some(provider_run) = provider_run.as_ref() {
+            if provider_run.session_id() != session_id {
+                return Err(DaemonError::ProviderRunNotInSession {
+                    session_id: session_id.to_string(),
+                    provider_run_id: provider_run.id().to_string(),
+                });
+            }
+        }
+        let agent = self.agent_store.get_agent(agent_id)?;
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(
             "merge_key".to_string(),
@@ -630,17 +647,30 @@ impl KernelRuntimeOwnedState {
         let context = crate::history::HistoryEventTurnContext {
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
-            provider: Some(provider_run.provider().to_string()),
-            model: Some(provider_run.model().to_string()),
+            provider: Some(
+                provider_run
+                    .as_ref()
+                    .map(|run| run.provider())
+                    .unwrap_or_else(|| agent.provider())
+                    .to_string(),
+            ),
+            model: provider_run
+                .as_ref()
+                .map(|run| run.model().to_string())
+                .or_else(|| agent.model().map(str::to_string)),
             turn_id: active_turn
                 .as_ref()
                 .map(|turn| turn.trace_id.clone())
                 .or_else(|| Some(active_prompt_id.to_string())),
             prompt_id: Some(active_prompt_id.to_string()),
             provider_run_id: Some(provider_run_id.to_string()),
-            provider_session_id: provider_run.provider_session_id().map(str::to_string),
+            provider_session_id: provider_run
+                .as_ref()
+                .and_then(|run| run.provider_session_id())
+                .map(str::to_string),
             worktree_path: provider_run
-                .working_directory()
+                .as_ref()
+                .and_then(|run| run.working_directory())
                 .map(|path| path.display().to_string()),
             ..crate::history::HistoryEventTurnContext::default()
         };
@@ -678,11 +708,14 @@ impl KernelRuntimeOwnedState {
         self.echo_prompt_to_attachments(
             session_id,
             provider_run_id,
+            None,
             prompt_id,
             source_attachment_id,
             prompt,
             attachments,
             recipient_attachment_ids,
+            None,
+            None,
         );
     }
 
@@ -701,23 +734,63 @@ impl KernelRuntimeOwnedState {
         self.echo_prompt_to_attachments(
             session_id,
             provider_run_id,
+            None,
             prompt_id,
             source_attachment_id,
             prompt,
             attachments,
             recipient_attachment_ids,
+            None,
+            None,
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn echo_steering_prompt_to_other_attachments(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        prompt_source_attachment_id: &str,
+        steering_attachment_id: &str,
+        prompt: &str,
+        attachments: &[crate::session::PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
+    ) {
+        let recipient_attachment_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter(|attachment_id| attachment_id != steering_attachment_id)
+            .collect::<Vec<_>>();
+        self.echo_prompt_to_attachments(
+            session_id,
+            provider_run_id,
+            Some(agent_id),
+            prompt_id,
+            prompt_source_attachment_id,
+            prompt,
+            attachments,
+            recipient_attachment_ids,
+            Some(prompt_origin),
+            Some(crate::history::steering_prompt_merge_key(prompt_id)),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn echo_prompt_to_attachments(
         &self,
         session_id: &str,
         provider_run_id: &str,
+        agent_id_override: Option<&str>,
         prompt_id: &str,
         source_attachment_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
         recipient_attachment_ids: Vec<String>,
+        prompt_origin_override: Option<crate::session::PromptOrigin>,
+        merge_key: Option<String>,
     ) {
         if recipient_attachment_ids.is_empty() {
             return;
@@ -727,21 +800,24 @@ impl KernelRuntimeOwnedState {
         if !bytes.ends_with(b"\n") {
             bytes.push(b'\n');
         }
-        let agent_id = self
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let prompt_origin = agent_id.as_deref().and_then(|agent_id| {
-            self.session_store
-                .get_session(session_id)
+        let agent_id = agent_id_override.map(str::to_string).or_else(|| {
+            self.provider_store
+                .get_run(provider_run_id)
                 .ok()
-                .and_then(|session| {
-                    self.prompt_state_owner
-                        .active_prompt_for_agent(&session, agent_id)
-                })
-                .filter(|prompt| prompt.id() == prompt_id)
-                .map(|prompt| prompt.prompt_origin())
+                .and_then(|run| run.agent_instance_id().map(str::to_string))
+        });
+        let prompt_origin = prompt_origin_override.or_else(|| {
+            agent_id.as_deref().and_then(|agent_id| {
+                self.session_store
+                    .get_session(session_id)
+                    .ok()
+                    .and_then(|session| {
+                        self.prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                    })
+                    .filter(|prompt| prompt.id() == prompt_id)
+                    .map(|prompt| prompt.prompt_origin())
+            })
         });
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
@@ -750,13 +826,14 @@ impl KernelRuntimeOwnedState {
             agent_id.as_deref(),
             recipient_attachment_ids,
         );
-        self.terminal_stream.fan_out_prompt_output(
+        self.terminal_stream.fan_out_prompt_output_with_merge_key(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             prompt_id,
             prompt_origin,
             source_attachment_id,
+            merge_key,
             recipient_attachment_ids,
             &bytes,
         );

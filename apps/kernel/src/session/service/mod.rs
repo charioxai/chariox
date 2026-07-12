@@ -20,11 +20,11 @@ use super::{
     WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
-    WorkflowQueuedPromptSource, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
-    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
-    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
+    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus,
+    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
+    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
+    WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
+    WorkspaceLinkAttachment, WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -106,6 +106,13 @@ pub struct WorkflowWatchdogTickPlan {
     pub endpoint_id: String,
     pub queue_id: Option<String>,
     pub invocation_prompt: String,
+    pub enqueue_prompt: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowWatchdogCollection {
+    pub plans: Vec<WorkflowWatchdogTickPlan>,
+    pub changed_session_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]

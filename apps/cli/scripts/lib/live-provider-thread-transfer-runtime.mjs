@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHmac } from "node:crypto"
-import { createWriteStream } from "node:fs"
+import { createWriteStream, existsSync } from "node:fs"
 import { chmod, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -10,12 +10,14 @@ import { setTimeout as sleep } from "node:timers/promises"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
   createSessionRequest,
+  endSessionRequest,
   getProviderRunRequest,
   getSliceRequest,
   getSessionHistoryBlobContentRequest,
   getSessionHistoryOutlineRequest,
   getSessionStateRequest,
   listProviderProcessesRequest,
+  listSessionsRequest,
 } from "../../dist/ipc-requests.js"
 import {
   makeAvailablePorts,
@@ -26,8 +28,8 @@ import {
 export const scriptDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const cliRoot = path.resolve(scriptDir, "..")
 export const repoRoot = path.resolve(cliRoot, "..", "..")
-export const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-export const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+export const kernelBinary = resolveBinaryPath("kernel", "arroba-kernel")
+export const relayBinary = resolveBinaryPath("relay", "arroba-relay")
 export const artifactsRoot = path.join(repoRoot, ".artifacts", "provider-thread-transfer")
 export const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 
@@ -40,6 +42,14 @@ export const DEFAULT_SLICE_BUILD_IMAGE_POLICY = process.env.ARROBA_PROVIDER_THRE
 export const RELAY_ISSUER = "arroba-provider-thread-transfer-drill"
 export const RELAY_SECRET = "arroba-provider-thread-transfer-drill-secret"
 export const RELAY_REALM = "provider-thread-transfer-drill"
+
+function resolveBinaryPath(crateName, binName) {
+  const appLocalBinary = path.join(repoRoot, "apps", crateName, "target", "debug", binName)
+  if (existsSync(appLocalBinary)) return appLocalBinary
+  const workspaceBinary = path.join(repoRoot, "target", "debug", binName)
+  if (existsSync(workspaceBinary)) return workspaceBinary
+  return appLocalBinary
+}
 
 export function parseArgs(argv) {
   const options = {
@@ -518,6 +528,8 @@ export function workerResumeDaemonEnv({
   return {
     ...process.env,
     ...providerEnv,
+    XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
     ARROBA_KERNEL_PORT: String(kernelPort),
     ARROBA_MCP_PORT: String(mcpPort),
     ARROBA_OPENCODE_PORT: String(openCodePort),
@@ -561,11 +573,26 @@ export async function runLoggedCommand(command, args, { cwd, env, stdoutPath, st
       timeoutMs,
     )
     if (status.code !== 0) {
-      throw new Error(`${command} ${args.join(" ")} exited with code ${status.code}${status.signal ? ` signal ${status.signal}` : ""}`)
+      const stdoutTail = await readLogTail(stdoutPath)
+      const stderrTail = await readLogTail(stderrPath)
+      throw new Error([
+        `${command} ${args.join(" ")} exited with code ${status.code}${status.signal ? ` signal ${status.signal}` : ""}`,
+        stdoutTail ? `stdout tail:\n${stdoutTail}` : null,
+        stderrTail ? `stderr tail:\n${stderrTail}` : null,
+      ].filter(Boolean).join("\n"))
     }
   } catch (error) {
     await terminateChild(child)
     throw error
+  }
+}
+
+async function readLogTail(filePath) {
+  if (!filePath) return ""
+  try {
+    return (await readFile(filePath, "utf8")).split("\n").slice(-80).join("\n").trim()
+  } catch {
+    return ""
   }
 }
 

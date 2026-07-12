@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, RwLock};
 use super::support::*;
 use super::*;
 use crate::auth::DEFAULT_RELAY_REALM_ID;
-use crate::protocol::{DaemonRegistration, EncryptedRelayPayload};
+use crate::protocol::{ClientTarget, DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
 
 #[test]
@@ -156,6 +156,34 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
     assert!(!guard.daemons.contains_key(&daemon_key));
     assert!(!guard.daemon_peers.contains_key(&daemon_key));
     assert!(!guard.peers.contains_key(&peer_addr));
+}
+
+#[tokio::test]
+async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
+    let real_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel");
+    let temp_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel:peer-tmp:req-1");
+    let mut real = daemon_registration("home-kernel");
+    real.daemon_alias = Some("home".to_string());
+    real.capabilities = vec!["kernel_websocket".to_string()];
+    let mut temporary = daemon_registration("home-kernel:peer-tmp:req-1");
+    temporary.daemon_alias = Some("home".to_string());
+    temporary.capabilities = vec!["relay_peer_transport".to_string()];
+    let mut registry = RelayRegistry::default();
+    registry.daemons.insert(real_key.clone(), real);
+    registry.daemons.insert(temp_key, temporary);
+    let registry = Arc::new(RwLock::new(registry));
+
+    let resolved = resolve_target_daemon_key(
+        &registry,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("home".to_string()),
+        },
+    )
+    .await;
+
+    assert_eq!(resolved, Some(real_key));
 }
 
 #[tokio::test]

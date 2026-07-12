@@ -270,7 +270,15 @@ export async function selectWorkerKernel(client, workerMachineId, provider, time
   return selected
 }
 
-export async function runWorkerResumeScenario({ provider, root, kernelUrl, workerMachineId, workerKernelId, options }) {
+export async function runWorkerResumeScenario({
+  provider,
+  root,
+  kernelUrl,
+  historyDir,
+  workerMachineId,
+  workerKernelId,
+  options,
+}) {
   const workspace = path.join(root, provider, "workspace")
   await mkdir(workspace, { recursive: true })
   await writeFile(path.join(workspace, "README.md"), `# Worker resume provider thread transfer drill for ${provider}\n`, "utf8")
@@ -374,7 +382,7 @@ export async function runWorkerResumeScenario({ provider, root, kernelUrl, worke
       marker: rememberMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
-      historyDir: options.historyDir,
+      historyDir,
     })
     await waitForPromptIdle({
       client,
@@ -487,7 +495,7 @@ export async function runWorkerResumeScenario({ provider, root, kernelUrl, worke
       marker: recallObservationMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
-      historyDir: options.historyDir,
+      historyDir,
     })
     result.checks.worker_recall_marker_observed = true
     result.evidence.recall_marker = recallMarker

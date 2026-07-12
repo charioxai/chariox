@@ -163,6 +163,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
     structured_endpoint: Option<String>,
     provider_session_id: Option<String>,
     required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
     runtime_state
@@ -176,6 +177,7 @@ pub(crate) async fn launch_relay_leased_native_provider_run(
             structured_endpoint,
             provider_session_id,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
         )
         .await
@@ -198,6 +200,18 @@ pub(crate) async fn send_relay_leased_native_provider_input(
         .await
 }
 
+pub(crate) async fn resize_relay_leased_provider_terminal(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .resize_relay_leased_provider_terminal(leased_agent_id, provider_run_id, cols, rows)
+        .await
+}
+
 pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
@@ -206,6 +220,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     workflow_context: Option<RemoteWorkflowTurnContext>,
     git_context: Option<RemoteGitTurnContext>,
     required_mcps: Vec<RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
     runtime_state
@@ -216,7 +231,32 @@ pub(crate) async fn submit_relay_leased_prompt(
             workflow_context,
             git_context,
             required_mcps,
+            required_skills,
             remote_extension_manifest,
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn steer_relay_leased_prompt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    steer_id: &str,
+    target_home_prompt_id: &str,
+    prompt: &str,
+    hidden_system_context: &str,
+    attachments: Vec<RelayPromptAttachment>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+) -> Result<(String, bool), DaemonError> {
+    runtime_state
+        .steer_relay_leased_prompt(
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            prompt,
+            hidden_system_context,
+            attachments,
+            required_skills,
         )
         .await
 }
@@ -307,9 +347,15 @@ pub(crate) async fn drain_relay_leased_runtime_projection(
     leased_agent_id: &str,
     provider_run_id: &str,
     pump_output: bool,
+    replay_settled_completion: bool,
 ) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
     runtime_state
-        .drain_relay_leased_runtime_projection(leased_agent_id, provider_run_id, pump_output)
+        .drain_relay_leased_runtime_projection(
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            replay_settled_completion,
+        )
         .await
 }
 

@@ -201,6 +201,18 @@ mod tests {
     }
 
     #[test]
+    fn remote_kernel_selection_accepts_native_claude_provider_id() {
+        let selected = select_remote_kernel(
+            vec![kernel("kernel-1", true, &["claude", "claude-headless"])],
+            "machine-1",
+            "claude",
+        )
+        .expect("native claude provider id should be leaseable when advertised");
+
+        assert_eq!(selected.kernel_id, "kernel-1");
+    }
+
+    #[test]
     fn explicit_kernel_validation_errors_are_actionable() {
         let disabled = ensure_kernel_can_host_provider(
             kernel("kernel-1", false, &["codex"]),

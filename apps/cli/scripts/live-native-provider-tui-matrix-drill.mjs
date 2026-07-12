@@ -148,6 +148,7 @@ function printHelp() {
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
+    "  --providers P1,P2        Limit selected scenarios to supported providers",
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
     "  --provider-account P=A   Label the provider account/profile used by this matrix without exposing credentials",
@@ -174,6 +175,7 @@ function parseArgs(argv) {
     continueOnFailure: false,
     reportPath: null,
     artifactIndexPath: null,
+    providers: null,
     providerAccounts: {},
     passthrough: [],
     help: false,
@@ -184,6 +186,8 @@ function parseArgs(argv) {
     else if (arg === "--include-hetzner") options.includeHetzner = true
     else if (arg === "--dry-run") options.dryRun = true
     else if (arg === "--continue-on-failure") options.continueOnFailure = true
+    else if (arg === "--providers") options.providers = parseProviders(readValue(argv, index++, arg))
+    else if (arg.startsWith("--providers=")) options.providers = parseProviders(arg.slice("--providers=".length))
     else if (arg === "--report") options.reportPath = readValue(argv, index++, arg)
     else if (arg.startsWith("--report=")) options.reportPath = arg.slice("--report=".length)
     else if (arg === "--artifact-index") options.artifactIndexPath = readValue(argv, index++, arg)
@@ -207,12 +211,36 @@ function parseArgs(argv) {
 }
 
 function selectScenarios(options) {
-  return selectDrillMatrixScenarios({
+  const selected = selectDrillMatrixScenarios({
     scenarios: MATRIX,
     requestedIds: options.only,
     enabledRequirements: new Set(options.includeHetzner ? ["hetzner"] : []),
     requirementLabels: { hetzner: "--include-hetzner" },
   })
+  return options.providers ? selected.map((scenarioItem) => selectScenarioProviders(scenarioItem, options.providers)) : selected
+}
+
+function parseProviders(value) {
+  const providers = [...new Set(String(value).split(",").map((provider) => provider.trim()).filter(Boolean))].sort()
+  if (providers.length === 0) throw new Error("--providers requires at least one provider")
+  for (const provider of providers) {
+    if (!ALL_PROVIDERS.split(",").includes(provider)) throw new Error(`unsupported native TUI provider: ${provider}`)
+  }
+  return providers
+}
+
+function selectScenarioProviders(scenarioItem, requestedProviders) {
+  const providers = scenarioItem.providers.filter((provider) => requestedProviders.includes(provider))
+  if (providers.length === 0) {
+    throw new Error(`${scenarioItem.id} does not support requested providers: ${requestedProviders.join(",")}`)
+  }
+  const args = [...scenarioItem.args]
+  const providersIndex = args.indexOf("--providers")
+  if (providersIndex < 0 || providersIndex + 1 >= args.length) {
+    throw new Error(`${scenarioItem.id} is missing its provider argument`)
+  }
+  args[providersIndex + 1] = providers.join(",")
+  return { ...scenarioItem, args, providers }
 }
 
 function commandForScenario(scenarioItem, passthrough) {

@@ -229,8 +229,17 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
         assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hosted-cloud"])
-        assert.deepEqual(report.checks.matrices.missingScenarios, ["hosted-collab-remote-agent", "hosted-single-user-remote-agent", "ui-projection"])
+        assert.deepEqual(report.checks.matrices.missingScenarios, [
+          "hetzner-collaborator-reconnect-authority",
+          "hosted-browser-relay-kernel-reconnect",
+          "hosted-cloud-relay-second-kernel-reconnect",
+          "hosted-collab-remote-agent",
+          "hosted-single-user-remote-agent",
+          "local-browser-relay-kernel-reconnect",
+          "ui-projection",
+        ])
         assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
+          { owner: "validation-harness", classification: "matrix-coverage" },
           { owner: "validation-harness", classification: "matrix-coverage" },
           { owner: "validation-harness", classification: "matrix-coverage" },
           { owner: "validation-harness", classification: "matrix-coverage" },

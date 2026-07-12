@@ -4,7 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import { verifyDrillRuntimeAuthorityRegistryParity } from "./drill-runtime-authority-registry-parity.mjs"
+import {
+  validateCloudCompatibleDrillRuntimeAuthorityManifest,
+  verifyDrillRuntimeAuthorityRegistryParity,
+} from "./drill-runtime-authority-registry-parity.mjs"
 import { drillRuntimeAuthorityManifest } from "./drill-runtime-authority-invariants.mjs"
 
 test("accepts matching OSS and Cloud runtime authority registries", async () => {
@@ -33,6 +36,18 @@ test("accepts Cloud control-plane invariant alias and owner override", async () 
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
+})
+
+test("accepts Cloud control-plane aliases in embedded artifact manifests", () => {
+  const manifest = drillRuntimeAuthorityManifest()
+  const contextual = {
+    ...manifest,
+    invariants: manifest.invariants.map((invariant) => invariant.id === "relay-cloud-transport-only"
+      ? { ...invariant, id: "cloud-control-plane-only", owner: "cloud-deployment" }
+      : invariant),
+  }
+
+  assert.doesNotThrow(() => validateCloudCompatibleDrillRuntimeAuthorityManifest(contextual))
 })
 
 test("rejects missing Cloud runtime authority registry exports", async () => {

@@ -49,8 +49,8 @@ impl SessionActor {
 #[cfg(test)]
 mod tests {
     use super::projection_policy::{
-        projected_config_update_absence_response, session_response_projection_action,
-        SessionProjectionAction,
+        projected_config_update_absence_response, projected_terminal_input_absence_response,
+        session_response_projection_action, SessionProjectionAction,
     };
     use crate::agent::{AgentState, CreateAgentRequest};
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
@@ -59,8 +59,8 @@ mod tests {
         DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
         ExternalProviderSessionCapabilities, ExternalProviderSessionRecord, FocusAgentRequest,
         ListExternalProviderSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-        PollRuntimeNoticesRequest, ResizeTerminalRequest, UpdateAgentConfigRequest,
-        UpdateSessionConfigRequest,
+        PollRuntimeNoticesRequest, ResizeTerminalRequest, SendTerminalInputRequest,
+        UpdateAgentConfigRequest, UpdateSessionConfigRequest,
     };
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
     use crate::runtime::command::KernelCommand;

@@ -169,9 +169,7 @@ pub(super) async fn handle_incoming_envelope(
             });
         }
         RelayEnvelope::DaemonDisplayTunnelRegistered {
-            tunnel_id,
-            error,
-            ..
+            tunnel_id, error, ..
         } => {
             state
                 .write()

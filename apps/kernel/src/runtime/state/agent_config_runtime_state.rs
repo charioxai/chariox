@@ -847,37 +847,41 @@ impl KernelRuntimeState {
             ) {
                 config.apply_remote_relay_override(relay_url, relay_token);
             }
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &config,
-                    ClientTarget {
-                        daemon_id: Some(remote_update.worker_kernel_id.clone()),
-                        daemon_alias: None,
-                    },
-                    RelayPeerRequest::UpdateLeasedAgentConfig {
-                        leased_agent_id: remote_update.leased_agent_id,
-                        execution_mode: remote_update.execution_mode,
-                        permission_level: remote_update.permission_level,
-                    },
-                ),
-            )
-            .await
-            {
-                Ok(Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. })) => {}
-                Ok(Ok(other)) => {
+            let target = ClientTarget {
+                daemon_id: Some(remote_update.worker_kernel_id.clone()),
+                daemon_alias: None,
+            };
+            let request = RelayPeerRequest::UpdateLeasedAgentConfig {
+                leased_agent_id: remote_update.leased_agent_id,
+                execution_mode: remote_update.execution_mode,
+                permission_level: remote_update.permission_level,
+            };
+            let response = match self.connected_relay_state_for_config(&config).await {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay(
+                        &config,
+                        &relay_state,
+                        target,
+                        request,
+                    )
+                    .await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        &config, target, request,
+                    )
+                    .await
+                }
+            };
+            match response {
+                Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. }) => {}
+                Ok(other) => {
                     return Err(DaemonError::LocalTransport {
                         operation: "update remote leased agent config",
                         message: format!("unexpected remote config response: {other:?}"),
                     });
                 }
-                Ok(Err(error)) => return Err(error),
-                Err(_) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "update remote leased agent config",
-                        message: "timed out waiting for remote worker config update".to_string(),
-                    });
-                }
+                Err(error) => return Err(error),
             }
             agent = self.owned.commit_remote_agent_config_update(
                 session_id,

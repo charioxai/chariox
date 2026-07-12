@@ -266,6 +266,33 @@ impl SessionService {
             .collect())
     }
 
+    pub fn session_has_active_workflow_run(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let session = self
+            .store
+            .get(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.has_active_workflow_run())
+    }
+
+    pub fn has_queued_workflow_prompt_for_watchdog(
+        &self,
+        session_id: &str,
+        watchdog_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self
+            .store
+            .get(session_id)
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(session.workflow_queued_prompts().iter().any(|prompt| {
+            prompt.watchdog_id() == Some(watchdog_id)
+                && prompt.status() == WorkflowQueuedPromptStatus::Queued
+        }))
+    }
+
     pub fn enqueue_workflow_prompt(
         &mut self,
         session_id: &str,

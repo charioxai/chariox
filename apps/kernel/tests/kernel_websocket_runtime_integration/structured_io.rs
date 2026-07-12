@@ -206,6 +206,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
             "resize-during-slow-submit",
             LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
                 session_id: session_id.clone(),
+                provider_run_id: None,
                 cols: 132,
                 rows: 43,
             }),
@@ -287,6 +288,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
             "resize-during-slow-abort",
             LocalDaemonRequest::ResizeTerminal(ResizeTerminalRequest {
                 session_id: session_id.clone(),
+                provider_run_id: None,
                 cols: 120,
                 rows: 38,
             }),

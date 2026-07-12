@@ -64,7 +64,7 @@ const MATRIX = [
     id: "provider-run-binding",
     provider: "claude-headless",
     providerFamily: "claude",
-    description: "same-host remote Claude provider-run binding and placement",
+    description: "same-host remote provider-run binding and placement",
     classification: "provider-error",
     runtimeSignals: ["lease-health", "provider-run-lifecycle"],
     exitCriteria: [
@@ -222,6 +222,7 @@ function printHelp() {
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
+    "  --scenario-provider I=P  Override a provider-backed scenario provider",
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
     "  --provider-model P=M     Override model for provider-backed scenarios",
@@ -257,6 +258,7 @@ function parseArgs(argv) {
     artifactIndexPath: null,
     providerAccounts: {},
     providerModels: {},
+    scenarioProviders: {},
     passthrough: [],
     help: false,
   }
@@ -267,6 +269,8 @@ function parseArgs(argv) {
     else if (arg === "--include-hosted-cloud") options.includeHostedCloud = true
     else if (arg === "--dry-run") options.dryRun = true
     else if (arg === "--continue-on-failure") options.continueOnFailure = true
+    else if (arg === "--scenario-provider") applyScenarioProviderOverride(options.scenarioProviders, readValue(argv, index++, arg))
+    else if (arg.startsWith("--scenario-provider=")) applyScenarioProviderOverride(options.scenarioProviders, arg.slice("--scenario-provider=".length))
     else if (arg === "--report") options.reportPath = readValue(argv, index++, arg)
     else if (arg.startsWith("--report=")) options.reportPath = arg.slice("--report=".length)
     else if (arg === "--artifact-index") options.artifactIndexPath = readValue(argv, index++, arg)
@@ -295,7 +299,7 @@ function selectScenarios(options) {
   const enabledRequirements = new Set()
   if (options.includeHetzner) enabledRequirements.add("hetzner")
   if (options.includeHostedCloud) enabledRequirements.add("hosted-cloud")
-  return selectDrillMatrixScenarios({
+  const selected = selectDrillMatrixScenarios({
     scenarios: MATRIX,
     requestedIds: options.only,
     enabledRequirements,
@@ -304,6 +308,34 @@ function selectScenarios(options) {
       "hosted-cloud": "--include-hosted-cloud",
     },
   })
+  return selected.map((scenario) => scenarioWithProviderOverride(scenario, options.scenarioProviders[scenario.id]))
+}
+
+function applyScenarioProviderOverride(target, value) {
+  const separator = value.indexOf("=")
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error("--scenario-provider must use SCENARIO=PROVIDER")
+  }
+  const scenarioId = value.slice(0, separator).trim()
+  const provider = value.slice(separator + 1).trim()
+  const scenario = MATRIX.find((item) => item.id === scenarioId)
+  if (!scenario || scenario.script !== remoteMachineDrill) {
+    throw new Error(`scenario provider override is not supported for ${scenarioId}`)
+  }
+  if (!["codex", "opencode", "claude-headless"].includes(provider)) {
+    throw new Error(`unsupported remote scenario provider: ${provider}`)
+  }
+  target[scenarioId] = provider
+}
+
+function scenarioWithProviderOverride(scenario, provider) {
+  if (!provider) return scenario
+  return {
+    ...scenario,
+    provider,
+    providerFamily: provider === "claude-headless" ? "claude" : provider,
+    args: ["--provider", provider],
+  }
 }
 
 function modelForScenario(scenario, options) {

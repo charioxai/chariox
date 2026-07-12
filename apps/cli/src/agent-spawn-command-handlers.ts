@@ -11,7 +11,10 @@ import {
   resolveLocalPlacement,
   type RemoteGitWorktreePlacement,
 } from "./command-worktree-placement.js"
-import { remoteKernelReadiness } from "@arroba/kernel-client/shell-remote-format"
+import {
+  remoteKernelReadiness,
+  remoteKernelReadinessForProvider,
+} from "@arroba/kernel-client/shell-remote-format"
 
 type FooterTone = "info" | "error"
 
@@ -217,39 +220,30 @@ async function validateRemoteMachineSpawnTarget(
   if (kernels.length === 0) {
     throw new Error(`remote machine ${machineRef} has no live worker kernels; next: run /machine kernels ${machineRef} or choose another worker`)
   }
-  const ready = kernels.filter((kernel) => remoteKernelReadiness(kernel) === "ready")
-  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "blocked")) {
+  if (kernels.every((kernel) => remoteKernelReadiness(kernel) === "blocked")) {
     const kernelTargets = formatKernelTargets(kernels)
     throw new Error(`remote machine ${machineRef} has no kernel accepting remote agents; next: enable remote leases on ${kernelTargets} or choose another worker`)
   }
-  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-provider")) {
+  const accepting = kernels.filter((kernel) => kernel.accepting_remote_leases === true)
+  if (accepting.length > 0 && accepting.every((kernel) => (kernel.available_providers ?? []).length === 0)) {
     const kernelTargets = formatKernelTargets(kernels)
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider CLIs; next: configure provider CLIs on ${kernelTargets} or choose another worker`)
   }
-  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")) {
-    const kernelTargets = formatKernelTargets(kernels)
-    throw new Error(`remote machine ${machineRef} has no ready worker kernel with authenticated provider accounts; next: configure/import or refresh provider accounts on ${kernelTargets} or choose another worker`)
-  }
-  if (ready.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
+  if (accepting.length === 0 && kernels.every((kernel) => remoteKernelReadiness(kernel) === "unknown")) {
     throw new Error(`remote machine ${machineRef} has no kernel with known remote readiness; next: run /machine kernels ${machineRef}, refresh relay inventory, or choose another worker`)
   }
-  if (ready.length === 0) {
-    throw new Error(`remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker`)
-  }
-  if (!ready.some((kernel) => (kernel.available_providers ?? []).includes(provider))) {
-    const providerCandidates = kernels.filter((kernel) => (
-      kernel.accepting_remote_leases === true
-      && (kernel.available_providers ?? []).includes(provider)
-    ))
-    if (
-      providerCandidates.length > 0
-      && providerCandidates.every((kernel) => remoteKernelReadiness(kernel) === "needs-account")
-    ) {
-      const kernelTargets = formatKernelTargets(providerCandidates)
-      throw new Error(`remote machine ${machineRef} has no ready worker kernel with an authenticated ${provider} account; next: configure/import or refresh the ${provider} account on ${kernelTargets} or choose another worker`)
-    }
+  const providerCandidates = accepting.filter((kernel) => (
+    (kernel.available_providers ?? []).includes(provider)
+  ))
+  if (providerCandidates.length === 0) {
     throw new Error(`remote machine ${machineRef} has no accepting kernel with provider ${provider}; next: choose a worker with ${provider} or change the agent provider`)
   }
+  if (providerCandidates.some((kernel) => remoteKernelReadinessForProvider(kernel, provider) === "ready")) return
+  if (providerCandidates.every((kernel) => remoteKernelReadinessForProvider(kernel, provider) === "needs-account")) {
+    const kernelTargets = formatKernelTargets(providerCandidates)
+    throw new Error(`remote machine ${machineRef} has no ready worker kernel with a usable ${provider} account; next: configure/import or refresh the ${provider} account on ${kernelTargets} or choose another worker`)
+  }
+  throw new Error(`remote machine ${machineRef} has no ready worker kernel; next: run /machine kernels ${machineRef}, fix the listed readiness issue, or choose another worker`)
 }
 
 function formatKernelTargets(kernels: readonly { kernel_id?: string | null; kernel_alias?: string | null; relay_alias?: string | null }[]): string {

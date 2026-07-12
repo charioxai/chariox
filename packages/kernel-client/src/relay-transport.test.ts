@@ -1,12 +1,41 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createRelayKeypair, relayPublicKeyFromPrivateKey } from "./relay-crypto.js"
+import {
+  createRelayKeypair,
+  decryptRelayPayload,
+  relayPublicKeyFromPrivateKey,
+} from "./relay-crypto.js"
 import {
   buildRelaySubscribeFrame,
   buildRelayUnsubscribeFrame,
+  normalizeRelayRequest,
   requireRelayTarget,
 } from "./relay-transport.js"
+
+test("relay requests preserve the request id as the kernel command id", () => {
+  const daemon = createRelayKeypair()
+  const request = {
+    PumpTerminalOutput: {
+      session_id: "session-1",
+      attachment_id: "attachment-1",
+    },
+  }
+  const normalized = normalizeRelayRequest(
+    "request-1",
+    request,
+    { daemon_id: "daemon-1", daemon_alias: null },
+    daemon.publicKeyBase64,
+  )
+
+  assert.deepEqual(
+    JSON.parse(decryptRelayPayload(daemon.privateKey, normalized.frame.encrypted_request)),
+    {
+      command_id: "request-1",
+      request,
+    },
+  )
+})
 
 test("buildRelaySubscribeFrame projects scoped relay subscriptions", () => {
   const frame = buildRelaySubscribeFrame({

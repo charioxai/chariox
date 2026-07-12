@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
 use std::sync::mpsc::Receiver;
 
+use serde_json::Value;
+
 use super::process::{stop_child, ClaudeRuntimeMessage};
+use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +37,8 @@ pub struct ClaudeRuntimeState {
     pub(super) active_permission_level: AgentPermissionLevel,
     pub(super) session_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
+    pub(super) active_prompt_message: Option<Value>,
+    pub(super) turn_watchdog: ClaudeTurnWatchdog,
     pub(super) cancelled_turn_pending_settlement: bool,
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
@@ -56,6 +61,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             .field("active_permission_level", &self.active_permission_level)
             .field("session_id", &self.session_id)
             .field("active_turn_id", &self.active_turn_id)
+            .field("turn_watchdog", &self.turn_watchdog)
             .field(
                 "cancelled_turn_pending_settlement",
                 &self.cancelled_turn_pending_settlement,

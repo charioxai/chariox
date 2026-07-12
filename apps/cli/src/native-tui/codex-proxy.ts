@@ -50,6 +50,37 @@ export type CodexProxyServer = WebSocketServer & {
   projectKernelOutputToTui: (records: TerminalOutputRecord[]) => void
 }
 
+export function createCodexProjectionThreadTracker(options: {
+  setThreadId: (threadId: string) => void
+  debug: CodexProxyDebug
+}) {
+  let tuiThreadId: string | null = null
+  let projectedThreadId: string | null = null
+
+  const setProjectedThreadId = (threadId: string) => {
+    if (projectedThreadId === threadId) return
+    projectedThreadId = threadId
+    options.setThreadId(threadId)
+  }
+
+  return {
+    bindTuiThread: (threadId: string) => {
+      tuiThreadId = threadId
+      setProjectedThreadId(threadId)
+    },
+    observeUpstreamThread: (threadId: string) => {
+      if (tuiThreadId && threadId !== tuiThreadId) {
+        options.debug("upstream_thread_started_ignored_for_projection", {
+          tuiThreadId,
+          upstreamThreadId: threadId,
+        })
+        return
+      }
+      setProjectedThreadId(threadId)
+    },
+  }
+}
+
 export async function startCodexProxy(options: CodexProxyOptions): Promise<CodexProxyServer> {
   const httpServer = http.createServer((request, response) => {
     if (request.url === "/readyz") {
@@ -69,6 +100,26 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
   }>()
   let nextUpstreamRequestId = 1
   let upstreamSocket: WebSocket | null = null
+
+  const downstreamCounts = () => {
+    let tui = 0
+    let kernel = 0
+    let unknown = 0
+    for (const downstream of downstreams) {
+      switch (downstream.kind) {
+        case "tui":
+          tui += 1
+          break
+        case "kernel":
+          kernel += 1
+          break
+        default:
+          unknown += 1
+          break
+      }
+    }
+    return { total: downstreams.size, tui, kernel, unknown }
+  }
 
   const ensureUpstream = () => {
     if (upstreamSocket && upstreamSocket.readyState !== WebSocket.CLOSED) return upstreamSocket
@@ -138,14 +189,23 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
   }
 
   const broadcastToNativeTuis = (message: unknown) => {
+    let sent = 0
     for (const downstream of downstreams) {
-      if (downstream.kind === "tui") sendDownstream(downstream, message)
+      if (downstream.kind === "tui") {
+        sendDownstream(downstream, message)
+        sent += 1
+      }
     }
+    if (sent === 0) options.debug("native_projection_no_tui_downstream", { agentId: options.agentId, downstreams: downstreamCounts() })
   }
 
   const kernelOutputProjection = createCodexKernelOutputProjection({
     agentId: options.agentId,
     broadcast: broadcastToNativeTuis,
+    debug: options.debug,
+  })
+  const projectionThreadTracker = createCodexProjectionThreadTracker({
+    setThreadId: kernelOutputProjection.setThreadId,
     debug: options.debug,
   })
 
@@ -167,7 +227,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       if (pending.method === "thread/start" && message.result) {
         const threadId = extractCodexThreadId(message)
         if (threadId) {
-          kernelOutputProjection.setThreadId(threadId)
+          projectionThreadTracker.bindTuiThread(threadId)
           bindObservedThread(options, threadId)
         }
       }
@@ -178,7 +238,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     if (message.method === "thread/started") {
       const thread = message.params?.thread
       if (thread && typeof thread === "object" && "id" in thread && typeof thread.id === "string") {
-        kernelOutputProjection.setThreadId(thread.id)
+        projectionThreadTracker.observeUpstreamThread(thread.id)
       }
     }
     broadcast(message)
@@ -197,6 +257,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
   server.on("connection", (clientSocket) => {
     const downstream: CodexDownstream = { socket: clientSocket, kind: "unknown" }
     downstreams.add(downstream)
+    options.debug("downstream_connected", { agentId: options.agentId, downstreams: downstreamCounts() })
     clientSocket.on("message", (raw) => {
       const message = parseCodexJsonRpcMessage(raw)
       if (!message) {
@@ -225,9 +286,13 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
         sendUpstream(message)
         return
       }
-      if (message.method === "initialize") downstream.kind = "tui"
+      if (message.method === "initialize") {
+        downstream.kind = "tui"
+        options.debug("tui_connected", { agentId: options.agentId, downstreams: downstreamCounts() })
+      }
       if (message.method === "thread/start") {
         downstream.kind = "tui"
+        options.debug("tui_thread_start", { agentId: options.agentId, downstreams: downstreamCounts() })
         forwardRequest(downstream, message)
         return
       }
@@ -241,7 +306,11 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       }
       forwardRequest(downstream, message)
     })
-    clientSocket.on("close", () => downstreams.delete(downstream))
+    clientSocket.on("close", () => {
+      const kind = downstream.kind
+      downstreams.delete(downstream)
+      options.debug("downstream_closed", { agentId: options.agentId, kind, downstreams: downstreamCounts() })
+    })
   })
 
   const sendUpstreamRaw = (raw: WebSocket.RawData) => {
