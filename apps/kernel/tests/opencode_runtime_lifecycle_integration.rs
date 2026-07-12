@@ -11,7 +11,8 @@ use arroba_kernel::{DaemonApp, DaemonConfig};
 mod support;
 use support::runtime_integration::{
     collect_provider_output_until, collect_provider_records_until, create_opencode_fixture_script,
-    opencode_env_guard, output_timeout_ms, wait_for_provider_runtime_state, MockOpenCodeServer,
+    opencode_env_guard, output_timeout_ms, wait_for_mock_opencode_event_subscription,
+    wait_for_provider_runtime_state, MockOpenCodeServer,
 };
 
 #[test]
@@ -90,10 +91,7 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
     let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.set_prompt_async_response_delay(Duration::from_millis(500));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -109,19 +107,17 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
         ))
         .expect("attachment should attach");
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
+    wait_for_mock_opencode_event_subscription(&mock_server);
 
     assert!(app
         .providers()
         .structured_runtime_state_bound_for_tests(run.id()));
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let outcome = arroba_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -129,6 +125,13 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
         Vec::new(),
     )
     .expect("prompt should start");
+    assert!(
+        matches!(
+            outcome,
+            arroba_kernel::session::PromptSubmissionOutcome::Started { .. }
+        ),
+        "prompt should dispatch immediately: {outcome:?}"
+    );
     wait_for_provider_runtime_state(&app, run.id(), false, "submit I/O is in flight");
 
     app.providers_mut().clear_runtime(run.id());
@@ -138,16 +141,6 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
         .providers()
         .structured_runtime_state_bound_for_tests(run.id()));
 
-    if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
-    }
-    if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
-    }
     mock_server.stop();
 }
 
@@ -155,11 +148,9 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
 fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
     let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(1_000));
+    mock_server.set_prompt_async_response_delay(Duration::from_millis(100));
     mock_server.set_abort_response_delay(Duration::from_millis(500));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -175,14 +166,12 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
         ))
         .expect("attachment should attach");
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
+    wait_for_mock_opencode_event_subscription(&mock_server);
 
     let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
@@ -192,6 +181,7 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
         Vec::new(),
     )
     .expect("prompt should start");
+    wait_for_provider_runtime_state(&app, run.id(), false, "submit I/O is in flight");
     wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
     let cancellation = arroba_kernel::transport::TransportService::cancel_active_prompt(
         &mut app,
@@ -209,16 +199,6 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
         .providers()
         .structured_runtime_state_bound_for_tests(run.id()));
 
-    if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
-    }
-    if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
-    }
     mock_server.stop();
 }
 
@@ -226,10 +206,8 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
 fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::remove_var("ARROBA_OPENCODE_BIN");
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    mock_server.set_prompt_async_response_delay(Duration::from_millis(100));
+    let endpoint = format!("http://127.0.0.1:{}", mock_server.port());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -245,14 +223,12 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
         ))
         .expect("attachment should attach");
     let run = app
-        .launch_provider(LaunchProviderRequest::new(
-            session.id(),
-            "opencode",
-            "opencode",
-            "default",
-            "default",
-        ))
+        .launch_provider(
+            LaunchProviderRequest::new(session.id(), "opencode", "opencode", "default", "default")
+                .with_structured_endpoint(endpoint),
+        )
         .expect("provider run should launch");
+    wait_for_mock_opencode_event_subscription(&mock_server);
     app.providers()
         .set_output_poll_delay_for_tests(run.id(), Duration::from_millis(500));
 
@@ -264,7 +240,7 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
         Vec::new(),
     )
     .expect("prompt should start");
-    thread::sleep(Duration::from_millis(120));
+    wait_for_provider_runtime_state(&app, run.id(), false, "submit I/O is in flight");
     wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
@@ -284,16 +260,6 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
         .providers()
         .structured_runtime_state_bound_for_tests(run.id()));
 
-    if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
-    }
-    if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
-    } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
-    }
     mock_server.stop();
 }
 
