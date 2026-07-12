@@ -183,6 +183,7 @@ impl<'a> KernelAgentService<'a> {
             .dispatch_prompt_to_provider(
                 &dispatch.session_id,
                 &dispatch.provider_run_id,
+                &dispatch.prompt_id,
                 &dispatch.source_attachment_id,
                 &dispatch.prompt,
                 &dispatch.hidden_system_context,

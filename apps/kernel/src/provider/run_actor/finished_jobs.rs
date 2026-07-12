@@ -2,13 +2,19 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::DaemonError;
 use crate::provider::opencode_binding::OpenCodeRunSelection;
-use crate::provider::ProviderPromptSignalBatch;
+use crate::provider::{ProviderPromptSignalBatch, ProviderResumeState};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderPromptSubmitAcknowledgement {
+    pub(crate) resume_state: ProviderResumeState,
+}
 
 pub(crate) struct FinishedProviderPromptSubmitJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,
     pub(crate) agent_id: String,
-    pub(crate) result: Result<(), DaemonError>,
+    pub(crate) prompt_id: String,
+    pub(crate) result: Result<ProviderPromptSubmitAcknowledgement, DaemonError>,
 }
 
 pub(crate) struct FinishedProviderPromptAbortJob {

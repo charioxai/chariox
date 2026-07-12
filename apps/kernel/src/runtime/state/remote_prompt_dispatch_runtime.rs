@@ -732,6 +732,14 @@ impl KernelRuntimeState {
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                         None,
                     );
+                    owned.mark_active_prompt_delivery(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        crate::session::DurablePromptDeliveryPhase::Delivered,
+                        Some(remote_provider_run_id),
+                        None,
+                    )?;
                     Ok(true)
                 }
                 Err(error) => {
@@ -786,6 +794,19 @@ impl KernelRuntimeState {
                     "source_attachment_id": dispatch.source_attachment_id,
                 }),
             );
+            if let Err(error) = state.owned.mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                None,
+                None,
+            ) {
+                let _ = state
+                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .await;
+                return;
+            }
             let agent = match state.owned.agent_store.get_agent(&dispatch.agent_id) {
                 Ok(agent) => agent,
                 Err(error) => {

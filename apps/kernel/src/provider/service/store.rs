@@ -272,6 +272,7 @@ impl ProviderProcessServiceStore {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
+        prompt_id: String,
         run: &RuntimeProviderRun,
         prompt: &str,
         hidden_system_context: &str,
@@ -283,6 +284,7 @@ impl ProviderProcessServiceStore {
             session_id,
             provider_run_id,
             agent_id,
+            prompt_id,
             run,
             prompt,
             hidden_system_context,
@@ -320,6 +322,15 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> Vec<FinishedProviderPromptSubmitJob> {
         self.write().drain_finished_structured_prompt_submit_jobs()
+    }
+
+    pub(crate) fn apply_prompt_submit_acknowledgement(
+        &self,
+        provider_run_id: &str,
+        acknowledgement: &crate::provider::ProviderPromptSubmitAcknowledgement,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .apply_prompt_submit_acknowledgement(provider_run_id, acknowledgement)
     }
 
     pub(crate) fn drain_finished_structured_prompt_abort_jobs(

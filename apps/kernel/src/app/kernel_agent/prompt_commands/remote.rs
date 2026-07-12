@@ -183,6 +183,14 @@ impl<'a> KernelAgentService<'a> {
         let Some(dispatch) = dispatch else {
             return Ok(());
         };
+        self.app.mark_active_prompt_delivery(
+            &dispatch.session_id,
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )?;
         let attachments = self
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;

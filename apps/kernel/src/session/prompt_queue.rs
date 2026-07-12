@@ -20,6 +20,14 @@ pub enum PromptOrigin {
     External,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DurablePromptDeliveryPhase {
+    Accepted,
+    Dispatching,
+    Delivered,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptAttachment {
     url: String,
@@ -101,6 +109,12 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) operation_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) initially_queued: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_phase: Option<DurablePromptDeliveryPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_provider_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -109,6 +123,9 @@ struct PromptPrivateMetadata {
     operation_id: Option<String>,
     operation_fingerprint: Option<String>,
     initially_queued: Option<bool>,
+    delivery_phase: Option<DurablePromptDeliveryPhase>,
+    delivery_provider_run_id: Option<String>,
+    delivery_provider_session_id: Option<String>,
 }
 
 impl DurablePromptPrivateState {
@@ -120,6 +137,9 @@ impl DurablePromptPrivateState {
             operation_id: metadata.operation_id.clone(),
             operation_fingerprint: metadata.operation_fingerprint.clone(),
             initially_queued: metadata.initially_queued,
+            delivery_phase: metadata.delivery_phase,
+            delivery_provider_run_id: metadata.delivery_provider_run_id.clone(),
+            delivery_provider_session_id: metadata.delivery_provider_session_id.clone(),
         })
     }
 }
@@ -256,7 +276,7 @@ impl PromptQueueItem {
         if hidden_system_context.is_empty() {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
-                if metadata.operation_id.is_none() {
+                if metadata.operation_id.is_none() && metadata.delivery_phase.is_none() {
                     self.private_metadata = None;
                 }
             }
@@ -390,22 +410,54 @@ impl PromptQueueItem {
         }
     }
 
-    pub(crate) fn restore_durable_private_state(
+    pub(crate) fn durable_delivery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_phase)
+    }
+
+    pub(crate) fn durable_delivery_provider_run_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_provider_run_id.as_deref())
+    }
+
+    pub(crate) fn durable_delivery_provider_session_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_provider_session_id.as_deref())
+    }
+
+    pub(crate) fn set_durable_delivery(
         &mut self,
-        hidden_system_context: String,
-        operation_id: Option<String>,
-        operation_fingerprint: Option<String>,
-        initially_queued: Option<bool>,
+        phase: DurablePromptDeliveryPhase,
+        provider_run_id: Option<String>,
+        provider_session_id: Option<String>,
     ) {
-        if hidden_system_context.is_empty() && operation_id.is_none() {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.delivery_phase = Some(phase);
+        metadata.delivery_provider_run_id = provider_run_id;
+        metadata.delivery_provider_session_id = provider_session_id;
+    }
+
+    pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
+        if private.hidden_system_context.is_empty()
+            && private.operation_id.is_none()
+            && private.delivery_phase.is_none()
+        {
             self.private_metadata = None;
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
-            hidden_system_context,
-            operation_id,
-            operation_fingerprint,
-            initially_queued,
+            hidden_system_context: private.hidden_system_context.clone(),
+            operation_id: private.operation_id.clone(),
+            operation_fingerprint: private.operation_fingerprint.clone(),
+            initially_queued: private.initially_queued,
+            delivery_phase: private.delivery_phase,
+            delivery_provider_run_id: private.delivery_provider_run_id.clone(),
+            delivery_provider_session_id: private.delivery_provider_session_id.clone(),
         }));
     }
 
@@ -534,6 +586,11 @@ mod tests {
         .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
         .with_durable_operation("operation-private", "fingerprint-private");
         item.set_durable_initially_queued(true);
+        item.set_durable_delivery(
+            DurablePromptDeliveryPhase::Delivered,
+            Some("provider-run-private".to_string()),
+            Some("provider-session-private".to_string()),
+        );
 
         let payload = serde_json::to_string(&item).expect("prompt should serialize");
 
@@ -544,6 +601,8 @@ mod tests {
         assert!(!payload.contains("fingerprint-private"));
         assert!(!payload.contains("durable_initially_queued"));
         assert!(!payload.contains("private_metadata"));
+        assert!(!payload.contains("provider-run-private"));
+        assert!(!payload.contains("provider-session-private"));
     }
 
     #[test]

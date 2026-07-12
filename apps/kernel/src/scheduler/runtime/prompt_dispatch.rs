@@ -38,6 +38,14 @@ pub(super) fn dispatch_workflow_prompt(
 ) -> Result<(), DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+        app.mark_active_prompt_delivery(
+            session_id,
+            target_agent_id,
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            None,
+            None,
+        )?;
         let session = app.sessions().get_session(session_id)?;
         let workspace_live_sync_mode =
             crate::provider::provider_workspace_live_sync_mode_for_session(
@@ -88,7 +96,19 @@ pub(super) fn dispatch_workflow_prompt(
                 LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT,
             ));
         return match response {
-            Ok(RelayPeerResponse::LeasedPromptSubmitted { .. }) => Ok(()),
+            Ok(RelayPeerResponse::LeasedPromptSubmitted {
+                provider_run_id, ..
+            }) => {
+                app.mark_active_prompt_delivery(
+                    session_id,
+                    target_agent_id,
+                    prompt.id(),
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(provider_run_id),
+                    None,
+                )?;
+                Ok(())
+            }
             Ok(other) => Err(DaemonError::LocalTransport {
                 operation: "dispatch remote workflow prompt",
                 message: format!("unexpected remote workflow prompt response: {other:?}"),
@@ -101,6 +121,7 @@ pub(super) fn dispatch_workflow_prompt(
         crate::app::ProviderPromptDispatcher::new(app).dispatch_prompt_to_provider(
             session_id,
             provider_run_id,
+            prompt.id(),
             prompt.source_attachment_id(),
             prompt.prompt(),
             prompt.hidden_system_context(),

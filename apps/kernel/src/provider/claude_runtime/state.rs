@@ -75,6 +75,12 @@ impl std::fmt::Debug for ClaudeRuntimeState {
     }
 }
 
+impl ClaudeRuntimeState {
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+}
+
 impl Drop for ClaudeRuntimeState {
     fn drop(&mut self) {
         stop_child(&mut self.child);

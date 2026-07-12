@@ -74,6 +74,30 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    pub(super) fn mark_active_prompt_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        phase: crate::session::DurablePromptDeliveryPhase,
+        provider_run_id: Option<String>,
+        provider_session_id: Option<String>,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self.prompt_state_owner.mark_active_prompt_delivery(
+            &session,
+            agent_id,
+            prompt_id,
+            phase,
+            provider_run_id,
+            provider_session_id,
+        )?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(prompt)
+    }
+
     pub(super) fn mirror_prompt_owner_session_state(
         &self,
         session_id: &str,

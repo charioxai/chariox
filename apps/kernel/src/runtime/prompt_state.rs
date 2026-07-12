@@ -212,6 +212,11 @@ impl PromptStateOwner {
         if should_start {
             let state = owner.ensure_agent_state(session, &agent_id);
             prompt.set_durable_initially_queued(false);
+            prompt.set_durable_delivery(
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+                None,
+                None,
+            );
             prompt.set_status(PromptStatus::Running);
             state.active_prompt = Some(prompt.clone());
             Ok(PromptSubmissionOutcome::Started { prompt })
@@ -238,6 +243,11 @@ impl PromptStateOwner {
                 });
             }
             prompt.set_durable_initially_queued(true);
+            prompt.set_durable_delivery(
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+                None,
+                None,
+            );
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
             state.queued_prompts.push_back(prompt.clone());
             Ok(PromptSubmissionOutcome::Queued { prompt })
@@ -306,6 +316,39 @@ impl PromptStateOwner {
             .as_mut()?;
         active.set_status(PromptStatus::Running);
         Some(active.clone())
+    }
+
+    pub(crate) fn mark_active_prompt_delivery(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        phase: crate::session::DurablePromptDeliveryPhase,
+        provider_run_id: Option<String>,
+        provider_session_id: Option<String>,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            })?;
+        if active.id() != prompt_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "mark prompt delivery",
+                message: format!(
+                    "active prompt `{}` does not match delivery prompt `{prompt_id}`",
+                    active.id()
+                ),
+            });
+        }
+        active.set_durable_delivery(phase, provider_run_id, provider_session_id);
+        Ok(active.clone())
     }
 
     pub(crate) fn finalize_active_prompt_cancellation(
@@ -902,6 +945,85 @@ mod tests {
             .expect_err("fingerprint drift should conflict")
             .to_string()
             .contains("already used for a different prompt request"));
+    }
+
+    #[test]
+    fn active_prompt_delivery_phase_tracks_matching_provider_acknowledgement() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-delivery",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let prompt = PromptQueueItem::new(
+            "prompt-delivery",
+            "attachment-1",
+            "agent-1",
+            "deliver once",
+            PromptStatus::Queued,
+        )
+        .with_durable_operation("command-delivery", "fingerprint-delivery");
+        let PromptSubmissionOutcome::Started { prompt } = owner
+            .submit_prepared_prompt(&session, prompt, false)
+            .expect("prompt should start")
+        else {
+            panic!("prompt should be active");
+        };
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+
+        let dispatching = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some("provider-run-1".to_string()),
+                None,
+            )
+            .expect("dispatching phase should persist");
+        assert_eq!(
+            dispatching.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            dispatching.durable_delivery_provider_run_id(),
+            Some("provider-run-1")
+        );
+
+        let delivered = owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("provider-run-1".to_string()),
+                Some("provider-session-1".to_string()),
+            )
+            .expect("delivery acknowledgement should persist");
+        assert_eq!(
+            delivered.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            delivered.durable_delivery_provider_session_id(),
+            Some("provider-session-1")
+        );
+        assert!(owner
+            .mark_active_prompt_delivery(
+                &session,
+                "agent-1",
+                "another-prompt",
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                None,
+                None,
+            )
+            .is_err());
     }
 
     #[test]

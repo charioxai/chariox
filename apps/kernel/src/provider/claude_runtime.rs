@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
+use rand::RngCore;
 use serde_json::json;
 
 use crate::error::DaemonError;
@@ -39,7 +40,15 @@ pub(crate) fn initialize_claude_runtime(
             message: "Claude provider run did not include an executable".to_string(),
         })?
         .to_string();
-    let args = run.pty_args().to_vec();
+    let mut args = run.pty_args().to_vec();
+    let session_id = run
+        .resume_state()
+        .claude_session_id()
+        .map(str::to_string)
+        .unwrap_or_else(new_claude_session_id);
+    if run.resume_state().claude_session_id().is_none() {
+        args.extend(["--session-id".to_string(), session_id.clone()]);
+    }
     let env = run.pty_env().clone();
     let context_file = env.get("ARROBA_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("ARROBA_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
@@ -71,7 +80,7 @@ pub(crate) fn initialize_claude_runtime(
             active_variant: run.variant().map(str::to_string),
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
-            session_id: run.resume_state().claude_session_id().map(str::to_string),
+            session_id: Some(session_id),
             active_turn_id: None,
             active_prompt_message: None,
             turn_watchdog: Default::default(),
@@ -395,13 +404,39 @@ fn claude_args_without_resume(args: &[String]) -> Vec<String> {
             skip_next = false;
             continue;
         }
-        if arg == "--resume" {
+        if matches!(arg.as_str(), "--resume" | "--session-id") {
             skip_next = true;
             continue;
         }
         sanitized.push(arg.clone());
     }
     sanitized
+}
+
+fn new_claude_session_id() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15],
+    )
 }
 
 fn write_claude_hidden_context(
@@ -432,7 +467,8 @@ mod tests {
 
     use super::{
         claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
-        input::claude_user_content, ClaudeRuntimeState, ProviderPromptSignalBatch,
+        input::claude_user_content, new_claude_session_id, ClaudeRuntimeState,
+        ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -484,6 +520,8 @@ mod tests {
             "sonnet".to_string(),
             "--resume".to_string(),
             "stale-session".to_string(),
+            "--session-id".to_string(),
+            "new-session".to_string(),
             "--mcp-config".to_string(),
             "/tmp/mcp.json".to_string(),
         ];
@@ -496,6 +534,23 @@ mod tests {
                 "--mcp-config".to_string(),
                 "/tmp/mcp.json".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn generated_claude_session_ids_are_uuid_v4_shape() {
+        let session_id = new_claude_session_id();
+        assert_eq!(session_id.len(), 36);
+        assert_eq!(&session_id[14..15], "4");
+        assert!(matches!(&session_id[19..20], "8" | "9" | "a" | "b"));
+        assert_eq!(
+            session_id
+                .chars()
+                .enumerate()
+                .filter(|(_, character)| *character == '-')
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            vec![8, 13, 18, 23]
         );
     }
 

@@ -51,40 +51,64 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_submit_jobs()
         {
-            if let Err(error) = finished.result {
-                let diagnostic = format!("Provider prompt dispatch failed: {error}");
-                if let Ok(run) = self
-                    .provider_store
-                    .record_terminal_diagnostic(&finished.provider_run_id, diagnostic.clone())
-                {
-                    self.provider_run_projection.update(run);
-                }
-                if let Ok(session) = self.session_store.get_session(&finished.session_id) {
-                    if let Some(prompt) = self
-                        .prompt_state_owner
-                        .active_prompt_for_agent(&session, &finished.agent_id)
-                    {
-                        if prompt.workflow_run_id().is_some() {
-                            let _ = self.workflow_fail_provider_prompt(
-                                &finished.session_id,
-                                &prompt,
-                                Some(&finished.provider_run_id),
-                                &diagnostic,
-                            );
-                        }
+            match finished.result {
+                Ok(acknowledgement) => {
+                    if let Err(error) = self.finish_structured_prompt_delivery(
+                        &finished.session_id,
+                        &finished.agent_id,
+                        &finished.prompt_id,
+                        &finished.provider_run_id,
+                        &acknowledgement,
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.prompt_delivery",
+                            "failed to persist structured prompt acknowledgement",
+                            serde_json::json!({
+                                "session_id": finished.session_id,
+                                "agent_id": finished.agent_id,
+                                "prompt_id": finished.prompt_id,
+                                "provider_run_id": finished.provider_run_id,
+                                "error": error.to_string(),
+                            }),
+                        );
                     }
                 }
-                let _ = self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
-                let _ = self.session_snapshot(&finished.session_id);
-                let recipients = self
-                    .attachment_store
-                    .list_session_attachment_ids(&finished.session_id);
-                self.record_notice(
-                    &finished.session_id,
-                    Some(&finished.provider_run_id),
-                    recipients,
-                    format!("Prompt dispatch failed after acknowledgement: {error}"),
-                );
+                Err(error) => {
+                    let diagnostic = format!("Provider prompt dispatch failed: {error}");
+                    if let Ok(run) = self
+                        .provider_store
+                        .record_terminal_diagnostic(&finished.provider_run_id, diagnostic.clone())
+                    {
+                        self.provider_run_projection.update(run);
+                    }
+                    if let Ok(session) = self.session_store.get_session(&finished.session_id) {
+                        if let Some(prompt) = self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, &finished.agent_id)
+                        {
+                            if prompt.workflow_run_id().is_some() {
+                                let _ = self.workflow_fail_provider_prompt(
+                                    &finished.session_id,
+                                    &prompt,
+                                    Some(&finished.provider_run_id),
+                                    &diagnostic,
+                                );
+                            }
+                        }
+                    }
+                    let _ =
+                        self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
+                    let _ = self.session_snapshot(&finished.session_id);
+                    let recipients = self
+                        .attachment_store
+                        .list_session_attachment_ids(&finished.session_id);
+                    self.record_notice(
+                        &finished.session_id,
+                        Some(&finished.provider_run_id),
+                        recipients,
+                        format!("Prompt dispatch failed after acknowledgement: {error}"),
+                    );
+                }
             }
         }
         for finished in self
@@ -116,6 +140,50 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+    }
+
+    fn finish_structured_prompt_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        acknowledgement: &crate::provider::ProviderPromptSubmitAcknowledgement,
+    ) -> Result<(), DaemonError> {
+        let run = self
+            .provider_store
+            .apply_prompt_submit_acknowledgement(provider_run_id, acknowledgement)?;
+        if let Some(run_agent_id) = run.agent_instance_id() {
+            let agent = self
+                .agent_store
+                .set_agent_runtime_profile_with_account_profile(
+                    run_agent_id,
+                    run.provider(),
+                    Some(run.model().to_string()),
+                    run.variant().map(str::to_string),
+                    Some(run.account_profile().to_string()),
+                    run.resume_state().clone(),
+                )?;
+            self.durable_state_store.append_event(
+                "agent.runtime_profile_updated",
+                Some(agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &agent,
+                    "provider_run_id": run.id(),
+                    "reason": "prompt_delivery_acknowledged",
+                }),
+            )?;
+        }
+        self.provider_run_projection.update(run.clone());
+        self.mark_active_prompt_delivery(
+            session_id,
+            agent_id,
+            prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id.to_string()),
+            run.provider_session_id().map(str::to_string),
+        )?;
+        Ok(())
     }
 
     pub(super) fn clear_prompt_activity(&self, provider_run_id: &str) -> bool {

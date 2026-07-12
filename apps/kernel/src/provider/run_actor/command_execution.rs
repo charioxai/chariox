@@ -20,40 +20,55 @@ use super::super::{
 };
 use super::native_interaction::ProviderNativeInteractionBridgeStore;
 use super::runtime_slots::ProviderRunRuntimeRegistry;
+use super::ProviderPromptSubmitAcknowledgement;
 
 pub(super) fn execute_submit_command(
     runtime_registry: &ProviderRunRuntimeRegistry,
     run: RuntimeProviderRun,
     envelope: PromptEnvelope,
-) -> Result<(), DaemonError> {
+) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
     let run_id = run.id().to_string();
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         thread::sleep(Duration::from_millis(750));
-        return Ok(());
+        return Ok(ProviderPromptSubmitAcknowledgement {
+            resume_state: run.resume_state().clone(),
+        });
     }
     if run.adapter_key() == "codex" {
         let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
         let result = submit_codex_prompt(&run, &mut state, &envelope);
+        let mut resume_state = run.resume_state().clone();
+        resume_state.set_codex_thread_id(state.thread_id());
         runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
-        return result;
+        return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
     if run.adapter_key() == "claude" {
         if !run.client_interface().is_arroba() {
-            return Ok(());
+            return Ok(ProviderPromptSubmitAcknowledgement {
+                resume_state: run.resume_state().clone(),
+            });
         }
         let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
         let result = submit_claude_prompt(&run, &mut state, &envelope);
+        let mut resume_state = run.resume_state().clone();
+        if let Some(session_id) = state.session_id() {
+            resume_state.set_claude_session_id(session_id);
+        }
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
-        return result;
+        return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
     if run.adapter_key() != "opencode" {
-        return Ok(());
+        return Ok(ProviderPromptSubmitAcknowledgement {
+            resume_state: run.resume_state().clone(),
+        });
     }
 
     let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
-    result
+    result.map(|_| ProviderPromptSubmitAcknowledgement {
+        resume_state: run.resume_state().clone(),
+    })
 }
 
 pub(super) fn execute_abort_command(
@@ -361,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_resume_state_is_durable_only_after_prompt_completion() {
+    fn codex_output_poll_resolves_resume_state_only_after_prompt_completion() {
         assert_eq!(
             completed_codex_turn_resume_state("thread-1", Some(&codex_poll(false)))
                 .and_then(|state| state.codex_thread_id().map(str::to_string)),

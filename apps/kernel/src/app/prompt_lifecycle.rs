@@ -80,6 +80,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
         &mut self,
         session_id: &str,
         provider_run_id: &str,
+        prompt_id: &str,
         attachment_id: &str,
         prompt: &str,
         hidden_system_context: &str,
@@ -96,18 +97,26 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 operation: "submit prompt",
             });
         }
+        let agent_id = provider_run
+            .agent_instance_id()
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: "provider run has no agent".to_string(),
+            })?
+            .to_string();
+        self.app.mark_active_prompt_delivery(
+            session_id,
+            &agent_id,
+            prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(provider_run_id.to_string()),
+            provider_run.provider_session_id().map(str::to_string),
+        )?;
 
         if self
             .app
             .providers
             .run_uses_structured_prompt_io(&provider_run)
         {
-            let agent_id = provider_run
-                .agent_instance_id()
-                .ok_or_else(|| DaemonError::AgentNotFound {
-                    agent_id: "provider run has no agent".to_string(),
-                })?
-                .to_string();
             let mode = if self.app.agents.get_agent(&agent_id)?.is_metaagent() {
                 crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
             } else {
@@ -117,6 +126,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 session_id.to_string(),
                 provider_run_id.to_string(),
                 agent_id,
+                prompt_id.to_string(),
                 &provider_run,
                 prompt,
                 hidden_system_context,
@@ -135,21 +145,36 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 attachment_id,
                 provider_prompt.as_bytes(),
             );
-            return self
-                .app
-                .process_claude_native_bridge_for_runtime(
-                    session_id,
-                    provider_run_id,
-                    &provider_run,
-                )
-                .map(|_| ());
+            self.app.process_claude_native_bridge_for_runtime(
+                session_id,
+                provider_run_id,
+                &provider_run,
+            )?;
+            self.app.mark_active_prompt_delivery(
+                session_id,
+                &agent_id,
+                prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.to_string()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
+            return Ok(());
         }
         crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
             session_id,
             provider_run_id,
             attachment_id,
             &crate::app::terminal_input::provider_prompt_input(&provider_prompt),
-        )
+        )?;
+        self.app.mark_active_prompt_delivery(
+            session_id,
+            &agent_id,
+            prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id.to_string()),
+            provider_run.provider_session_id().map(str::to_string),
+        )?;
+        Ok(())
     }
 }
 
@@ -300,23 +325,57 @@ impl DaemonApp {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
-        result: Result<(), DaemonError>,
+        prompt_id: String,
+        result: Result<crate::provider::ProviderPromptSubmitAcknowledgement, DaemonError>,
     ) -> Result<(), DaemonError> {
-        if let Err(error) = result {
-            crate::app::KernelAgentService::new(self).cancel_active_after_prompt_start_failure(
-                &session_id,
-                &agent_id,
-                &provider_run_id,
-            );
-            let _ = crate::app::KernelSessionReadService::new(self).session_snapshot(&session_id);
-            self.record_notice(
-                &session_id,
-                Some(&provider_run_id),
-                self.attachments.list_session_attachment_ids(&session_id),
-                format!("Prompt dispatch failed after acknowledgement: {error}"),
-            );
-            return Err(error);
-        }
+        let acknowledgement = match result {
+            Ok(acknowledgement) => acknowledgement,
+            Err(error) => {
+                crate::app::KernelAgentService::new(self).cancel_active_after_prompt_start_failure(
+                    &session_id,
+                    &agent_id,
+                    &provider_run_id,
+                );
+                let _ =
+                    crate::app::KernelSessionReadService::new(self).session_snapshot(&session_id);
+                self.record_notice(
+                    &session_id,
+                    Some(&provider_run_id),
+                    self.attachments.list_session_attachment_ids(&session_id),
+                    format!("Prompt dispatch failed after acknowledgement: {error}"),
+                );
+                return Err(error);
+            }
+        };
+        let run = self
+            .providers
+            .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;
+        let agent = self.agents.set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            run.provider(),
+            Some(run.model().to_string()),
+            run.variant().map(str::to_string),
+            Some(run.account_profile().to_string()),
+            run.resume_state().clone(),
+        )?;
+        self.durable_state_store().append_event(
+            "agent.runtime_profile_updated",
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+                "provider_run_id": run.id(),
+                "reason": "prompt_delivery_acknowledged",
+            }),
+        )?;
+        self.update_provider_run_projection(run.clone());
+        self.mark_active_prompt_delivery(
+            &session_id,
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run_id),
+            run.provider_session_id().map(str::to_string),
+        )?;
         Ok(())
     }
 
@@ -341,6 +400,14 @@ impl DaemonApp {
                     &dispatch.prompt,
                     &dispatch.attachments,
                 );
+                self.mark_active_prompt_delivery(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(remote_provider_run_id),
+                    None,
+                )?;
                 Ok(())
             }
             Err(error) => {
@@ -439,6 +506,7 @@ impl DaemonApp {
                 finished.session_id,
                 finished.provider_run_id,
                 finished.agent_id,
+                finished.prompt_id,
                 finished.result,
             );
         }

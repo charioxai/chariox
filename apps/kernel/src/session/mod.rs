@@ -37,7 +37,6 @@ pub use service::{
 };
 pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;
-pub(crate) use types::DurablePromptPrivateState;
 pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, MetaagentTask,
@@ -71,6 +70,7 @@ pub use types::{
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
+pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub use workflow_publication::{
     WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
 };

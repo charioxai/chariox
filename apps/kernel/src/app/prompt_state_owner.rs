@@ -159,6 +159,28 @@ impl DaemonApp {
         Ok(cancelled)
     }
 
+    pub(crate) fn mark_active_prompt_delivery(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        phase: crate::session::DurablePromptDeliveryPhase,
+        provider_run_id: Option<String>,
+        provider_session_id: Option<String>,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let session = self.sessions.get_session(session_id)?;
+        let prompt = self.prompt_state_owner.mark_active_prompt_delivery(
+            &session,
+            agent_id,
+            prompt_id,
+            phase,
+            provider_run_id,
+            provider_session_id,
+        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        Ok(prompt)
+    }
+
     pub(crate) fn prompt_owner_begin_cancelling_active_prompt(
         &mut self,
         session_id: &str,

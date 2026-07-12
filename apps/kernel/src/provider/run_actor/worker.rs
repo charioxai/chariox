@@ -40,6 +40,7 @@ pub(super) enum ProviderRunActorCommand {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
     },
@@ -123,6 +124,7 @@ impl ProviderRunWorkerDeps {
                 session_id,
                 provider_run_id,
                 agent_id,
+                prompt_id,
                 run,
                 envelope,
             } => {
@@ -132,6 +134,7 @@ impl ProviderRunWorkerDeps {
                     session_id,
                     provider_run_id: provider_run_id.clone(),
                     agent_id,
+                    prompt_id,
                     result,
                 };
                 push_finished_submit(&self.finished_submits, finished);

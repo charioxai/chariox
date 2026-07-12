@@ -189,10 +189,19 @@ impl KernelRuntimeOwnedState {
             } else {
                 crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
             };
+            self.mark_active_prompt_delivery(
+                session_id,
+                agent_id,
+                started_next.id(),
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(provider_run_id.clone()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
             if let Err(error) = self.provider_store.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.clone(),
                 agent_id.to_string(),
+                started_next.id().to_string(),
                 &provider_run,
                 &prompt_with_handoff,
                 &hidden_system_context,

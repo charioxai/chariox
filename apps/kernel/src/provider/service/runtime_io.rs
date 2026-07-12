@@ -66,8 +66,16 @@ impl ProviderProcessService {
     ) -> Result<(), DaemonError> {
         match binding {
             ProviderRuntimeBinding::Claude(binding) => {
+                let session_id = binding.state.session_id().map(str::to_string);
                 self.run_actor_mailbox
                     .insert_claude_runtime(run_id.to_string(), binding.state);
+                if let Some(session_id) = session_id {
+                    let run = self.get_run_mut(run_id)?;
+                    let mut resume_state = run.resume_state().clone();
+                    resume_state.set_claude_session_id(session_id.clone());
+                    run.set_resume_state(resume_state);
+                    run.set_provider_session_id(Some(session_id));
+                }
                 self.apply_claude_run_selection(run_id, binding.selection)?;
             }
             ProviderRuntimeBinding::Codex(binding) => {
@@ -165,6 +173,7 @@ impl ProviderProcessService {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
+        prompt_id: String,
         run: &RuntimeProviderRun,
         prompt: &str,
         hidden_system_context: &str,
@@ -201,6 +210,7 @@ impl ProviderProcessService {
             session_id,
             provider_run_id,
             agent_id,
+            prompt_id,
             run.clone(),
             envelope,
         )
@@ -255,6 +265,22 @@ impl ProviderProcessService {
         &mut self,
     ) -> Vec<FinishedProviderPromptSubmitJob> {
         self.run_actor_mailbox.drain_finished_submits()
+    }
+
+    pub(crate) fn apply_prompt_submit_acknowledgement(
+        &mut self,
+        provider_run_id: &str,
+        acknowledgement: &crate::provider::ProviderPromptSubmitAcknowledgement,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(provider_run_id)?;
+        run.set_resume_state(acknowledgement.resume_state.clone());
+        run.set_provider_session_id(
+            acknowledgement
+                .resume_state
+                .provider_session_id(run.adapter_key())
+                .map(str::to_string),
+        );
+        Ok(run.clone())
     }
 
     pub(crate) fn drain_finished_structured_prompt_abort_jobs(
@@ -529,7 +555,10 @@ fn normalize_claude_selection_model(model: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::provider::{LaunchProviderRequest, ProviderProcessService};
+    use crate::provider::{
+        LaunchProviderRequest, ProviderProcessService, ProviderPromptSubmitAcknowledgement,
+        ProviderResumeState, RuntimeProviderRun,
+    };
 
     use super::{normalize_claude_selection_model, CodexRunSelection};
 
@@ -559,6 +588,28 @@ mod tests {
 
         let run = providers.get_run(&run_id).expect("run should exist");
         assert_eq!(run.model(), "gpt-5.5");
+    }
+
+    #[test]
+    fn prompt_submit_acknowledgement_persists_provider_resume_identity() {
+        let mut providers = ProviderProcessService::new();
+        let run = RuntimeProviderRun::from_control_capability_inference(
+            "run-1",
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "codex".to_string(),
+        );
+        providers.insert_run_for_test(run);
+        let acknowledgement = ProviderPromptSubmitAcknowledgement {
+            resume_state: ProviderResumeState::from_codex_thread_id("thread-1"),
+        };
+
+        let run = providers
+            .apply_prompt_submit_acknowledgement("run-1", &acknowledgement)
+            .expect("acknowledgement should update the run");
+
+        assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+        assert_eq!(run.provider_session_id(), Some("thread-1"));
     }
 
     #[test]

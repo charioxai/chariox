@@ -36,3 +36,13 @@ Every kernel-owned prompt-state mirror now appends an acknowledged `session.prom
 Focused coverage proves an accepted queued prompt, hidden context, operation key, and one-item queue survive a full kernel bootstrap and that the same command replays once even though its old attachment was reconciled. Prompt-focused tests cover local, remote, workflow, queue, projection, and provider-settlement paths.
 
 This milestone does not yet make an in-flight provider turn automatically resumable. The next slice must add durable delivery phases and an outbox/reconciler for active prompt dispatch, steer/cancel/clear receipts, provider launch/resume state, and uncertain side effects before restart reconciliation can stop cancelling active work.
+
+## Milestone 4: Durable Prompt Delivery Acknowledgements
+
+Kernel-owned prompt envelopes now carry a private durable delivery phase: `accepted`, `dispatching`, or `delivered`. Local, remote, workflow, queued-promotion, and structured-provider paths persist `dispatching` before crossing their external side-effect boundary. PTY/native bridge and remote lease paths persist `delivered` only after the write or relay acknowledgement succeeds; structured providers persist it only after the provider actor acknowledges submission.
+
+Structured acknowledgements include the provider-native resume identity and update both the provider run and agent runtime profile before the prompt becomes `delivered`. Claude runs receive a UUID v4 `--session-id` before launch when they do not already have a resume identity, OpenCode keeps its bound session identity, and Codex captures its thread identity as soon as submission returns. The delivery metadata remains absent from public prompt serialization and survives compact prompt events, snapshots, and entity checkpoints.
+
+Focused tests cover private-state round trips, exact-prompt phase transitions, local dispatch acknowledgement, provider resume-state persistence, and Claude session-id generation and argument sanitization.
+
+This milestone records enough evidence to classify restart uncertainty but does not yet change restart behavior. Startup reconciliation must inspect the durable phase and provider-native transcript/session state before deciding whether to dispatch, resume observation, or surface a provider-specific limitation. It must never blindly resend a `dispatching` or `delivered` prompt.

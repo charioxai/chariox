@@ -6,6 +6,7 @@ impl ProviderRunActorMailbox {
         session_id: String,
         provider_run_id: String,
         agent_id: String,
+        prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
     ) -> Result<(), DaemonError> {
@@ -15,6 +16,7 @@ impl ProviderRunActorMailbox {
             session_id,
             provider_run_id: provider_run_id.clone(),
             agent_id,
+            prompt_id,
             run,
             envelope,
         }) {
@@ -477,6 +479,7 @@ mod tests {
                 "session-1".to_string(),
                 "run-1".to_string(),
                 "agent-1".to_string(),
+                "prompt-1".to_string(),
                 runtime_run("run-1"),
                 crate::prompt_assembly::PromptEnvelope::new(
                     "hello",

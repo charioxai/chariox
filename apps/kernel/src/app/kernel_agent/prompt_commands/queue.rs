@@ -85,6 +85,7 @@ impl<'a> KernelAgentService<'a> {
                 .dispatch_prompt_to_provider(
                     session_id,
                     &provider_run_id,
+                    next.id(),
                     &source_attachment_id,
                     next.prompt(),
                     next.hidden_system_context(),

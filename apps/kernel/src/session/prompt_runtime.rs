@@ -60,12 +60,7 @@ impl PromptRuntimeState {
                 let Some(private) = states.get(prompt.id()) else {
                     continue;
                 };
-                prompt.restore_durable_private_state(
-                    private.hidden_system_context.clone(),
-                    private.operation_id.clone(),
-                    private.operation_fingerprint.clone(),
-                    private.initially_queued,
-                );
+                prompt.restore_durable_private_state(private);
             }
         }
         self.refresh_prompt_projection(None);

@@ -240,6 +240,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_dispatch_persists_delivered_phase_after_provider_write() {
+        let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
+            runtime_with_active_prompt().await;
+        let prompt_dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            &provider_run_id,
+            &active_prompt_id,
+            "active prompt",
+            None,
+            false,
+        );
+
+        runtime
+            .enqueue_prompt_dispatch(&prompt_dispatch)
+            .await
+            .expect("prompt should reach the provider");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain");
+
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_run_id(),
+            Some(provider_run_id.as_str())
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_match_uses_prompt_owner_when_session_mirror_is_stale() {
         let (runtime, session_id, agent_id, attachment_id, active_prompt_id, provider_run_id) =
             runtime_with_active_prompt().await;
@@ -381,6 +421,18 @@ impl KernelRuntimeState {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(());
         }
+        if !dispatch.steering {
+            let provider_run = owned
+                .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
+            owned.mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                Some(dispatch.provider_run_id.clone()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
+        }
         owned.echo_prompt_to_other_attachments(
             &dispatch.session_id,
             &dispatch.provider_run_id,
@@ -434,6 +486,7 @@ impl KernelRuntimeState {
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
                 dispatch.agent_id.clone(),
+                dispatch.prompt_id.clone(),
                 &provider_run,
                 &prompt_with_handoff,
                 &hidden_system_context,
@@ -523,6 +576,14 @@ impl KernelRuntimeState {
         if !has_managed_process {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
+                owned.mark_active_prompt_delivery(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(dispatch.provider_run_id.clone()),
+                    provider_run.provider_session_id().map(str::to_string),
+                )?;
             }
             return Ok(());
         }
@@ -581,6 +642,14 @@ impl KernelRuntimeState {
             );
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
+                owned.mark_active_prompt_delivery(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(dispatch.provider_run_id.clone()),
+                    provider_run.provider_session_id().map(str::to_string),
+                )?;
             }
             return Ok(());
         }
@@ -595,6 +664,14 @@ impl KernelRuntimeState {
         );
         if !dispatch.steering {
             owned.note_prompt_started(&dispatch.provider_run_id);
+            owned.mark_active_prompt_delivery(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(dispatch.provider_run_id.clone()),
+                provider_run.provider_session_id().map(str::to_string),
+            )?;
         }
         Ok(())
     }
