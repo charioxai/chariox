@@ -119,7 +119,7 @@ fn remote_prompt_dispatch_is_current(
         .is_some_and(|prompt| prompt.id() == dispatch.prompt_id)
 }
 
-fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Duration {
+pub(super) fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1_u64 << attempt.saturating_sub(1).min(3);
     std::time::Duration::from_millis(250_u64.saturating_mul(multiplier))
 }

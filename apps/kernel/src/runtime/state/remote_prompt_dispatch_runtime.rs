@@ -4,32 +4,70 @@
 //! settlement after owned prompt state has already admitted the prompt.
 
 use super::remote_prompt_worker_submission_runtime::{
-    remote_prompt_error_should_refresh_binding, submit_remote_prompt_to_worker_with_binding_refresh,
+    remote_prompt_error_should_refresh_binding, remote_prompt_error_should_retry_transport,
+    remote_prompt_transport_retry_delay, submit_remote_prompt_to_worker_with_binding_refresh,
 };
 use super::*;
 
+const REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+// Duplicate starts advance the generation so release and restart are one atomic decision.
 struct RemotePromptAgentClaim {
     key: (String, String),
-    claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
+    claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    seen_generation: u64,
+    released: bool,
 }
 
 impl RemotePromptAgentClaim {
     fn try_acquire(
-        claims: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
+        claims: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
         session_id: &str,
         agent_id: &str,
     ) -> Option<Self> {
         let key = (session_id.to_string(), agent_id.to_string());
-        let inserted = claims
+        let mut claims_guard = claims
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key.clone());
-        inserted.then_some(Self { key, claims })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(generation) = claims_guard.get_mut(&key) {
+            *generation = generation.saturating_add(1);
+            return None;
+        }
+        claims_guard.insert(key.clone(), 0);
+        drop(claims_guard);
+        Some(Self {
+            key,
+            claims,
+            seen_generation: 0,
+            released: false,
+        })
+    }
+
+    fn release_or_restart(&mut self) -> bool {
+        let mut claims = self
+            .claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(generation) = claims.get(&self.key).copied() else {
+            self.released = true;
+            return false;
+        };
+        if generation != self.seen_generation {
+            self.seen_generation = generation;
+            return true;
+        }
+        claims.remove(&self.key);
+        self.released = true;
+        false
     }
 }
 
 impl Drop for RemotePromptAgentClaim {
     fn drop(&mut self) {
+        if self.released {
+            return;
+        }
         self.claims
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -52,7 +90,7 @@ impl KernelRuntimeState {
     }
 
     fn spawn_remote_prompt_projection_drain(&self, session_id: String, agent_id: String) {
-        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+        let Some(mut claim) = RemotePromptAgentClaim::try_acquire(
             Arc::clone(&self.owned.remote_prompt_projection_drains),
             &session_id,
             &agent_id,
@@ -61,14 +99,48 @@ impl KernelRuntimeState {
         };
         let state = self.clone();
         tokio::spawn(async move {
-            let _claim = claim;
-            for _ in 0..120 {
+            let mut transport_retry_attempt = 0_u32;
+            loop {
                 match state
                     .drain_remote_prompt_projection_once(&session_id, &agent_id)
                     .await
                 {
-                    Ok(true) => {}
-                    Ok(false) => return,
+                    Ok(true) => transport_retry_attempt = 0,
+                    Ok(false) => {
+                        if claim.release_or_restart() {
+                            continue;
+                        }
+                        return;
+                    }
+                    Err(error) if remote_prompt_error_should_retry_transport(&error) => {
+                        transport_retry_attempt = transport_retry_attempt.saturating_add(1);
+                        if transport_retry_attempt == 1 || transport_retry_attempt % 12 == 0 {
+                            crate::logging::warn_with_fields(
+                                "daemon.remote_prompt_dispatch",
+                                "remote projection transport unavailable; retrying active prompt",
+                                serde_json::json!({
+                                    "session_id": session_id,
+                                    "agent_id": agent_id,
+                                    "attempt": transport_retry_attempt,
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                        if state
+                            .remote_prompt_projection_drain_target(&session_id, &agent_id)
+                            .is_none()
+                        {
+                            if claim.release_or_restart() {
+                                continue;
+                            }
+                            return;
+                        }
+                        tokio::time::sleep(remote_prompt_transport_retry_delay(
+                            transport_retry_attempt,
+                        ))
+                        .await;
+                        continue;
+                    }
                     Err(error) => {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
@@ -79,6 +151,9 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
+                        if claim.release_or_restart() {
+                            continue;
+                        }
                         return;
                     }
                 }
@@ -86,18 +161,13 @@ impl KernelRuntimeState {
                     .remote_prompt_projection_drain_target(&session_id, &agent_id)
                     .is_none()
                 {
+                    if claim.release_or_restart() {
+                        continue;
+                    }
                     return;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
-            crate::logging::warn_with_fields(
-                "daemon.remote_prompt_dispatch",
-                "remote queued prompt projection drain timed out",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "agent_id": agent_id,
-                }),
-            );
         });
     }
 
@@ -165,19 +235,21 @@ impl KernelRuntimeState {
         };
         let response = match self.connected_relay_state_for_config(&relay_config).await {
             Some(relay_state) => {
-                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
                     &relay_config,
                     &relay_state,
                     target,
                     request,
+                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
                 )
                 .await
             }
             None => {
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                     &relay_config,
                     target,
                     request,
+                    REMOTE_PROMPT_PROJECTION_RESPONSE_TIMEOUT,
                 )
                 .await
             }
@@ -1030,9 +1102,9 @@ mod tests {
     }
 
     #[test]
-    fn remote_prompt_projection_drain_claims_are_single_owner_and_release_on_drop() {
-        let claims = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
-        let first =
+    fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
+        let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
+        let mut first =
             RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
                 .expect("first drain should claim the agent");
 
@@ -1041,12 +1113,38 @@ mod tests {
                 .is_none(),
             "a duplicate drain must not start while the first owner is alive"
         );
-
-        drop(first);
+        assert!(
+            first.release_or_restart(),
+            "the active owner must consume a start request that arrived before release"
+        );
+        assert!(
+            !first.release_or_restart(),
+            "the owner must release once no newer start request remains"
+        );
 
         assert!(
             RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
-            "dropping the owner must allow reconnect recovery to start a new drain"
+            "an atomically released claim must allow reconnect recovery to start a new drain"
+        );
+    }
+
+    #[test]
+    fn remote_prompt_projection_transport_retry_delay_is_bounded() {
+        assert_eq!(
+            remote_prompt_transport_retry_delay(1),
+            std::time::Duration::from_millis(250)
+        );
+        assert_eq!(
+            remote_prompt_transport_retry_delay(2),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(
+            remote_prompt_transport_retry_delay(4),
+            std::time::Duration::from_millis(2_000)
+        );
+        assert_eq!(
+            remote_prompt_transport_retry_delay(100),
+            std::time::Duration::from_millis(2_000)
         );
     }
 }

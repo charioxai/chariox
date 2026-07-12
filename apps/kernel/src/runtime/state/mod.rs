@@ -100,8 +100,8 @@ struct KernelRuntimeOwnedState {
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
-        Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
-    remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeSet<(String, String)>>>,
+        Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
+    remote_prompt_recoveries: Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
     slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -424,8 +424,8 @@ impl KernelRuntimeState {
                 remote_home_extension_inflight: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
                 relay_state,
-                remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
-                remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+                remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+                remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
