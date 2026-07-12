@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import type {
   RuntimeSession,
   SessionConfigState,
@@ -8,6 +10,7 @@ import type {
 } from "./kernel-types.js"
 import {
   aliasWorkflowRequest,
+  applyWorkflowDesignOpRequest,
   cancelWorkflowRunRequest,
   createWorkflowRequest,
   getWorkflowRunRequest,
@@ -104,6 +107,32 @@ export async function executeWorkflowCommand(
       const response = await deps.client.send(aliasWorkflowRequest(sessionId, workflowRef, alias))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowAliased")
       return { ok: true, message: `workflow ${payload.workflow.id} aliased as ${payload.workflow.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id } }
+    }
+    case "delete":
+    case "remove":
+    case "rm": {
+      const workflowRef = args[0] ?? context.workflowId
+      if (!workflowRef) {
+        return { ok: false, message: `usage: workflow ${action} <workflow-ref>` }
+      }
+      if (!deps.clientId) {
+        return { ok: false, message: "workflow deletion requires a connected client id" }
+      }
+      const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+      const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
+      const response = await deps.client.send(applyWorkflowDesignOpRequest(
+        sessionId,
+        deps.clientId,
+        `shell-${randomUUID()}`,
+        { kind: "workflow_remove", workflow_id: workflow.id },
+      ))
+      const payload = expectVariant<{ event: { op?: unknown }; session: RuntimeSession }>(response, "WorkflowDesignOpAccepted")
+      return {
+        ok: true,
+        message: `deleted workflow ${formatWorkflowLabel(workflow)}`,
+        data: payload,
+        contextUpdates: { workflowId: undefined, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+      }
     }
     case "run":
     case "start": {
@@ -247,7 +276,7 @@ export async function executeWorkflowCommand(
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|schedule|queue|registry|code" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|schedule|queue|registry|code" }
   }
 }
 

@@ -68,6 +68,47 @@ test("executeShellCommand manages workflow list, create, show, and alias", async
   ])
 })
 
+test("executeShellCommand deletes workflows through the shared design-op path", async () => {
+  const workflow = makeWorkflow()
+  const session = makeSession({ workflows: [] })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ResolveWorkflow" in request) {
+          return { WorkflowResolved: { workflow } }
+        }
+        return { WorkflowDesignOpAccepted: { event: { op: { kind: "workflow_remove", workflow_id: workflow.id } }, session } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    workflowId: workflow.id,
+  })
+  const result = await executeShellCommand(parseShellCommand("workflow delete"), context, {
+    client: fake.client,
+    clientId: "tui-client-1",
+  })
+
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /deleted workflow workflow-1 \(qa\)/)
+  assert.deepEqual(result.contextUpdates, { workflowId: undefined, sessionId: "session-1", agentId: "agent-1" })
+  assert.deepEqual(requests[0], { ResolveWorkflow: { session_id: "session-1", workflow_ref: "workflow-1" } })
+  assert.deepEqual(requests[1], {
+    ApplyWorkflowDesignOp: {
+      session_id: "session-1",
+      origin_client_id: "tui-client-1",
+      op_id: (requests[1] as { ApplyWorkflowDesignOp: { op_id: string } }).ApplyWorkflowDesignOp.op_id,
+      op: { kind: "workflow_remove", workflow_id: "workflow-1" },
+    },
+  })
+  assert.match((requests[1] as { ApplyWorkflowDesignOp: { op_id: string } }).ApplyWorkflowDesignOp.op_id, /^shell-/)
+})
+
 test("executeShellCommand manages workflow registry entries", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-workflow-registry-shell-"))
   try {
