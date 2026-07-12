@@ -1,0 +1,43 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "@ ARROBA" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - generic [ref=e6]: "@"
+      - generic [ref=e7]: ARROBA
+    - navigation "Primary navigation" [ref=e8]:
+      - link "Products" [ref=e9] [cursor=pointer]:
+        - /url: /
+      - link "Enterprise" [ref=e10] [cursor=pointer]:
+        - /url: /enterprise
+      - link "Pricing" [ref=e11] [cursor=pointer]:
+        - /url: /pricing
+      - link "Resources" [ref=e12] [cursor=pointer]:
+        - /url: /resources
+    - generic [ref=e13]:
+      - link "GitHub" [ref=e14] [cursor=pointer]:
+        - /url: https://github.com/mgutierrez09/arroba
+      - link "Log in" [ref=e17] [cursor=pointer]:
+        - /url: /auth/login?returnTo=/waiting-room
+      - button "Switch color theme" [pressed] [ref=e18] [cursor=pointer]
+  - main [ref=e24]:
+    - heading "ARROBA Cloud" [level=1] [ref=e25]
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]: browser control plane
+        - heading "Run ARROBA sessions from a faster React shell." [level=2] [ref=e30]
+        - paragraph [ref=e31]: The web app is moving to a component architecture while preserving the current terminal workflows during the migration.
+        - generic [ref=e32]:
+          - link "Open waiting room" [ref=e33] [cursor=pointer]:
+            - /url: /waiting-room
+          - link "View topology" [ref=e34] [cursor=pointer]:
+            - /url: /resources
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - strong [ref=e37]: shell
+          - generic [ref=e38]: React
+        - generic [ref=e39]:
+          - strong [ref=e40]: state
+          - generic [ref=e41]: Zustand + Query
+        - generic [ref=e42]:
+          - strong [ref=e43]: flows
+          - generic [ref=e44]: React Flow

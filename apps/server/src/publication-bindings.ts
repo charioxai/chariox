@@ -140,6 +140,9 @@ function bindingForAgent(
 function availableProviderProfile(catalog: ProviderCatalogIndex, profile: PublicationProviderModelProfile): PublicationProviderModelProfile | null {
   const models = catalog.providers.get(profile.provider)
   if (!models) return null
+  if (profile.model === "default" || profile.model === `${profile.provider}/default`) {
+    return { ...profile, model: null }
+  }
   if (!profile.model || models.size === 0 || models.has(profile.model)) return profile
   const providerPrefixedModel = `${profile.provider}/`
   if (profile.model.startsWith(providerPrefixedModel)) {

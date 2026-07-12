@@ -108,13 +108,39 @@ async fn inspect_publication_runtime(
         .as_ref()
         .and_then(|process| process.local_url.clone());
     let process_id = running.as_ref().and_then(|process| process.process_id);
-    let status = if running.is_some() {
-        "running".to_string()
+    let publication = if let Some(process) = running.as_ref() {
+        mark_publication_runtime_status(
+            runtime_state,
+            publication.session_id(),
+            publication.id(),
+            "running",
+            Some(local_url.clone()),
+            Some(serde_json::json!({
+                "kind": "local_runtime",
+                "status": "running",
+                "host": process.host,
+                "port": process.port,
+                "local_url": process.local_url,
+                "process_id": process.process_id,
+                "package_root": process.package_root,
+            })),
+        )?
     } else if publication.status() == Some("error") {
-        "error".to_string()
+        publication
     } else {
-        "stopped".to_string()
+        mark_publication_runtime_status(
+            runtime_state,
+            publication.session_id(),
+            publication.id(),
+            "stopped",
+            Some(None),
+            Some(serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped",
+            })),
+        )?
     };
+    let status = publication.status().unwrap_or("stopped").to_string();
     let open_url = running.as_ref().and_then(|_| {
         publication
             .open_url()
