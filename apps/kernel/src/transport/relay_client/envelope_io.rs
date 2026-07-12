@@ -117,6 +117,41 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn display_tunnel_chunks_and_close_share_ordered_event_lane() {
+        let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(2);
+
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonDisplayTunnelChunk {
+                chunk: RelayDisplayTunnelStreamChunk {
+                    stream_id: "stream-1".to_string(),
+                    data: "aGVsbG8=".to_string(),
+                    message_kind: None,
+                },
+            },
+        )
+        .expect("display chunk should send");
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonDisplayTunnelClose {
+                stream_id: "stream-1".to_string(),
+                error: None,
+            },
+        )
+        .expect("display close should send");
+
+        assert!(priority_rx.try_recv().is_err());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonDisplayTunnelChunk { .. })
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(RelayEnvelope::DaemonDisplayTunnelClose { .. })
+        ));
+    }
+
     fn encrypted_payload_for_test() -> EncryptedRelayPayload {
         EncryptedRelayPayload {
             sender_public_key: "sender".to_string(),

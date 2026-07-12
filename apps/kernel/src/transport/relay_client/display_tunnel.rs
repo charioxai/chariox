@@ -729,7 +729,7 @@ mod tests {
                 },
             }
         }
-        match timeout(Duration::from_secs(2), priority_rx.recv())
+        match timeout(Duration::from_secs(2), event_rx.recv())
             .await
             .expect("display close should arrive")
         {
@@ -797,7 +797,7 @@ mod tests {
             other => panic!("unexpected display body: {other:?}"),
         }
 
-        match timeout(Duration::from_secs(2), priority_rx.recv())
+        match timeout(Duration::from_secs(2), event_rx.recv())
             .await
             .expect("display close should arrive")
         {

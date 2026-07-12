@@ -139,6 +139,7 @@ fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
         RelayEnvelope::DaemonEvent { .. }
             | RelayEnvelope::DaemonPeerEvent { .. }
             | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
+            | RelayEnvelope::DaemonDisplayTunnelClose { .. }
             | RelayEnvelope::DaemonDisplayTunnelClientChunk { .. }
     )
 }
