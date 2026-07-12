@@ -505,7 +505,7 @@ copy_provider_auth_file() {
 }
 
 trust_claude_slice_workspace() {
-  if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
+  if ! run_with_timeout 30 docker exec -e "ARROBA_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
 const fs = require('fs')
 const file = '/home/slice/.claude.json'
 let data = {}
@@ -518,11 +518,13 @@ const projects = data.projects && typeof data.projects === 'object' ? data.proje
 const template = Object.values(projects).find((value) =>
   value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
 ) || {}
-projects['/workspace'] = {
-  ...template,
-  allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
-  hasTrustDialogAccepted: true,
-  projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
+for (const workspace of new Set(['/workspace', process.env.ARROBA_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
+  projects[workspace] = {
+    ...template,
+    allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
+    hasTrustDialogAccepted: true,
+    projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
+  }
 }
 data.projects = projects
 fs.writeFileSync(file, JSON.stringify(data, null, 2))
@@ -532,7 +534,7 @@ NODE"
     log "Claude workspace trust update unavailable; continuing"
     return 0
   fi
-  log "marked /workspace as trusted for Claude Code"
+  log "marked /workspace and $SLICE_WORKSPACE as trusted for Claude Code"
 }
 
 import_provider_auth() {
@@ -604,18 +606,22 @@ import_claude_auth() {
   copy_provider_auth_file "$SLICE_CLAUDE_JSON" "/home/slice/.claude.json" "Claude metadata"
   copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "/home/slice/.claude/settings.json" "Claude settings"
   copy_provider_auth_file "$SLICE_CLAUDE_STATS" "/home/slice/.claude/stats-cache.json" "Claude stats"
-  if [[ -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
-    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "/home/slice/.claude/.credentials.json" "Claude credentials"
-  elif command -v security >/dev/null 2>&1; then
+  local imported_credentials=0
+  if command -v security >/dev/null 2>&1; then
     local credentials_tmp
     credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-claude-credentials.XXXXXX")"
+    chmod 600 "$credentials_tmp"
     if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
       copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
-    else
-      log "Claude credentials not found in Keychain service $SLICE_CLAUDE_KEYCHAIN_SERVICE; skipping"
+      imported_credentials=1
     fi
     rm -f "$credentials_tmp"
-  else
+  fi
+  if [[ "$imported_credentials" != "1" && -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
+    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "/home/slice/.claude/.credentials.json" "Claude credentials"
+    imported_credentials=1
+  fi
+  if [[ "$imported_credentials" != "1" ]]; then
     log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
   fi
   trust_claude_slice_workspace
