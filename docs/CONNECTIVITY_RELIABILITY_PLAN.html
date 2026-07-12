@@ -484,9 +484,9 @@
           <p>Auth, permission, remote, slice, transcript, and Hetzner rows passed live.</p>
         </article>
         <article class="result-card">
-          <span class="num">31</span>
+          <span class="num">81</span>
           <h3>Live Sync Checks</h3>
-          <p>Every web/TUI latency stayed within budget; eight screenshots were captured.</p>
+          <p>Expanded direct and relay web/TUI latency checks all stayed within budget; 18 screenshots were inspected.</p>
         </article>
       </div>
     </section>
@@ -549,6 +549,7 @@
             <li>Transferred live Claude authentication into managed Linux slices without printing or persisting temporary credentials.</li>
             <li>Restored Workspace Live Sync launch policy, permission calls, status propagation, provider fixtures, and worker cleanup.</li>
             <li>Protected kernel-owned provider descendants while removing stale run-owned provider processes.</li>
+            <li>Exposed TUI workflow deletion through the existing kernel-owned workflow design operation so web and TUI deletion reconcile over one authority path.</li>
           </ul>
         </article>
         <article class="card">
@@ -559,6 +560,9 @@
             <li>Resolved Cargo binaries from both per-app and workspace target layouts across local, Cloud, staging, slice, and Hetzner drills.</li>
             <li>Enabled <code>dev-stub</code> inventory only in hosted drill kernels after public inventory hardening.</li>
             <li>Hardened failure preservation, process cleanup, free-port allocation, checkout parity, and evidence ownership.</li>
+            <li>Hydrated published-workflow routes from kernel-backed session state after hard reload and refreshed them from live session and workflow-run events.</li>
+            <li>Resolved fresh workflow action menus from the same kernel-backed route store used by the sidebar instead of depending on lagging waiting-room inventory.</li>
+            <li>Expanded the shared two-client drill across provider, model, variant, mode, permission, queues, steering, cancellation, interactions, workflow runs, publications, hard remounts, and deletion in both directions.</li>
           </ul>
         </article>
       </div>
@@ -596,8 +600,13 @@
             <td>Eight screenshots cover queues, permissions resolved from either client, real Claude user requests, and workflow synchronization; all 31 checks stayed within budget.</td>
           </tr>
           <tr>
+            <td>Expanded two-client Freeform and workflows</td>
+            <td><span><code>.artifacts/resilience-closure-20260712/two-client-expanded-direct-full-pass-5</code> and <code>two-client-expanded-relay-full-pass-1</code></span></td>
+            <td>Direct passed 38 latency checks with a 432 ms maximum; relay passed 43 with a 1,547 ms maximum, including a real relay stop/start. No budget failed. Eighteen screenshots cover queueing, permission resolution from either client, disconnect/recovery, workflow runs, publications, hard remount, and synchronized deletion.</td>
+          </tr>
+          <tr>
             <td>Claude native and remote</td>
-            <td><code>.artifacts/resilience-closure-20260712/native-claude-*.json</code> and <code>remote-claude-*.json</code></td>
+            <td><span><code>.artifacts/resilience-closure-20260712/native-claude-*.json</code> and <code>remote-claude-*.json</code></span></td>
             <td>Final reruns close the initial defects: native matrix 6/6, remote matrix 5/5, headless slice passed, and four-user Hetzner collaboration passed.</td>
           </tr>
         </tbody>
@@ -861,7 +870,7 @@
         <tbody>
           <tr>
             <td>Local macOS</td>
-            <td>72 GiB filesystem availability at final sample. The shared data volume was at 83% at the final sample.</td>
+            <td>72 GiB filesystem availability at the closure sample. In the expanded direct run, kernel/relay/web RSS was 82,688/7,904/58,592 KiB; in relay mode it was 99,824/9,168/63,680 KiB. Active-run CPU samples were 64.1/2.6/0% and 88.3/4.2/0.1%, respectively.</td>
             <td>No run-owned relay, kernel, provider, TUI observer, browser, SSH tunnel, screen session, temporary failure root, or listening port remained. Pre-existing relay/kernel PIDs were not touched.</td>
           </tr>
           <tr>
@@ -945,9 +954,9 @@
           <p>Every committed validation test is registered and passed.</p>
         </article>
         <article class="result-card">
-          <span class="num">6,759</span>
+          <span class="num">6,764</span>
           <h3>Core Assertions</h3>
-          <p>Kernel, relay, CLI, Cloud web, and Cloud API suites passed.</p>
+          <p>Kernel, relay, CLI, 3,218 Cloud web, and 66 Cloud API assertions passed.</p>
         </article>
         <article class="result-card">
           <span class="num">0</span>
@@ -977,8 +986,10 @@
         <p>
           Execution followed the commit cadence on dedicated OSS and Cloud continuation branches. Final checkpoints
           include remote projection recovery, live Claude slice and native TUI support, deterministic provider lifecycle
-          drills, exhaustive validation registries, and restored Cloud lint gates. The final OSS and Cloud continuation
-          branches were pushed to origin after authentication was restored.
+          drills, exhaustive validation registries, and restored Cloud lint gates. Task-owned Cloud dirty files were
+          isolated in <code>arroba-cloud-resilience-validation</code>; the original dirty checkout was left untouched.
+          The workflow deletion checkpoint is <code>3fea076a2</code>, the expanded Cloud synchronization checkpoint is
+          <code>759871f0</code>, and both continuation branches were pushed to origin.
         </p>
       </div>
     </section>
