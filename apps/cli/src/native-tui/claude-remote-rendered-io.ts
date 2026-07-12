@@ -82,6 +82,65 @@ export type RemoteRenderedInputAction =
   | { type: "input"; data: string }
   | { type: "enter"; prompt: string }
 
+export type ClaudeRemoteRenderedReadiness = {
+  observe: (records: unknown, providerRunId: string, agentId: string) => void
+  wait: (timeoutMs?: number) => Promise<void>
+}
+
+export function createClaudeRemoteRenderedReadiness(): ClaudeRemoteRenderedReadiness {
+  let output = ""
+  let ready = false
+  const waiters = new Set<() => void>()
+  return {
+    observe: (records, providerRunId, agentId) => {
+      if (ready) return
+      for (const bytes of claudeRemoteRenderedTerminalBytes(records, providerRunId, agentId)) {
+        output = `${output}${bytes.toString("utf8")}`.slice(-32_768)
+      }
+      if (!output.includes("Claude Code") || !output.includes("\u001b[?2004h")) return
+      ready = true
+      for (const resolve of waiters) resolve()
+      waiters.clear()
+    },
+    wait: async (timeoutMs = 60_000) => {
+      if (ready) return
+      await new Promise<void>((resolve, reject) => {
+        const onReady = () => {
+          clearTimeout(timeout)
+          resolve()
+        }
+        const timeout = setTimeout(() => {
+          waiters.delete(onReady)
+          reject(new Error(`timed out waiting ${timeoutMs}ms for the remote Claude TUI input surface`))
+        }, timeoutMs)
+        waiters.add(onReady)
+        if (ready) {
+          waiters.delete(onReady)
+          onReady()
+        }
+      })
+    },
+  }
+}
+
+export async function submitClaudeRemoteRenderedInitialPrompt(options: {
+  client: LocalIpcClient
+  sessionId: string
+  attachmentId: string
+  providerRunId: string
+  prompt: string
+  readiness: ClaudeRemoteRenderedReadiness
+}) {
+  await options.readiness.wait()
+  await sendRemoteRenderedInput(
+    options.client,
+    options.sessionId,
+    options.attachmentId,
+    options.providerRunId,
+    `${options.prompt}\r`,
+  )
+}
+
 export function createClaudeRemoteRenderedComposerState(): RemoteRenderedComposerState {
   return {
     text: "",
@@ -306,6 +365,7 @@ export function startClaudeRemoteRenderedPumpLoop(
   attachmentId: string,
   providerRunId: string,
   agentId: string,
+  onRecords?: (records: unknown) => void,
 ): { stop: () => void } {
   let stopped = false
   const loop = async () => {
@@ -314,6 +374,7 @@ export function startClaudeRemoteRenderedPumpLoop(
         .send<Record<string, unknown>>(pumpTerminalOutputRequest(sessionId, attachmentId))
         .catch(() => ({}))
       const records = "TerminalOutput" in response ? (response.TerminalOutput as { records?: unknown[] }).records : null
+      onRecords?.(records)
       writeClaudeRemoteRenderedTerminalRecords(records, providerRunId, agentId)
       await sleep(250)
     }
@@ -331,12 +392,24 @@ export function writeClaudeRemoteRenderedTerminalRecords(
   providerRunId: string,
   agentId: string,
 ) {
-  if (!Array.isArray(records)) return
+  for (const bytes of claudeRemoteRenderedTerminalBytes(records, providerRunId, agentId)) {
+    process.stdout.write(bytes)
+  }
+}
+
+function claudeRemoteRenderedTerminalBytes(
+  records: unknown,
+  providerRunId: string,
+  agentId: string,
+): Buffer[] {
+  const chunks: Buffer[] = []
+  if (!Array.isArray(records)) return chunks
   for (const record of records) {
     if (!record || typeof record !== "object") continue
     const payload = record as { provider_run_id?: unknown; agent_id?: unknown; bytes?: unknown }
     if (payload.provider_run_id !== providerRunId && payload.agent_id !== agentId) continue
     const bytes = Array.isArray(payload.bytes) ? Buffer.from(payload.bytes as number[]) : null
-    if (bytes?.length) process.stdout.write(bytes)
+    if (bytes?.length) chunks.push(bytes)
   }
+  return chunks
 }

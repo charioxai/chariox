@@ -3,9 +3,11 @@ import test from "node:test"
 
 import type { LocalIpcClient } from "../ipc.js"
 import {
+  createClaudeRemoteRenderedReadiness,
   createClaudeRemoteRenderedComposerState,
   installClaudeRemoteRenderedResizeForwarder,
   planClaudeRemoteRenderedInput,
+  submitClaudeRemoteRenderedInitialPrompt,
   writeClaudeRemoteRenderedTerminalRecords,
 } from "./claude-remote-rendered-io.js"
 
@@ -88,6 +90,70 @@ test("remote Claude rendering selects raw worker output by home agent identity",
   })
 
   assert.equal(output, "CLAUDEDELTA")
+})
+
+test("remote Claude readiness waits for its fragmented input surface", async () => {
+  const readiness = createClaudeRemoteRenderedReadiness()
+  let resolved = false
+  const waiting = readiness.wait(250).then(() => {
+    resolved = true
+  })
+
+  readiness.observe([{
+    provider_run_id: "provider-run-other",
+    agent_id: "agent-other",
+    bytes: [...Buffer.from("Claude Code\u001b[?2004h")],
+  }], "leased:agent-b:provider-run-2", "agent-home-b")
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(resolved, false)
+
+  readiness.observe([{
+    provider_run_id: "provider-run-2",
+    agent_id: "agent-home-b",
+    bytes: [...Buffer.from("\u001b]0;Claude ")],
+  }], "leased:agent-b:provider-run-2", "agent-home-b")
+  readiness.observe([{
+    provider_run_id: "provider-run-2",
+    agent_id: "agent-home-b",
+    bytes: [...Buffer.from("Code\u0007\u001b[?2004h")],
+  }], "leased:agent-b:provider-run-2", "agent-home-b")
+
+  await waiting
+  assert.equal(resolved, true)
+})
+
+test("remote Claude initial prompt waits for readiness and submits atomically", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return {}
+    },
+  } as unknown as LocalIpcClient
+  const readiness = createClaudeRemoteRenderedReadiness()
+  readiness.observe([{
+    provider_run_id: "provider-run-2",
+    agent_id: "agent-home-b",
+    bytes: [...Buffer.from("\u001b]0;Claude Code\u0007\u001b[?2004h")],
+  }], "leased:agent-b:provider-run-2", "agent-home-b")
+
+  await submitClaudeRemoteRenderedInitialPrompt({
+    client,
+    sessionId: "session-1",
+    attachmentId: "attachment-1",
+    providerRunId: "leased:agent-b:provider-run-2",
+    prompt: "Reply exactly",
+    readiness,
+  })
+
+  assert.deepEqual(requests, [{
+    SendTerminalInput: {
+      session_id: "session-1",
+      attachment_id: "attachment-1",
+      provider_run_id: "leased:agent-b:provider-run-2",
+      data_base64: Buffer.from("Reply exactly\r").toString("base64"),
+    },
+  }])
 })
 
 test("remote Claude resize targets its provider run and retries a transport outage", async () => {
