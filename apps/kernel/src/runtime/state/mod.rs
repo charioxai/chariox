@@ -187,6 +187,7 @@ mod remote_prompt_dispatch_runtime;
 mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
+mod restart_recovery_runtime;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;

@@ -422,17 +422,36 @@ fn kernel_restart_reconciliation_clears_restored_attachments() {
         .expect("session should be created");
     session.add_attachment("attachment-1");
     session.add_attachment("attachment-2");
+    session.activate_prompt(crate::session::PromptQueueItem::new(
+        "prompt-restart",
+        "attachment-1",
+        "agent-1",
+        "recover me",
+        crate::session::PromptStatus::Running,
+    ));
 
     let reconciliation = session.reconcile_after_kernel_restart();
     service.restore_session(session.clone());
 
     assert_eq!(reconciliation.cleared_attachment_count, 2);
+    assert_eq!(reconciliation.recoverable_prompt_count, 1);
+    assert_eq!(reconciliation.interrupted_prompt_count, 0);
     assert!(reconciliation.changed());
-    assert!(service
+    let restored = service
         .get_session(session.id())
-        .expect("session should still exist")
-        .attachment_ids()
-        .is_empty());
+        .expect("session should still exist");
+    assert!(restored.attachment_ids().is_empty());
+    assert_eq!(
+        restored
+            .active_prompt_for_agent("agent-1")
+            .map(|prompt| prompt.id()),
+        Some("prompt-restart")
+    );
+
+    let mut shutdown = restored;
+    let shutdown_reconciliation = shutdown.interrupt_runtime_for_shutdown();
+    assert_eq!(shutdown_reconciliation.interrupted_prompt_count, 1);
+    assert!(shutdown.active_prompt_for_agent("agent-1").is_none());
 }
 
 #[test]

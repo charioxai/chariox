@@ -46,3 +46,13 @@ Structured acknowledgements include the provider-native resume identity and upda
 Focused tests cover private-state round trips, exact-prompt phase transitions, local dispatch acknowledgement, provider resume-state persistence, and Claude session-id generation and argument sanitization.
 
 This milestone records enough evidence to classify restart uncertainty but does not yet change restart behavior. Startup reconciliation must inspect the durable phase and provider-native transcript/session state before deciding whether to dispatch, resume observation, or surface a provider-specific limitation. It must never blindly resend a `dispatching` or `delivered` prompt.
+
+## Milestone 5: Non-Destructive Restart Reconciliation
+
+Kernel bootstrap now clears only ephemeral attachment and active-provider pointers. It preserves active prompt queues, active and prepared workflow runs, node states, turn envelopes, and scheduler authority for the async runtime reconciler. Explicit daemon shutdown keeps the former interruption behavior through a separate shutdown-only path.
+
+After the relay connector starts, the runtime scans every preserved active prompt. Local prompts durably recorded as `accepted` are redelivered through the normal provider path even though their originating terminal attachment no longer exists. Remote prompts either resume projection draining from their acknowledged worker run or replay the same home prompt identity through the existing leased-agent idempotency path. Local `dispatching`, `delivered`, and legacy prompts remain active and are not blindly resent.
+
+Focused coverage proves bootstrap retains running and prepared workflow state, shutdown still interrupts work, accepted local prompts progress to `delivered`, and uncertain prompts retain their exact identity and phase without a duplicate dispatch.
+
+The next recovery slice must reconcile uncertain local prompts against provider-native transcripts and session identities, then issue a durable continuation operation when the original provider turn was delivered but its observation was interrupted. Provider launch failures must also retry without completing the preserved prompt.

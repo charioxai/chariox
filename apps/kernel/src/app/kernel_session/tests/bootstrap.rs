@@ -345,7 +345,7 @@ fn bootstrap_restores_metaagent_events_from_snapshot_then_replays_state() {
 }
 
 #[test]
-fn bootstrap_reconciles_stale_runtime_work_after_restart() {
+fn bootstrap_preserves_durable_runtime_work_for_restart_recovery() {
     let config = DaemonConfig::for_tests();
     let (session_id, workflow_run_id, workflow_node_run_id) = {
         let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
@@ -411,26 +411,29 @@ fn bootstrap_reconciles_stale_runtime_work_after_restart() {
         .get_session(&session_id)
         .expect("session should restore");
     assert_eq!(restored.active_provider_run_id(), None);
-    assert!(restored.active_prompt().is_none());
-    assert_eq!(restored.scheduler_state(), SchedulerState::Idle);
+    assert_eq!(
+        restored.active_prompt().map(|prompt| prompt.prompt()),
+        Some("still running when the kernel stops")
+    );
+    assert_eq!(restored.scheduler_state(), SchedulerState::Running);
     let workflow_run = restored
         .workflow_run(&workflow_run_id)
         .expect("workflow run should restore");
-    assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
-    assert_eq!(workflow_run.active_node_run_id(), None);
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Running);
+    assert_eq!(workflow_run.active_node_run_id(), Some("node-run-stale"));
     assert_eq!(
         workflow_run.node_runs()[0].status(),
-        WorkflowNodeRunStatus::Stopped
+        WorkflowNodeRunStatus::Running
     );
     assert_eq!(workflow_run.node_runs()[0].id(), workflow_node_run_id);
-    assert!(workflow_run
+    assert!(!workflow_run
         .failure_events()
         .iter()
         .any(|event| { event.message().contains("interrupted by kernel restart") }));
 }
 
 #[test]
-fn bootstrap_reconciles_prepared_created_workflow_run_after_restart() {
+fn bootstrap_preserves_prepared_workflow_run_after_restart() {
     let config = DaemonConfig::for_tests();
     let (session_id, workflow_run_id, workflow_node_run_id) = {
         let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
@@ -483,23 +486,23 @@ fn bootstrap_reconciles_prepared_created_workflow_run_after_restart() {
         .sessions()
         .get_session(&session_id)
         .expect("session should restore");
-    assert!(!restored.has_active_workflow_run());
+    assert!(restored.has_active_workflow_run());
     let workflow_run = restored
         .workflow_run(&workflow_run_id)
         .expect("workflow run should restore");
-    assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
-    assert_eq!(workflow_run.active_node_run_id(), None);
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
+    assert_eq!(workflow_run.active_node_run_id(), Some("node-run-prepared"));
     let node_run = &workflow_run.node_runs()[0];
     assert_eq!(node_run.id(), workflow_node_run_id);
-    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Stopped);
+    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Ready);
     assert_eq!(
         node_run
             .turn_envelope()
             .expect("turn envelope should remain visible")
             .state(),
-        crate::session::WorkflowTurnRuntimeState::Cancelled
+        crate::session::WorkflowTurnRuntimeState::Prepared
     );
-    assert!(workflow_run
+    assert!(!workflow_run
         .failure_events()
         .iter()
         .any(|event| { event.message().contains("interrupted by kernel restart") }));

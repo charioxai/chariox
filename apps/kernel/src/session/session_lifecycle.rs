@@ -28,6 +28,8 @@ pub enum SchedulerState {
 pub struct KernelRestartReconciliation {
     pub cleared_active_provider_run: bool,
     pub cleared_attachment_count: usize,
+    pub recoverable_prompt_count: usize,
+    pub recoverable_workflow_run_count: usize,
     pub interrupted_prompt_count: usize,
     pub stopped_workflow_run_count: usize,
 }

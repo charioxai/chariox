@@ -505,14 +505,18 @@ impl KernelRuntimeState {
         }
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
         {
-            let attachment = owned
+            match owned
                 .attachment_store
-                .get_attachment(&dispatch.source_attachment_id)?;
-            if attachment.session_id() != dispatch.session_id {
-                return Err(DaemonError::AttachmentNotInSession {
-                    session_id: dispatch.session_id.clone(),
-                    attachment_id: dispatch.source_attachment_id.clone(),
-                });
+                .get_attachment(&dispatch.source_attachment_id)
+            {
+                Ok(attachment) if attachment.session_id() != dispatch.session_id => {
+                    return Err(DaemonError::AttachmentNotInSession {
+                        session_id: dispatch.session_id.clone(),
+                        attachment_id: dispatch.source_attachment_id.clone(),
+                    });
+                }
+                Ok(_) | Err(DaemonError::AttachmentNotFound { .. }) => {}
+                Err(error) => return Err(error),
             }
         }
         let prompt_with_handoff = owned.prompt_with_pending_context_handoff(

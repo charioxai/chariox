@@ -88,7 +88,7 @@ impl DaemonApp {
         self.prompt_owner_remove_session(session_id);
 
         let mut session = self.sessions.get_session(session_id)?;
-        let reconciliation = session.reconcile_after_kernel_restart();
+        let reconciliation = session.interrupt_runtime_for_shutdown();
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
         self.sessions.restore_session(session.clone());
@@ -133,6 +133,7 @@ impl DaemonApp {
             relay_state,
             shutdown_rx.clone(),
         ));
+        runtime_state.spawn_durable_restart_recovery();
         let external_provider_session_discovery_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
                 Arc::clone(&app),

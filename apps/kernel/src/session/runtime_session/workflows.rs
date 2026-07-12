@@ -95,6 +95,30 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
+        reconciliation.recoverable_prompt_count = self
+            .prompt_runtime
+            .prompt_states()
+            .values()
+            .filter(|state| state.active_prompt().is_some())
+            .count();
+        reconciliation.recoverable_workflow_run_count = self
+            .workflow_runs
+            .iter()
+            .filter(|workflow_run| {
+                !matches!(
+                    workflow_run.status(),
+                    WorkflowRunStatus::Completed
+                        | WorkflowRunStatus::Failed
+                        | WorkflowRunStatus::Stopped
+                )
+            })
+            .count();
+
+        reconciliation
+    }
+
+    pub(crate) fn interrupt_runtime_for_shutdown(&mut self) -> KernelRestartReconciliation {
+        let mut reconciliation = self.reconcile_after_kernel_restart();
 
         reconciliation.interrupted_prompt_count = self
             .prompt_runtime

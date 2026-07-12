@@ -76,6 +76,32 @@ impl Drop for RemotePromptAgentClaim {
 }
 
 impl KernelRuntimeState {
+    pub(super) async fn recover_remote_prompt_after_kernel_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        delivery_phase: Option<crate::session::DurablePromptDeliveryPhase>,
+    ) -> Result<bool, DaemonError> {
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let active_worker_run = agent
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+            .is_some();
+        if active_worker_run
+            && delivery_phase != Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        {
+            self.spawn_remote_prompt_projection_drain(session_id.to_string(), agent_id.to_string());
+            return Ok(true);
+        }
+        let Some(mut dispatch) = self.remote_prompt_recovery_dispatch(&agent)? else {
+            return Ok(false);
+        };
+        self.populate_remote_prompt_recovery_workflow_context(&mut dispatch)
+            .await?;
+        self.spawn_remote_prompt_dispatch(dispatch);
+        Ok(true)
+    }
+
     pub(super) fn spawn_remote_prompt_projection_drain_if_needed(
         &self,
         submission: &crate::app::KernelPromptSubmission,
