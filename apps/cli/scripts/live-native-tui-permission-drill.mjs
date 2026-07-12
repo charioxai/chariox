@@ -7,7 +7,10 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
-import { resolveBuiltBinarySync } from "./lib/drill-runtime-helpers.mjs"
+import {
+  resolveBuiltBinarySync,
+  terminateMatchingProcesses,
+} from "./lib/drill-runtime-helpers.mjs"
 
 import { LocalIpcClient } from "../dist/ipc.js"
 import {
@@ -457,8 +460,11 @@ async function runProvider(provider, options) {
     arrobaPrompt: `/tmp/arroba-${provider}-arroba-permission-${process.pid}.txt`,
   }
   const automationSocket = path.join("/tmp", `arb-${provider}-perm-cli-${process.pid}.sock`)
+  const sessionAlias = `native-permission-${provider}-${marker}`
+  const observerClientId = `native-tui-permission-observer-${provider}-${process.pid}`
   let daemon = null
   let client = null
+  let providerScreen = null
   let succeeded = false
   let failure = null
   try {
@@ -489,7 +495,7 @@ async function runProvider(provider, options) {
       "--kernel-url",
       kernelUrl,
       "--alias",
-      `native-permission-${provider}-${marker}`,
+      sessionAlias,
       "--agent-alias",
       alias,
       "--workspace",
@@ -537,7 +543,7 @@ async function runProvider(provider, options) {
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
     if (provider === "claude") {
-      await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)
+      providerScreen = (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
     }
 
     client = new LocalIpcClient(kernelUrl)
@@ -554,7 +560,7 @@ async function runProvider(provider, options) {
       "--session",
       sessionId,
       "--client-id",
-      `native-tui-permission-observer-${provider}-${process.pid}`,
+      observerClientId,
       "--automation-socket",
       automationSocket,
       "--provider",
@@ -603,9 +609,23 @@ async function runProvider(provider, options) {
     failure = error
     throw error
   } finally {
+    let processCleanupFailure = null
     if (client) await client.close().catch(() => {})
     await screenQuit(screenNative)
     await screenQuit(screenCli)
+    if (providerScreen) await screenQuit(providerScreen)
+    const processCleanup = await terminateMatchingProcesses([
+      automationSocket,
+      sessionAlias,
+      observerClientId,
+    ]).catch((error) => ({ signaled: [], killed: [], remaining: [], error }))
+    if (processCleanup.error || processCleanup.remaining.length > 0) {
+      processCleanupFailure = new Error(processCleanup.error
+        ? `permission drill process cleanup failed: ${processCleanup.error.message ?? processCleanup.error}`
+        : `permission drill left run-owned processes: ${processCleanup.remaining.join(", ")}`)
+      succeeded = false
+      failure ??= processCleanupFailure
+    }
     if (daemon && daemon.exitCode == null) {
       daemon.kill("SIGTERM")
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
@@ -630,6 +650,7 @@ async function runProvider(provider, options) {
     }
     await rm(files.nativePrompt, { force: true }).catch(() => {})
     await rm(files.arrobaPrompt, { force: true }).catch(() => {})
+    if (processCleanupFailure) throw processCleanupFailure
   }
 }
 
