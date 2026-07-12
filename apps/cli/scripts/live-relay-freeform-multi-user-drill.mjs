@@ -225,6 +225,24 @@ async function terminateChild(child, signal = 'SIGTERM') {
   }
 }
 
+async function stopHetznerRelay(options, remoteRoot) {
+  if (!remoteRoot) return
+  const pidFile = path.posix.join(remoteRoot, 'relay.pid')
+  const marker = `ARROBA_RELAY_FREEFORM_MULTI_USER_ROOT=${remoteRoot}`
+  const result = await run('ssh', sshArgs(options, [
+    `pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || true)`,
+    `if test -n "$pid" && test -r "/proc/$pid/environ" && tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx ${shellQuote(marker)}; then`,
+    '  kill "$pid" 2>/dev/null || true',
+    '  for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done',
+    '  kill -9 "$pid" 2>/dev/null || true',
+    'fi',
+    `rm -rf ${shellQuote(remoteRoot)}`,
+  ].join('\n')))
+  if (result.code !== 0) {
+    log('hetzner-relay-cleanup-failed', { code: result.code, stderr: result.stderr.trim() })
+  }
+}
+
 function unwrap(resp, ...keys) {
   for (const key of keys) {
     if (resp?.[key] != null) return resp[key]
@@ -331,6 +349,9 @@ async function main() {
   let requests = null
   let relay = null
   let relayTunnel = null
+  const remoteRelayRoot = options.hetznerRelay
+    ? path.posix.join('/tmp', `arroba-relay-freeform-multi-user-${process.pid}-${Date.now()}`)
+    : null
   let daemon = null
   const clients = []
   let sessionId = null
@@ -365,11 +386,12 @@ async function main() {
       }
       relay = spawn('ssh', sshArgs(options, remoteEnvCommand({
         ARROBA_REMOTE_REPO: options.hetznerRepo,
+        ARROBA_RELAY_FREEFORM_MULTI_USER_ROOT: remoteRelayRoot,
         ARROBA_RELAY_HOST: '127.0.0.1',
         ARROBA_RELAY_PORT: String(ports.relayPort),
         ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
         ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-      }, './apps/relay/target/debug/arroba-relay')), {
+      }, `mkdir -p ${shellQuote(remoteRelayRoot)}; echo $$ > ${shellQuote(path.posix.join(remoteRelayRoot, 'relay.pid'))}; exec ./apps/relay/target/debug/arroba-relay`)), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
       relayTunnel = spawn('ssh', [
@@ -577,6 +599,7 @@ async function main() {
     if (sessionId && clients[0] && requests) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
+    await stopHetznerRelay(options, remoteRelayRoot)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
     await finalizeDrillArtifacts({
