@@ -71,6 +71,16 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id().to_string()
             }
         };
+        let (active_prompt, queued_prompts) = self
+            .prompt_state_owner
+            .state_parts(&session, &outcome_agent_id);
+        self.mirror_prompt_owner_agent_state(
+            &session_id,
+            &outcome_agent_id,
+            active_prompt,
+            queued_prompts,
+        )?;
+
         let prompt_sent_at_ms =
             if let crate::session::PromptSubmissionOutcome::Started { prompt } = &outcome {
                 let prompt_sent_at_ms = self.record_started_user_prompt(
@@ -93,20 +103,14 @@ impl KernelRuntimeOwnedState {
                         Some(prompt_sent_at_ms),
                     );
                 }
+                self.persist_prompt_session_state(
+                    &self.session_store.get_session(&session_id)?,
+                    &outcome_agent_id,
+                )?;
                 Some(prompt_sent_at_ms)
             } else {
                 None
             };
-        let (active_prompt, queued_prompts) = self
-            .prompt_state_owner
-            .state_parts(&session, &outcome_agent_id);
-        self.mirror_prompt_owner_agent_state(
-            &session_id,
-            &outcome_agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
-
         let mut dispatch = None;
         match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt } => {

@@ -75,7 +75,7 @@ pub struct PromptQueueItem {
     #[serde(default = "crate::session::unix_epoch_ms")]
     updated_at_ms: u64,
     #[serde(default, skip_serializing, skip_deserializing)]
-    hidden_system_context: String,
+    private_metadata: Option<Box<PromptPrivateMetadata>>,
     status: PromptStatus,
     #[serde(default)]
     prompt_origin: PromptOrigin,
@@ -90,6 +90,41 @@ pub struct PromptQueueItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DurablePromptPrivateState {
+    pub(crate) session_id: String,
+    pub(crate) prompt_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) hidden_system_context: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) initially_queued: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PromptPrivateMetadata {
+    hidden_system_context: String,
+    operation_id: Option<String>,
+    operation_fingerprint: Option<String>,
+    initially_queued: Option<bool>,
+}
+
+impl DurablePromptPrivateState {
+    pub(crate) fn from_prompt(session_id: &str, prompt: &PromptQueueItem) -> Option<Self> {
+        prompt.private_metadata.as_ref().map(|metadata| Self {
+            session_id: session_id.to_string(),
+            prompt_id: prompt.id.clone(),
+            hidden_system_context: metadata.hidden_system_context.clone(),
+            operation_id: metadata.operation_id.clone(),
+            operation_fingerprint: metadata.operation_fingerprint.clone(),
+            initially_queued: metadata.initially_queued,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPromptSubmission {
     pending_prompt_id: String,
     source_attachment_id: String,
@@ -98,7 +133,8 @@ pub struct PendingPromptSubmission {
     attachments: Vec<PromptAttachment>,
     created_at_ms: u64,
     updated_at_ms: u64,
-    hidden_system_context: String,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    private_metadata: Option<Box<PromptPrivateMetadata>>,
     prompt_origin: PromptOrigin,
     external_provider: Option<String>,
     external_provider_session_id: Option<String>,
@@ -121,7 +157,7 @@ impl PendingPromptSubmission {
             attachments: prompt.attachments,
             created_at_ms: now,
             updated_at_ms: now,
-            hidden_system_context: prompt.hidden_system_context,
+            private_metadata: prompt.private_metadata,
             prompt_origin: prompt.prompt_origin,
             external_provider: prompt.external_provider,
             external_provider_session_id: prompt.external_provider_session_id,
@@ -141,7 +177,7 @@ impl PendingPromptSubmission {
             attachments: self.attachments,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.updated_at_ms,
-            hidden_system_context: self.hidden_system_context,
+            private_metadata: self.private_metadata,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
             external_provider: self.external_provider,
@@ -171,7 +207,7 @@ impl PromptQueueItem {
             attachments: Vec::new(),
             created_at_ms: now,
             updated_at_ms: now,
-            hidden_system_context: String::new(),
+            private_metadata: None,
             status,
             prompt_origin: PromptOrigin::Arroba,
             external_provider: None,
@@ -216,7 +252,32 @@ impl PromptQueueItem {
     }
 
     pub fn with_hidden_system_context(mut self, hidden_system_context: impl Into<String>) -> Self {
-        self.hidden_system_context = hidden_system_context.into();
+        let hidden_system_context = hidden_system_context.into();
+        if hidden_system_context.is_empty() {
+            if let Some(metadata) = self.private_metadata.as_mut() {
+                metadata.hidden_system_context.clear();
+                if metadata.operation_id.is_none() {
+                    self.private_metadata = None;
+                }
+            }
+            return self;
+        }
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .hidden_system_context = hidden_system_context;
+        self
+    }
+
+    pub(crate) fn with_durable_operation(
+        mut self,
+        operation_id: impl Into<String>,
+        fingerprint: impl Into<String>,
+    ) -> Self {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.operation_id = Some(operation_id.into());
+        metadata.operation_fingerprint = Some(fingerprint.into());
         self
     }
 
@@ -296,7 +357,56 @@ impl PromptQueueItem {
     }
 
     pub fn hidden_system_context(&self) -> &str {
-        &self.hidden_system_context
+        self.private_metadata
+            .as_ref()
+            .map(|metadata| metadata.hidden_system_context.as_str())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn durable_operation_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.operation_id.as_deref())
+    }
+
+    pub(crate) fn durable_operation_fingerprint(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.operation_fingerprint.as_deref())
+    }
+
+    pub(crate) fn durable_initially_queued(&self) -> Option<bool> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.initially_queued)
+    }
+
+    pub(crate) fn set_durable_initially_queued(&mut self, queued: bool) {
+        if let Some(metadata) = self.private_metadata.as_mut() {
+            if metadata.operation_id.is_none() {
+                return;
+            }
+            metadata.initially_queued = Some(queued);
+        }
+    }
+
+    pub(crate) fn restore_durable_private_state(
+        &mut self,
+        hidden_system_context: String,
+        operation_id: Option<String>,
+        operation_fingerprint: Option<String>,
+        initially_queued: Option<bool>,
+    ) {
+        if hidden_system_context.is_empty() && operation_id.is_none() {
+            self.private_metadata = None;
+            return;
+        }
+        self.private_metadata = Some(Box::new(PromptPrivateMetadata {
+            hidden_system_context,
+            operation_id,
+            operation_fingerprint,
+            initially_queued,
+        }));
     }
 
     pub fn status(&self) -> PromptStatus {
@@ -414,20 +524,26 @@ mod tests {
 
     #[test]
     fn prompt_queue_item_does_not_serialize_hidden_system_context() {
-        let item = PromptQueueItem::new(
+        let mut item = PromptQueueItem::new(
             "prompt-1",
             "attachment-1",
             "agent-1",
             "VISIBLE_PROMPT_TOKEN",
             PromptStatus::Queued,
         )
-        .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN");
+        .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
+        .with_durable_operation("operation-private", "fingerprint-private");
+        item.set_durable_initially_queued(true);
 
         let payload = serde_json::to_string(&item).expect("prompt should serialize");
 
         assert!(payload.contains("VISIBLE_PROMPT_TOKEN"));
         assert!(!payload.contains("HIDDEN_CONTEXT_TOKEN"));
         assert!(!payload.contains("hidden_system_context"));
+        assert!(!payload.contains("operation-private"));
+        assert!(!payload.contains("fingerprint-private"));
+        assert!(!payload.contains("durable_initially_queued"));
+        assert!(!payload.contains("private_metadata"));
     }
 
     #[test]

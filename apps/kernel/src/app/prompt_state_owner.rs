@@ -84,6 +84,12 @@ impl DaemonApp {
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let source_attachment_id = prompt.source_attachment_id().to_string();
         let session = self.sessions.get_session(session_id)?;
+        if let Some(outcome) = self
+            .prompt_state_owner
+            .replay_durable_submission(&session, &prompt)?
+        {
+            return Ok(outcome);
+        }
         if !session.has_attachment(&source_attachment_id)
             && !crate::scheduler::runtime::is_workflow_prompt_attachment(&source_attachment_id)
         {
@@ -301,6 +307,11 @@ impl DaemonApp {
             agent_id,
             active_prompt,
             queued_prompts,
+        )?;
+        crate::durable_prompt_state::append_durable_prompt_state_event(
+            &self.durable_state,
+            &session,
+            agent_id,
         )?;
         self.provider_process_projection.invalidate();
         self.refresh_prompt_owner_session_projection(session_id)?;

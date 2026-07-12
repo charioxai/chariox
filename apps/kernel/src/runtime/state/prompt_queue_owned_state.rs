@@ -50,15 +50,28 @@ impl KernelRuntimeOwnedState {
         active_prompt: Option<crate::session::PromptQueueItem>,
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
     ) -> Result<(), DaemonError> {
-        self.session_store.mirror_agent_prompt_state(
+        let session = self.session_store.mirror_agent_prompt_state(
             session_id,
             agent_id,
             active_prompt,
             queued_prompts,
         )?;
+        self.persist_prompt_session_state(&session, agent_id)?;
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;
         Ok(())
+    }
+
+    pub(super) fn persist_prompt_session_state(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        crate::durable_prompt_state::append_durable_prompt_state_event(
+            &self.durable_state_store,
+            session,
+            agent_id,
+        )
     }
 
     pub(super) fn mirror_prompt_owner_session_state(

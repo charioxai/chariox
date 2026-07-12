@@ -15,6 +15,8 @@ pub(super) enum AgentCommand {
     SubmitPrompt {
         request: crate::local::SubmitPromptRequest,
         trace_id: String,
+        operation_id: String,
+        operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     },
     CompletePrompt {

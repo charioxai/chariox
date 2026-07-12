@@ -67,6 +67,10 @@ impl KernelRuntimeOwnedState {
                     prompt.source_attachment_id(),
                     prompt,
                 )?;
+                self.persist_prompt_session_state(
+                    &self.session_store.get_session(&session_id)?,
+                    &outcome_agent_id,
+                )?;
                 Some(crate::app::KernelRemotePromptDispatch {
                     session_id: session_id.clone(),
                     agent_id: target_agent_id.clone(),

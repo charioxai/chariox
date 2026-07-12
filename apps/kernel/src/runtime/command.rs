@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::local::LocalDaemonRequest;
 use crate::session::unix_epoch_ms;
@@ -42,6 +43,25 @@ pub struct KernelCommand {
 }
 
 impl KernelCommand {
+    pub(crate) fn durable_operation_id(&self, suffix: Option<&str>) -> String {
+        match suffix {
+            Some(suffix) => format!("{}:{suffix}", self.command_id),
+            None => self.command_id.clone(),
+        }
+    }
+
+    pub(crate) fn durable_request_fingerprint(&self) -> String {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "command_type": self.command_type,
+            "source": self.source,
+            "session_id": self.session_id,
+            "attachment_id": self.attachment_id,
+            "payload": self.payload,
+        }))
+        .unwrap_or_default();
+        format!("sha256:{:x}", Sha256::digest(payload))
+    }
+
     pub fn from_local_request(
         command_id: impl Into<String>,
         correlation_id: Option<String>,
@@ -161,6 +181,33 @@ mod tests {
         assert_eq!(command.session_id.as_deref(), Some("session-1"));
         assert_eq!(command.attachment_id.as_deref(), Some("attachment-1"));
         assert_eq!(command.agent_id.as_deref(), Some("agent-1"));
+    }
+
+    #[test]
+    fn durable_prompt_fingerprint_is_stable_and_payload_sensitive() {
+        let request = |prompt: &str| {
+            LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+                session_id: "session-1".to_string(),
+                attachment_id: "attachment-1".to_string(),
+                target_agent_id: Some("agent-1".to_string()),
+                prompt: prompt.to_string(),
+                attachments: Vec::new(),
+            })
+        };
+        let first = KernelCommand::from_local_request("cmd-1", None, None, &request("hello"));
+        let retry = KernelCommand::from_local_request("cmd-1", None, None, &request("hello"));
+        let conflict = KernelCommand::from_local_request("cmd-1", None, None, &request("changed"));
+
+        assert_eq!(
+            first.durable_request_fingerprint(),
+            retry.durable_request_fingerprint()
+        );
+        assert_ne!(
+            first.durable_request_fingerprint(),
+            conflict.durable_request_fingerprint()
+        );
+        assert!(first.durable_request_fingerprint().starts_with("sha256:"));
+        assert_eq!(first.durable_operation_id(Some("2")), "cmd-1:2");
     }
 
     #[test]

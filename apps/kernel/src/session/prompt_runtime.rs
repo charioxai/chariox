@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use super::types::PromptSubmissionOutcome;
-use super::types::{AgentPromptState, PromptQueueItem, SchedulerState};
+use super::types::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem, SchedulerState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::session) struct PromptRuntimeState {
@@ -27,6 +27,50 @@ impl Default for PromptRuntimeState {
 }
 
 impl PromptRuntimeState {
+    pub(in crate::session) fn durable_private_states(
+        &self,
+        session_id: &str,
+    ) -> Vec<DurablePromptPrivateState> {
+        self.prompt_states
+            .values()
+            .flat_map(|state| {
+                state
+                    .active_prompt
+                    .iter()
+                    .chain(state.queued_prompts.iter())
+            })
+            .filter_map(|prompt| DurablePromptPrivateState::from_prompt(session_id, prompt))
+            .collect()
+    }
+
+    pub(in crate::session) fn restore_durable_private_states(
+        &mut self,
+        states: &[DurablePromptPrivateState],
+    ) {
+        let states = states
+            .iter()
+            .map(|state| (state.prompt_id.as_str(), state))
+            .collect::<BTreeMap<_, _>>();
+        for prompt_state in self.prompt_states.values_mut() {
+            for prompt in prompt_state
+                .active_prompt
+                .iter_mut()
+                .chain(prompt_state.queued_prompts.iter_mut())
+            {
+                let Some(private) = states.get(prompt.id()) else {
+                    continue;
+                };
+                prompt.restore_durable_private_state(
+                    private.hidden_system_context.clone(),
+                    private.operation_id.clone(),
+                    private.operation_fingerprint.clone(),
+                    private.initially_queued,
+                );
+            }
+        }
+        self.refresh_prompt_projection(None);
+    }
+
     pub(in crate::session) fn prompt_states(&self) -> &BTreeMap<String, AgentPromptState> {
         &self.prompt_states
     }

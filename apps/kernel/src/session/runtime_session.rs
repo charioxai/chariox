@@ -9,7 +9,7 @@ use crate::provider::ExternalProviderImportMetadata;
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
-use super::prompt_queue::{AgentPromptState, PromptQueueItem};
+use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
 use super::prompt_runtime::PromptRuntimeState;
 use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
@@ -118,6 +118,19 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn durable_prompt_private_states(&self) -> Vec<DurablePromptPrivateState> {
+        self.prompt_runtime.durable_private_states(&self.id)
+    }
+
+    pub(crate) fn restore_durable_prompt_private_states(
+        &mut self,
+        states: &[DurablePromptPrivateState],
+    ) {
+        self.prompt_runtime.restore_durable_private_states(states);
+        self.prompt_runtime
+            .refresh_after_focus_change(self.focused_agent_id.as_deref());
+    }
+
     pub fn new(
         id: impl Into<String>,
         alias: Option<String>,

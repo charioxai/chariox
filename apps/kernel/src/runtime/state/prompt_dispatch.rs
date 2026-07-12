@@ -12,6 +12,18 @@ impl KernelRuntimeState {
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
         {
             let owned = &self.owned;
+            let session = owned.session_store.get_session(&prepared.session_id)?;
+            if let Some(outcome) = owned
+                .prompt_state_owner
+                .replay_durable_submission(&session, &prepared.prompt)?
+            {
+                return Ok(crate::app::KernelPromptSubmission {
+                    outcome,
+                    session: owned.session_snapshot(&prepared.session_id)?,
+                    dispatch: None,
+                    remote_dispatch: None,
+                });
+            }
             if let Some(mut submission) = owned.submit_local_prepared_prompt(&prepared)? {
                 self.finish_owned_prompt_submission_workflow_start(&mut submission)
                     .await?;

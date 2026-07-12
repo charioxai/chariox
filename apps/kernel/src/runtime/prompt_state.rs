@@ -52,6 +52,29 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    pub(crate) fn replay_durable_submission(
+        &self,
+        session: &RuntimeSession,
+        prompt: &PromptQueueItem,
+    ) -> Result<Option<PromptSubmissionOutcome>, DaemonError> {
+        let Some(operation_id) = prompt.durable_operation_id() else {
+            return Ok(None);
+        };
+        let fingerprint =
+            prompt
+                .durable_operation_fingerprint()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "replay durable prompt submission",
+                    message: format!(
+                        "prompt operation `{operation_id}` is missing its request fingerprint"
+                    ),
+                })?;
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .submission_for_durable_operation(session.id(), operation_id, fingerprint)
+    }
+
     pub(crate) fn active_prompt_for_agent(
         &self,
         session: &RuntimeSession,
@@ -172,12 +195,23 @@ impl PromptStateOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let (Some(operation_id), Some(fingerprint)) = (
+            prompt.durable_operation_id(),
+            prompt.durable_operation_fingerprint(),
+        ) {
+            if let Some(outcome) =
+                owner.submission_for_durable_operation(session.id(), operation_id, fingerprint)?
+            {
+                return Ok(outcome);
+            }
+        }
         let should_start = {
             let state = owner.ensure_agent_state(session, &agent_id);
             !force_queue && state.active_prompt.is_none()
         };
         if should_start {
             let state = owner.ensure_agent_state(session, &agent_id);
+            prompt.set_durable_initially_queued(false);
             prompt.set_status(PromptStatus::Running);
             state.active_prompt = Some(prompt.clone());
             Ok(PromptSubmissionOutcome::Started { prompt })
@@ -203,6 +237,7 @@ impl PromptStateOwner {
                     ),
                 });
             }
+            prompt.set_durable_initially_queued(true);
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
             state.queued_prompts.push_back(prompt.clone());
             Ok(PromptSubmissionOutcome::Queued { prompt })
@@ -676,6 +711,48 @@ fn validate_prompt_target_agent(
 }
 
 impl PromptStateOwnerState {
+    fn submission_for_durable_operation(
+        &self,
+        session_id: &str,
+        operation_id: &str,
+        fingerprint: &str,
+    ) -> Result<Option<PromptSubmissionOutcome>, DaemonError> {
+        let prompt = self
+            .states
+            .iter()
+            .filter(|(key, _)| key.session_id == session_id)
+            .flat_map(|(_, state)| {
+                state
+                    .active_prompt
+                    .iter()
+                    .chain(state.queued_prompts.iter())
+            })
+            .find(|prompt| prompt.durable_operation_id() == Some(operation_id));
+        let Some(prompt) = prompt else {
+            return Ok(None);
+        };
+        if prompt.durable_operation_fingerprint() != Some(fingerprint) {
+            return Err(DaemonError::LocalTransport {
+                operation: "replay durable prompt submission",
+                message: format!(
+                    "operation id `{operation_id}` was already used for a different prompt request"
+                ),
+            });
+        }
+        let initially_queued = prompt.durable_initially_queued().unwrap_or_else(|| {
+            prompt.status() == PromptStatus::Queued || prompt.pending_prompt_id().is_some()
+        });
+        Ok(Some(if initially_queued {
+            PromptSubmissionOutcome::Queued {
+                prompt: prompt.clone(),
+            }
+        } else {
+            PromptSubmissionOutcome::Started {
+                prompt: prompt.clone(),
+            }
+        }))
+    }
+
     fn agent_ids_for_session(&self, session: &RuntimeSession) -> Vec<String> {
         let mut agent_ids = session
             .agents()
@@ -764,6 +841,67 @@ mod tests {
             owner.queued_prompt_count_for_agent(&session, "agent-1"),
             PROMPT_QUEUE_LIMIT
         );
+    }
+
+    #[test]
+    fn durable_submission_replay_does_not_duplicate_active_or_queued_prompts() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-durable",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        );
+        let first = PromptQueueItem::new(
+            "prompt-active",
+            "attachment-1",
+            "agent-1",
+            "active",
+            PromptStatus::Queued,
+        );
+        owner
+            .submit_prepared_prompt(&session, first, false)
+            .expect("active prompt should submit");
+        let durable = PromptQueueItem::new(
+            "prompt-durable-draft",
+            "attachment-1",
+            "agent-1",
+            "queued once",
+            PromptStatus::Queued,
+        )
+        .with_durable_operation("command-1", "fingerprint-1");
+        let queued = owner
+            .submit_prepared_prompt(&session, durable.clone(), false)
+            .expect("durable prompt should queue");
+        let replayed = owner
+            .submit_prepared_prompt(&session, durable, false)
+            .expect("durable prompt should replay");
+
+        let queued_id = match queued {
+            PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+            other => panic!("expected queued prompt, got {other:?}"),
+        };
+        match replayed {
+            PromptSubmissionOutcome::Queued { prompt } => assert_eq!(prompt.id(), queued_id),
+            other => panic!("expected replayed queued prompt, got {other:?}"),
+        }
+        assert_eq!(owner.queued_prompt_count_for_agent(&session, "agent-1"), 1);
+
+        let conflict = PromptQueueItem::new(
+            "prompt-conflict",
+            "attachment-1",
+            "agent-1",
+            "different",
+            PromptStatus::Queued,
+        )
+        .with_durable_operation("command-1", "fingerprint-2");
+        assert!(owner
+            .submit_prepared_prompt(&session, conflict, false)
+            .expect_err("fingerprint drift should conflict")
+            .to_string()
+            .contains("already used for a different prompt request"));
     }
 
     #[test]

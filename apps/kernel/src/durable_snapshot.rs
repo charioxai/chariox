@@ -9,12 +9,14 @@ use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
 };
-use crate::session::{RuntimeSession, SessionStateStore};
+use crate::session::{DurablePromptPrivateState, RuntimeSession, SessionStateStore};
 use crate::slice::{SliceBackupRecord, SliceRecord, SliceSavedStateRecord, SliceStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DurableKernelSnapshotPayload {
     pub(crate) sessions: Vec<RuntimeSession>,
+    #[serde(default)]
+    pub(crate) prompt_private_states: Vec<DurablePromptPrivateState>,
     pub(crate) agents: Vec<AgentInstance>,
     #[serde(default)]
     pub(crate) slices: Vec<SliceRecord>,
@@ -36,6 +38,10 @@ impl DurableKernelSnapshotPayload {
         metaagent_events: &MetaagentEventStore,
     ) -> Self {
         let sessions = sessions.read().store().list();
+        let prompt_private_states = sessions
+            .iter()
+            .flat_map(RuntimeSession::durable_prompt_private_states)
+            .collect();
         let agents = agents.list_agents();
         let slice_records = slices.list();
         let slice_saved_states = slices.list_saved_states();
@@ -43,6 +49,7 @@ impl DurableKernelSnapshotPayload {
         let metaagent_snapshot = metaagent_events.snapshot();
         Self {
             sessions,
+            prompt_private_states,
             agents,
             slices: slice_records,
             slice_saved_states,
@@ -171,11 +178,7 @@ fn checkpoint_entities(
                 message: format!("durable checkpoint group `{kind}` must be an array"),
             })?;
         for (index, value) in values.iter().enumerate() {
-            let id = ["id", "event_id", "subscription_id", "slice_id", "backup_id"]
-                .into_iter()
-                .find_map(|field| value.get(field).and_then(serde_json::Value::as_str))
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("{index:020}"));
+            let id = checkpoint_entity_id(kind, value, index);
             entities.push(DurableCheckpointEntity {
                 kind: kind.clone(),
                 id,
@@ -191,12 +194,49 @@ fn checkpoint_entities(
     Ok(entities)
 }
 
+fn checkpoint_entity_id(kind: &str, value: &serde_json::Value, index: usize) -> String {
+    if kind == "prompt_private_states" {
+        if let (Some(session_id), Some(prompt_id)) = (
+            value.get("session_id").and_then(serde_json::Value::as_str),
+            value.get("prompt_id").and_then(serde_json::Value::as_str),
+        ) {
+            return format!("{session_id}:{prompt_id}");
+        }
+    }
+    ["id", "event_id", "subscription_id", "slice_id", "backup_id"]
+        .into_iter()
+        .find_map(|field| value.get(field).and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{index:020}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::DaemonApp;
     use crate::config::DaemonConfig;
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn prompt_private_checkpoint_ids_are_scoped_by_session() {
+        let first = serde_json::json!({
+            "session_id": "session-1",
+            "prompt_id": "prompt-1"
+        });
+        let second = serde_json::json!({
+            "session_id": "session-2",
+            "prompt_id": "prompt-1"
+        });
+
+        assert_eq!(
+            checkpoint_entity_id("prompt_private_states", &first, 0),
+            "session-1:prompt-1"
+        );
+        assert_eq!(
+            checkpoint_entity_id("prompt_private_states", &second, 1),
+            "session-2:prompt-1"
+        );
+    }
 
     #[test]
     fn tick_once_skips_until_interval_is_reached() {

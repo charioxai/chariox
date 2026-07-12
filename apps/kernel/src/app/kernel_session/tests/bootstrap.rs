@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome};
 
 #[test]
 fn bootstrap_restores_created_session_and_agents_from_durable_state() {
@@ -37,6 +38,98 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
             .expect("spawned agent should restore")
             .session_id(),
         session_id
+    );
+}
+
+#[test]
+fn bootstrap_restores_queued_prompt_private_state_and_replays_submission_once() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, agent_id, attachment_id, queued_prompt_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-durable-prompt",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let prompt = PromptQueueItem::new(
+            "prompt-draft",
+            attachment.id(),
+            agent.id(),
+            "durable queued prompt",
+            PromptStatus::Queued,
+        )
+        .with_hidden_system_context("private durable context")
+        .with_durable_operation("command-durable-prompt", "fingerprint-durable-prompt");
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
+            .expect("prompt should queue durably");
+        let queued_prompt_id = match outcome {
+            PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+            other => panic!("expected queued prompt, got {other:?}"),
+        };
+        let later_session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("later session state should load");
+        app.durable_state_store()
+            .append_event(
+                "session.updated",
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": &later_session,
+                    "reason": "test_later_generic_update",
+                }),
+            )
+            .expect("later generic session event should persist");
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            attachment.id().to_string(),
+            queued_prompt_id,
+        )
+    };
+
+    let mut app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    let queued = restored
+        .queued_prompts_for_agent(&agent_id)
+        .expect("agent prompt queue should restore");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), queued_prompt_id);
+    assert_eq!(queued[0].hidden_system_context(), "private durable context");
+    assert_eq!(
+        queued[0].durable_operation_id(),
+        Some("command-durable-prompt")
+    );
+
+    let replay = PromptQueueItem::new(
+        "prompt-retry-draft",
+        attachment_id,
+        &agent_id,
+        "durable queued prompt",
+        PromptStatus::Queued,
+    )
+    .with_hidden_system_context("private durable context")
+    .with_durable_operation("command-durable-prompt", "fingerprint-durable-prompt");
+    let replayed = app
+        .prompt_owner_submit_prepared_prompt(&session_id, replay, true)
+        .expect("matching command should replay despite stale attachment identity");
+    match replayed {
+        PromptSubmissionOutcome::Queued { prompt } => assert_eq!(prompt.id(), queued_prompt_id),
+        other => panic!("expected replayed queued prompt, got {other:?}"),
+    }
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(&session_id, &agent_id)
+            .expect("queue count should load"),
+        1
     );
 }
 

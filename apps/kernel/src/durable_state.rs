@@ -524,6 +524,7 @@ impl DurableKernelStateStore {
             })?;
         let mut payload = [
             "sessions",
+            "prompt_private_states",
             "agents",
             "slices",
             "slice_saved_states",

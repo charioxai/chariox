@@ -119,6 +119,8 @@ impl AgentRuntime {
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id: command_trace.trace_id().to_string(),
+                operation_id: command.durable_operation_id(None),
+                operation_fingerprint: command.durable_request_fingerprint(),
                 response_mode,
             },
         )
@@ -183,6 +185,8 @@ impl AgentRuntime {
                 async move {
                     let submit_request = item.into_submit_prompt_request(session_id, attachment_id);
                     let command_trace = CommandTrace::from_command(&command);
+                    let operation_id = command.durable_operation_id(Some(&index.to_string()));
+                    let operation_fingerprint = command.durable_request_fingerprint();
                     let result = runtime
                         .dispatch_to_agent(
                             agent_id.clone(),
@@ -190,6 +194,8 @@ impl AgentRuntime {
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
                                 trace_id: command_trace.trace_id().to_string(),
+                                operation_id,
+                                operation_fingerprint,
                                 response_mode: PromptSubmitResponseMode::BatchItem,
                             },
                         )

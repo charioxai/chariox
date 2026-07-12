@@ -1,12 +1,15 @@
 use crate::agent::AgentInstance;
 use crate::app::DaemonApp;
+use crate::durable_prompt_state::{
+    DurablePromptStateEventPayload, DURABLE_PROMPT_STATE_EVENT_KIND,
+};
 use crate::durable_snapshot::{DurableKernelSnapshotPayload, DurableSnapshotScheduler};
 use crate::durable_state::{DurableKernelStateStore, DurableStateEvent};
 use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
-use crate::session::RuntimeSession;
+use crate::session::{DurablePromptPrivateState, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -198,9 +201,20 @@ impl DaemonApp {
             .filter(|session| self.session_belongs_to_current_kernel(session))
             .map(|session| session.id().to_string())
             .collect();
-        for session in snapshot.sessions {
+        let mut prompt_private_states_by_session =
+            BTreeMap::<String, Vec<DurablePromptPrivateState>>::new();
+        for state in snapshot.prompt_private_states {
+            prompt_private_states_by_session
+                .entry(state.session_id.clone())
+                .or_default()
+                .push(state);
+        }
+        for mut session in snapshot.sessions {
             if !restored_session_ids.contains(session.id()) {
                 continue;
+            }
+            if let Some(states) = prompt_private_states_by_session.get(session.id()) {
+                session.restore_durable_prompt_private_states(states);
             }
             self.prompt_state_owner.restore_session_state(&session);
             self.sessions.restore_session(session);
@@ -503,14 +517,60 @@ impl DaemonApp {
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
+            DURABLE_PROMPT_STATE_EVENT_KIND => {
+                let mut prompt_state =
+                    serde_json::from_value::<DurablePromptStateEventPayload>(event.payload.clone())
+                        .map_err(|error| DaemonError::LocalTransport {
+                            operation: "durable_state.restore_prompt_state_event",
+                            message: error.to_string(),
+                        })?;
+                let session = self.sessions.get_session(&prompt_state.session_id)?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
+                prompt_state.restore_private_states();
+                if let Some(timestamp_ms) = prompt_state.last_prompt_sent_at_ms {
+                    self.agents
+                        .note_prompt_sent_at(&prompt_state.agent_id, timestamp_ms)?;
+                    self.sessions.note_prompt_sent(
+                        &prompt_state.session_id,
+                        &prompt_state.agent_id,
+                        timestamp_ms,
+                    )?;
+                }
+                let session = self.sessions.mirror_agent_prompt_state(
+                    &prompt_state.session_id,
+                    &prompt_state.agent_id,
+                    prompt_state.active_prompt,
+                    prompt_state.queued_prompts,
+                )?;
+                self.prompt_state_owner.restore_session_state(&session);
+                self.update_session_projection(session);
+            }
             "session.updated" => {
-                let session: RuntimeSession = decode_durable_payload_field(
+                let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
                     "durable_state.restore_session_update",
                 )?;
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
+                }
+                let private_states =
+                    if let Some(states) = event.payload.get("prompt_private_states") {
+                        serde_json::from_value::<Vec<DurablePromptPrivateState>>(states.clone())
+                            .map_err(|error| DaemonError::LocalTransport {
+                                operation: "durable_state.restore_prompt_private_states",
+                                message: error.to_string(),
+                            })?
+                    } else {
+                        self.sessions
+                            .get_session(session.id())
+                            .map(|current| current.durable_prompt_private_states())
+                            .unwrap_or_default()
+                    };
+                if !private_states.is_empty() {
+                    session.restore_durable_prompt_private_states(&private_states);
                 }
                 self.prompt_state_owner.restore_session_state(&session);
                 self.sessions.restore_session(session.clone());

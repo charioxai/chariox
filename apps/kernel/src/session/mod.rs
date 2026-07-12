@@ -37,6 +37,7 @@ pub use service::{
 };
 pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;
+pub(crate) use types::DurablePromptPrivateState;
 pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, MetaagentTask,

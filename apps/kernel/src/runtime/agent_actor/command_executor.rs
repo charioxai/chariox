@@ -44,8 +44,19 @@ impl AgentRuntimeCommandExecutor {
             AgentCommand::SubmitPrompt {
                 request,
                 trace_id,
+                operation_id,
+                operation_fingerprint,
                 response_mode,
-            } => self.submit_prompt(request, trace_id, response_mode).await,
+            } => {
+                self.submit_prompt(
+                    request,
+                    trace_id,
+                    operation_id,
+                    operation_fingerprint,
+                    response_mode,
+                )
+                .await
+            }
             AgentCommand::CancelActivePrompt {
                 request,
                 target_agent_id,
@@ -72,6 +83,8 @@ impl AgentRuntimeCommandExecutor {
         &self,
         request: crate::local::SubmitPromptRequest,
         trace_id: String,
+        operation_id: String,
+        operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let target_agent_id =
@@ -106,6 +119,7 @@ impl AgentRuntimeCommandExecutor {
             PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_system_context)
+        .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,
