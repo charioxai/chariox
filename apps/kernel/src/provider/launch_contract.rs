@@ -178,6 +178,21 @@ impl ProviderResumeState {
         self.claude_session_id = Some(session_id.into());
     }
 
+    pub(crate) fn set_provider_session_id(
+        &mut self,
+        provider: &str,
+        session_id: impl Into<String>,
+    ) -> bool {
+        let session_id = session_id.into();
+        match provider.trim().to_ascii_lowercase().as_str() {
+            "codex" => self.set_codex_thread_id(session_id),
+            "opencode" => self.set_opencode_session_id(session_id),
+            "claude" => self.set_claude_session_id(session_id),
+            _ => return false,
+        }
+        true
+    }
+
     pub fn without_opencode_session_id(&self) -> Self {
         Self {
             opencode_session_id: None,

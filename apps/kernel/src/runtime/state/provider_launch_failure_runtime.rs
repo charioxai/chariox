@@ -52,13 +52,33 @@ impl KernelRuntimeState {
             {
                 durable_agent_update = Some(agent);
             }
+            let durable_active_prompt = started.run.agent_instance_id().and_then(|agent_id| {
+                let session = owned
+                    .session_store
+                    .get_session(started.run.session_id())
+                    .ok()?;
+                owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)
+                    .filter(|prompt| prompt.durable_delivery_phase().is_some())
+            });
             let leased_context = self
                 .with_app_side_effect(|app| {
                     crate::app::RemoteLeaseRuntime::new(app)
                         .leased_workflow_turn_context_for_provider_run(started.run.id())
                 })
                 .await;
-            if let Some(context) = leased_context {
+            if durable_active_prompt.is_some() {
+                crate::logging::warn_with_fields(
+                    "durable_state.recovery",
+                    "preserving durable prompt after provider launch failure",
+                    serde_json::json!({
+                        "session_id": started.run.session_id(),
+                        "agent_id": started.run.agent_instance_id(),
+                        "provider_run_id": started.run.id(),
+                    }),
+                );
+            } else if let Some(context) = leased_context {
                 let _ = self
                     .with_app_side_effect(|app| {
                         app.block_on_relay_future(

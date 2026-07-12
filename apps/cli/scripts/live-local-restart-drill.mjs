@@ -68,6 +68,20 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function sendWithTimeout(client, request, label, timeoutMs = 15_000) {
+  let timeout
+  try {
+    return await Promise.race([
+      client.send(request),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 async function run(command, args, options = {}) {
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -127,6 +141,14 @@ async function stopDaemon(child) {
   })
 }
 
+async function crashDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  await new Promise((resolve) => {
+    child.once('exit', resolve)
+    child.kill('SIGKILL')
+  })
+}
+
 async function waitForDaemon(kernelUrl) {
   const deadline = Date.now() + 20_000
   let lastError = null
@@ -149,7 +171,12 @@ async function waitForState(client, sessionId, predicate, label, timeoutMs = 10_
   const deadline = Date.now() + timeoutMs
   let lastSession = null
   while (Date.now() < deadline) {
-    const response = await client.send(getSessionStateRequest(sessionId))
+    const response = await sendWithTimeout(
+      client,
+      getSessionStateRequest(sessionId),
+      `poll ${label}`,
+      Math.min(timeoutMs, 5_000),
+    )
     lastSession = variant(response, 'SessionState').session
     if (predicate(lastSession)) return lastSession
     await sleep(250)
@@ -329,21 +356,43 @@ async function main() {
     )
     log('workflow-active', { workflowId: workflow.id, workflowRunId: workflowRun.id })
 
+    const beforeCrash = variant(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
+    const workflowPromptId = beforeCrash.active_prompt?.id
+    assert(workflowPromptId, 'workflow prompt was not active before the crash')
+
     await sleep(250)
     await client.close().catch(() => {})
     client = null
-    await stopDaemon(daemon)
-    log('daemon-stopped')
+    await crashDaemon(daemon)
+    daemon = null
+    log('daemon-crashed')
 
     daemon = startDaemon(kernelBinary, env)
     await waitForDaemon(kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     log('daemon-restarted')
 
-    const sessions = variant(await client.send(listSessionsRequest()), 'SessionsListed').sessions
+    log('restore-session-list-requested')
+    const sessions = variant(
+      await sendWithTimeout(client, listSessionsRequest(), 'restore session list'),
+      'SessionsListed',
+    ).sessions
+    log('restore-session-list-received')
     assert(sessions.some((candidate) => candidate.id === sessionId), 'restored session is missing from listSessions')
-    const restored = variant(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
-    const restoredAgents = variant(await client.send(listAgentsRequest(sessionId)), 'AgentsListed').agents
+    const restored = await waitForState(
+      client,
+      sessionId,
+      (state) => state.active_provider_run_id != null
+        && state.active_prompt?.id === workflowPromptId
+        && asArray(state.workflow_runs).some((run) => run.id === workflowRun.id && run.status === 'Running'),
+      'active workflow recovery after kernel crash',
+    )
+    log('restore-agent-list-requested')
+    const restoredAgents = variant(
+      await sendWithTimeout(client, listAgentsRequest(sessionId), 'restore agent list'),
+      'AgentsListed',
+    ).agents
+    log('restore-agent-list-received')
     const restoredAgent = restoredAgents.find((candidate) => candidate.id === agent.id)
     assert(restoredAgent, 'spawned agent did not restore')
     assert(restoredAgent.provider === 'dev-stub', `expected restored provider dev-stub, got ${restoredAgent.provider}`)
@@ -353,29 +402,39 @@ async function main() {
     assert(asArray(restored.workflows).some((candidate) => candidate.id === workflow.id), 'workflow definition did not restore')
     const restoredRun = asArray(restored.workflow_runs).find((candidate) => candidate.id === workflowRun.id)
     assert(restoredRun, 'workflow run did not restore')
-    assert(restored.active_provider_run_id == null, `stale active provider run was not cleared: ${restored.active_provider_run_id}`)
-    assert(restored.active_prompt == null, 'stale active prompt was not cleared')
-    assert(restoredRun.status === 'Stopped', `workflow run was not stopped after restart: ${restoredRun.status}`)
+    assert(restored.active_provider_run_id, 'provider run was not relaunched after kernel crash')
+    assert(restored.active_prompt?.id === workflowPromptId, 'active workflow prompt identity changed during recovery')
+    assert(restoredRun.status === 'Running', `workflow run did not remain active after recovery: ${restoredRun.status}`)
     assert(
-      JSON.stringify(restoredRun.failure_events ?? []).includes('interrupted by kernel restart'),
-      `workflow run failure event does not mention kernel restart: ${JSON.stringify(restoredRun.failure_events ?? [])}`,
+      !JSON.stringify(restoredRun.failure_events ?? []).includes('interrupted by kernel restart'),
+      `workflow run was destructively interrupted during recovery: ${JSON.stringify(restoredRun.failure_events ?? [])}`,
     )
 
     const transcript = variant(
-      await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredAgent.id], 10)),
+      await sendWithTimeout(
+        client,
+        getSessionHistoryOutlineRequest(sessionId, [restoredAgent.id], 10),
+        'restore history outline',
+      ),
       'SessionHistoryOutline',
     )
     assert(
       historyOutlineText(transcript, { includeUserPrompt: true }).includes(historyMarker),
       'session transcript did not retain completed prompt marker',
     )
-    const search = await client.send(searchRecallRequest(historyMarker, { session_id: sessionId, limit: 10 }))
+    const search = await sendWithTimeout(
+      client,
+      searchRecallRequest(historyMarker, { session_id: sessionId, limit: 10 }),
+      'restore recall search',
+    )
     assert(JSON.stringify(search).includes(historyMarker), 'recall search did not find completed prompt marker')
     log('restored-state-verified', {
       sessionId,
       agentId: agent.id,
       workflowRunId: workflowRun.id,
       workflowRunStatus: restoredRun.status,
+      activePromptId: restored.active_prompt.id,
+      recoveredProviderRunId: restored.active_provider_run_id,
     })
 
     await client.send(endSessionRequest(sessionId)).catch(() => {})
@@ -384,6 +443,12 @@ async function main() {
     failure = error
     throw error
   } finally {
+    if (failure && daemon?.logs) {
+      log('daemon-failure-logs', {
+        stdout: daemon.logs.stdout.slice(-12_000),
+        stderr: daemon.logs.stderr.slice(-12_000),
+      })
+    }
     await client?.close().catch(() => {})
     await stopDaemon(daemon)
     await finalizeDrillArtifacts({

@@ -82,17 +82,27 @@ impl<'a> ProviderTerminalInput<'a> {
         self.app
             .terminal
             .record_input(session_id, provider_run_id, source_attachment_id, bytes);
-        self.app.pty.write_input(provider_run_id, bytes)
+        self.app
+            .pty
+            .input_writer(provider_run_id)?
+            .enqueue_input(bytes)
     }
 }
 
 impl DaemonApp {
+    pub(crate) fn provider_pty_input_writer_for_runtime(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<crate::pty::PtyInputWriter, DaemonError> {
+        self.pty.input_writer(provider_run_id)
+    }
+
     pub(crate) fn write_provider_pty_input_for_runtime(
         &mut self,
         provider_run_id: &str,
         bytes: &[u8],
     ) -> Result<(), DaemonError> {
-        self.pty.write_input(provider_run_id, bytes)
+        self.pty.input_writer(provider_run_id)?.enqueue_input(bytes)
     }
 
     pub(crate) fn drain_provider_pty_output_for_runtime(

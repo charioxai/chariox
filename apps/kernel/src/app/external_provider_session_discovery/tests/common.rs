@@ -293,3 +293,77 @@ fn discovers_opencode_sqlite_sessions() {
     assert_eq!(sessions[0].worktree_path.as_deref(), Some("/repo/sqlite"));
     assert!(sessions[0].last_modified_at_ms >= 1_782_113_000_000);
 }
+
+#[test]
+fn prompt_recovery_match_prefers_exact_worktree_and_tracks_recovery_anchor() {
+    let sessions = vec![
+        recovery_session("thread-other", "/repo/other", 30),
+        recovery_session("thread-target", "/repo/target", 20),
+    ];
+    let matched = select_external_provider_prompt_recovery_match(
+        "codex",
+        "build the recovery path",
+        Some("/repo/target"),
+        Some("arroba-recovery:prompt-1:1"),
+        sessions,
+        |session_id| {
+            let recovery = format!(
+                "[Arroba recovery operation arroba-recovery:prompt-1:1] continue {session_id}"
+            );
+            vec![
+                observed_turn(
+                    ObservedExternalProviderTurnRole::User,
+                    "build the recovery path",
+                ),
+                observed_turn(ObservedExternalProviderTurnRole::User, &recovery),
+                observed_turn(ObservedExternalProviderTurnRole::Assistant, "resumed"),
+                observed_turn(
+                    ObservedExternalProviderTurnRole::Status,
+                    "codex task_complete\n{}",
+                ),
+            ]
+        },
+    )
+    .expect("matching provider session should be found");
+
+    assert_eq!(matched.provider_session_id, "thread-target");
+    assert!(matched.original_prompt_observed);
+    assert!(matched.recovery_operation_observed);
+    assert!(matched.provider_activity_after_anchor);
+    assert!(matched.settled_after_anchor);
+}
+
+fn recovery_session(
+    provider_session_id: &str,
+    worktree_path: &str,
+    last_modified_at_ms: u64,
+) -> ExternalProviderSessionRecord {
+    ExternalProviderSessionRecord {
+        external_session_id: format!("codex:{provider_session_id}"),
+        provider: "codex".to_string(),
+        provider_session_id: provider_session_id.to_string(),
+        title: None,
+        title_source: None,
+        first_prompt_preview: None,
+        created_at_ms: None,
+        last_modified_at_ms,
+        worktree_path: Some(worktree_path.to_string()),
+        account_profile: None,
+        capabilities: ExternalProviderSessionCapabilities::default(),
+        attached_to_arroba: false,
+        attached_session_ids: Vec::new(),
+        attached_agent_ids: Vec::new(),
+    }
+}
+
+fn observed_turn(
+    role: ObservedExternalProviderTurnRole,
+    text: &str,
+) -> ObservedExternalProviderTurn {
+    ObservedExternalProviderTurn {
+        role,
+        text: text.to_string(),
+        provider_turn_id: None,
+        observed_at_ms: None,
+    }
+}

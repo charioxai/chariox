@@ -5,23 +5,47 @@ use super::*;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) accepted_local_redispatched: usize,
+    pub(crate) uncertain_original_redispatched: usize,
+    pub(crate) provider_continuations_dispatched: usize,
     pub(crate) remote_reconciliations_started: usize,
     pub(crate) uncertain_local_prompts_preserved: usize,
+    pub(crate) transcript_recovery_pending: usize,
     pub(crate) failed_reconciliations: usize,
+}
+
+enum UncertainLocalRecoveryOutcome {
+    OriginalRedispatched,
+    ContinuationDispatched,
+    Preserved,
+    TranscriptPending,
 }
 
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) {
         let state = self.clone();
         tokio::spawn(async move {
-            let summary = state.recover_durable_runtime_after_restart().await;
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            let mut attempt = 0_u32;
+            let summary = loop {
+                let summary = state.recover_durable_runtime_after_restart().await;
+                if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
+                    || attempt >= 299
+                {
+                    break summary;
+                }
+                attempt = attempt.saturating_add(1);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            };
             crate::logging::info_with_fields(
                 "durable_state.recovery",
                 "reconciled durable runtime work after kernel restart",
                 serde_json::json!({
                     "accepted_local_redispatched": summary.accepted_local_redispatched,
+                    "uncertain_original_redispatched": summary.uncertain_original_redispatched,
+                    "provider_continuations_dispatched": summary.provider_continuations_dispatched,
                     "remote_reconciliations_started": summary.remote_reconciliations_started,
                     "uncertain_local_prompts_preserved": summary.uncertain_local_prompts_preserved,
+                    "transcript_recovery_pending": summary.transcript_recovery_pending,
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
@@ -69,26 +93,64 @@ impl KernelRuntimeState {
                     }
                     continue;
                 }
-                if delivery_phase != Some(crate::session::DurablePromptDeliveryPhase::Accepted) {
-                    summary.uncertain_local_prompts_preserved += 1;
-                    continue;
-                }
-                match self
-                    .redispatch_accepted_local_prompt(session.id(), agent_id, &prompt)
-                    .await
-                {
-                    Ok(()) => summary.accepted_local_redispatched += 1,
-                    Err(error) => {
-                        summary.failed_reconciliations += 1;
-                        log_restart_recovery_failure(session.id(), agent_id, prompt.id(), &error);
-                    }
+                match delivery_phase {
+                    Some(crate::session::DurablePromptDeliveryPhase::Accepted) => match self
+                        .redispatch_local_prompt(session.id(), agent_id, &prompt)
+                        .await
+                    {
+                        Ok(()) => summary.accepted_local_redispatched += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    },
+                    Some(
+                        crate::session::DurablePromptDeliveryPhase::Dispatching
+                        | crate::session::DurablePromptDeliveryPhase::Delivered,
+                    ) => match self
+                        .reconcile_uncertain_local_prompt(
+                            session.id(),
+                            &agent,
+                            &prompt,
+                            delivery_phase.expect("matched delivery phase"),
+                        )
+                        .await
+                    {
+                        Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched) => {
+                            summary.uncertain_original_redispatched += 1;
+                        }
+                        Ok(UncertainLocalRecoveryOutcome::ContinuationDispatched) => {
+                            summary.provider_continuations_dispatched += 1;
+                        }
+                        Ok(UncertainLocalRecoveryOutcome::Preserved) => {
+                            summary.uncertain_local_prompts_preserved += 1;
+                        }
+                        Ok(UncertainLocalRecoveryOutcome::TranscriptPending) => {
+                            summary.transcript_recovery_pending += 1;
+                        }
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    },
+                    None => summary.uncertain_local_prompts_preserved += 1,
                 }
             }
         }
         summary
     }
 
-    async fn redispatch_accepted_local_prompt(
+    async fn redispatch_local_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -119,6 +181,234 @@ impl KernelRuntimeState {
         };
         self.enqueue_prompt_dispatch(&dispatch).await
     }
+
+    async fn reconcile_uncertain_local_prompt(
+        &self,
+        session_id: &str,
+        agent: &crate::agent::AgentInstance,
+        prompt: &crate::session::PromptQueueItem,
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
+        let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
+        if adapter_key == "dev-stub" {
+            self.redispatch_local_prompt(session_id, agent.id(), prompt)
+                .await?;
+            return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);
+        }
+        if !crate::provider::ExternalProviderObservationPolicy::for_provider(adapter_key)
+            .is_configured()
+        {
+            return Ok(UncertainLocalRecoveryOutcome::Preserved);
+        }
+        let existing_recovery_operation =
+            prompt.durable_recovery_operation_id().map(str::to_string);
+        let prompt_text = prompt.prompt().to_string();
+        let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
+            self.owned
+                .session_store
+                .get_session(session_id)
+                .ok()
+                .map(|session| session.worktree_id().to_string())
+        });
+        let mut matched = None;
+        for scan_attempt in 0..5 {
+            let adapter_key_owned = adapter_key.to_string();
+            let prompt_text = prompt_text.clone();
+            let worktree_path = worktree_path.clone();
+            let recovery_operation_for_scan = existing_recovery_operation.clone();
+            matched = tokio::task::spawn_blocking(move || {
+                crate::app::find_external_provider_prompt_recovery_match(
+                    &adapter_key_owned,
+                    &prompt_text,
+                    worktree_path.as_deref(),
+                    recovery_operation_for_scan.as_deref(),
+                )
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "scan provider transcript for restart recovery",
+                message: error.to_string(),
+            })?;
+            if matched.is_some() || scan_attempt == 4 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let provider_session_id = prompt
+            .durable_delivery_provider_session_id()
+            .map(str::to_string)
+            .or_else(|| {
+                agent
+                    .provider_resume_state()
+                    .provider_session_id(adapter_key)
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                matched
+                    .as_ref()
+                    .map(|matched| matched.provider_session_id.clone())
+            });
+        let Some(provider_session_id) = provider_session_id else {
+            if delivery_phase == crate::session::DurablePromptDeliveryPhase::Dispatching
+                && existing_recovery_operation.is_none()
+            {
+                self.redispatch_local_prompt(session_id, agent.id(), prompt)
+                    .await?;
+                return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);
+            }
+            return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
+        };
+        if let Some(operation_id) = existing_recovery_operation.as_deref() {
+            let operation_observed = matched
+                .as_ref()
+                .is_some_and(|matched| matched.recovery_operation_observed);
+            if operation_observed {
+                self.owned.mark_active_prompt_recovery_phase(
+                    session_id,
+                    agent.id(),
+                    prompt.id(),
+                    operation_id,
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                )?;
+            } else if prompt.durable_recovery_phase()
+                != Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+            {
+                return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
+            }
+        }
+        self.persist_recovered_provider_session(agent, adapter_key, &provider_session_id)?;
+        let recovery_prompt =
+            self.owned
+                .begin_active_prompt_recovery(session_id, agent.id(), prompt.id())?;
+        let operation_id = recovery_prompt
+            .durable_recovery_operation_id()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "begin provider restart continuation",
+                message: "recovery operation did not receive an id".to_string(),
+            })?
+            .to_string();
+        self.owned.mark_active_prompt_recovery_phase(
+            session_id,
+            agent.id(),
+            prompt.id(),
+            &operation_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+        )?;
+        let session_id_owned = session_id.to_string();
+        let agent_id_owned = agent.id().to_string();
+        let provider_run_id = match self
+            .with_app_side_effect(move |app| {
+                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
+            })
+            .await
+        {
+            Ok(provider_run_id) => provider_run_id,
+            Err(error) => {
+                let _ = self.owned.mark_active_prompt_recovery_phase(
+                    session_id,
+                    agent.id(),
+                    prompt.id(),
+                    &operation_id,
+                    crate::session::DurablePromptDeliveryPhase::Accepted,
+                );
+                return Err(error);
+            }
+        };
+        let structured = self
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .is_ok_and(|run| {
+                self.owned
+                    .provider_store
+                    .run_uses_structured_prompt_io(&run)
+            });
+        let continuation = provider_restart_continuation_prompt(&operation_id);
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id,
+            agent_id: agent.id().to_string(),
+            prompt_id: prompt.id().to_string(),
+            target_active_prompt_id: None,
+            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            prompt: continuation,
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            prompt_origin: crate::session::PromptOrigin::Arroba,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            steering: false,
+        };
+        if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+            let _ = self.owned.mark_active_prompt_recovery_phase(
+                session_id,
+                agent.id(),
+                prompt.id(),
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+            );
+            return Err(error);
+        }
+        if !structured {
+            self.owned.mark_active_prompt_recovery_phase(
+                session_id,
+                agent.id(),
+                prompt.id(),
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+            )?;
+        }
+        Ok(UncertainLocalRecoveryOutcome::ContinuationDispatched)
+    }
+
+    fn persist_recovered_provider_session(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        adapter_key: &str,
+        provider_session_id: &str,
+    ) -> Result<(), DaemonError> {
+        if agent
+            .provider_resume_state()
+            .provider_session_id(adapter_key)
+            == Some(provider_session_id)
+        {
+            return Ok(());
+        }
+        let mut resume_state = agent.provider_resume_state().clone();
+        if !resume_state.set_provider_session_id(adapter_key, provider_session_id.to_string()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist provider restart session",
+                message: format!("provider `{adapter_key}` has no resumable session identity"),
+            });
+        }
+        let updated = self
+            .owned
+            .agent_store
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                agent.provider(),
+                agent.model().map(str::to_string),
+                agent.effort().map(str::to_string),
+                Some(agent.provider_account_profile().to_string()),
+                resume_state,
+            )?;
+        self.owned.durable_state_store.append_event(
+            "agent.runtime_profile_updated",
+            Some(updated.id().to_string()),
+            serde_json::json!({
+                "agent": &updated,
+                "reason": "provider_restart_transcript_reconciled",
+            }),
+        )?;
+        Ok(())
+    }
+}
+
+fn provider_restart_continuation_prompt(operation_id: &str) -> String {
+    format!(
+        "[Arroba recovery operation {operation_id}] Continue the active task from the current provider session state. Do not repeat completed tool calls or external side effects. If the task already completed, return its final response from the existing results."
+    )
 }
 
 fn log_restart_recovery_failure(
@@ -179,7 +469,7 @@ mod tests {
                 LaunchProviderRequest::new(
                     session.id(),
                     "dev-stub",
-                    "claude-code",
+                    "dev-stub",
                     "default",
                     "sonnet",
                 )
@@ -258,14 +548,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uncertain_local_prompt_is_preserved_without_redispatch() {
+    async fn uncertain_dev_stub_prompt_is_redispatched_after_restart() {
         let (runtime, session_id, agent_id, prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
 
         let summary = runtime.recover_durable_runtime_after_restart().await;
 
         assert_eq!(summary.accepted_local_redispatched, 0);
-        assert_eq!(summary.uncertain_local_prompts_preserved, 1);
+        assert_eq!(summary.uncertain_original_redispatched, 1);
+        assert_eq!(summary.uncertain_local_prompts_preserved, 0);
         let session = runtime
             .owned
             .session_store
@@ -275,11 +566,79 @@ mod tests {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &agent_id)
-            .expect("uncertain prompt should remain active");
+            .expect("redispatched prompt should remain active");
         assert_eq!(prompt.id(), prompt_id);
         assert_eq!(
             prompt.durable_delivery_phase(),
-            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
         );
+    }
+
+    #[test]
+    fn recovery_operation_reuses_accepted_generation_and_advances_after_delivery() {
+        let mut prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "recover",
+            PromptStatus::Running,
+        );
+
+        let first = prompt.begin_durable_recovery_operation();
+        assert_eq!(prompt.begin_durable_recovery_operation(), first);
+        assert!(prompt.mark_durable_recovery_phase(
+            &first,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+        ));
+        let second = prompt.begin_durable_recovery_operation();
+
+        assert_eq!(first, "arroba-recovery:prompt-1:1");
+        assert_eq!(second, "arroba-recovery:prompt-1:2");
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_recovery_prompt_is_not_recorded_as_user_terminal_input() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        let provider_run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("provider run should exist")
+            .id()
+            .to_string();
+        let operation_id = "arroba-recovery:prompt-hidden:1";
+        let dispatch = crate::app::KernelPromptDispatch {
+            session_id: session_id.clone(),
+            provider_run_id: provider_run_id.clone(),
+            agent_id: agent_id.clone(),
+            prompt_id,
+            target_active_prompt_id: None,
+            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            prompt: provider_restart_continuation_prompt(operation_id),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            prompt_origin: crate::session::PromptOrigin::Arroba,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            steering: false,
+        };
+
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("internal continuation should dispatch");
+
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .input_records()
+            .iter()
+            .all(|record| !String::from_utf8_lossy(&record.bytes).contains(operation_id)));
     }
 }

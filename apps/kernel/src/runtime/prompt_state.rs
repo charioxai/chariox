@@ -351,6 +351,67 @@ impl PromptStateOwner {
         Ok(active.clone())
     }
 
+    pub(crate) fn begin_active_prompt_recovery(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            })?;
+        if active.id() != prompt_id {
+            return Err(DaemonError::LocalTransport {
+                operation: "begin prompt recovery",
+                message: format!(
+                    "active prompt `{}` does not match recovery prompt `{prompt_id}`",
+                    active.id()
+                ),
+            });
+        }
+        active.begin_durable_recovery_operation();
+        Ok(active.clone())
+    }
+
+    pub(crate) fn mark_active_prompt_recovery_phase(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<PromptQueueItem, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            })?;
+        if active.id() != prompt_id || !active.mark_durable_recovery_phase(operation_id, phase) {
+            return Err(DaemonError::LocalTransport {
+                operation: "mark prompt recovery",
+                message: format!(
+                    "active prompt `{}` does not match recovery operation `{operation_id}` for prompt `{prompt_id}`",
+                    active.id()
+                ),
+            });
+        }
+        Ok(active.clone())
+    }
+
     pub(crate) fn finalize_active_prompt_cancellation(
         &self,
         session: &RuntimeSession,

@@ -117,6 +117,17 @@ async function waitForDaemon(LocalIpcClient, kernelUrl) {
   throw new Error(`daemon did not become ready: ${lastError?.message ?? lastError}`)
 }
 
+async function waitForState(client, getSessionStateRequest, sessionId, predicate, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastSession = null
+  while (Date.now() < deadline) {
+    lastSession = unwrap(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
+    if (predicate(lastSession)) return lastSession
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`timed out waiting for ${label}\nlast session:\n${JSON.stringify(lastSession, null, 2)}`)
+}
+
 async function stopDaemon(child) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return
   child.kill('SIGTERM')
@@ -131,6 +142,12 @@ async function stopDaemon(child) {
     child.kill('SIGKILL')
     await new Promise((resolve) => child.once('exit', resolve))
   }
+}
+
+async function crashDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGKILL')
+  await new Promise((resolve) => child.once('exit', resolve))
 }
 
 async function startDaemon(kernelBinary, env) {
@@ -323,33 +340,43 @@ async function main() {
       preRestartState.workflow_runs.find((run) => run.id === workflowRun.id)?.status,
       'Running',
     )
+    const workflowPromptId = preRestartState.active_prompt.id
 
     await new Promise((resolve) => setTimeout(resolve, 6_500))
     await client.close()
     client = null
-    await stopDaemon(daemon)
+    await crashDaemon(daemon)
     daemon = null
-    log('daemon-stopped')
+    log('daemon-crashed')
 
     daemon = await startDaemon(kernelBinary, env)
     await waitForDaemon(LocalIpcClient, kernelUrl)
     client = new LocalIpcClient(kernelUrl)
     log('daemon-restarted')
 
-    const restored = unwrap(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
+    const restored = await waitForState(
+      client,
+      getSessionStateRequest,
+      sessionId,
+      (state) => state.active_provider_run_id != null
+        && state.active_prompt?.id === workflowPromptId
+        && state.workflow_runs.some((run) => run.id === workflowRun.id && run.status === 'Running'),
+      'active workflow recovery after kernel crash',
+    )
     assert.equal(restored.id, sessionId)
-    assert.equal(restored.active_provider_run_id, null)
-    assert.equal(restored.active_prompt, null)
-    assert.equal(restored.scheduler_state, 'Idle')
+    assert.ok(restored.active_provider_run_id)
+    assert.equal(restored.active_prompt.id, workflowPromptId)
+    assert.equal(restored.scheduler_state, 'Running')
     assert.equal(restored.workflows.some((entry) => entry.id === workflow.id), true)
     assert.equal(restored.workflows.find((entry) => entry.id === workflow.id)?.endpoints?.[0]?.id, endpoint.id)
     const restoredRun = restored.workflow_runs.find((run) => run.id === workflowRun.id)
-    assert.equal(restoredRun?.status, 'Stopped')
-    assert.equal(restoredRun?.active_node_run_id, null)
-    assert.equal(restoredRun?.node_runs?.[0]?.status, 'Stopped')
+    assert.equal(restoredRun?.status, 'Running')
+    assert.ok(restoredRun?.active_node_run_id)
+    assert.equal(restoredRun?.node_runs?.[0]?.status, 'Running')
     assert.equal(
-      restoredRun?.failure_events?.some((event) => String(event.message).includes('interrupted by kernel restart')),
-      true,
+      (restoredRun?.failure_events ?? [])
+        .some((event) => String(event.message).includes('interrupted by kernel restart')),
+      false,
     )
 
     const agents = unwrap(await client.send(listAgentsRequest(sessionId)), 'AgentsListed').agents
@@ -373,6 +400,8 @@ async function main() {
       agentId: restoredWorker.id,
       workflowId: workflow.id,
       workflowRunId: workflowRun.id,
+      activePromptId: restored.active_prompt.id,
+      recoveredProviderRunId: restored.active_provider_run_id,
       historyEvents: search.events.length,
       artifactRoot: rootDir,
     })

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -13,7 +13,20 @@ use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
+const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
+const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
+
+#[derive(Clone)]
+pub(crate) struct PtyInputWriter {
+    provider_run_id: String,
+    input_tx: SyncSender<PtyInputRequest>,
+}
+
+struct PtyInputRequest {
+    bytes: Vec<u8>,
+    completion_tx: Option<SyncSender<Result<(), String>>>,
+}
 
 pub struct PtyManager {
     process_aliases: BTreeMap<String, String>,
@@ -62,7 +75,7 @@ pub enum PtyProcessState {
 struct PtyProcess {
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
     exited: bool,
     reference_count: usize,
@@ -197,6 +210,24 @@ impl PtyManager {
                 provider_run_id: request.provider_run_id.clone(),
                 message: error.to_string(),
             })?;
+        let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let writer_provider_run_id = request.provider_run_id.clone();
+        let writer_thread = thread::Builder::new()
+            .name(format!("arroba-pty-writer-{}", request.provider_run_id))
+            .stack_size(PTY_WRITER_STACK_BYTES)
+            .spawn(move || run_pty_writer(writer, input_rx));
+        if let Err(error) = writer_thread {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: format!("failed to spawn bounded PTY writer: {error}"),
+            });
+        }
+        let input_writer = PtyInputWriter {
+            provider_run_id: writer_provider_run_id,
+            input_tx,
+        };
 
         let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
 
@@ -236,7 +267,7 @@ impl PtyManager {
             PtyProcess {
                 child,
                 master: pair.master,
-                writer,
+                input_writer,
                 output_rx,
                 exited: false,
                 reference_count: 1,
@@ -249,23 +280,93 @@ impl PtyManager {
     }
 
     pub fn write_input(&mut self, provider_run_id: &str, input: &[u8]) -> Result<(), DaemonError> {
-        let process_key = self.resolve_process_key(provider_run_id)?;
-        let process = self.processes.get_mut(&process_key).ok_or_else(|| {
-            DaemonError::PtyProcessNotFound {
-                provider_run_id: provider_run_id.to_string(),
-            }
-        })?;
+        self.input_writer(provider_run_id)?.write_input(input)
+    }
 
-        process
-            .writer
-            .write_all(input)
-            .and_then(|_| process.writer.flush())
+    pub(crate) fn input_writer(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<PtyInputWriter, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        let mut writer = process.input_writer.clone();
+        writer.provider_run_id = provider_run_id.to_string();
+        Ok(writer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn input_writer_for_test(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<PtyInputWriter, DaemonError> {
+        self.input_writer(provider_run_id)
+    }
+}
+
+impl PtyInputWriter {
+    pub(crate) fn write_input(&self, input: &[u8]) -> Result<(), DaemonError> {
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        self.send_request(PtyInputRequest {
+            bytes: input.to_vec(),
+            completion_tx: Some(completion_tx),
+        })?;
+        completion_rx
+            .recv()
             .map_err(|error| DaemonError::PtyWrite {
-                provider_run_id: provider_run_id.to_string(),
-                message: error.to_string(),
+                provider_run_id: self.provider_run_id.clone(),
+                message: format!("PTY writer stopped before confirming input: {error}"),
+            })?
+            .map_err(|message| DaemonError::PtyWrite {
+                provider_run_id: self.provider_run_id.clone(),
+                message,
             })
     }
 
+    pub(crate) fn enqueue_input(&self, input: &[u8]) -> Result<(), DaemonError> {
+        self.send_request(PtyInputRequest {
+            bytes: input.to_vec(),
+            completion_tx: None,
+        })
+    }
+
+    fn send_request(&self, request: PtyInputRequest) -> Result<(), DaemonError> {
+        self.input_tx.try_send(request).map_err(|error| {
+            let message = match error {
+                TrySendError::Full(_) => {
+                    format!("PTY input queue reached its {PTY_INPUT_QUEUE_LIMIT}-request limit")
+                }
+                TrySendError::Disconnected(_) => "PTY input writer has stopped".to_string(),
+            };
+            DaemonError::PtyWrite {
+                provider_run_id: self.provider_run_id.clone(),
+                message,
+            }
+        })
+    }
+}
+
+fn run_pty_writer(mut writer: Box<dyn Write + Send>, input_rx: Receiver<PtyInputRequest>) {
+    while let Ok(request) = input_rx.recv() {
+        let result = writer
+            .write_all(&request.bytes)
+            .and_then(|_| writer.flush())
+            .map_err(|error| error.to_string());
+        let failed = result.is_err();
+        if let Some(completion_tx) = request.completion_tx {
+            let _ = completion_tx.send(result);
+        }
+        if failed {
+            break;
+        }
+    }
+}
+
+impl PtyManager {
     pub fn resize(
         &mut self,
         provider_run_id: &str,
@@ -586,7 +687,7 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
 
-    use super::PtyManager;
+    use super::{mpsc, PtyInputWriter, PtyManager, PTY_INPUT_QUEUE_LIMIT};
 
     fn test_run() -> RuntimeProviderRun {
         RuntimeProviderRun::new(
@@ -665,6 +766,59 @@ mod tests {
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
         assert!(!manager.has_process(run.id()));
+    }
+
+    #[test]
+    fn cloned_input_writer_can_write_without_borrowing_the_manager() {
+        let run = test_run();
+        let mut manager = PtyManager::new();
+        manager
+            .spawn_for_run(&run)
+            .expect("PTY-backed provider process should spawn");
+        let writer = manager
+            .input_writer_for_test(run.id())
+            .expect("input writer should clone");
+
+        writer
+            .write_input(b"detached writer\n")
+            .expect("detached writer should write");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        while std::time::Instant::now() < deadline && output.is_empty() {
+            output.extend(
+                manager
+                    .drain_output(run.id())
+                    .expect("PTY output should drain")
+                    .into_iter()
+                    .flat_map(|chunk| chunk.bytes),
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(String::from_utf8_lossy(&output).contains("detached writer"));
+        manager
+            .remove_process(run.id())
+            .expect("PTY process should stop");
+    }
+
+    #[test]
+    fn enqueued_input_is_bounded_without_waiting_for_a_blocked_writer() {
+        let (input_tx, _input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let writer = PtyInputWriter {
+            provider_run_id: "provider-run-blocked".to_string(),
+            input_tx,
+        };
+
+        for _ in 0..PTY_INPUT_QUEUE_LIMIT {
+            writer
+                .enqueue_input(b"queued input")
+                .expect("bounded input queue should accept available capacity");
+        }
+        let error = writer
+            .enqueue_input(b"one input too many")
+            .expect_err("full input queue should fail without blocking");
+
+        assert!(error.to_string().contains("input queue reached"));
     }
 
     #[tokio::test]

@@ -47,6 +47,7 @@ const KERNEL_RECONNECT_BASE_DELAY_MS = 250
 const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
+const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
@@ -61,6 +62,7 @@ type LocalIpcClientOptions = {
   reconnectJitterMs?: number | undefined
   reconnectRandom?: (() => number) | undefined
   controlRequestRetryDeadlineMs?: number | undefined
+  controlResponseStallMs?: number | undefined
 }
 
 export class LocalIpcClient {
@@ -86,6 +88,7 @@ export class LocalIpcClient {
   private readonly reconnectJitterMs: number
   private readonly reconnectRandom: () => number
   private readonly controlRequestRetryDeadlineMs: number
+  private readonly controlResponseStallMs: number
   private missedControlPongs = 0
   private missedEventPongs = 0
   private suppressNextControlCloseEvent = false
@@ -107,6 +110,10 @@ export class LocalIpcClient {
     this.controlRequestRetryDeadlineMs = Math.max(
       options.controlRequestRetryDeadlineMs ?? KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS,
       0,
+    )
+    this.controlResponseStallMs = Math.max(
+      options.controlResponseStallMs ?? KERNEL_CONTROL_RESPONSE_STALL_MS,
+      10,
     )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
     this.relayTarget = this.relayAuthToken
@@ -314,7 +321,11 @@ export class LocalIpcClient {
         continue
       }
 
-      const pending = this.pendingRequests.register<TResponse>(requestId, lane)
+      const pending = this.pendingRequests.register<TResponse>(
+        requestId,
+        lane,
+        this.requestAttemptTimeoutMs(lane, retryUntilMs),
+      )
 
       try {
         const relayRequest = this.isRelayMode()
@@ -348,7 +359,18 @@ export class LocalIpcClient {
       && Date.now() < retryUntilMs
       && error instanceof LocalIpcError
       && error.retryable
-      && (error.code === "connection_closed" || error.code === "write_failed")
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout")
+  }
+
+  private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
+    if (lane !== "control") {
+      return IPC_TIMEOUT_MS
+    }
+    const remainingRetryMs = retryUntilMs - Date.now()
+    if (remainingRetryMs <= this.controlResponseStallMs) {
+      return IPC_TIMEOUT_MS
+    }
+    return this.controlResponseStallMs
   }
 
   private async waitBeforeWebSocketRequestReplay(delayMs: number, retryUntilMs: number): Promise<number> {
@@ -477,6 +499,9 @@ export class LocalIpcClient {
             this.setMissedKernelPongs(lane, 0)
           })
           socket.once("close", (code: number, reason: Buffer) => {
+            if (this.getWebSocket(lane) !== socket) {
+              return
+            }
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
             const closeMessage = reason.length > 0
@@ -497,6 +522,9 @@ export class LocalIpcClient {
             }
           })
           socket.on("error", (error: unknown) => {
+            if (this.getWebSocket(lane) !== socket) {
+              return
+            }
             const message = formatTransportError(error, this.socketPath)
             const suppressed = this.getSuppressNextCloseEvent(lane)
             this.setSuppressNextCloseEvent(lane, false)
@@ -706,7 +734,7 @@ export class LocalIpcClient {
     this.setMissedKernelPongs(lane, 0)
     const heartbeat = setInterval(() => {
       if (socket !== this.getWebSocket(lane) || socket.readyState !== WebSocket.OPEN) {
-        this.clearKernelHeartbeat(lane)
+        clearInterval(heartbeat)
         return
       }
       if (this.getMissedKernelPongs(lane) >= this.kernelMaxMissedPongs) {
@@ -939,6 +967,7 @@ export class LocalIpcClient {
     this.setConnectingWebSocket(lane, null)
     this.setWebSocketConnectPromise(lane, null)
     this.setRelayDaemonPublicKey(lane, null)
+    this.clearKernelHeartbeat(lane)
     if (socket && socket.readyState !== WebSocket.CLOSED) {
       this.setSuppressNextCloseEvent(lane, true)
       socket.terminate()

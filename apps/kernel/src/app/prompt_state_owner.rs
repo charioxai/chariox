@@ -316,7 +316,7 @@ impl DaemonApp {
         self.prompt_state_owner.remove_session(session_id);
     }
 
-    fn mirror_prompt_owner_agent_state(
+    pub(crate) fn mirror_prompt_owner_agent_state(
         &mut self,
         session_id: &str,
         agent_id: &str,

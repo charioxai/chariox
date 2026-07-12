@@ -177,20 +177,22 @@ impl DaemonApp {
             if let Ok(Some(active_prompt)) =
                 self.prompt_owner_active_prompt_for_agent(started.run.session_id(), agent_id)
             {
-                if active_prompt.workflow_run_id().is_some() {
-                    let _ = crate::scheduler::runtime::on_workflow_provider_failure(
-                        self,
+                if active_prompt.durable_delivery_phase().is_none() {
+                    if active_prompt.workflow_run_id().is_some() {
+                        let _ = crate::scheduler::runtime::on_workflow_provider_failure(
+                            self,
+                            started.run.session_id(),
+                            &active_prompt,
+                            Some(started.run.id()),
+                            &diagnostic,
+                        );
+                    }
+                    let _ = self.complete_active_prompt(
                         started.run.session_id(),
-                        &active_prompt,
+                        agent_id,
                         Some(started.run.id()),
-                        &diagnostic,
                     );
                 }
-                let _ = self.complete_active_prompt(
-                    started.run.session_id(),
-                    agent_id,
-                    Some(started.run.id()),
-                );
             }
         }
         let _ = ProviderProcessTracker::new(self).remove_run(started.run.id());

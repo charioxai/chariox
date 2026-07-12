@@ -111,6 +111,11 @@ mod tests {
             Some("provider-run-1".to_string()),
             Some("provider-session-1".to_string()),
         );
+        let recovery_operation_id = prompt.begin_durable_recovery_operation();
+        assert!(prompt.mark_durable_recovery_phase(
+            &recovery_operation_id,
+            DurablePromptDeliveryPhase::Dispatching,
+        ));
         session.mirror_agent_prompt_state(
             "agent-1",
             Some(prompt),
@@ -121,6 +126,10 @@ mod tests {
             serde_json::to_value(DurablePromptStateEventPayload::capture(&session, "agent-1"))
                 .expect("event should encode");
         assert_eq!(encoded["private_states"][0]["delivery_phase"], "delivered");
+        assert_eq!(
+            encoded["private_states"][0]["recovery_operation_id"],
+            recovery_operation_id
+        );
         assert!(encoded["active_prompt"].get("private_metadata").is_none());
         let mut restored: DurablePromptStateEventPayload =
             serde_json::from_value(encoded).expect("event should decode");
@@ -142,5 +151,13 @@ mod tests {
             Some("provider-session-1")
         );
         assert_eq!(prompt.hidden_system_context(), "private context");
+        assert_eq!(
+            prompt.durable_recovery_operation_id(),
+            Some(recovery_operation_id.as_str())
+        );
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(DurablePromptDeliveryPhase::Dispatching)
+        );
     }
 }

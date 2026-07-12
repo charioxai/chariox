@@ -20,7 +20,11 @@ export class KernelPendingRequestRegistry {
 
   constructor(private readonly timeoutMs: number) {}
 
-  register<TResponse>(requestId: string, lane: KernelSocketLane): RegisteredKernelRequest<TResponse> {
+  register<TResponse>(
+    requestId: string,
+    lane: KernelSocketLane,
+    timeoutMs = this.timeoutMs,
+  ): RegisteredKernelRequest<TResponse> {
     const promise = new Promise<TResponse>((resolve, reject) => {
       const timeout = setTimeout(() => {
         const pending = this.pending.get(requestId)
@@ -29,7 +33,7 @@ export class KernelPendingRequestRegistry {
         }
         this.pending.delete(requestId)
         pending.reject(new LocalIpcError("handle kernel response", "timed out", "request_timeout", true))
-      }, this.timeoutMs)
+      }, timeoutMs)
 
       this.pending.set(requestId, {
         resolve: resolve as (value: unknown) => void,

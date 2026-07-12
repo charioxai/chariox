@@ -376,6 +376,26 @@ impl DaemonApp {
             Some(provider_run_id),
             run.provider_session_id().map(str::to_string),
         )?;
+        let active = self.prompt_owner_active_prompt_for_agent(&session_id, &agent_id)?;
+        if let Some(active) = active {
+            if active.id() == prompt_id
+                && active.durable_recovery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            {
+                if let Some(operation_id) = active.durable_recovery_operation_id() {
+                    let session = self.sessions.get_session(&session_id)?;
+                    let prompt = self.prompt_state_owner.mark_active_prompt_recovery_phase(
+                        &session,
+                        &agent_id,
+                        &prompt_id,
+                        operation_id,
+                        crate::session::DurablePromptDeliveryPhase::Delivered,
+                    )?;
+                    let _ = prompt;
+                    self.mirror_prompt_owner_agent_state(&session_id, &agent_id)?;
+                }
+            }
+        }
         Ok(())
     }
 

@@ -433,14 +433,18 @@ impl KernelRuntimeState {
                 provider_run.provider_session_id().map(str::to_string),
             )?;
         }
-        owned.echo_prompt_to_other_attachments(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.prompt_id,
-            &dispatch.source_attachment_id,
-            &dispatch.prompt,
-            &dispatch.attachments,
-        );
+        let internal_recovery =
+            is_internal_recovery_prompt_attachment(&dispatch.source_attachment_id);
+        if !internal_recovery {
+            owned.echo_prompt_to_other_attachments(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.prompt_id,
+                &dispatch.source_attachment_id,
+                &dispatch.prompt,
+                &dispatch.attachments,
+            );
+        }
         let provider_run = owned
             .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
@@ -454,8 +458,10 @@ impl KernelRuntimeState {
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
         {
-            self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
-                .await;
+            if !internal_recovery {
+                self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
+                    .await;
+            }
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
@@ -503,7 +509,10 @@ impl KernelRuntimeState {
             }
             return result;
         }
-        if !crate::scheduler::runtime::is_workflow_prompt_attachment(&dispatch.source_attachment_id)
+        if !internal_recovery
+            && !crate::scheduler::runtime::is_workflow_prompt_attachment(
+                &dispatch.source_attachment_id,
+            )
         {
             match owned
                 .attachment_store
@@ -537,18 +546,20 @@ impl KernelRuntimeState {
             crate::provider::provider_run_uses_claude_native_bridge(&provider_run);
         let provider_pty_input =
             crate::app::terminal_input::provider_prompt_input(&provider_prompt);
-        self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
-            .await;
-        owned.terminal_stream.record_input(
-            &dispatch.session_id,
-            &dispatch.provider_run_id,
-            &dispatch.source_attachment_id,
-            if uses_claude_native_bridge {
-                provider_prompt.as_bytes()
-            } else {
-                &provider_pty_input
-            },
-        );
+        if !internal_recovery {
+            self.observe_git_before_prompt_dispatch(dispatch, &provider_run)
+                .await;
+            owned.terminal_stream.record_input(
+                &dispatch.session_id,
+                &dispatch.provider_run_id,
+                &dispatch.source_attachment_id,
+                if uses_claude_native_bridge {
+                    provider_prompt.as_bytes()
+                } else {
+                    &provider_pty_input
+                },
+            );
+        }
         let mut has_managed_process = owned
             .provider_process_tracking
             .read()
@@ -657,10 +668,25 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
-        self.with_app_side_effect(|app| {
-            app.write_provider_pty_input_for_runtime(&dispatch.provider_run_id, &provider_pty_input)
-        })
-        .await?;
+        let provider_run_id = dispatch.provider_run_id.clone();
+        let writer = self
+            .with_app_side_effect(|app| app.provider_pty_input_writer_for_runtime(&provider_run_id))
+            .await?;
+        let provider_run_id = dispatch.provider_run_id.clone();
+        let write_task =
+            tokio::task::spawn_blocking(move || writer.write_input(&provider_pty_input));
+        match tokio::time::timeout(std::time::Duration::from_secs(15), write_task).await {
+            Ok(result) => result.map_err(|error| DaemonError::LocalTransport {
+                operation: "write provider PTY input",
+                message: error.to_string(),
+            })??,
+            Err(_) => {
+                return Err(DaemonError::PtyWrite {
+                    provider_run_id,
+                    message: "timed out after 15 seconds of provider backpressure".to_string(),
+                });
+            }
+        }
         owned.consume_pending_context_handoff(
             &dispatch.session_id,
             &dispatch.agent_id,
@@ -936,6 +962,10 @@ fn join_hidden_context(first: &str, second: &str) -> String {
         ("", second) => second.to_string(),
         (first, second) => format!("{first}\n\n{second}"),
     }
+}
+
+fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> bool {
+    attachment_id.starts_with("kernel-recovery:")
 }
 
 enum PromptAbortDispatchOutcome {

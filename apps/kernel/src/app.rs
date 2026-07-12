@@ -7,6 +7,7 @@ mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
 mod external_provider_session_discovery;
+pub(crate) use external_provider_session_discovery::find_external_provider_prompt_recovery_match;
 mod external_provider_sessions;
 mod history_access;
 mod history_event_context;

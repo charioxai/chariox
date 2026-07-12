@@ -6,7 +6,10 @@ use crate::error::DaemonError;
 use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderResumeState, ProviderRunState,
 };
-use crate::session::{CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults};
+use crate::session::{
+    CreateSessionRequest, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    SessionAgentDefaults,
+};
 
 #[test]
 fn prompt_auto_launch_uses_agent_owner_and_resume_state() {
@@ -86,6 +89,65 @@ fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
         .list_provider_processes(None)
         .expect("provider processes should list")
         .is_empty());
+}
+
+#[test]
+fn provider_launch_failure_preserves_durable_active_prompt_for_retry() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new("workspace-retry", "worktree-retry")
+                .with_agent_defaults(SessionAgentDefaults::new("dev-stub").with_model("sonnet")),
+        )
+        .expect("session create should succeed");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-retry",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let outcome = app
+        .prompt_owner_submit_prepared_prompt(
+            session.id(),
+            PromptQueueItem::new(
+                "pending-retry",
+                attachment.id(),
+                agent.id(),
+                "retry after provider recovery",
+                PromptStatus::Queued,
+            )
+            .with_durable_operation("command-retry", "fingerprint-retry"),
+            false,
+        )
+        .expect("prompt should be accepted");
+    let prompt_id = match outcome {
+        PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        PromptSubmissionOutcome::Queued { .. } => panic!("prompt should start"),
+    };
+
+    let result = app.launch_provider_detached(
+        LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "runtime-init-fail",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id().to_string()),
+    );
+
+    assert!(result.is_err());
+    let active = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("prompt state should load")
+        .expect("durable prompt should remain active");
+    assert_eq!(active.id(), prompt_id);
+    assert_eq!(
+        active.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+    );
 }
 
 #[test]

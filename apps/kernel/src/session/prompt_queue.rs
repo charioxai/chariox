@@ -115,6 +115,12 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) delivery_provider_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivery_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub(crate) recovery_generation: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -126,6 +132,13 @@ struct PromptPrivateMetadata {
     delivery_phase: Option<DurablePromptDeliveryPhase>,
     delivery_provider_run_id: Option<String>,
     delivery_provider_session_id: Option<String>,
+    recovery_generation: u32,
+    recovery_operation_id: Option<String>,
+    recovery_phase: Option<DurablePromptDeliveryPhase>,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 impl DurablePromptPrivateState {
@@ -140,6 +153,9 @@ impl DurablePromptPrivateState {
             delivery_phase: metadata.delivery_phase,
             delivery_provider_run_id: metadata.delivery_provider_run_id.clone(),
             delivery_provider_session_id: metadata.delivery_provider_session_id.clone(),
+            recovery_generation: metadata.recovery_generation,
+            recovery_operation_id: metadata.recovery_operation_id.clone(),
+            recovery_phase: metadata.recovery_phase,
         })
     }
 }
@@ -276,7 +292,10 @@ impl PromptQueueItem {
         if hidden_system_context.is_empty() {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
-                if metadata.operation_id.is_none() && metadata.delivery_phase.is_none() {
+                if metadata.operation_id.is_none()
+                    && metadata.delivery_phase.is_none()
+                    && metadata.recovery_operation_id.is_none()
+                {
                     self.private_metadata = None;
                 }
             }
@@ -442,10 +461,57 @@ impl PromptQueueItem {
         metadata.delivery_provider_session_id = provider_session_id;
     }
 
+    pub(crate) fn durable_recovery_operation_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.recovery_operation_id.as_deref())
+    }
+
+    pub(crate) fn durable_recovery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.recovery_phase)
+    }
+
+    pub(crate) fn begin_durable_recovery_operation(&mut self) -> String {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        if metadata.recovery_phase == Some(DurablePromptDeliveryPhase::Accepted) {
+            if let Some(operation_id) = metadata.recovery_operation_id.as_ref() {
+                return operation_id.clone();
+            }
+        }
+        metadata.recovery_generation = metadata.recovery_generation.saturating_add(1).max(1);
+        let operation_id = format!(
+            "arroba-recovery:{}:{}",
+            self.id, metadata.recovery_generation
+        );
+        metadata.recovery_operation_id = Some(operation_id.clone());
+        metadata.recovery_phase = Some(DurablePromptDeliveryPhase::Accepted);
+        operation_id
+    }
+
+    pub(crate) fn mark_durable_recovery_phase(
+        &mut self,
+        operation_id: &str,
+        phase: DurablePromptDeliveryPhase,
+    ) -> bool {
+        let Some(metadata) = self.private_metadata.as_mut() else {
+            return false;
+        };
+        if metadata.recovery_operation_id.as_deref() != Some(operation_id) {
+            return false;
+        }
+        metadata.recovery_phase = Some(phase);
+        true
+    }
+
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
+            && private.recovery_operation_id.is_none()
         {
             self.private_metadata = None;
             return;
@@ -458,6 +524,9 @@ impl PromptQueueItem {
             delivery_phase: private.delivery_phase,
             delivery_provider_run_id: private.delivery_provider_run_id.clone(),
             delivery_provider_session_id: private.delivery_provider_session_id.clone(),
+            recovery_generation: private.recovery_generation,
+            recovery_operation_id: private.recovery_operation_id.clone(),
+            recovery_phase: private.recovery_phase,
         }));
     }
 
@@ -591,6 +660,7 @@ mod tests {
             Some("provider-run-private".to_string()),
             Some("provider-session-private".to_string()),
         );
+        let recovery_operation_id = item.begin_durable_recovery_operation();
 
         let payload = serde_json::to_string(&item).expect("prompt should serialize");
 
@@ -603,6 +673,7 @@ mod tests {
         assert!(!payload.contains("private_metadata"));
         assert!(!payload.contains("provider-run-private"));
         assert!(!payload.contains("provider-session-private"));
+        assert!(!payload.contains(&recovery_operation_id));
     }
 
     #[test]

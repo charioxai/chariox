@@ -41,3 +41,17 @@ test("KernelPendingRequestRegistry rejects write failures once", async () => {
 
   await assert.rejects(request.promise, /write failed/)
 })
+
+test("KernelPendingRequestRegistry supports a bounded attempt timeout", async () => {
+  const registry = new KernelPendingRequestRegistry(10_000)
+  const startedAt = Date.now()
+  const request = registry.register<string>("request-stalled", "control", 25)
+
+  await assert.rejects(request.promise, (error: unknown) => {
+    assert.ok(error instanceof LocalIpcError)
+    assert.equal(error.code, "request_timeout")
+    assert.equal(error.retryable, true)
+    return true
+  })
+  assert.ok(Date.now() - startedAt < 1_000)
+})

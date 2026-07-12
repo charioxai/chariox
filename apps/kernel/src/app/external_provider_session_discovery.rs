@@ -217,6 +217,109 @@ pub(crate) fn read_external_provider_observed_turns(
     latest_observed_turns(turns)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalProviderPromptRecoveryMatch {
+    pub(crate) provider_session_id: String,
+    pub(crate) original_prompt_observed: bool,
+    pub(crate) recovery_operation_observed: bool,
+    pub(crate) provider_activity_after_anchor: bool,
+    pub(crate) settled_after_anchor: bool,
+}
+
+pub(crate) fn find_external_provider_prompt_recovery_match(
+    provider: &str,
+    prompt: &str,
+    worktree_path: Option<&str>,
+    recovery_operation_id: Option<&str>,
+) -> Option<ExternalProviderPromptRecoveryMatch> {
+    let provider = normalized_external_provider_id(provider);
+    if provider.is_empty() {
+        return None;
+    }
+    let sessions = discover_external_provider_sessions(Some(provider));
+    select_external_provider_prompt_recovery_match(
+        provider,
+        prompt,
+        worktree_path,
+        recovery_operation_id,
+        sessions,
+        |provider_session_id| read_external_provider_observed_turns(provider, provider_session_id),
+    )
+}
+
+fn select_external_provider_prompt_recovery_match(
+    provider: &str,
+    prompt: &str,
+    worktree_path: Option<&str>,
+    recovery_operation_id: Option<&str>,
+    sessions: Vec<ExternalProviderSessionRecord>,
+    mut read_turns: impl FnMut(&str) -> Vec<ObservedExternalProviderTurn>,
+) -> Option<ExternalProviderPromptRecoveryMatch> {
+    let expected_prompt = crate::provider::normalized_observed_prompt_text(prompt)?;
+    let mut matches = sessions
+        .into_iter()
+        .filter(|session| provider_matches(Some(&session.provider), provider))
+        .filter_map(|session| {
+            let worktree_exact = match (worktree_path, session.worktree_path.as_deref()) {
+                (Some(expected), Some(actual)) if !same_path(expected, actual) => return None,
+                (Some(_), Some(_)) => true,
+                _ => false,
+            };
+            let turns = read_turns(&session.provider_session_id);
+            let original_index = turns.iter().rposition(|turn| {
+                turn.role == ObservedExternalProviderTurnRole::User
+                    && crate::provider::normalized_observed_prompt_text(&turn.text).as_deref()
+                        == Some(expected_prompt.as_str())
+            });
+            let recovery_index = recovery_operation_id.and_then(|operation_id| {
+                turns.iter().rposition(|turn| {
+                    turn.role == ObservedExternalProviderTurnRole::User
+                        && turn.text.contains(operation_id)
+                })
+            });
+            let anchor_index = match (original_index, recovery_index) {
+                (Some(original), Some(recovery)) => Some(original.max(recovery)),
+                (Some(original), None) => Some(original),
+                (None, Some(recovery)) => Some(recovery),
+                (None, None) => None,
+            }?;
+            let after_anchor = &turns[anchor_index + 1..];
+            let policy = crate::provider::ExternalProviderObservationPolicy::for_provider(provider);
+            Some((
+                worktree_exact,
+                session.last_modified_at_ms,
+                ExternalProviderPromptRecoveryMatch {
+                    provider_session_id: session.provider_session_id,
+                    original_prompt_observed: original_index.is_some(),
+                    recovery_operation_observed: recovery_index.is_some(),
+                    provider_activity_after_anchor: after_anchor.iter().any(|turn| {
+                        turn.role != ObservedExternalProviderTurnRole::User
+                            && !policy.turn_is_passive_telemetry(turn)
+                    }),
+                    settled_after_anchor: policy.latest_effective_turn_settles(after_anchor),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| left.2.provider_session_id.cmp(&right.2.provider_session_id))
+    });
+    matches.into_iter().next().map(|(_, _, matched)| matched)
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    let left = PathBuf::from(left);
+    let right = PathBuf::from(right);
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn provider_matches(filter: Option<&str>, provider: &str) -> bool {
     filter.map_or(true, |filter| {
         normalized_external_provider_id(filter) == provider

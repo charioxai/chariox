@@ -183,6 +183,26 @@ impl KernelRuntimeOwnedState {
             Some(provider_run_id.to_string()),
             run.provider_session_id().map(str::to_string),
         )?;
+        let session = self.session_store.get_session(session_id)?;
+        if let Some(active) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        {
+            if active.id() == prompt_id
+                && active.durable_recovery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            {
+                if let Some(operation_id) = active.durable_recovery_operation_id() {
+                    self.mark_active_prompt_recovery_phase(
+                        session_id,
+                        agent_id,
+                        prompt_id,
+                        operation_id,
+                        crate::session::DurablePromptDeliveryPhase::Delivered,
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 

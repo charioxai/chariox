@@ -98,6 +98,44 @@ impl KernelRuntimeOwnedState {
         Ok(prompt)
     }
 
+    pub(super) fn begin_active_prompt_recovery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .begin_active_prompt_recovery(&session, agent_id, prompt_id)?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(prompt)
+    }
+
+    pub(super) fn mark_active_prompt_recovery_phase(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self.prompt_state_owner.mark_active_prompt_recovery_phase(
+            &session,
+            agent_id,
+            prompt_id,
+            operation_id,
+            phase,
+        )?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(prompt)
+    }
+
     pub(super) fn mirror_prompt_owner_session_state(
         &self,
         session_id: &str,

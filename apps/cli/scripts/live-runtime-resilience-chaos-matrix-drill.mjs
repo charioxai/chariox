@@ -81,7 +81,7 @@ const MATRIX = [
   }),
   scenario({
     id: "local-kernel-restart-durable-state",
-    description: "local kernel restart restores durable session, grants, history, and active state cleanup",
+    description: "local kernel crash restores durable session, grants, history, and active workflow execution",
     script: localRestartDrill,
     args: ["--keep-artifacts-on-failure"],
     classification: "kernel-authority",
@@ -90,7 +90,7 @@ const MATRIX = [
     provider: "dev-stub",
     exitCriteria: [
       "session, agent, MCP grant, skill grant, and history outline survive a kernel restart",
-      "stale active provider run, prompt, and workflow activity are reconciled after restart",
+      "the active prompt keeps its identity while the provider run is relaunched and the workflow remains running",
     ],
   }),
   scenario({
