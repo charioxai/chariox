@@ -56,6 +56,7 @@ export async function createPublicationDeploymentFromPackage(input: {
   readonly start?: boolean
 }): Promise<PublicationDeploymentSummary> {
   const metadata = await readPublicationPackageMetadata(input.packagePath)
+  assertManagedCloudPackagePolicy(metadata.agentApp)
   const created = await postJson<{ readonly deployment: PublicationDeploymentSummary }>(input.profile, "/publication-deployments", {
     accountId: input.profile.accountId,
     mode: input.mode,
@@ -93,6 +94,7 @@ export async function reuploadPublicationDeploymentPackage(input: {
   readonly packagePath: string
 }): Promise<PublicationDeploymentSummary> {
   const metadata = await readPublicationPackageMetadata(input.packagePath)
+  assertManagedCloudPackagePolicy(metadata.agentApp)
   const uploaded = await uploadPublicationDeploymentPackage({
     profile: input.profile,
     deploymentId: input.deploymentId,
@@ -187,6 +189,33 @@ export async function readPublicationPackageMetadata(packagePath: string): Promi
     ...(publicationPackage.alias !== undefined ? { publicationAlias: publicationPackage.alias } : {}),
     ...(hook.id !== undefined ? { hookId: hook.id } : {}),
   }
+}
+
+function assertManagedCloudPackagePolicy(agentApp: unknown): void {
+  if (managedAgentAppRequestsPersistentPatch(agentApp)) {
+    throw new Error("Persistent patches are not available for managed Cloud deployments.")
+  }
+}
+
+function managedAgentAppRequestsPersistentPatch(agentApp: unknown): boolean {
+  const config = objectRecord(agentApp)
+  if (!config) return false
+  const persistentPatch = config.persistent_patch ?? config.persistentPatch
+  if (persistentPatch === true || objectRecord(persistentPatch)?.enabled === true) return true
+  if (!Array.isArray(config.routes)) return false
+  return config.routes.some((candidate) => {
+    const manipulation = objectRecord(objectRecord(candidate)?.manipulation)
+    return manipulation?.level === "persistent_patch"
+      || manipulation?.level === "persistentPatch"
+      || manipulation?.scope === "persistent"
+      || manipulation?.scope === "deployment"
+  })
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
 }
 
 async function publicationPackageDigest(packageRoot: string): Promise<string> {

@@ -119,7 +119,48 @@ test("publication deployment API reuploads package archives", async () => {
   }
 })
 
-async function publicationPackageFixture(): Promise<string> {
+test("managed Cloud deployment rejects persistent patch packages before network access", async () => {
+  const root = await publicationPackageFixture({
+    enabled: true,
+    persistent_patch: { enabled: true },
+    routes: [{ path: "/admin/*", manipulation: { level: "persistent_patch", scope: "persistent" } }],
+  })
+  const previousFetch = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async () => {
+    fetchCalls += 1
+    throw new Error("unexpected fetch")
+  }) as typeof fetch
+
+  try {
+    await assert.rejects(
+      createPublicationDeploymentFromPackage({
+        profile: profile(),
+        packagePath: root,
+        mode: "hosted_container",
+      }),
+      /Persistent patches are not available for managed Cloud deployments/,
+    )
+    await assert.rejects(
+      reuploadPublicationDeploymentPackage({
+        profile: profile(),
+        deploymentId: "deployment-1",
+        packagePath: root,
+      }),
+      /Persistent patches are not available for managed Cloud deployments/,
+    )
+    assert.equal(fetchCalls, 0)
+  } finally {
+    globalThis.fetch = previousFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+async function publicationPackageFixture(agentApp: unknown = {
+  enabled: true,
+  routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+  replicas: { count: 2 },
+}): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
@@ -133,11 +174,7 @@ async function publicationPackageFixture(): Promise<string> {
       transport: "human_http",
       route: "/final/*",
     }],
-    agent_app: {
-      enabled: true,
-      routes: [{ path: "/add/*", prompt_source: "path_tail" }],
-      replicas: { count: 2 },
-    },
+    agent_app: agentApp,
   }, null, 2))
   return root
 }
