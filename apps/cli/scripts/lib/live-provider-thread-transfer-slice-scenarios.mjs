@@ -15,6 +15,7 @@ import {
   launchProviderRunRequest,
   moveAgentToLocalRequest,
   moveAgentToRemoteRequest,
+  resetSliceStateRequest,
   saveSliceStateRequest,
   spawnAgentRequest,
   startSliceRequest,
@@ -328,9 +329,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       })
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
-      await client.send(deleteSliceRequest(sliceId)).catch((error) => {
-        result.evidence.slice_cleanup_error = error.message ?? String(error)
-      })
+      await cleanupSliceRuntime(client, sliceId, result.evidence, { resetSavedState: true })
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
@@ -834,12 +833,26 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       })
     }
     if (sliceId && !(options.keepSliceOnFailure && result.status !== "passed")) {
-      await client.send(deleteSliceRequest(sliceId)).catch((error) => {
-        result.evidence.slice_cleanup_error = error.message ?? String(error)
-      })
+      await cleanupSliceRuntime(client, sliceId, result.evidence)
     } else if (sliceId) {
       result.evidence.slice_left_running_for_debug = sliceId
     }
     await client.close().catch(() => {})
   }
+}
+
+export async function cleanupSliceRuntime(
+  client,
+  sliceId,
+  evidence,
+  { resetSavedState = false } = {},
+) {
+  if (resetSavedState) {
+    await client.send(resetSliceStateRequest(sliceId)).catch((error) => {
+      evidence.slice_state_cleanup_error = error.message ?? String(error)
+    })
+  }
+  await client.send(deleteSliceRequest(sliceId)).catch((error) => {
+    evidence.slice_cleanup_error = error.message ?? String(error)
+  })
 }
