@@ -113,8 +113,8 @@ Strict live results:
 - Codex slice restart: `.artifacts/provider-thread-transfer/1783908220981-22884`
 - Claude slice restart: `.artifacts/provider-thread-transfer/1783907968000-10688`
 
-All four preserve the provider session id, exact second-turn recall, and an active provider run through the assertion point. Worker runs preserve the exact workspace; slice runs preserve `/workspace`. Worker-side provider teardown now runs before kernel termination, followed by delayed idempotent temporary-root removal. Post-run audits found no matching provider process, credential root, drill container, or saved-state image.
+All four preserve the provider session id, exact second-turn recall, and an active provider run through the assertion point. Worker runs preserve the exact workspace; slice runs preserve `/workspace`. Worker-side provider teardown now runs before kernel termination, followed by delayed idempotent temporary-root removal. Slice cleanup erases temporary Codex and OpenCode auth copies from retained artifact roots while preserving non-secret provider state, and removes the external Claude credential root. Post-run audits found no matching provider process, credential file or root, drill container, or saved-state image.
 
 Claude credentials are currently valid and both Claude drills pass. OpenCode remains externally blocked: Zen reports insufficient balance and the OpenAI OAuth profile fails refresh with `401`. Arroba correctly projects both failures and cleans up immediately; same-thread continuation cannot be claimed until one OpenCode account path is restored.
 
-The final OSS gates pass: 2,056 kernel unit tests plus integration and documentation tests, 1,346 CLI tests, 70 server tests, 13 shell tests, lint, formatting, and all 629 validation-suite checks.
+The final OSS gates pass: 2,056 kernel unit tests plus integration and documentation tests, 1,346 CLI tests, 70 server tests, 13 shell tests, lint, formatting, and all 630 validation-suite checks.

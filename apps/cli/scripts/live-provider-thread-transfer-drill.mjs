@@ -20,6 +20,7 @@ import {
   RELAY_ISSUER,
   RELAY_SECRET,
   artifactsRoot,
+  cleanupSliceModeProviderCredentials,
   defaultLocalDockerSliceImage,
   kernelBinary,
   makeWorkerResumePorts,
@@ -397,12 +398,7 @@ async function main() {
     matrix.passed = matrix.results.length > 0 && matrix.results.every((result) => result.status === "passed")
     await writeFile(path.join(root, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
     await terminateChild(daemonChild)
-    if (sliceModeProviderEnv?.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT) {
-      await rm(sliceModeProviderEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT, {
-        recursive: true,
-        force: true,
-      })
-    }
+    await cleanupSliceModeProviderCredentials(sliceModeProviderEnv)
   }
 
   console.log(`provider thread transfer drill artifacts: ${root}`)

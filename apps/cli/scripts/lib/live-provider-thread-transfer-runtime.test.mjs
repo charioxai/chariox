@@ -10,6 +10,7 @@ import {
   transferProviderStateToWorker,
 } from "./live-provider-thread-transfer-provider-state.mjs"
 import {
+  cleanupSliceModeProviderCredentials,
   normalizeProviderOutputText,
   providersNeedClaudeCredentials,
   terminalProviderHistoryError,
@@ -87,6 +88,49 @@ test("Claude credential payloads are validated and written mode 600", async () =
     await assert.rejects(
       writeClaudeCredentialsPayload(path.join(root, "invalid.json"), Buffer.from("[]")),
       /JSON object/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("slice provider credentials are removed without deleting provider state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-slice-credentials-test-"))
+  try {
+    const codexHome = path.join(root, "codex")
+    const opencodeHome = path.join(root, "opencode")
+    const claudeSecretRoot = path.join(root, "claude-secrets")
+    await writeClaudeCredentialsPayload(
+      path.join(codexHome, "auth.json"),
+      Buffer.from('{"token":"codex"}\n'),
+    )
+    await writeClaudeCredentialsPayload(
+      path.join(opencodeHome, "auth.json"),
+      Buffer.from('{"token":"opencode"}\n'),
+    )
+    await writeClaudeCredentialsPayload(
+      path.join(claudeSecretRoot, "credentials.json"),
+      Buffer.from('{"token":"claude"}\n'),
+    )
+    await writeClaudeCredentialsPayload(
+      path.join(codexHome, "sessions", "state.json"),
+      Buffer.from('{"session":"retained"}\n'),
+    )
+
+    await cleanupSliceModeProviderCredentials({
+      CODEX_HOME: codexHome,
+      OPENCODE_DATA_HOME: opencodeHome,
+      ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED: "1",
+      ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: "1",
+      ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
+    })
+
+    await assert.rejects(stat(path.join(codexHome, "auth.json")), { code: "ENOENT" })
+    await assert.rejects(stat(path.join(opencodeHome, "auth.json")), { code: "ENOENT" })
+    await assert.rejects(stat(claudeSecretRoot), { code: "ENOENT" })
+    assert.equal(
+      await readFile(path.join(codexHome, "sessions", "state.json"), "utf8"),
+      '{"session":"retained"}\n',
     )
   } finally {
     await rm(root, { recursive: true, force: true })

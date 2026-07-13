@@ -556,6 +556,32 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
   }
 }
 
+export async function cleanupSliceModeProviderCredentials(providerEnv) {
+  if (!providerEnv) return
+  const removals = []
+  if (
+    providerEnv.ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED === "1"
+    && providerEnv.CODEX_HOME
+  ) {
+    removals.push(rm(path.join(providerEnv.CODEX_HOME, "auth.json"), { force: true }))
+  }
+  if (
+    providerEnv.ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED === "1"
+    && providerEnv.OPENCODE_DATA_HOME
+  ) {
+    removals.push(rm(path.join(providerEnv.OPENCODE_DATA_HOME, "auth.json"), { force: true }))
+  }
+  if (providerEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT) {
+    removals.push(
+      rm(providerEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT, {
+        recursive: true,
+        force: true,
+      }),
+    )
+  }
+  await Promise.all(removals)
+}
+
 export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVIDERS, role = "worker") {
   const real = realProviderEnv()
   const secretRoot = path.join(
