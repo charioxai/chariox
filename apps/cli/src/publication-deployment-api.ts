@@ -3,6 +3,11 @@ import { readFile, mkdtemp, rm, stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { pathToFileURL } from "node:url"
+import {
+  resolveWorkflowPublicationDeploymentContract,
+  workflowPublicationDeploymentContractPath,
+  type WorkflowPublicationDeploymentContract,
+} from "@arroba/kernel-client/workflow-publication-deployment-contract"
 import type { RelayCloudProfile } from "./preferences.js"
 
 export type PublicationDeploymentMode = "local_runtime" | "hosted_container"
@@ -45,6 +50,7 @@ export interface PublicationPackageMetadata {
   readonly transport: string
   readonly route?: string | null
   readonly agentApp?: unknown
+  readonly deploymentContract?: WorkflowPublicationDeploymentContract
 }
 
 export async function createPublicationDeploymentFromPackage(input: {
@@ -171,7 +177,16 @@ export async function readPublicationPackageMetadata(packagePath: string): Promi
       route?: string
     }>
     agent_app?: unknown
+    deployment_contract?: { path?: string; schema_version?: number }
   }
+  const deploymentContractPath = workflowPublicationDeploymentContractPath(publicationPackage)
+  const deploymentContractValue = deploymentContractPath
+    ? JSON.parse(await readFile(resolve(packageRoot, deploymentContractPath), "utf8")) as unknown
+    : undefined
+  const deploymentContract = resolveWorkflowPublicationDeploymentContract(
+    publicationPackage,
+    deploymentContractValue,
+  )
   const hook = publicationPackage.hooks?.[0]
   if (!publicationPackage.publication_id || !publicationPackage.workflow_id || !hook?.endpoint_id) {
     throw new Error("publication package is missing publication_id, workflow_id, or hook endpoint_id")
@@ -186,6 +201,7 @@ export async function readPublicationPackageMetadata(packagePath: string): Promi
     transport: hook.transport ?? "human_http",
     ...(hook.route !== undefined ? { route: hook.route } : {}),
     ...(publicationPackage.agent_app !== undefined ? { agentApp: publicationPackage.agent_app } : {}),
+    ...(deploymentContract.kind === "native" ? { deploymentContract: deploymentContract.contract } : {}),
     ...(publicationPackage.alias !== undefined ? { publicationAlias: publicationPackage.alias } : {}),
     ...(hook.id !== undefined ? { hookId: hook.id } : {}),
   }

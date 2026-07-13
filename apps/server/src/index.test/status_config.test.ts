@@ -544,3 +544,75 @@ test("gateway loads publication package directories", async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("gateway requires a valid deployment contract for package v3", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-contract-"))
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 3,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: { id: "session-1", workspace_id: "/repo", worktree_id: "/repo" },
+      workflow: {
+        id: "workflow-1",
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [],
+    }))
+
+    await assert.rejects(
+      loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
+      /deployment-contract\.json/,
+    )
+    const digest = `sha256:${"a".repeat(64)}`
+    await writeFile(join(root, "deployment-contract.json"), JSON.stringify({
+      schema_version: 1,
+      package_id: digest,
+      artifact: {
+        content_digest: digest,
+        digest_algorithm: "sha256",
+        digest_scope: "package_files_excluding_deployment_contract",
+      },
+      source: {
+        publication_id: "pub-1",
+        session_id: "session-1",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        creator_user_id: "user-1",
+        captured_at_ms: 1,
+      },
+      compatibility: {
+        package_version: 3,
+        minimum_kernel_version: "0.1.0",
+        minimum_local_daemon_protocol_version: 239,
+      },
+      routes: [{ id: "hook-1" }],
+      provider_requirements: [],
+      credential_slots: [],
+      configuration: [],
+      capabilities: {},
+      resources: {},
+      presentation: {},
+      signatures: [],
+    }))
+
+    const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
+    assert.equal(config.publication_id, "pub-1")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})

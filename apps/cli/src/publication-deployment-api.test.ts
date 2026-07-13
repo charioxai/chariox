@@ -23,6 +23,8 @@ test("publication deployment API reads package metadata", async () => {
     assert.equal(metadata.transport, "human_http")
     assert.equal(metadata.route, "/final/*")
     assert.equal(metadata.packageUri, `file://${root}`)
+    assert.equal(metadata.packageVersion, 3)
+    assert.equal(metadata.deploymentContract?.source.publication_id, "pub-1")
     assert.deepEqual(metadata.agentApp, {
       enabled: true,
       routes: [{ path: "/add/*", prompt_source: "path_tail" }],
@@ -164,7 +166,7 @@ async function publicationPackageFixture(agentApp: unknown = {
   const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
-    package_version: 1,
+    package_version: 3,
     publication_id: "pub-1",
     alias: "Public Demo",
     workflow_id: "workflow-1",
@@ -175,8 +177,44 @@ async function publicationPackageFixture(agentApp: unknown = {
       route: "/final/*",
     }],
     agent_app: agentApp,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
   }, null, 2))
+  await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContractFixture(), null, 2))
   return root
+}
+
+function deploymentContractFixture(): Record<string, unknown> {
+  const digest = `sha256:${"a".repeat(64)}`
+  return {
+    schema_version: 1,
+    package_id: digest,
+    artifact: {
+      content_digest: digest,
+      digest_algorithm: "sha256",
+      digest_scope: "package_files_excluding_deployment_contract",
+    },
+    source: {
+      publication_id: "pub-1",
+      session_id: "session-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      creator_user_id: "user-1",
+      captured_at_ms: 1,
+    },
+    compatibility: {
+      package_version: 3,
+      minimum_kernel_version: "0.1.0",
+      minimum_local_daemon_protocol_version: 239,
+    },
+    routes: [{ id: "hook-1" }],
+    provider_requirements: [],
+    credential_slots: [],
+    configuration: [],
+    capabilities: {},
+    resources: {},
+    presentation: {},
+    signatures: [],
+  }
 }
 
 function profile(): RelayCloudProfile {

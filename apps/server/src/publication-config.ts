@@ -13,6 +13,10 @@ import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
 } from "@arroba/kernel-client/kernel-types"
+import {
+  resolveWorkflowPublicationDeploymentContract,
+  workflowPublicationDeploymentContractPath,
+} from "@arroba/kernel-client/workflow-publication-deployment-contract"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
@@ -81,6 +85,11 @@ export async function loadPublicationPackageConfig(
   const packagePath = path.endsWith(".json") ? path : join(path, "publication.json")
   const root = dirname(resolve(packagePath))
   const publicationPackage = JSON.parse(await readFile(packagePath, "utf8")) as WorkflowPublicationPackage
+  const deploymentContractPath = workflowPublicationDeploymentContractPath(publicationPackage)
+  const deploymentContractValue = deploymentContractPath
+    ? JSON.parse(await readFile(join(root, deploymentContractPath), "utf8")) as unknown
+    : undefined
+  resolveWorkflowPublicationDeploymentContract(publicationPackage, deploymentContractValue)
   const snapshotPath = join(root, "workflow.snapshot.json")
   const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as WorkflowPublicationSnapshot
   const config = publicationConfigFromPackage(

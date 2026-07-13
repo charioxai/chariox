@@ -1,0 +1,236 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://arroba.dev/schema/workflow-publication-deployment-contract-v1.json",
+  "title": "Arroba workflow publication deployment contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "package_id",
+    "artifact",
+    "source",
+    "compatibility",
+    "routes",
+    "provider_requirements",
+    "credential_slots",
+    "configuration",
+    "capabilities",
+    "resources",
+    "presentation",
+    "signatures"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "package_id": { "$ref": "#/definitions/sha256" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_digest", "digest_algorithm", "digest_scope"],
+      "properties": {
+        "content_digest": { "$ref": "#/definitions/sha256" },
+        "digest_algorithm": { "const": "sha256" },
+        "digest_scope": { "const": "package_files_excluding_deployment_contract" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publication_id",
+        "session_id",
+        "workflow_id",
+        "endpoint_id",
+        "creator_user_id",
+        "captured_at_ms"
+      ],
+      "properties": {
+        "publication_id": { "$ref": "#/definitions/non_empty_string" },
+        "session_id": { "$ref": "#/definitions/non_empty_string" },
+        "workflow_id": { "$ref": "#/definitions/non_empty_string" },
+        "endpoint_id": { "$ref": "#/definitions/non_empty_string" },
+        "creator_user_id": { "$ref": "#/definitions/non_empty_string" },
+        "captured_at_ms": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_version",
+        "minimum_kernel_version",
+        "minimum_local_daemon_protocol_version"
+      ],
+      "properties": {
+        "package_version": { "const": 3 },
+        "minimum_kernel_version": { "$ref": "#/definitions/non_empty_string" },
+        "minimum_local_daemon_protocol_version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/route" }
+    },
+    "provider_requirements": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/provider_requirement" }
+    },
+    "credential_slots": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/credential_slot" }
+    },
+    "configuration": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["actions", "manipulation_levels", "extensions", "filesystem", "network"],
+      "properties": {
+        "actions": { "$ref": "#/definitions/string_array" },
+        "manipulation_levels": { "$ref": "#/definitions/string_array" },
+        "extensions": { "type": "object" },
+        "filesystem": { "type": "object" },
+        "network": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "resources": {
+      "type": "object",
+      "required": [
+        "expected_concurrency",
+        "replicas",
+        "max_queue_depth",
+        "timeout_ms",
+        "storage",
+        "schedule_count",
+        "region_hint",
+        "data_sensitivity"
+      ],
+      "properties": {
+        "expected_concurrency": { "type": "integer", "minimum": 1 },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "max_queue_depth": { "type": ["integer", "null"], "minimum": 1 },
+        "timeout_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "storage": { "const": "ephemeral" },
+        "schedule_count": { "type": "integer", "minimum": 0 },
+        "region_hint": { "type": ["string", "null"] },
+        "data_sensitivity": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "presentation": {
+      "type": "object",
+      "required": ["kind", "display_name", "entry_path", "assets"],
+      "properties": {
+        "kind": { "enum": ["agent_app", "workflow_endpoint"] },
+        "display_name": { "$ref": "#/definitions/non_empty_string" },
+        "entry_path": { "$ref": "#/definitions/non_empty_string" },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "sha256", "byte_size"],
+            "properties": {
+              "path": { "$ref": "#/definitions/non_empty_string" },
+              "sha256": { "$ref": "#/definitions/sha256" },
+              "byte_size": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "signatures": { "type": "array", "items": { "type": "object" } }
+  },
+  "definitions": {
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "string_array": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/non_empty_string" },
+      "uniqueItems": true
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "transport",
+        "methods",
+        "input_schema",
+        "required_roles",
+        "session",
+        "streaming",
+        "timeout_ms",
+        "idempotency"
+      ],
+      "properties": {
+        "id": { "$ref": "#/definitions/non_empty_string" },
+        "path": { "$ref": "#/definitions/non_empty_string" },
+        "transport": { "$ref": "#/definitions/non_empty_string" },
+        "methods": { "$ref": "#/definitions/string_array" },
+        "input_schema": { "type": ["object", "null"] },
+        "required_roles": { "$ref": "#/definitions/string_array" },
+        "session": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope", "per_caller_ordering"],
+          "properties": {
+            "scope": { "$ref": "#/definitions/non_empty_string" },
+            "per_caller_ordering": { "type": "boolean" }
+          }
+        },
+        "streaming": { "type": "boolean" },
+        "timeout_ms": { "type": ["integer", "null"], "minimum": 1 },
+        "idempotency": { "$ref": "#/definitions/non_empty_string" }
+      }
+    },
+    "provider_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot_id",
+        "provider",
+        "models",
+        "agent_ids",
+        "node_ids",
+        "allowed_substitutions",
+        "readiness_test"
+      ],
+      "properties": {
+        "slot_id": { "type": "string", "pattern": "^provider:[a-z0-9-]+$" },
+        "provider": { "$ref": "#/definitions/non_empty_string" },
+        "models": { "$ref": "#/definitions/string_array" },
+        "agent_ids": { "$ref": "#/definitions/string_array" },
+        "node_ids": { "$ref": "#/definitions/string_array" },
+        "allowed_substitutions": { "type": "boolean" },
+        "readiness_test": { "const": "provider_native" }
+      }
+    },
+    "credential_slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_id", "kind", "label", "required", "scope", "uses", "test_method"],
+      "properties": {
+        "slot_id": { "type": "string", "pattern": "^(provider|integration):[a-z0-9-]+$" },
+        "kind": { "enum": ["provider", "integration"] },
+        "label": { "$ref": "#/definitions/non_empty_string" },
+        "provider": { "$ref": "#/definitions/non_empty_string" },
+        "integration": { "$ref": "#/definitions/non_empty_string" },
+        "required": { "type": "boolean" },
+        "scope": { "const": "environment" },
+        "uses": { "$ref": "#/definitions/string_array" },
+        "test_method": { "enum": ["provider_native", "runtime_requirement"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "provider" } } },
+          "then": { "required": ["provider"] },
+          "else": { "required": ["integration"] }
+        }
+      ]
+    }
+  }
+}

@@ -154,13 +154,62 @@ fn local_request_api_exports_agent_app_publication_package() {
             package_files,
             ..
         } => {
-            assert_eq!(package_version, 2);
+            assert_eq!(package_version, 3);
             package_files
         }
         _ => panic!("unexpected local response"),
     };
     let publication_json = package_json_file(&exported, "publication.json");
-    assert_eq!(publication_json["package_version"], serde_json::json!(2));
+    assert_eq!(publication_json["package_version"], serde_json::json!(3));
+    assert_eq!(
+        publication_json["deployment_contract"],
+        serde_json::json!({
+            "path": "deployment-contract.json",
+            "schema_version": 1,
+        })
+    );
+    let deployment_contract = package_json_file(&exported, "deployment-contract.json");
+    let deployment_contract_schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../schema/workflow-publication-deployment-contract-v1.schema.json"
+    ))
+    .expect("deployment contract schema should parse");
+    let compiled_schema = jsonschema::JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(&deployment_contract_schema)
+        .expect("deployment contract schema should compile");
+    assert!(
+        compiled_schema.is_valid(&deployment_contract),
+        "exported deployment contract should satisfy its versioned schema"
+    );
+    assert_eq!(deployment_contract["schema_version"], serde_json::json!(1));
+    assert_eq!(
+        deployment_contract["compatibility"]["package_version"],
+        serde_json::json!(3)
+    );
+    assert_eq!(
+        deployment_contract["compatibility"]["minimum_local_daemon_protocol_version"],
+        serde_json::json!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        deployment_contract["provider_requirements"][0]["provider"],
+        serde_json::json!("dev-stub")
+    );
+    assert_eq!(
+        deployment_contract["credential_slots"][0]["slot_id"],
+        serde_json::json!("provider:dev-stub")
+    );
+    assert_eq!(
+        deployment_contract["presentation"]["kind"],
+        serde_json::json!("agent_app")
+    );
+    assert!(deployment_contract["presentation"]["assets"]
+        .as_array()
+        .is_some_and(|assets| assets.iter().any(|asset| {
+            asset["path"] == serde_json::json!("app/index.html")
+                && asset["sha256"]
+                    .as_str()
+                    .is_some_and(|digest| digest.starts_with("sha256:"))
+        })));
     assert_eq!(publication_json["kind"], serde_json::json!("ingress"));
     assert_eq!(
         publication_json["agent_app"]["routes"][0]["path"],

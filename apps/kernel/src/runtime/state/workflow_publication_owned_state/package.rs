@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+mod deployment_contract;
+
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     session: &crate::session::RuntimeSession,
@@ -135,11 +137,28 @@ pub(super) fn workflow_publication_package_files(
             false,
         ),
     ];
-    if workflow_publication_package_version(agent_app) == 2 {
+    if agent_app
+        .and_then(|value| value.get("enabled"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
         if let Some(assets_dir) = agent_app_assets_dir {
             files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
         }
     }
+    let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
+        publication,
+        &publication_value,
+        &snapshot,
+        agent_app,
+        &requirements,
+        &files,
+    )?;
+    files.push(package_file(
+        "deployment-contract.json",
+        pretty_json(&deployment_contract)?,
+        false,
+    ));
     Ok(files)
 }
 
@@ -225,23 +244,23 @@ fn workflow_publication_package_json(
             "public_dir": "public",
             "scripts_dir": "scripts",
         },
+        "deployment_contract": {
+            "path": "deployment-contract.json",
+            "schema_version": 1,
+        },
     });
-    if workflow_publication_package_version(agent_app) == 2 {
-        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
-    }
-    package
-}
-
-pub(super) fn workflow_publication_package_version(agent_app: Option<&serde_json::Value>) -> u32 {
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
         == Some(true)
     {
-        2
-    } else {
-        1
+        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
     }
+    package
+}
+
+pub(super) fn workflow_publication_package_version(_agent_app: Option<&serde_json::Value>) -> u32 {
+    3
 }
 
 fn workflow_publication_agent_app_json(agent_app: Option<&serde_json::Value>) -> serde_json::Value {
@@ -541,6 +560,7 @@ fn workflow_publication_readme(
         "## Files",
         "",
         "- `publication.json`: published workflow package metadata",
+        "- `deployment-contract.json`: immutable release requirements and compatibility contract",
         "- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents",
         "- `requirements.json`: required extensions and credential handles",
         "- `bindings.example.json`: provider/model override template",

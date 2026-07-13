@@ -23,6 +23,7 @@
     "./prompt-provider-selection": "./dist/prompt-provider-selection.js",
     "./prompt-surface-state": "./dist/prompt-surface-state.js",
     "./prompt-submission": "./dist/prompt-submission.js",
+    "./workflow-publication-deployment-contract": "./dist/workflow-publication-deployment-contract.js",
     "./provider-namespace-command": "./dist/provider-namespace-command.js",
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
     "./provider-status": "./dist/provider-status.js",
