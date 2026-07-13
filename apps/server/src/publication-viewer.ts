@@ -457,6 +457,7 @@ function publicationWebSocketUrl(path) {
 function publicationIngressPrefix() {
   const parts = window.location.pathname.split('/').filter(Boolean);
   if (!parts.length) return '';
+  if (parts[0] === '~d' && parts[1] && parts[2]) return '/' + parts.slice(0, 3).join('/');
   if (parts[0] === 'publication-ingress' && parts[1] === '~d' && parts[2] && parts[3]) return '/' + parts.slice(0, 4).join('/');
   if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';

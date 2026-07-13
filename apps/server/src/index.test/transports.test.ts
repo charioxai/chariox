@@ -64,6 +64,10 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     "/publication-ingress/~d/deployment-1/demo",
   )
   assert.equal(
+    resolvePrefix({ location: { pathname: "/~d/deployment-1/demo/final/hello" } }, viewerConfig),
+    "/~d/deployment-1/demo",
+  )
+  assert.equal(
     resolvePrefix({ location: { pathname: "/publication-ingress/demo/final/hello" } }, viewerConfig),
     "/publication-ingress/demo",
   )
