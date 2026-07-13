@@ -3,6 +3,7 @@ export type PromptInputRefRenderable = {
   focused: boolean
   plainText: string
   syntaxStyle: unknown
+  isDestroyed?: boolean
   focus: () => void
   blur: () => void
   clear: () => void
@@ -11,41 +12,49 @@ export type PromptInputRefRenderable = {
 export function createPromptInputRefController<TInput extends PromptInputRefRenderable>() {
   let input: TInput | undefined
 
+  function liveInput(): TInput | undefined {
+    if (input?.isDestroyed) {
+      input = undefined
+    }
+    return input
+  }
+
   return {
     assignInput(value: TInput | undefined) {
       input = value
     },
     current() {
-      return input
+      return liveInput()
     },
     currentOrNull() {
-      return input ?? null
+      return liveInput() ?? null
     },
     hasInput() {
-      return Boolean(input)
+      return Boolean(liveInput())
     },
     height(fallback: number) {
-      return input?.height ?? fallback
+      return liveInput()?.height ?? fallback
     },
     isFocused() {
-      return Boolean(input?.focused)
+      return Boolean(liveInput()?.focused)
     },
     plainText() {
-      return input?.plainText
+      return liveInput()?.plainText
     },
     setSyntaxStyle(style: unknown) {
-      if (input) {
-        input.syntaxStyle = style
+      const current = liveInput()
+      if (current) {
+        current.syntaxStyle = style
       }
     },
     focus() {
-      input?.focus()
+      liveInput()?.focus()
     },
     blur() {
-      input?.blur()
+      liveInput()?.blur()
     },
     clear() {
-      input?.clear()
+      liveInput()?.clear()
     },
   }
 }
