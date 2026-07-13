@@ -165,7 +165,7 @@ formEl?.addEventListener('submit', async (event) => {
 async function invokeHumanHttp(prompt, artifacts) {
   if (!artifacts.length) {
     const encoded = encodeURIComponent(prompt);
-    window.location.href = viewerConfig.humanPromptTarget.prefix + encoded + viewerConfig.humanPromptTarget.suffix;
+    window.location.href = publicationUrl(viewerConfig.humanPromptTarget.prefix + encoded + viewerConfig.humanPromptTarget.suffix);
     return;
   }
   const response = await fetch(publicationUrl(viewerConfig.humanFormInvokePath), {
@@ -457,7 +457,8 @@ function publicationWebSocketUrl(path) {
 function publicationIngressPrefix() {
   const parts = window.location.pathname.split('/').filter(Boolean);
   if (!parts.length) return '';
-  if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts[0] + '/' + parts[1];
+  if (parts[0] === 'publication-ingress' && parts[1] === '~d' && parts[2] && parts[3]) return '/' + parts.slice(0, 4).join('/');
+  if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
   if (routeFirst && parts[0] === routeFirst) return '';
   if (!routeFirst && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';

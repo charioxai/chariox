@@ -41,6 +41,35 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { publicationViewerPage } from "../publication-viewer.js"
+
+test("publication viewer preserves canonical and legacy Cloud ingress prefixes", () => {
+  const html = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/final/*",
+    methods: ["GET"],
+  })
+  const functionSource = html.match(/function publicationIngressPrefix\(\) \{[\s\S]*?\n\}/)?.[0]
+  assert.ok(functionSource)
+  const resolvePrefix = new Function(
+    "window",
+    "viewerConfig",
+    `${functionSource}; return publicationIngressPrefix();`,
+  ) as (window: { location: { pathname: string } }, viewerConfig: unknown) => string
+  const viewerConfig = { humanPromptTarget: { prefix: "/final/" }, transport: "human_http" }
+
+  assert.equal(
+    resolvePrefix({ location: { pathname: "/publication-ingress/~d/deployment-1/demo/final/hello" } }, viewerConfig),
+    "/publication-ingress/~d/deployment-1/demo",
+  )
+  assert.equal(
+    resolvePrefix({ location: { pathname: "/publication-ingress/demo/final/hello" } }, viewerConfig),
+    "/publication-ingress/demo",
+  )
+  assert.equal(resolvePrefix({ location: { pathname: "/final/hello" } }, viewerConfig), "")
+  assert.match(html, /window\.location\.href = publicationUrl\(viewerConfig\.humanPromptTarget\.prefix/)
+})
 
 test("gateway parses JSON and forwards transport-shaped workflow output", async () => {
   let seenInput: unknown = null

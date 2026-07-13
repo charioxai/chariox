@@ -33,6 +33,9 @@ pub(crate) fn load_provider_catalog(
     }
 
     let mut catalogs = vec![claude_provider_catalog()];
+    if crate::provider::dev_stub_public_inventory_enabled() {
+        catalogs.push(dev_stub_provider_catalog());
+    }
     let mut source_errors = Vec::new();
 
     match ensure_opencode_catalog_endpoint() {
@@ -285,6 +288,19 @@ fn merge_provider_catalogs(
     Some(merged)
 }
 
+fn dev_stub_provider_catalog() -> OpenCodeProviderCatalog {
+    OpenCodeProviderCatalog {
+        all: vec![OpenCodeProviderInfo {
+            id: "dev-stub".to_string(),
+            name: "Dev Stub".to_string(),
+            remote_machine_aliases: Vec::new(),
+            models: Default::default(),
+        }],
+        default: Default::default(),
+        connected: vec!["dev-stub".to_string()],
+    }
+}
+
 fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
     let mut models = BTreeMap::new();
     let mut first_model = None;
@@ -452,6 +468,16 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn drill_provider_catalog_exposes_dev_stub_without_restricting_fixture_models() {
+        let catalog = dev_stub_provider_catalog();
+
+        assert_eq!(catalog.connected, vec!["dev-stub"]);
+        assert_eq!(catalog.all.len(), 1);
+        assert_eq!(catalog.all[0].id, "dev-stub");
+        assert!(catalog.all[0].models.is_empty());
+    }
 
     #[test]
     fn provider_auth_status_accepts_claude_provider_modes() {

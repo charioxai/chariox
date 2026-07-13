@@ -792,13 +792,13 @@
     <div id="scroll-progress" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">Cross-repository implementation and validation plan / 2026-07-13</p>
+      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-14</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: approved direction, implementation not started</span>
+        <span>Status: Phase 0 in progress; containment and local web/TUI parity green</span>
       </div>
     </header>
 
@@ -1513,6 +1513,19 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
                 </ul>
                 <h4>Exit</h4>
                 <p>Cross-account mutation/read probes fail; unauthenticated control mutation fails; duplicate slugs cannot alter routing; existing local and hosted deployment smoke tests still pass.</p>
+                <div class="callout info">
+                  <strong>Progress record / 2026-07-14</strong>
+                  <ul>
+                    <li>Cloud control routes now derive account identity from authenticated sessions, enforce account roles and CSRF policy, reject cross-account access, and keep package operations account-scoped. Global ingress routing now uses deployment identity plus slug instead of an ambiguous account-scoped slug.</li>
+                    <li>Managed deployment paths reject persistent patches in both OSS and Cloud. The Phase 0 actor, asset, trust-boundary, abuse-case, and containment model is recorded in <code>docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md</code>.</li>
+                    <li>Pushed Cloud checkpoints: <code>2c2d87b0</code>, <code>384d7756</code>, <code>fb89c4e1</code>, and <code>f700ed45</code>. Pushed OSS checkpoints: <code>dcd652039</code>, <code>02c12bc43</code>, <code>3832e47a4</code>, <code>92b959749</code>, and TUI disconnect fix <code>2fe90236d</code>.</li>
+                    <li>A dedicated local stack on ports 57174-57177 created deployment <code>fd284cd7-6bbc-4d0b-a53b-9d77f1515d11</code>. The canonical browser form completed with output <code>{"value":1842}</code>; the web Deployed tab and a real TUI/CLI projected the same deployment, source session, workflow, endpoint, ready/healthy state, URL, and cleanup transition.</li>
+                    <li>Visual evidence is retained under <code>.artifacts/deployed-workflows-platform/phase0-local-e2e/</code>, including <code>web-deployed-tab-ready.png</code>, <code>canonical-browser-form-completed.png</code>, and <code>web-deployed-tab-after-cleanup.png</code>.</li>
+                    <li>Cloud API coverage passed 127 tests; OSS server coverage passed 71 tests; the complete CLI set passed 1,348 tests with bounded concurrency. The TUI kernel restart drill retained the same session and agent through disconnect/reconnect after the teardown race was fixed.</li>
+                    <li>The deployment drill peaked near 266 MB RSS, the local Cloud process near 146 MB RSS, and the TUI build-plus-restart drill near 491 MB RSS. Dedicated ports, processes, sockets, state roots, and <code>/tmp</code> artifacts were removed and verified absent; unrelated user processes and containers were left untouched.</li>
+                  </ul>
+                  <p><strong>Still open for the Phase 0 exit:</strong> repeat the complete containment and parity smoke through the hosted Hetzner runtime from both web and TUI, and resolve or explicitly contain the report-only CSP diagnostics emitted by the embedded publication viewer.</p>
+                </div>
               </div>
             </details>
 
@@ -1777,7 +1790,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="footer">
-            <strong>Implementation starting point:</strong> begin with Phase 0 in both worktrees only after plan review. Security containment, globally unambiguous routing, and the immutable deployment contract are the first engineering slice. Do not start with visual expansion of the existing sidebar.
+            <strong>Current implementation point:</strong> finish the remaining hosted Phase 0 containment and parity gate, then begin the immutable release contract and product model. Keep the global Deployed surface behind those contracts instead of expanding the existing sidebar around provisional runtime fields.
           </div>
         </section>
       </article>
