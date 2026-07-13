@@ -3,7 +3,11 @@ import { mkdir } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { runHostedSecondKernelAssertions, runHostedTokenRotationAssertions } from "./lib/hosted-cloud-kernel-scenarios.mjs"
+import {
+  runHostedSecondKernelAssertions,
+  runHostedTokenRotationAssertions,
+  withHostedKernelIsolation,
+} from "./lib/hosted-cloud-kernel-scenarios.mjs"
 import { runHostedMultiUserAssertions } from "./lib/hosted-cloud-multi-user-scenarios.mjs"
 import { runHostedRemoteCliAssertions, runHostedRemoteCliPairingAssertions } from "./lib/hosted-cloud-remote-cli-scenarios.mjs"
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from "./lib/drill-artifacts.mjs"
@@ -126,13 +130,8 @@ async function main() {
     ])
     requests = loadedRequests
 
-    const daemonEnv = withDevStubProviderInventory({
+    const daemonEnv = withDevStubProviderInventory(withHostedKernelIsolation({
       ...process.env,
-      HOME: os.homedir(),
-      XDG_CONFIG_HOME: xdgConfigHome,
-      XDG_STATE_HOME: xdgStateHome,
-      XDG_RUNTIME_DIR: xdgRuntimeDir,
-      ARROBA_HOME: arrobaHome,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
       ARROBA_OPENCODE_PORT: String(ports.opencodePort),
@@ -144,7 +143,13 @@ async function main() {
       ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
       ARROBA_SESSION_HISTORY_DIR: homeHistoryDir,
       ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
-    })
+    }, {
+      homeDir,
+      arrobaHome,
+      xdgConfigHome,
+      xdgStateHome,
+      xdgRuntimeDir,
+    }))
 
     log("start-kernel")
     daemon = spawnProcess(kernelPath, [], { cwd: repoRoot, env: daemonEnv, name: "kernel" })

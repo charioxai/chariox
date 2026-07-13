@@ -11,6 +11,25 @@ import {
   waitForRuntimeTool,
 } from "./hosted-cloud-runtime-helpers.mjs"
 
+export const HOSTED_HOME_PROXY_MODEL = "native-tui-idle"
+
+export function withHostedKernelIsolation(env, {
+  homeDir,
+  arrobaHome,
+  xdgConfigHome,
+  xdgStateHome,
+  xdgRuntimeDir,
+}) {
+  return {
+    ...env,
+    HOME: homeDir,
+    ARROBA_HOME: arrobaHome,
+    XDG_CONFIG_HOME: xdgConfigHome,
+    XDG_STATE_HOME: xdgStateHome,
+    XDG_RUNTIME_DIR: xdgRuntimeDir,
+  }
+}
+
 async function initHostedLiveSyncWorktree(worktree, label) {
   await mkdir(path.join(worktree, "outputs"), { recursive: true })
   await mkdir(path.join(worktree, "ignored"), { recursive: true })
@@ -36,6 +55,45 @@ async function waitForFileContent(filePath, expected, timeoutMs, pollMs = 250) {
     await sleep(pollMs)
   }
   throw new Error(`timed out waiting for ${filePath} content ${JSON.stringify(expected)}; last=${JSON.stringify(lastContent)}`)
+}
+
+export async function startHostedRemoteProviderRun({
+  client,
+  requests,
+  sessionId,
+  attachmentId,
+  agentId,
+  prompt,
+  timeoutMs = 90_000,
+  pollMs = 250,
+}) {
+  await client.send(requests.submitPromptRequest(
+    sessionId,
+    attachmentId,
+    agentId,
+    prompt,
+    [],
+  ))
+
+  const deadline = Date.now() + timeoutMs
+  let lastAgent = null
+  let lastRun = null
+  while (Date.now() < deadline) {
+    const listed = await client.send(requests.listAgentsRequest(sessionId))
+    const agents = listed?.AgentsListed?.agents ?? listed?.agents ?? []
+    const agent = agents.find((candidate) => candidate.id === agentId) ?? null
+    lastAgent = agent
+    const remote = agent?.remote_execution
+    if (remote?.leased_agent_id && remote?.active_worker_provider_run_id) {
+      const projectedRunId = `leased:${remote.leased_agent_id}:${remote.active_worker_provider_run_id}`
+      const response = await client.send(requests.getProviderRunRequest(projectedRunId)).catch(() => null)
+      const run = response?.ProviderRun?.provider_run ?? response?.provider_run ?? null
+      lastRun = run
+      if (run?.runtime_mcp_server_url && run?.runtime_mcp_auth_token) return run
+    }
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for hosted remote provider run for ${agentId}: agent=${JSON.stringify(lastAgent)} run=${JSON.stringify(lastRun)}`)
 }
 
 async function prepareHostedWorkspaceLiveSyncFixture({
@@ -522,12 +580,16 @@ async function assertHostedCollaboratorHomeExtensions({
       kernelMaxMissedPongs: 10,
     }), "extension-peer-relay")
     await peerRemoteClient.send(requests.joinSessionInviteRequest(localInviteToken, peerProfile.userId))
+    const peerAttachment = unwrap(
+      await peerRemoteClient.send(requests.attachToSessionRequest(session.id, `hosted-extension-peer-${Date.now()}`)),
+      "SessionAttached",
+    ).attachment
     const agent = unwrap(
       await peerRemoteClient.send(requests.spawnAgentRequest(
         session.id,
         "dev-stub",
         "hosted-extension-peer-agent",
-        "hosted-extension-collab",
+        HOSTED_HOME_PROXY_MODEL,
         workerWorkspace,
         "low",
         undefined,
@@ -549,18 +611,15 @@ async function assertHostedCollaboratorHomeExtensions({
       agentId: agent.id,
       env,
     })
-    const launch = unwrap(
-      await peerRemoteClient.send(requests.launchProviderRunRequest(
-        session.id,
-        "dev-stub",
-        "default",
-        "default",
-        "low",
-        agent.id,
-        { nativeTui: true },
-      )),
-      "ProviderRunLaunched",
-    ).provider_run
+    const launch = await startHostedRemoteProviderRun({
+      client: peerRemoteClient,
+      requests,
+      sessionId: session.id,
+      attachmentId: peerAttachment.id,
+      agentId: agent.id,
+      prompt: "Initialize the hosted collaborator home-proxy extension runtime.",
+      timeoutMs: pollTimeoutMs,
+    })
     const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
       name: "arroba.request_extension",
       arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
@@ -598,6 +657,11 @@ async function assertHostedCollaboratorHomeExtensions({
       fixtures,
       label: "collab",
     })
+    await peerRemoteClient.send(requests.cancelActivePromptRequest(
+      session.id,
+      peerAttachment.id,
+      agent.id,
+    ))
     log("second-kernel-collab-extension-pass", {
       sessionId: session.id,
       agentId: agent.id,
@@ -800,7 +864,7 @@ export async function runHostedSecondKernelAssertions({
         session.id,
         "dev-stub",
         "hosted-worker-agent",
-        "hosted-second-kernel",
+        HOSTED_HOME_PROXY_MODEL,
         workerWorkspace,
         "low",
         undefined,
@@ -818,18 +882,15 @@ export async function runHostedSecondKernelAssertions({
       agentId: spawned.agent.id,
       env,
     })
-    const launch = unwrap(
-      await homeClient.send(requests.launchProviderRunRequest(
-        session.id,
-        "dev-stub",
-        "default",
-        "default",
-        "low",
-        spawned.agent.id,
-        { nativeTui: true },
-      )),
-      "ProviderRunLaunched",
-    ).provider_run
+    const launch = await startHostedRemoteProviderRun({
+      client: homeClient,
+      requests,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+      agentId: spawned.agent.id,
+      prompt: "Initialize the hosted home-proxy extension runtime.",
+      timeoutMs: pollTimeoutMs,
+    })
     if (liveSyncFixture) {
       await assertHostedWorkspaceLiveSyncProxy({
         client: homeClient,
@@ -854,6 +915,18 @@ export async function runHostedSecondKernelAssertions({
       fixtures,
       label: "single",
     })
+    let completed = null
+    try {
+      completed = unwrap(
+        await homeClient.send(requests.completePromptRequest(session.id)),
+        "PromptCompleted",
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes("has no active prompt")) throw error
+      log("second-kernel-complete-prompt-already-settled", { sessionId: session.id })
+    }
+    await waitForCompletion(eventLog, pollTimeoutMs, 0)
     if (collabExtensions) {
       await assertHostedCollaboratorHomeExtensions({
         LocalIpcClient,
@@ -900,27 +973,6 @@ export async function runHostedSecondKernelAssertions({
         log,
       })
     }
-    await homeClient.send(requests.submitPromptRequest(
-      session.id,
-      attachment.id,
-      spawned.agent.id,
-      "Reply with exactly HOSTED_SECOND_KERNEL_OK.",
-      [],
-    ))
-    let completed = null
-    try {
-      completed = unwrap(
-        await homeClient.send({ CompletePrompt: { session_id: session.id } }),
-        "PromptCompleted",
-      )
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes("has no active prompt")) {
-        throw error
-      }
-      log("second-kernel-complete-prompt-already-settled", { sessionId: session.id })
-    }
-    await waitForCompletion(eventLog, pollTimeoutMs, 0)
     if (ownsSession) {
       await homeClient.send(requests.endSessionRequest(session.id)).catch(() => {})
     }
