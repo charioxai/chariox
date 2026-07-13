@@ -5,6 +5,11 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
+import {
+  rustBinaryPath,
+  rustManifestPath,
+} from '../../../../scripts/rust-workspace.mjs'
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 export const cliRoot = path.resolve(scriptDir, '..', '..')
 export const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -198,15 +203,12 @@ export async function ensureDockerAvailable() {
 }
 
 export async function buildRustBinary(binaryName) {
-  const manifestPath = binaryName === 'arroba-relay'
-    ? path.join(repoRoot, 'apps/relay/Cargo.toml')
-    : path.join(repoRoot, 'apps/kernel/Cargo.toml')
+  const manifestPath = rustManifestPath(repoRoot, binaryName)
   const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', binaryName])
   if (result.code !== 0) {
     throw new Error(`${binaryName} build failed\n${result.stdout}\n${result.stderr}`)
   }
-  const targetRoot = binaryName === 'arroba-relay' ? 'apps/relay' : 'apps/kernel'
-  return path.join(repoRoot, targetRoot, 'target/debug', binaryName)
+  return rustBinaryPath(repoRoot, binaryName)
 }
 
 export async function buildPublicationContainerImage(tag) {

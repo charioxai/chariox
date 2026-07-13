@@ -12,6 +12,10 @@ import {
   getPublicationDeployment,
   listPublicationDeploymentLogs,
 } from '../../dist/publication-deployment-api.js'
+import {
+  rustBinaryPath,
+  rustManifestPath,
+} from '../../../../scripts/rust-workspace.mjs'
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..')
 
@@ -725,10 +729,10 @@ export async function waitForProviderRunReady(client, providerRunId) {
 }
 
 export async function buildRustBinary(binaryName) {
-  const binaryPath = path.join(repoRoot, 'apps', binaryName.replace(/^arroba-/, ''), 'target', 'debug', binaryName)
+  const binaryPath = rustBinaryPath(repoRoot, binaryName)
   const exists = await readFile(binaryPath).then(() => true).catch(() => false)
   if (exists) return binaryPath
-  const manifestPath = path.join(repoRoot, 'apps', binaryName.replace(/^arroba-/, ''), 'Cargo.toml')
+  const manifestPath = rustManifestPath(repoRoot, binaryName)
   const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', binaryName])
   if (result.code !== 0) throw new Error(`cargo build ${binaryName} failed\n${result.stdout}\n${result.stderr}`)
   return binaryPath
