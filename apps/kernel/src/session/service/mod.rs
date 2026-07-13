@@ -118,6 +118,7 @@ pub struct WorkflowWatchdogCollection {
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
+    ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
     host_daemon_id: String,
     prompt_id_allocator: PromptIdAllocator,

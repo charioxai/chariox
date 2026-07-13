@@ -104,7 +104,10 @@ async function main() {
     const controlResponse = await client.send({ GetSessionState: { session_id: 'session-live-reconnect' } })
 
     const deadline = Date.now() + 2_000
-    while (Date.now() < deadline && subscribeFrames.length < 2) {
+    while (
+      Date.now() < deadline
+      && !events.some((event) => event.event === 'transport_resumed')
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
 

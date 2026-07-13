@@ -526,7 +526,22 @@ impl DaemonApp {
                             operation: "durable_state.restore_prompt_state_event",
                             message: error.to_string(),
                         })?;
-                let session = self.sessions.get_session(&prompt_state.session_id)?;
+                let session = match self.sessions.get_session(&prompt_state.session_id) {
+                    Ok(session) => session,
+                    Err(DaemonError::SessionNotFound { .. }) => {
+                        crate::logging::warn_with_fields(
+                            "durable_state.restore",
+                            "ignored prompt state for a missing runtime session",
+                            serde_json::json!({
+                                "session_id": prompt_state.session_id,
+                                "agent_id": prompt_state.agent_id,
+                                "event_id": event.event_id,
+                            }),
+                        );
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                };
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }

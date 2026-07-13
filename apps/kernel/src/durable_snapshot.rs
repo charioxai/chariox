@@ -37,12 +37,20 @@ impl DurableKernelSnapshotPayload {
         slices: &SliceStore,
         metaagent_events: &MetaagentEventStore,
     ) -> Self {
-        let sessions = sessions.read().store().list();
+        let sessions = sessions.read().durable_sessions();
+        let durable_session_ids = sessions
+            .iter()
+            .map(|session| session.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
         let prompt_private_states = sessions
             .iter()
             .flat_map(RuntimeSession::durable_prompt_private_states)
             .collect();
-        let agents = agents.list_agents();
+        let agents = agents
+            .list_agents()
+            .into_iter()
+            .filter(|agent| durable_session_ids.contains(agent.session_id()))
+            .collect();
         let slice_records = slices.list();
         let slice_saved_states = slices.list_saved_states();
         let slice_backups = slices.list_backups();
@@ -236,6 +244,37 @@ mod tests {
             checkpoint_entity_id("prompt_private_states", &second, 1),
             "session-2:prompt-1"
         );
+    }
+
+    #[test]
+    fn snapshot_excludes_ephemeral_runtime_sessions() {
+        let mut app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should bootstrap");
+        let (durable_session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+            .expect("durable session should be created");
+        let ephemeral_session = app
+            .session_state_store()
+            .create_ephemeral_session(
+                CreateSessionRequest::new("worker-runtime", "worker-runtime").with_hidden(true),
+            )
+            .expect("ephemeral runtime session should be created");
+
+        let snapshot = DurableKernelSnapshotPayload::capture(
+            &app.session_state_store(),
+            app.agents(),
+            &app.slices(),
+            &app.metaagent_event_store(),
+        );
+
+        assert!(snapshot
+            .sessions
+            .iter()
+            .any(|session| session.id() == durable_session.id()));
+        assert!(snapshot
+            .sessions
+            .iter()
+            .all(|session| session.id() != ephemeral_session.id()));
     }
 
     #[test]

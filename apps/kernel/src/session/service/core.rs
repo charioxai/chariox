@@ -7,6 +7,7 @@ impl SessionService {
     pub fn new(config: &DaemonConfig) -> Self {
         Self {
             store: SessionStore::new(),
+            ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
             prompt_id_allocator: PromptIdAllocator::default(),
@@ -70,6 +71,27 @@ impl SessionService {
         Ok(self.store.insert(session))
     }
 
+    pub(crate) fn create_ephemeral_session(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.create_session(request)?;
+        self.ephemeral_session_ids.insert(session.id().to_string());
+        Ok(session)
+    }
+
+    pub(crate) fn is_ephemeral_session(&self, session_id: &str) -> bool {
+        self.ephemeral_session_ids.contains(session_id)
+    }
+
+    pub(crate) fn durable_sessions(&self) -> Vec<RuntimeSession> {
+        self.store
+            .list()
+            .into_iter()
+            .filter(|session| !self.is_ephemeral_session(session.id()))
+            .collect()
+    }
+
     fn default_session_alias(&self, workspace_id: &str) -> String {
         let base = default_session_alias_base(workspace_id);
         let mut number = self
@@ -95,6 +117,7 @@ impl SessionService {
     }
 
     pub(crate) fn remove_restored_session(&mut self, session_id: &str) -> Option<RuntimeSession> {
+        self.ephemeral_session_ids.remove(session_id);
         self.store.remove(session_id)
     }
 

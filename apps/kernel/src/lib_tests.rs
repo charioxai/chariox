@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::process::Command;
-use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -23,8 +22,6 @@ use super::transport::relay_peer::{
 };
 use super::{DaemonApp, DaemonConfig, DaemonError};
 use sha2::{Digest, Sha256};
-
-static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
 
 fn run_test_git(cwd: &std::path::Path, args: &[&str]) {
     let output = Command::new("git")

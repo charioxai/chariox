@@ -116,11 +116,14 @@ impl SessionService {
     }
 
     pub fn delete_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.store
-            .remove(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })
+        let deleted =
+            self.store
+                .remove(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        self.ephemeral_session_ids.remove(session_id);
+        Ok(deleted)
     }
 
     pub fn add_attachment_to_session(

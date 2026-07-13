@@ -71,6 +71,17 @@ impl SessionStateStore {
         self.write().create_session(request)
     }
 
+    pub(crate) fn create_ephemeral_session(
+        &self,
+        request: CreateSessionRequest,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write().create_ephemeral_session(request)
+    }
+
+    pub(crate) fn is_ephemeral_session(&self, session_id: &str) -> bool {
+        self.read().is_ephemeral_session(session_id)
+    }
+
     pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
         self.write().restore_session(session)
     }

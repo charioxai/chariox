@@ -788,6 +788,12 @@ export async function waitForHistoryOutputMarker({ client, sessionId, attachment
   while (Date.now() < deadline) {
     const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
     const outputEntries = entries.filter((entry) => entry?.kind !== "user_prompt")
+    const terminalError = terminalProviderHistoryError(outputEntries)
+    if (terminalError) {
+      throw new Error(
+        `provider failed while waiting for marker ${marker}: ${historyEntryText(terminalError).slice(-4000)}`,
+      )
+    }
     const textFragments = outputEntries
       .filter((entry) => entry.agent_id == null || entry.agent_id === agentId)
       .map(historyEntryText)
@@ -823,6 +829,12 @@ export async function waitForHistoryOutputMarker({ client, sessionId, attachment
   throw new Error(
     `timed out waiting for marker ${marker}; ordered_match=${lastOrderedMatch}\n${lastText.slice(-4000)}\ncompact:\n${lastCompactText.slice(-4000)}\nfallback_compact:\n${lastFallbackCompactText.slice(-4000)}\nraw_compact:\n${lastRawCompactText.slice(-4000)}`,
   )
+}
+
+export function terminalProviderHistoryError(entries) {
+  return entries.find((entry) => (
+    entry?.kind === "provider_error" || entry?.kind === "error"
+  )) ?? null
 }
 
 export function historyEntryText(entry) {

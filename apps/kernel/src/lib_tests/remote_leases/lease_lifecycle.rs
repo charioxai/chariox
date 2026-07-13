@@ -246,8 +246,6 @@ fn leased_agents_reject_missing_working_directory() {
 
 #[test]
 fn leased_agents_materialize_remote_git_worktree_before_creation() {
-    let _guard = CURRENT_DIR_LOCK.lock().expect("current dir lock");
-    let original_dir = std::env::current_dir().expect("current dir should resolve");
     let root = std::env::temp_dir().join(format!(
         "arroba-remote-git-worktree-base-{}",
         crate::session::unix_epoch_ms()
@@ -266,7 +264,6 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
     run_test_git(&root, &["add", "README.md"]);
     run_test_git(&root, &["commit", "-m", "init"]);
 
-    std::env::set_current_dir(&root).expect("test should enter repo root");
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
@@ -280,7 +277,8 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
         )
         .expect("execution lease should be created");
     let leased_agent = RemoteLeaseRuntime::new(&mut app)
-        .create_leased_agent(
+        .create_leased_agent_from_base_directory(
+            &root,
             &lease.id,
             "opencode",
             Some("kimi2.5".to_string()),
@@ -296,7 +294,6 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
             }),
         )
         .expect("leased agent should be created in materialized worktree");
-    std::env::set_current_dir(original_dir).expect("current dir should restore");
 
     assert!(target.join("README.md").exists());
     let backing_session = app
@@ -304,4 +301,6 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
         .get_session(&leased_agent.backing_session_id)
         .expect("backing session should exist");
     assert_eq!(backing_session.worktree_id(), target.display().to_string());
+    let _ = std::fs::remove_dir_all(&target);
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -549,6 +549,37 @@ mod tests {
     }
 
     #[test]
+    fn durable_restore_ignores_orphan_ephemeral_prompt_state() {
+        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+            "orphan-ephemeral-prompt-state-{}.db",
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(state_path.display().to_string());
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+            app.durable_state_store()
+                .append_event(
+                    crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND,
+                    Some("missing-worker-session".to_string()),
+                    serde_json::json!({
+                        "session_id": "missing-worker-session",
+                        "agent_id": "missing-worker-agent",
+                        "active_prompt": null,
+                        "queued_prompts": [],
+                    }),
+                )
+                .expect("orphan prompt event should persist");
+        }
+
+        let restored = DaemonApp::bootstrap(config)
+            .expect("orphan ephemeral prompt state must not prevent restart");
+        assert!(restored.sessions().list_sessions().is_empty());
+
+        let _ = std::fs::remove_file(state_path);
+    }
+
+    #[test]
     fn durable_restore_keeps_slices_bound_to_their_owner_kernel_id() {
         let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
             "shared-slice-state-{}.db",

@@ -88,6 +88,38 @@ impl<'a> RemoteLeaseRuntime<'a> {
         worktree_id: Option<String>,
         worktree_placement: Option<GitWorktreePlacement>,
     ) -> Result<LeasedAgent, DaemonError> {
+        let base_directory =
+            std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
+                operation: "resolve leased agent working directory",
+                message: error.to_string(),
+            })?;
+        self.create_leased_agent_from_base_directory(
+            &base_directory,
+            lease_id,
+            provider,
+            model,
+            effort,
+            execution_mode,
+            permission_level,
+            workspace_live_sync_mode,
+            worktree_id,
+            worktree_placement,
+        )
+    }
+
+    pub(crate) fn create_leased_agent_from_base_directory(
+        &mut self,
+        base_directory: &Path,
+        lease_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
+        workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+        worktree_id: Option<String>,
+        worktree_placement: Option<GitWorktreePlacement>,
+    ) -> Result<LeasedAgent, DaemonError> {
         let lease = self
             .app
             .execution_leases
@@ -103,11 +135,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
         let worktree = if let Some(placement) = worktree_placement {
-            let base_directory =
-                std::env::current_dir().map_err(|error| DaemonError::LocalTransport {
-                    operation: "resolve leased agent working directory",
-                    message: error.to_string(),
-                })?;
             crate::git_worktree_placement::prepare_git_worktree(
                 &placement,
                 base_directory,
@@ -117,13 +144,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         } else {
             match worktree_id {
                 Some(worktree) => worktree,
-                None => std::env::current_dir()
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "resolve leased agent working directory",
-                        message: error.to_string(),
-                    })?
-                    .display()
-                    .to_string(),
+                None => base_directory.display().to_string(),
             }
         };
         let worktree_path = Path::new(&worktree);
@@ -185,7 +206,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 if let Some(mode) = workspace_live_sync_mode {
                     request = request.with_workspace_live_sync_mode(mode);
                 }
-                self.app.sessions.create_session(request)?
+                self.app.sessions.create_ephemeral_session(request)?
             }
         };
         let session_store = self.app.session_state_store();

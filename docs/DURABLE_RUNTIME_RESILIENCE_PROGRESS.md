@@ -70,3 +70,13 @@ Provider PTY input uses a bounded per-process writer pump. App-lock paths enqueu
 Focused tests cover transcript matching, durable continuation generations, launch-failure preservation, response-loss replay, stale socket callbacks, bounded PTY queues, and lock-free confirmed writes. Full validation passed with 2,053 kernel tests and 813 kernel-client tests. Both local `SIGKILL` drills preserve the same active prompt, provider run identity, running workflow/node/scheduler state, grants, transcript, and recall history across restart.
 
 Provider limitation: official-provider continuation depends on a provider-native session id or discoverable local transcript. When neither exists, Arroba preserves delivered work instead of risking duplicate execution; dispatching work is redelivered only when the transcript scan finds no execution evidence. Remote provider recovery continues through the leased-agent idempotency path and remains part of the distributed live-drill gate.
+
+## Milestone 7: Disposable Worker Runtime Recovery
+
+The first real same-host matrix run exposed that worker lease backing sessions were being journaled as prompt authority without a matching durable session lifecycle. A worker restart then replayed an orphan `session.prompt_state.updated` event and exited with `SessionNotFound`, leaving the home kernel unable to repair the stale lease.
+
+Leased backing sessions are now explicitly ephemeral in the shared session store. Their prompt state and agents are excluded from durable events, snapshots, and checkpoints, while normal user sessions and hidden publication sessions remain durable. Restore also ignores orphan prompt events defensively so older worker journals cannot prevent startup. The home kernel remains the sole durable authority and recreates worker execution state through the existing lease-refresh and idempotent prompt path.
+
+Focused tests cover orphan prompt replay and snapshot exclusion. The websocket reconnect drill now waits for the client-side `transport_resumed` event instead of racing the server-side second subscribe. Provider-thread drills fail immediately on terminal provider errors rather than polling until the global timeout.
+
+The repaired matrix scenarios pass: websocket drop resumes from event id 1; home restart preserves the original leased-agent id; worker restart and both-kernel restart each acquire one fresh lease and complete the post-restart prompt. Codex worker thread transfer also passes with provider session identity preserved. OpenCode could not be validated beyond Arroba launch/error projection: OpenCode Zen reports insufficient balance, and the OpenAI-backed OpenCode profile reports OAuth refresh `401`. Both are external account failures and now surface in seconds.

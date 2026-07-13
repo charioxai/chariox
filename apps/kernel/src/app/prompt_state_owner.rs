@@ -330,11 +330,13 @@ impl DaemonApp {
             active_prompt,
             queued_prompts,
         )?;
-        crate::durable_prompt_state::append_durable_prompt_state_event(
-            &self.durable_state,
-            &session,
-            agent_id,
-        )?;
+        if !self.sessions.is_ephemeral_session(session_id) {
+            crate::durable_prompt_state::append_durable_prompt_state_event(
+                &self.durable_state,
+                &session,
+                agent_id,
+            )?;
+        }
         self.provider_process_projection.invalidate();
         self.refresh_prompt_owner_session_projection(session_id)?;
         Ok(session)
