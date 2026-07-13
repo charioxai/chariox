@@ -58,7 +58,6 @@ export async function createPublicationDeploymentFromPackage(input: {
   const metadata = await readPublicationPackageMetadata(input.packagePath)
   const created = await postJson<{ readonly deployment: PublicationDeploymentSummary }>(input.profile, "/publication-deployments", {
     accountId: input.profile.accountId,
-    createdByUserId: input.profile.userId,
     mode: input.mode,
     slug: input.slug,
     publicationId: metadata.publicationId,

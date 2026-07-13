@@ -68,6 +68,7 @@ test("publication deployment API creates, uploads, and starts hosted deployments
       ["POST", "/publication-deployments/deployment-1/package"],
       ["POST", "/publication-deployments/deployment-1/start"],
     ])
+    assert.equal("createdByUserId" in (calls[0]?.body as Record<string, unknown>), false)
     assert.equal((calls[0]?.body as Record<string, unknown>).credentialProfile, "miguel_staging")
     assert.equal((calls[0]?.body as Record<string, unknown>).route, "/final/*")
     assert.deepEqual((calls[0]?.body as Record<string, unknown>).agentApp, {
