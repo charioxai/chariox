@@ -252,6 +252,7 @@ export function providerRunSnapshot(run) {
     execution_mode: run?.execution_mode ?? null,
     permission_level: run?.permission_level ?? null,
     write_access_mode: run?.write_access_mode ?? null,
+    working_directory: run?.working_directory ?? null,
     started_at_ms: run?.started_at_ms ?? null,
     last_activity_at_ms: run?.last_activity_at_ms ?? null,
   }
@@ -415,7 +416,84 @@ export async function copySecretIfPresent(source, destination) {
   }
 }
 
-export async function prepareSliceModeProviderEnv(root) {
+export function providersNeedClaudeCredentials(providers) {
+  return providers.some((provider) => (
+    provider === "claude" || provider === "claude-p" || provider === "claude-headless"
+  ))
+}
+
+export async function writeClaudeCredentialsPayload(destination, payload) {
+  const parsed = JSON.parse(Buffer.from(payload).toString("utf8"))
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Claude credential export did not contain a JSON object")
+  }
+  await mkdir(path.dirname(destination), { recursive: true })
+  await writeFile(destination, payload, { mode: 0o600 })
+  await chmod(destination, 0o600)
+  return destination
+}
+
+async function commandOutput(command, args, env = process.env, timeoutMs = 30_000) {
+  const child = spawn(command, args, {
+    env,
+    stdio: ["ignore", "pipe", "ignore"],
+  })
+  const chunks = []
+  child.stdout?.on("data", (chunk) => chunks.push(chunk))
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    child.kill("SIGTERM")
+  }, timeoutMs)
+  timeout.unref()
+  const status = await new Promise((resolve) => {
+    child.on("error", () => resolve(1))
+    child.on("close", (code) => resolve(code ?? 1))
+  })
+  clearTimeout(timeout)
+  return { status: timedOut ? 124 : status, output: Buffer.concat(chunks) }
+}
+
+export async function exportClaudeCredentials(destination, home = process.env.HOME ?? os.homedir()) {
+  if (process.platform === "darwin") {
+    const keychain = await commandOutput("security", [
+      "find-generic-password",
+      "-s",
+      "Claude Code-credentials",
+      "-w",
+    ])
+    if (keychain.status === 0 && keychain.output.length > 0) {
+      return await writeClaudeCredentialsPayload(destination, keychain.output)
+    }
+  }
+
+  const source = path.join(home, ".claude", ".credentials.json")
+  try {
+    return await writeClaudeCredentialsPayload(destination, await readFile(source))
+  } catch (error) {
+    if (error?.code === "ENOENT") return null
+    throw error
+  }
+}
+
+export async function verifyClaudeAuthHome(home) {
+  const result = await commandOutput("claude", ["auth", "status"], {
+    ...process.env,
+    HOME: home,
+  })
+  if (result.status !== 0) return false
+  const text = result.output.toString("utf8")
+  const start = text.indexOf("{")
+  const end = text.lastIndexOf("}")
+  if (start < 0 || end < start) return false
+  try {
+    return JSON.parse(text.slice(start, end + 1)).loggedIn === true
+  } catch {
+    return false
+  }
+}
+
+export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROVIDERS) {
   const real = realProviderEnv()
   const codexHome = path.join(root, "codex-home")
   const xdgConfigHome = path.join(root, "xdg-config")
@@ -429,14 +507,36 @@ export async function prepareSliceModeProviderEnv(root) {
   await mkdir(xdgStateHome, { recursive: true })
   await mkdir(xdgCacheHome, { recursive: true })
 
-  const codexAuthCopied = await copySecretIfPresent(
-    path.join(real.CODEX_HOME, "auth.json"),
-    path.join(codexHome, "auth.json"),
-  )
-  const opencodeAuthCopied = await copySecretIfPresent(
-    path.join(real.OPENCODE_DATA_HOME, "auth.json"),
-    path.join(opencodeDataHome, "auth.json"),
-  )
+  const codexAuthCopied = providers.includes("codex")
+    ? await copySecretIfPresent(
+        path.join(real.CODEX_HOME, "auth.json"),
+        path.join(codexHome, "auth.json"),
+      )
+    : false
+  const opencodeAuthCopied = providers.includes("opencode")
+    ? await copySecretIfPresent(
+        path.join(real.OPENCODE_DATA_HOME, "auth.json"),
+        path.join(opencodeDataHome, "auth.json"),
+      )
+    : false
+
+  let claudeSecretRoot = null
+  let claudeCredentialsPath = null
+  if (providersNeedClaudeCredentials(providers)) {
+    claudeSecretRoot = path.join(os.tmpdir(), `arroba-provider-transfer-slice-secrets-${process.pid}-${Date.now()}`)
+    try {
+      claudeCredentialsPath = await exportClaudeCredentials(
+        path.join(claudeSecretRoot, "claude-credentials.json"),
+        real.HOME,
+      )
+      if (!claudeCredentialsPath) {
+        throw new Error("Claude credentials are unavailable for the isolated slice runner")
+      }
+    } catch (error) {
+      await rm(claudeSecretRoot, { recursive: true, force: true })
+      throw error
+    }
+  }
 
   return {
     HOME: real.HOME,
@@ -449,12 +549,19 @@ export async function prepareSliceModeProviderEnv(root) {
     XDG_CACHE_HOME: xdgCacheHome,
     ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
     ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
+    ...(claudeCredentialsPath ? {
+      ARROBA_SLICE_CLAUDE_CREDENTIALS: claudeCredentialsPath,
+      ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
+    } : {}),
   }
 }
 
-export async function prepareIsolatedWorkerProviderEnv() {
+export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVIDERS, role = "worker") {
   const real = realProviderEnv()
-  const secretRoot = path.join(os.tmpdir(), `arroba-provider-transfer-secrets-${process.pid}-${Date.now()}`)
+  const secretRoot = path.join(
+    os.tmpdir(),
+    `arroba-provider-transfer-secrets-${role}-${process.pid}-${Date.now()}`,
+  )
   const isolatedHome = path.join(secretRoot, "home")
   const codexHome = path.join(secretRoot, "codex")
   const xdgDataHome = path.join(secretRoot, "xdg-data")
@@ -469,21 +576,66 @@ export async function prepareIsolatedWorkerProviderEnv() {
   await mkdir(xdgCacheHome, { recursive: true })
   await mkdir(opencodeDataHome, { recursive: true })
 
-  const codexAuthCopied = await copySecretIfPresent(
-    path.join(real.CODEX_HOME, "auth.json"),
-    path.join(codexHome, "auth.json"),
-  )
+  const codexAuthCopied = providers.includes("codex")
+    ? await copySecretIfPresent(
+        path.join(real.CODEX_HOME, "auth.json"),
+        path.join(codexHome, "auth.json"),
+      )
+    : false
   const opencodeSourceDataHome = process.env.OPENCODE_DATA_HOME
     ?? path.join(real.XDG_DATA_HOME, "opencode")
   const opencodeAuthSource = path.join(opencodeSourceDataHome, "auth.json")
-  const opencodeDataAuthCopied = await copySecretIfPresent(
-    opencodeAuthSource,
-    path.join(opencodeDataHome, "auth.json"),
-  )
-  const opencodeXdgAuthCopied = await copySecretIfPresent(
-    opencodeAuthSource,
-    path.join(xdgDataHome, "opencode", "auth.json"),
-  )
+  const opencodeDataAuthCopied = providers.includes("opencode")
+    ? await copySecretIfPresent(
+        opencodeAuthSource,
+        path.join(opencodeDataHome, "auth.json"),
+      )
+    : false
+  const opencodeXdgAuthCopied = providers.includes("opencode")
+    ? await copySecretIfPresent(
+        opencodeAuthSource,
+        path.join(xdgDataHome, "opencode", "auth.json"),
+      )
+    : false
+
+  let claudeAuthCopied = false
+  let claudeAuthVerified = false
+  let claudeConfigCopied = false
+  let claudeSettingsCopied = false
+  if (providersNeedClaudeCredentials(providers)) {
+    claudeConfigCopied = await copySecretIfPresent(
+      path.join(real.HOME, ".claude.json"),
+      path.join(isolatedHome, ".claude.json"),
+    )
+    if (!claudeConfigCopied) {
+      await rm(secretRoot, { recursive: true, force: true })
+      throw new Error("Claude home config is unavailable for the isolated worker")
+    }
+    claudeSettingsCopied = await copySecretIfPresent(
+      path.join(real.HOME, ".claude", "settings.json"),
+      path.join(isolatedHome, ".claude", "settings.json"),
+    )
+    const exportedPath = path.join(secretRoot, "claude-credentials-export.json")
+    const destination = path.join(isolatedHome, ".claude", ".credentials.json")
+    const exported = await exportClaudeCredentials(exportedPath, real.HOME)
+    if (!exported) {
+      await rm(secretRoot, { recursive: true, force: true })
+      throw new Error("Claude credentials are unavailable for the isolated worker")
+    }
+    try {
+      await mkdir(path.dirname(destination), { recursive: true })
+      await copyFile(exported, destination)
+      await chmod(destination, 0o600)
+      claudeAuthCopied = true
+    } finally {
+      await rm(exportedPath, { force: true })
+    }
+    claudeAuthVerified = await verifyClaudeAuthHome(isolatedHome)
+    if (!claudeAuthVerified) {
+      await rm(secretRoot, { recursive: true, force: true })
+      throw new Error("Claude credentials copied to the isolated worker but failed `claude auth status`")
+    }
+  }
 
   return {
     secretRoot,
@@ -501,6 +653,10 @@ export async function prepareIsolatedWorkerProviderEnv() {
       mode: "isolated",
       codex_auth_copied: codexAuthCopied,
       opencode_auth_copied: opencodeDataAuthCopied || opencodeXdgAuthCopied,
+      claude_auth_copied: claudeAuthCopied,
+      claude_auth_verified: claudeAuthVerified,
+      claude_config_copied: claudeConfigCopied,
+      claude_settings_copied: claudeSettingsCopied,
       opencode_config_shared: true,
       provider_data_shared: false,
       provider_cache_shared: false,
@@ -784,7 +940,7 @@ export async function waitForHistoryOutputMarker({ client, sessionId, attachment
   let lastCompactText = ""
   let lastFallbackCompactText = ""
   let lastRawCompactText = ""
-  let lastOrderedMatch = false
+  let lastNormalizedText = ""
   while (Date.now() < deadline) {
     const entries = await loadAgentHistoryEntries(client, sessionId, agentId)
     const outputEntries = entries.filter((entry) => entry?.kind !== "user_prompt")
@@ -805,15 +961,17 @@ export async function waitForHistoryOutputMarker({ client, sessionId, attachment
     lastRawCompactText = historyDir
       ? await loadRawHistoryOutputText({ historyDir, sessionId, agentId }).catch(() => "")
       : ""
-    lastOrderedMatch = containsOrderedMarker(lastCompactText, marker)
-      || containsOrderedMarker(lastFallbackCompactText, marker)
-      || containsOrderedMarker(lastRawCompactText, marker)
+    lastNormalizedText = normalizeProviderOutputText([
+      lastCompactText,
+      lastFallbackCompactText,
+      lastRawCompactText,
+    ].join("\n"))
     if (
       lastText.includes(marker) ||
       lastCompactText.includes(marker) ||
       lastFallbackCompactText.includes(marker) ||
       lastRawCompactText.includes(marker) ||
-      lastOrderedMatch
+      lastNormalizedText.includes(marker)
     ) {
       return {
         entries,
@@ -821,19 +979,24 @@ export async function waitForHistoryOutputMarker({ client, sessionId, attachment
         compactText: lastCompactText,
         fallbackCompactText: lastFallbackCompactText,
         rawCompactText: lastRawCompactText,
-        orderedMatch: lastOrderedMatch,
+        normalizedText: lastNormalizedText,
       }
     }
     await sleep(pollMs)
   }
   throw new Error(
-    `timed out waiting for marker ${marker}; ordered_match=${lastOrderedMatch}\n${lastText.slice(-4000)}\ncompact:\n${lastCompactText.slice(-4000)}\nfallback_compact:\n${lastFallbackCompactText.slice(-4000)}\nraw_compact:\n${lastRawCompactText.slice(-4000)}`,
+    `timed out waiting for marker ${marker}\n${lastText.slice(-4000)}\ncompact:\n${lastCompactText.slice(-4000)}\nfallback_compact:\n${lastFallbackCompactText.slice(-4000)}\nraw_compact:\n${lastRawCompactText.slice(-4000)}\nnormalized:\n${lastNormalizedText.slice(-4000)}`,
   )
 }
 
 export function terminalProviderHistoryError(entries) {
   return entries.find((entry) => (
-    entry?.kind === "provider_error" || entry?.kind === "error"
+    entry?.kind === "provider_error"
+    || entry?.kind === "error"
+    || (
+      entry?.kind === "notice"
+      && /provider run .* ended unexpectedly/i.test(historyEntryText(entry))
+    )
   )) ?? null
 }
 
@@ -869,13 +1032,11 @@ export async function loadRawHistoryOutputText({ historyDir, sessionId, agentId 
   return fragments.join("")
 }
 
-export function containsOrderedMarker(text, marker) {
-  let index = 0
-  for (const char of text) {
-    if (char === marker[index]) index += 1
-    if (index === marker.length) return true
-  }
-  return false
+export function normalizeProviderOutputText(text) {
+  return String(text)
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "")
 }
 
 export async function createDeterministicMcp(root, name) {

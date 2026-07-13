@@ -243,6 +243,13 @@ pub(super) fn claude_native_tui_args(
     {
         args.extend(["--effort".to_string(), variant.to_string()]);
     }
+    if let Some(session_id) = request
+        .resume_state
+        .as_ref()
+        .and_then(|state| state.claude_session_id())
+    {
+        args.extend(["--resume".to_string(), session_id.to_string()]);
+    }
     if request.permission_level.unwrap_or_default() == AgentPermissionLevel::Yolo {
         args.push("--allow-dangerously-skip-permissions".to_string());
     }
@@ -268,7 +275,11 @@ pub(super) fn claude_native_tui_args(
 
 #[cfg(test)]
 mod tests {
-    use super::claude_native_hook_handler;
+    use std::path::Path;
+
+    use crate::provider::{LaunchProviderRequest, ProviderResumeState};
+
+    use super::{claude_native_hook_handler, claude_native_tui_args};
 
     #[test]
     fn hook_does_not_block_bypass_or_arroba_runtime_pre_tool_use() {
@@ -278,5 +289,26 @@ mod tests {
         assert!(handler.contains("toolName.startsWith(\"mcp__arroba__\")"));
         assert!(handler.contains("toolName.startsWith(\"arroba.\")"));
         assert!(handler.contains("process.exit(0)"));
+    }
+
+    #[test]
+    fn native_tui_resumes_requested_claude_session() {
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        )
+        .with_resume_state(ProviderResumeState::from_claude_session_id(
+            "claude-session-1",
+        ));
+
+        let args = claude_native_tui_args(&request, Path::new("settings.json"))
+            .expect("Claude native TUI args should resolve");
+
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--resume", "claude-session-1"]));
     }
 }

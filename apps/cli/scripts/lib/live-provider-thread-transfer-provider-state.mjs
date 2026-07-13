@@ -1,4 +1,4 @@
-import { chmod, mkdir, stat } from "node:fs/promises"
+import { chmod, copyFile, cp, mkdir, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
@@ -51,7 +51,7 @@ export function providerStateCopySpecs(provider, providerEnv = realProviderEnv()
     ]
   }
   if (provider === "claude-p" || provider === "claude-headless" || provider === "claude") {
-    const home = process.env.HOME ?? os.homedir()
+    const home = providerEnv.HOME ?? process.env.HOME ?? os.homedir()
     return [
       {
         label: "claude-home",
@@ -68,6 +68,48 @@ export function providerStateCopySpecs(provider, providerEnv = realProviderEnv()
     ]
   }
   return []
+}
+
+export async function transferProviderStateToWorker({
+  provider,
+  sourceProviderEnv,
+  destinationProviderEnv,
+}) {
+  const destinations = new Map(
+    providerStateCopySpecs(provider, destinationProviderEnv)
+      .map((spec) => [spec.label, spec]),
+  )
+  const evidence = {
+    provider,
+    copied: [],
+    missing: [],
+  }
+  for (const source of providerStateCopySpecs(provider, sourceProviderEnv)) {
+    const destination = destinations.get(source.label)
+    if (!destination) continue
+    const sourceStat = await pathStat(source.source)
+    if (!sourceStat) {
+      evidence.missing.push({ label: source.label, kind: source.kind })
+      continue
+    }
+    if (source.kind === "dir") {
+      await mkdir(destination.source, { recursive: true })
+      await cp(source.source, destination.source, {
+        recursive: true,
+        force: true,
+      })
+    } else {
+      await mkdir(path.dirname(destination.source), { recursive: true })
+      await copyFile(source.source, destination.source)
+      await chmod(destination.source, 0o600).catch(() => {})
+    }
+    evidence.copied.push({
+      label: source.label,
+      kind: source.kind,
+      destination: destination.source,
+    })
+  }
+  return evidence
 }
 
 export async function runDockerCommandForTransfer(root, label, args, timeoutMs) {

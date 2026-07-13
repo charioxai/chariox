@@ -229,7 +229,8 @@ impl DaemonApp {
             &request.provider,
             &relay_config,
         )?;
-        let worker_worktree_id = request.worktree_id.clone();
+        let worker_worktree_id =
+            self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
         let worktree_placement = request.worktree_placement.clone();
         request.kernel_ref = None;
         request.worktree_id = None;
@@ -526,7 +527,14 @@ impl DaemonApp {
             agent.provider(),
             relay_config,
         )?;
-        self.bind_remote_agent_to_worker(&agent, &worker_kernel, None, None, relay_override)
+        let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
+        self.bind_remote_agent_to_worker(
+            &agent,
+            &worker_kernel,
+            worker_worktree_id,
+            None,
+            relay_override,
+        )
     }
 
     pub(crate) fn move_agent_to_local(
@@ -756,6 +764,17 @@ impl DaemonApp {
         }
         config.cloud_relay = None;
         Some(config)
+    }
+
+    fn worker_worktree_id_for_kernel_ref(
+        &self,
+        kernel_ref: &str,
+        requested_worktree_id: Option<String>,
+    ) -> Option<String> {
+        self.slices
+            .resolve_by_worker_kernel_ref(kernel_ref)
+            .map(|_| "/workspace".to_string())
+            .or(requested_worktree_id)
     }
 
     pub(crate) fn relay_config_for_remote_execution(
@@ -999,6 +1018,22 @@ mod tests {
         let relay_config = app
             .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
             .expect("slice worker ref should have relay config");
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(
+                &slice.worker_kernel_ref,
+                Some("/host/worktree".to_string()),
+            )
+            .as_deref(),
+            Some("/workspace")
+        );
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(
+                "standard-worker",
+                Some("/worker/worktree".to_string()),
+            )
+            .as_deref(),
+            Some("/worker/worktree")
+        );
         let ports = slice
             .local_docker_ports
             .expect("local Docker slice should have assigned ports");
@@ -1052,6 +1087,14 @@ mod tests {
         let relay_config = app
             .slice_relay_config_for_kernel_ref("slice:slice-1")
             .expect("slice worker machine id should have relay config");
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(
+                "slice:slice-1",
+                Some("/host/worktree".to_string()),
+            )
+            .as_deref(),
+            Some("/workspace")
+        );
         let ports = slice
             .local_docker_ports
             .expect("local Docker slice should have assigned ports");

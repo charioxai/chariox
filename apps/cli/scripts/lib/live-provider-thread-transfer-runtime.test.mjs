@@ -1,8 +1,97 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import test from "node:test"
 
 import { cleanupSliceRuntime } from "./live-provider-thread-transfer-slice-scenarios.mjs"
-import { terminalProviderHistoryError } from "./live-provider-thread-transfer-runtime.mjs"
+import {
+  providerStateCopySpecs,
+  transferProviderStateToWorker,
+} from "./live-provider-thread-transfer-provider-state.mjs"
+import {
+  normalizeProviderOutputText,
+  providersNeedClaudeCredentials,
+  terminalProviderHistoryError,
+  writeClaudeCredentialsPayload,
+} from "./live-provider-thread-transfer-runtime.mjs"
+
+test("provider output marker matching removes ANSI without accepting subsequences", () => {
+  const expected = "THREAD_TRANSFER_READY"
+  assert.equal(
+    normalizeProviderOutputText("THREAD_\x1b[31mTRANSFER\x1b[0m_READY").includes(expected),
+    true,
+  )
+  assert.equal(
+    normalizeProviderOutputText("THREAD_TRANSFER was requested with suffix _READY").includes(expected),
+    false,
+  )
+})
+
+test("Claude provider aliases request isolated credentials", () => {
+  assert.equal(providersNeedClaudeCredentials(["codex", "opencode"]), false)
+  assert.equal(providersNeedClaudeCredentials(["claude"]), true)
+  assert.equal(providersNeedClaudeCredentials(["claude-p"]), true)
+  assert.equal(providersNeedClaudeCredentials(["claude-headless"]), true)
+})
+
+test("Claude provider state uses the selected provider home", () => {
+  const specs = providerStateCopySpecs("claude-headless", { HOME: "/isolated/provider-home" })
+  assert.deepEqual(
+    specs.map((spec) => spec.source),
+    ["/isolated/provider-home/.claude", "/isolated/provider-home/.claude.json"],
+  )
+})
+
+test("provider state transfer copies into an isolated worker home", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-provider-state-test-"))
+  try {
+    const sourceHome = path.join(root, "source")
+    const destinationHome = path.join(root, "destination")
+    await writeClaudeCredentialsPayload(
+      path.join(sourceHome, ".claude", "projects", "session.json"),
+      Buffer.from('{"session":"one"}\n'),
+    )
+    await writeClaudeCredentialsPayload(
+      path.join(sourceHome, ".claude.json"),
+      Buffer.from('{"hasCompletedOnboarding":true}\n'),
+    )
+
+    const evidence = await transferProviderStateToWorker({
+      provider: "claude-headless",
+      sourceProviderEnv: { HOME: sourceHome },
+      destinationProviderEnv: { HOME: destinationHome },
+    })
+
+    assert.equal(evidence.copied.length, 2)
+    assert.equal(
+      await readFile(path.join(destinationHome, ".claude", "projects", "session.json"), "utf8"),
+      '{"session":"one"}\n',
+    )
+    assert.equal(
+      await readFile(path.join(destinationHome, ".claude.json"), "utf8"),
+      '{"hasCompletedOnboarding":true}\n',
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("Claude credential payloads are validated and written mode 600", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-claude-credentials-test-"))
+  try {
+    const destination = path.join(root, ".claude", ".credentials.json")
+    await writeClaudeCredentialsPayload(destination, Buffer.from('{"oauth":"test"}\n'))
+    assert.equal(await readFile(destination, "utf8"), '{"oauth":"test"}\n')
+    assert.equal((await stat(destination)).mode & 0o777, 0o600)
+    await assert.rejects(
+      writeClaudeCredentialsPayload(path.join(root, "invalid.json"), Buffer.from("[]")),
+      /JSON object/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("slice restart cleanup resets saved state before deleting the slice", async () => {
   const requests = []
@@ -32,6 +121,15 @@ test("provider thread transfer fails fast on terminal provider history", () => {
   ])
 
   assert.equal(failure?.text, "account balance exhausted")
+  assert.equal(
+    terminalProviderHistoryError([
+      {
+        kind: "notice",
+        text: "Provider run `provider-run-1` for `claude-headless` ended unexpectedly. No active prompt was running.",
+      },
+    ])?.kind,
+    "notice",
+  )
 })
 
 test("provider thread transfer ignores nonterminal provider history", () => {

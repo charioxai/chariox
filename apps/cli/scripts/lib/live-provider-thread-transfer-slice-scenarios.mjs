@@ -195,6 +195,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     })
 
     const rememberMarker = `THREAD_TRANSFER_SLICE_${provider.replaceAll("-", "_").toUpperCase()}_${process.pid}_${Date.now()}`
+    const readyMarker = `${rememberMarker}_READY`
     logStep(result, provider, "submit-slice-marker", { marker: rememberMarker })
     await sendControlRequest(
       kernelUrl,
@@ -204,7 +205,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
         agent.id,
         [
           `Remember this exact marker for a slice restart check: ${rememberMarker}`,
-          `Reply with exactly ${rememberMarker}_READY and nothing else.`,
+          "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
         ].join("\n"),
         [],
       ),
@@ -216,7 +217,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      marker: rememberMarker,
+      marker: readyMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir: options.historyDir,
@@ -268,6 +269,12 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       remote_execution: afterAgent?.remote_execution ?? null,
     }
     result.checks.same_arroba_agent_record = afterAgent?.id === agent.id
+    result.checks.slice_working_directory_before = beforeRun.working_directory ?? null
+    result.checks.slice_working_directory_after = afterRun.working_directory ?? null
+    result.checks.slice_working_directory_preserved = (
+      beforeRun.working_directory === "/workspace"
+      && afterRun.working_directory === beforeRun.working_directory
+    )
     result.checks.provider_thread_id_before = beforeThreadId
     result.checks.provider_thread_id_after = afterThreadId
     result.checks.provider_thread_id_preserved = beforeThreadId === afterThreadId
@@ -279,12 +286,16 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     if (!result.checks.same_arroba_agent_record) {
       throw new Error(`slice restart did not preserve same Arroba agent record ${agent.id}`)
     }
+    if (!result.checks.slice_working_directory_preserved) {
+      throw new Error(
+        `slice provider working directory changed across restart: before=${beforeRun.working_directory ?? "<unset>"} after=${afterRun.working_directory ?? "<unset>"}`,
+      )
+    }
     if (!result.checks.provider_thread_id_preserved) {
       throw new Error(`provider thread id changed across slice restart: before=${beforeThreadId} after=${afterThreadId}`)
     }
 
     const recallMarker = `${rememberMarker}_SLICE_RECALLED`
-    const recallObservationMarker = `${rememberMarker}_SLICE`
     logStep(result, provider, "submit-slice-recall-marker", { marker: recallMarker })
     await sendControlRequest(
       kernelUrl,
@@ -292,7 +303,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
         session.id,
         attachment.id,
         agent.id,
-        `Reply with exactly ${recallMarker} if you still remember the marker from before the slice restart. Do not include any other text.`,
+        "If you remember the marker from before the slice restart, reply with it followed immediately by the suffix `_SLICE_RECALLED`. Do not include any other text.",
         [],
       ),
       `submit slice recall marker prompt for ${provider}`,
@@ -303,13 +314,29 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      marker: recallObservationMarker,
+      marker: recallMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir: options.historyDir,
     })
     result.checks.slice_recall_marker_observed = true
     result.evidence.recall_marker = recallMarker
+    await waitForPromptIdle({
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+      agentId: agent.id,
+      timeoutMs: options.timeoutMs,
+      pollMs: options.pollMs,
+    })
+    const settledAfterRun = variant(
+      await client.send(getProviderRunRequest(afterRun.id)),
+      "ProviderRun",
+    ).provider_run
+    result.checks.slice_provider_run_remained_active = String(settledAfterRun.state ?? "").toLowerCase() !== "ended"
+    if (!result.checks.slice_provider_run_remained_active) {
+      throw new Error(`slice provider run ${afterRun.id} ended during the recall turn`)
+    }
 
     result.evidence.provider_processes = await collectProviderProcesses(client, provider)
     result.evidence.kernel_events = kernelEvents.slice(-50)
@@ -424,6 +451,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     })
 
     const rememberMarker = `THREAD_TRANSFER_LIVE_SLICE_${provider.replaceAll("-", "_").toUpperCase()}_${process.pid}_${Date.now()}`
+    const readyMarker = `${rememberMarker}_READY`
     logStep(result, provider, "submit-local-marker", { marker: rememberMarker })
     await sendControlRequest(
       kernelUrl,
@@ -433,7 +461,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         agent.id,
         [
           `Remember this exact marker for a live local-to-slice migration check: ${rememberMarker}`,
-          `Reply with exactly ${rememberMarker}_READY and nothing else.`,
+          "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
         ].join("\n"),
         [],
       ),
@@ -445,7 +473,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      marker: rememberMarker,
+      marker: readyMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir: options.historyDir,
@@ -592,7 +620,6 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     }
 
     const recallMarker = `${rememberMarker}_SLICE_MIGRATED`
-    const recallObservationMarker = `${rememberMarker}_SLICE`
     logStep(result, provider, "submit-slice-recall-marker", { marker: recallMarker })
     await sendControlRequest(
       kernelUrl,
@@ -600,7 +627,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         session.id,
         attachment.id,
         agent.id,
-        `Reply with exactly ${recallMarker} if you still remember the marker from before the local-to-slice migration. Do not include any other text.`,
+        "If you remember the marker from before the local-to-slice migration, reply with it followed immediately by the suffix `_SLICE_MIGRATED`. Do not include any other text.",
         [],
       ),
       `submit slice migration recall marker prompt for ${provider}`,
@@ -611,7 +638,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      marker: recallObservationMarker,
+      marker: recallMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir: options.historyDir,
@@ -627,6 +654,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
 
     if (roundTrip) {
       const reverseMarker = `${rememberMarker}_RETURN_CONTEXT`
+      const reverseReadyMarker = `${reverseMarker}_READY`
       logStep(result, provider, "submit-slice-return-marker", { marker: reverseMarker })
       await sendControlRequest(
         kernelUrl,
@@ -636,7 +664,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
           agent.id,
           [
             `Remember this exact marker for the slice-to-local return check: ${reverseMarker}`,
-            `Reply with exactly ${reverseMarker}_READY and nothing else.`,
+            "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
           ].join("\n"),
           [],
         ),
@@ -648,7 +676,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         sessionId: session.id,
         attachmentId: attachment.id,
         agentId: agent.id,
-        marker: reverseMarker,
+        marker: reverseReadyMarker,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
         historyDir: options.historyDir,
@@ -748,7 +776,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
           session.id,
           attachment.id,
           agent.id,
-          `Reply with exactly ${returnRecallMarker} if you remember both ${rememberMarker} and ${reverseMarker} after returning from the slice to local execution. Do not include any other text.`,
+          `If you remember both ${rememberMarker} and ${reverseMarker} after returning from the slice to local execution, reply with the first marker followed immediately by the suffix \`_LOCAL_RETURNED\`. Do not include any other text.`,
           [],
         ),
         `submit returned local recall marker prompt for ${provider}`,

@@ -3,6 +3,9 @@ import path from "node:path"
 
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
+  transferProviderStateToWorker,
+} from "./live-provider-thread-transfer-provider-state.mjs"
+import {
   attachToSessionRequest,
   createSessionRequest,
   endSessionRequest,
@@ -133,7 +136,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
         agent.id,
         [
           `Remember this exact marker for a later recall check: ${rememberMarker}`,
-          `Reply with exactly ${readyMarker} and nothing else.`,
+          "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
         ].join("\n"),
         [],
       ),
@@ -146,7 +149,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: agent.id,
-      marker: rememberMarker,
+      marker: readyMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir: options.historyDir,
@@ -201,7 +204,6 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
 
     if (!options.skipRecallPrompt) {
       const recallMarker = `${rememberMarker}_SECOND_TURN_RECALLED`
-      const recallObservationMarker = `${rememberMarker}_SECOND_TURN`
       logStep(result, provider, "submit-recall-marker", { marker: recallMarker })
       await sendControlRequest(
         kernelUrl,
@@ -209,7 +211,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
           session.id,
           attachment.id,
           agent.id,
-          `Reply with exactly ${recallMarker} if you still remember the marker from the previous turn. Do not include any other text.`,
+          "If you remember the marker from the previous turn, reply with it followed immediately by the suffix `_SECOND_TURN_RECALLED`. Do not include any other text.",
           [],
         ),
         `submit recall marker prompt for ${provider}`,
@@ -221,7 +223,7 @@ export async function runLocalReloadScenario({ provider, root, kernelUrl, option
         sessionId: session.id,
         attachmentId: attachment.id,
         agentId: agent.id,
-        marker: recallObservationMarker,
+        marker: recallMarker,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
         historyDir: options.historyDir,
@@ -277,6 +279,9 @@ export async function runWorkerResumeScenario({
   historyDir,
   workerMachineId,
   workerKernelId,
+  workerKernelUrl,
+  sourceProviderEnv,
+  destinationProviderEnv,
   options,
 }) {
   const workspace = path.join(root, provider, "workspace")
@@ -358,6 +363,7 @@ export async function runWorkerResumeScenario({
     })
 
     const rememberMarker = `THREAD_TRANSFER_WORKER_${provider.replaceAll("-", "_").toUpperCase()}_${process.pid}_${Date.now()}`
+    const readyMarker = `${rememberMarker}_READY`
     logStep(result, provider, "submit-local-marker", { marker: rememberMarker })
     await sendControlRequest(
       kernelUrl,
@@ -367,7 +373,7 @@ export async function runWorkerResumeScenario({
         localAgent.id,
         [
           `Remember this exact marker for a worker resume check: ${rememberMarker}`,
-          `Reply with exactly ${rememberMarker}_READY and nothing else.`,
+          "Reply with that marker followed immediately by the suffix `_READY`, and nothing else.",
         ].join("\n"),
         [],
       ),
@@ -379,7 +385,7 @@ export async function runWorkerResumeScenario({
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: localAgent.id,
-      marker: rememberMarker,
+      marker: readyMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir,
@@ -421,6 +427,19 @@ export async function runWorkerResumeScenario({
       throw new Error(`local provider run ${localRun.id} was not ended before remote launch: ${JSON.stringify(result.evidence.local_after_teardown)}`)
     }
 
+    if (options.workerState === "isolated") {
+      logStep(result, provider, "transfer-provider-state-to-worker")
+      result.evidence.provider_state_transfer = await transferProviderStateToWorker({
+        provider,
+        sourceProviderEnv,
+        destinationProviderEnv,
+      })
+      result.checks.provider_state_transferred = result.evidence.provider_state_transfer.copied.length > 0
+      if (!result.checks.provider_state_transferred) {
+        throw new Error(`provider ${provider} exposed no state to transfer to the isolated worker`)
+      }
+    }
+
     logStep(result, provider, "spawn-remote-agent", { workerKernelId })
     const remoteAgent = variant(
       await client.send(spawnAgentRequest(
@@ -428,7 +447,7 @@ export async function runWorkerResumeScenario({
         provider,
         `${provider}-worker-resume`,
         model,
-        null,
+        workspace,
         effort,
         undefined,
         undefined,
@@ -464,6 +483,12 @@ export async function runWorkerResumeScenario({
       requireThreadId: true,
     })
     result.evidence.remote_after = providerRunSnapshot(remoteRun)
+    result.checks.worker_working_directory_preserved = remoteRun.working_directory === workspace
+    if (!result.checks.worker_working_directory_preserved) {
+      throw new Error(
+        `worker provider resumed in ${remoteRun.working_directory ?? "<unset>"}; expected ${workspace}`,
+      )
+    }
     const afterThreadId = providerThreadId(remoteRun)
     result.checks.provider_thread_id_before = beforeThreadId
     result.checks.provider_thread_id_after = afterThreadId
@@ -473,7 +498,6 @@ export async function runWorkerResumeScenario({
     }
 
     const recallMarker = `${rememberMarker}_WORKER_RECALLED`
-    const recallObservationMarker = `${rememberMarker}_WORKER`
     logStep(result, provider, "submit-worker-recall-marker", { marker: recallMarker })
     await sendControlRequest(
       kernelUrl,
@@ -481,7 +505,7 @@ export async function runWorkerResumeScenario({
         session.id,
         attachment.id,
         remoteAgent.id,
-        `Reply with exactly ${recallMarker} if you still remember the marker from the previous local provider thread turn. Do not include any other text.`,
+        "If you remember the marker from the previous local provider thread turn, reply with it followed immediately by the suffix `_WORKER_RECALLED`. Do not include any other text.",
         [],
       ),
       `submit worker recall marker prompt for ${provider}`,
@@ -492,13 +516,29 @@ export async function runWorkerResumeScenario({
       sessionId: session.id,
       attachmentId: attachment.id,
       agentId: remoteAgent.id,
-      marker: recallObservationMarker,
+      marker: recallMarker,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,
       historyDir,
     })
     result.checks.worker_recall_marker_observed = true
     result.evidence.recall_marker = recallMarker
+    await waitForPromptIdle({
+      client,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+      agentId: remoteAgent.id,
+      timeoutMs: options.timeoutMs,
+      pollMs: options.pollMs,
+    })
+    const settledRemoteRun = variant(
+      await client.send(getProviderRunRequest(remoteRun.id)),
+      "ProviderRun",
+    ).provider_run
+    result.checks.worker_provider_run_remained_active = String(settledRemoteRun.state ?? "").toLowerCase() !== "ended"
+    if (!result.checks.worker_provider_run_remained_active) {
+      throw new Error(`worker provider run ${remoteRun.id} ended during the recall turn`)
+    }
 
     result.evidence.provider_processes = await collectProviderProcesses(client, provider)
     result.evidence.kernel_events = kernelEvents.slice(-50)
@@ -512,6 +552,22 @@ export async function runWorkerResumeScenario({
     }))
     return result
   } finally {
+    if (workerKernelUrl) {
+      try {
+        result.evidence.worker_provider_cleanup = variant(
+          await sendControlRequest(
+            workerKernelUrl,
+            teardownProviderProcessesRequest(provider, true),
+            `tear down worker ${provider} provider process`,
+            Math.min(options.timeoutMs, 60_000),
+          ),
+          "ProviderProcessesTornDown",
+        )
+      } catch (error) {
+        result.errors.push(`worker provider cleanup failed: ${error.message ?? String(error)}`)
+        result.status = "failed"
+      }
+    }
     if (sessionId) {
       await client.send(endSessionRequest(sessionId)).catch(() => {})
     }

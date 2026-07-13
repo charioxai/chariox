@@ -54,9 +54,25 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
   const realProvider = realProviderEnv()
-  const isolatedWorker = options.workerState === "isolated"
-    ? await prepareIsolatedWorkerProviderEnv()
-    : null
+  let isolatedHome = null
+  let isolatedWorker = null
+  if (options.workerState === "isolated") {
+    try {
+      isolatedHome = await prepareIsolatedWorkerProviderEnv(options.providers, "home")
+      isolatedWorker = await prepareIsolatedWorkerProviderEnv(options.providers, "worker")
+    } catch (error) {
+      await Promise.all([
+        isolatedHome?.secretRoot
+          ? rm(isolatedHome.secretRoot, { recursive: true, force: true })
+          : Promise.resolve(),
+        isolatedWorker?.secretRoot
+          ? rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+          : Promise.resolve(),
+      ])
+      throw error
+    }
+  }
+  const homeProvider = isolatedHome?.providerEnv ?? realProvider
   const workerProvider = isolatedWorker?.providerEnv ?? realProvider
   const relayEnv = {
     ...process.env,
@@ -98,7 +114,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
     mcpPort: ports.homeMcpPort,
     openCodePort: ports.homeOpenCodePort,
     codexPort: ports.homeCodexPort,
-    providerEnv: realProvider,
+    providerEnv: homeProvider,
   })
   const workerEnv = workerResumeDaemonEnv({
     ports,
@@ -140,6 +156,12 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
     worker_machine_id: workerMachineId,
     worker_state: options.workerState,
     worker_provider_environment: isolatedWorker?.evidence ?? {
+      mode: "shared",
+      provider_data_shared: true,
+      provider_cache_shared: true,
+      provider_home_shared: true,
+    },
+    home_provider_environment: isolatedHome?.evidence ?? {
       mode: "shared",
       provider_data_shared: true,
       provider_cache_shared: true,
@@ -195,6 +217,9 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
           historyDir: homeEnv.ARROBA_SESSION_HISTORY_DIR,
           workerMachineId,
           workerKernelId: workerKernel.kernel_id,
+          workerKernelUrl,
+          sourceProviderEnv: homeProvider,
+          destinationProviderEnv: workerProvider,
           options,
         })
         matrix.results.push(result)
@@ -214,8 +239,19 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
     await terminateChild(workerChild)
     await terminateChild(homeChild)
     await terminateChild(relayChild)
+    await sleep(500)
     if (isolatedWorker?.secretRoot) {
       await rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+    }
+    if (isolatedHome?.secretRoot) {
+      await rm(isolatedHome.secretRoot, { recursive: true, force: true })
+    }
+    await sleep(250)
+    if (isolatedWorker?.secretRoot) {
+      await rm(isolatedWorker.secretRoot, { recursive: true, force: true })
+    }
+    if (isolatedHome?.secretRoot) {
+      await rm(isolatedHome.secretRoot, { recursive: true, force: true })
     }
   }
   return matrix
@@ -271,7 +307,7 @@ async function main() {
     sliceImageBuild = await prebuildLocalDockerSliceImageIfNeeded(root, options.sliceBuildImage, options.timeoutMs)
   }
   const sliceModeProviderEnv = sliceMode
-    ? await prepareSliceModeProviderEnv(root)
+    ? await prepareSliceModeProviderEnv(root, options.providers)
     : null
   if (sliceModeProviderEnv) {
     options.providerStateSourceEnv = sliceModeProviderEnv
@@ -361,6 +397,12 @@ async function main() {
     matrix.passed = matrix.results.length > 0 && matrix.results.every((result) => result.status === "passed")
     await writeFile(path.join(root, "matrix.json"), `${JSON.stringify(matrix, null, 2)}\n`, "utf8")
     await terminateChild(daemonChild)
+    if (sliceModeProviderEnv?.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT) {
+      await rm(sliceModeProviderEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT, {
+        recursive: true,
+        force: true,
+      })
+    }
   }
 
   console.log(`provider thread transfer drill artifacts: ${root}`)

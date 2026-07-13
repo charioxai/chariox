@@ -80,3 +80,41 @@ Leased backing sessions are now explicitly ephemeral in the shared session store
 Focused tests cover orphan prompt replay and snapshot exclusion. The websocket reconnect drill now waits for the client-side `transport_resumed` event instead of racing the server-side second subscribe. Provider-thread drills fail immediately on terminal provider errors rather than polling until the global timeout.
 
 The repaired matrix scenarios pass: websocket drop resumes from event id 1; home restart preserves the original leased-agent id; worker restart and both-kernel restart each acquire one fresh lease and complete the post-restart prompt. Codex worker thread transfer also passes with provider session identity preserved. OpenCode could not be validated beyond Arroba launch/error projection: OpenCode Zen reports insufficient balance, and the OpenAI-backed OpenCode profile reports OAuth refresh `401`. Both are external account failures and now surface in seconds.
+
+## Milestone 8: Canonical Two-Client Workflow Projection
+
+The Cloud web terminal now renders and resolves workflow actions from the same merged projection of current session state, workflow snapshots, and publication state. Destructive actions no longer resolve against a narrower session-only list than the one shown to the user. The local web-plus-TUI drill passed 43 synchronized transitions covering Freeform prompt submission, queue, steer, clear, cancel, configuration changes, interaction popups, workflow creation, edits, parameters, run state, and reciprocal control. The Hetzner web-plus-TUI drill passed all 32 distributed transitions with low-delay convergence and screenshot evidence.
+
+Preserved evidence:
+
+- `.artifacts/runtime-resilience-goal/local-two-client-projection-fix-1`
+- `.artifacts/runtime-resilience-goal/hetzner-two-client-cb28b8d7`
+
+Cloud staging now accepts an external relay for this matrix and reconciles workflow action projections through the shared resolver. Non-detached drill children are always cleaned up. Cloud's complete workspace suite, lint, and 224-check validation gate passed; the web suite reported 3,244 passing tests.
+
+## Milestone 9: Distributed Recovery Drills
+
+The Hetzner collaborator matrix passed relay restart, collaborator reattachment, worker restart with a fresh lease and provider run, and home-owned grant/revoke authority in 27.9 seconds. Cleanup found no run-owned process or temporary root. The worker used about 84 MB RSS, the relay about 12 MB, and the host retained about 4.8 GB free disk during the drill. Evidence is in `.artifacts/runtime-resilience-goal/hetzner-collab-c145b0eb6`.
+
+The hosted staging second-kernel matrix passed in 32.9 seconds through the normal Arroba prompt path. Its home and worker kernels each remained near 78 MB RSS after isolating the drill `HOME`; using the global `~/.arroba` database had previously caused an avoidable 1.9 GB startup spike. The multi-user hosted drill also passed peer-owned remote-agent home-proxy script, MCP, and connector execution, denied peer grant/revoke, and deleted all four temporary Cloud identities. Evidence is in `.artifacts/runtime-resilience-goal/hosted-second-kernel-managed-fix`.
+
+The local slice lifecycle matrix and real Codex save/restart drill pass. Saved-state cleanup now resets saved state before deleting a slice, so no drill-owned state image survives. The Hetzner, hosted Cloud, and slice fixes were derived by comparing the existing related drills and preserved evidence before changing runtime behavior.
+
+## Milestone 10: Provider Thread Continuity
+
+Provider transfer drills now require an exact response marker that never appears verbatim in the prompt. ANSI normalization remains supported, but arbitrary subsequence matching was removed because a shutdown-flushed prompt echo could otherwise create a false pass. Unexpected provider termination also fails immediately.
+
+Claude isolated workers now receive a temporary Keychain credential export, `.claude.json`, and Claude settings; `claude auth status` must pass before launch. Run-owned provider state is copied from an isolated home to the isolated worker only after the source turn, avoiding the user's 98 GB Codex home and 1.3 GB OpenCode store. Native Claude launches now pass `--resume` for the requested session. Home-managed slices use `/workspace` consistently before and after restart, which keeps provider project-scoped transcript identity stable.
+
+Strict live results:
+
+- Codex isolated worker transfer: `.artifacts/provider-thread-transfer/1783908503626-37288`
+- Claude isolated worker transfer: `.artifacts/provider-thread-transfer/1783908555763-40040`
+- Codex slice restart: `.artifacts/provider-thread-transfer/1783908220981-22884`
+- Claude slice restart: `.artifacts/provider-thread-transfer/1783907968000-10688`
+
+All four preserve the provider session id, exact second-turn recall, and an active provider run through the assertion point. Worker runs preserve the exact workspace; slice runs preserve `/workspace`. Worker-side provider teardown now runs before kernel termination, followed by delayed idempotent temporary-root removal. Post-run audits found no matching provider process, credential root, drill container, or saved-state image.
+
+Claude credentials are currently valid and both Claude drills pass. OpenCode remains externally blocked: Zen reports insufficient balance and the OpenAI OAuth profile fails refresh with `401`. Arroba correctly projects both failures and cleans up immediately; same-thread continuation cannot be claimed until one OpenCode account path is restored.
+
+The final OSS gates pass: 2,056 kernel unit tests plus integration and documentation tests, 1,346 CLI tests, 70 server tests, 13 shell tests, lint, formatting, and all 629 validation-suite checks.
