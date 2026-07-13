@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 use crate::session::PromptAttachment;
 
-const PROMPT_REGISTRY_VERSION: &str = "1";
+const PROMPT_REGISTRY_VERSION: &str = "2";
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
@@ -22,7 +22,7 @@ const RUNTIME_METAAGENT_DELEGATION: &str =
 const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
 const RUNTIME_META_MODE_EXITED: &str = include_str!("provider/meta_mode_exited_context.md");
 const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
-const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Workflow direct JSON fallback:\nArroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
+const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Arroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
 const RUNTIME_METAAGENT_EVENT: &str = "Arroba runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `arroba.meta.session_overview`, `arroba.meta.list_events`, or `arroba.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
 
 const WORKFLOW_TURN: &str = concat!(
@@ -53,9 +53,9 @@ const WORKFLOW_TURN: &str = concat!(
     "If a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
 );
 
-const WORKFLOW_RUN_COMPLETION: &str = "System node-level prompt:\nThis node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n";
+const WORKFLOW_RUN_COMPLETION: &str = "This node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n";
 
-const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "System node-level prompt:\nThis node is authorized to emit intermediate workflow run outputs.\nIntermediate outputs are user-visible progress, event, or status updates for the endpoint and workflow run observers. They do not send data downstream, do not satisfy outgoing edge handoff requirements, and do not replace the final fenced JSON handoff required at the end of this turn.\nIf you want to send one user-visible intermediate output without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nYou may call `validate_and_submit_intermediate_workflow_run_output` multiple times in the same workflow node turn when useful, for example during long-running work. Every intermediate output call in this node uses the same node-level intermediate output schema.\nAfter each successful intermediate output submission, continue this same workflow turn. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream handoff validation rules still apply.\nDo not treat intermediate output as downstream handoff data.\n\n";
+const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "This node is authorized to emit intermediate workflow run outputs.\nIntermediate outputs are user-visible progress, event, or status updates for the endpoint and workflow run observers. They do not send data downstream, do not satisfy outgoing edge handoff requirements, and do not replace the final fenced JSON handoff required at the end of this turn.\nIf you want to send one user-visible intermediate output without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nYou may call `validate_and_submit_intermediate_workflow_run_output` multiple times in the same workflow node turn when useful, for example during long-running work. Every intermediate output call in this node uses the same node-level intermediate output schema.\nAfter each successful intermediate output submission, continue this same workflow turn. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream handoff validation rules still apply.\nDo not treat intermediate output as downstream handoff data.\n\n";
 
 const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str = "Generate a git commit subject for the workspace changes supplied by the user.\nRules:\n- Output exactly one concise imperative subject line.\n- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n- Keep it under 72 characters.";
 
@@ -265,8 +265,10 @@ impl PromptAssemblyService {
         {
             hidden_fragments.push(additional_hidden_context.to_string());
         }
-        if additional_hidden_context.is_some_and(|context| context.contains("Arroba workflow turn"))
-        {
+        if additional_hidden_context.is_some_and(|context| {
+            context.contains("<workflow-runtime-instructions>")
+                || context.contains("Arroba workflow turn")
+        }) {
             self.push_template(
                 "runtime/workflow-direct-json-fallback",
                 &mut hidden_fragments,
@@ -345,7 +347,8 @@ impl PromptAssemblyService {
         let template = self.registry.read_required(template_id)?;
         manifest.push_body(template.id.clone(), &template.body);
         if !template.body.trim().is_empty() {
-            fragments.push(template.body);
+            let body = strip_legacy_template_heading(template_id, &template.body);
+            fragments.push(prompt_component(&prompt_component_tag(template_id), &body));
         }
         Ok(())
     }
@@ -430,6 +433,104 @@ fn sha256_hex(value: &str) -> String {
     let digest = Sha256::digest(value.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+pub(crate) fn prompt_component(tag: &str, body: &str) -> String {
+    let escaped = escape_prompt_component_delimiters(tag, body.trim());
+    format!("<{tag}>\n{escaped}\n</{tag}>")
+}
+
+pub(crate) fn assembled_prompt_component(tag: &str, body: &str) -> String {
+    format!("<{tag}>\n{}\n</{tag}>", body.trim())
+}
+
+pub(crate) fn unescape_prompt_component_delimiters(body: &str) -> String {
+    ARROBA_PROMPT_COMPONENT_TAGS
+        .iter()
+        .fold(body.to_string(), |value, tag| {
+            unescape_prompt_component_tag_delimiters(&value, tag)
+        })
+}
+
+fn prompt_component_tag(template_id: &str) -> String {
+    match template_id {
+        "runtime/base" => "runtime-instructions",
+        "runtime/workspace-live-sync" => "workspace-live-sync-instructions",
+        "runtime/workspace-live-sync-tracked" => "workspace-live-sync-tracked-instructions",
+        "runtime/native-permissions" => "native-permission-instructions",
+        "runtime/slice" => "slice-runtime-instructions",
+        "runtime/metaagent-delegation" => "metaagent-delegation-instructions",
+        "runtime/meta-mode-entered" => "meta-mode-entered-context",
+        "runtime/meta-mode-exited" => "meta-mode-exited-context",
+        "runtime/mcp-skill-continuation" => "mcp-skill-continuation-context",
+        "runtime/workflow-direct-json-fallback" => "workflow-direct-json-fallback",
+        "runtime/metaagent-event" => "metaagent-event",
+        "workflow/turn" => "workflow-runtime-instructions",
+        "workflow/run-completion" | "workflow/run-intermediate-output" => {
+            "system-node-level-prompt"
+        }
+        "utility/workspace-commit-message" => "workspace-commit-message-instructions",
+        "utility/semantic-recall-search" => "semantic-recall-search-instructions",
+        _ => return template_id.replace('/', "-"),
+    }
+    .to_string()
+}
+
+fn strip_legacy_template_heading(template_id: &str, body: &str) -> String {
+    let heading = match template_id {
+        "runtime/workflow-direct-json-fallback" => Some("Workflow direct JSON fallback:"),
+        _ => None,
+    };
+    heading
+        .and_then(|heading| body.trim().strip_prefix(heading))
+        .unwrap_or(body.trim())
+        .trim_start()
+        .to_string()
+}
+
+fn escape_prompt_component_delimiters(component_tag: &str, body: &str) -> String {
+    let escaped = escape_prompt_component_tag_delimiters(body, component_tag);
+    ARROBA_PROMPT_COMPONENT_TAGS
+        .iter()
+        .filter(|tag| **tag != component_tag)
+        .fold(escaped, |value, tag| {
+            escape_prompt_component_tag_delimiters(&value, tag)
+        })
+}
+
+fn escape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
+    body.replace(&format!("<{tag}>"), &format!("&lt;{tag}&gt;"))
+        .replace(&format!("</{tag}>"), &format!("&lt;/{tag}&gt;"))
+}
+
+fn unescape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
+    body.replace(&format!("&lt;{tag}&gt;"), &format!("<{tag}>"))
+        .replace(&format!("&lt;/{tag}&gt;"), &format!("</{tag}>"))
+}
+
+const ARROBA_PROMPT_COMPONENT_TAGS: &[&str] = &[
+    "runtime-instructions",
+    "workspace-live-sync-instructions",
+    "workspace-live-sync-tracked-instructions",
+    "native-permission-instructions",
+    "slice-runtime-instructions",
+    "metaagent-delegation-instructions",
+    "meta-mode-entered-context",
+    "meta-mode-exited-context",
+    "mcp-skill-continuation-context",
+    "workflow-direct-json-fallback",
+    "metaagent-event",
+    "workspace-commit-message-instructions",
+    "semantic-recall-search-instructions",
+    "endpoint-prompt",
+    "workflow-level-prompt",
+    "node-level-prompt",
+    "workflow-runtime-instructions",
+    "system-node-level-prompt",
+    "workflow-handoff-payloads",
+    "outgoing-edge-contracts",
+    "node-instruction-reference",
+    "control-mailbox",
+];
 
 fn prompt_io_error(operation: &'static str, path: &Path, error: std::io::Error) -> DaemonError {
     DaemonError::ProviderProtocol {
@@ -572,6 +673,12 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/native-permissions"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<runtime-instructions>"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<native-permission-instructions>"));
     }
 
     #[test]
@@ -648,7 +755,9 @@ mod tests {
             .assemble_provider_turn(
                 &test_run(false),
                 "visible prompt",
-                Some("You are an agent participating in an Arroba workflow turn."),
+                Some(
+                    "<workflow-runtime-instructions>\nYou are an agent participating in an Arroba workflow turn.\n</workflow-runtime-instructions>",
+                ),
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
             )
@@ -657,6 +766,12 @@ mod tests {
         assert!(envelope
             .hidden_system_context
             .contains("do not write pseudo tool calls"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<workflow-direct-json-fallback>"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains("Workflow direct JSON fallback:"));
         assert!(envelope
             .manifest
             .entries
@@ -824,7 +939,10 @@ mod tests {
             .assemble_mcp_skill_continuation_context("playwright")
             .expect("continuation context should assemble");
 
-        assert_eq!(hidden, "CONTINUATION_TEMPLATE playwright");
+        assert_eq!(
+            hidden,
+            "<mcp-skill-continuation-context>\nCONTINUATION_TEMPLATE playwright\n</mcp-skill-continuation-context>"
+        );
         assert!(manifest
             .entries
             .iter()
@@ -857,8 +975,14 @@ mod tests {
             .assemble_meta_mode_exited_context("completion")
             .expect("exited context should assemble");
 
-        assert_eq!(entered, "ENTERED_TEMPLATE");
-        assert_eq!(exited, "EXITED_TEMPLATE completion");
+        assert_eq!(
+            entered,
+            "<meta-mode-entered-context>\nENTERED_TEMPLATE\n</meta-mode-entered-context>"
+        );
+        assert_eq!(
+            exited,
+            "<meta-mode-exited-context>\nEXITED_TEMPLATE completion\n</meta-mode-exited-context>"
+        );
         assert!(entered_manifest
             .entries
             .iter()

@@ -342,8 +342,8 @@ async function main() {
         hiddenMarker,
         "list_extensions",
         "You are an agent participating in an Arroba workflow turn",
-        "System node-level prompt:",
-        "Node instruction reference (daemon-managed)",
+        "<system-node-level-prompt>",
+        "<node-instruction-reference>",
       ].find((needle) => nativeLog.includes(needle))
       if (leakedWorkflowInjection) {
         throw new Error(`${log.alias} native TUI displayed hidden Arroba workflow prompt injection: ${leakedWorkflowInjection}`)

@@ -280,3 +280,51 @@ async fn output_seen_ack_clears_unread_activity_for_same_user_attachments_only_i
     assert_eq!(refreshed_session.activity.unread_idle_agent_count, 0);
     assert!(!refreshed_agent.activity.unread_idle_output);
 }
+
+#[tokio::test]
+async fn output_seen_ack_survives_kernel_restart() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, agent_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        app.sessions_mut()
+            .note_agent_output_sequence(&session_id, &agent_id, 7)
+            .expect("agent output sequence should be noted");
+        app.save_durable_state_snapshot()
+            .expect("unread output state should be snapshotted");
+
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let ack_request =
+            LocalDaemonRequest::AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest {
+                session_id: session_id.clone(),
+                agent_id: agent_id.clone(),
+            });
+        let ack_command =
+            KernelCommand::from_local_request("cmd-output-seen-durable", None, None, &ack_request);
+        router
+            .dispatch(ack_command, ack_request)
+            .await
+            .expect("output acknowledgement should succeed");
+        let acknowledged = router
+            .runtime_state
+            .session_snapshot_projection(&session_id, 0)
+            .expect("acknowledged session should remain projected");
+        assert!(!acknowledged.agent_activity[&agent_id].unread_idle_output);
+        drop(router);
+        (session_id, agent_id)
+    };
+
+    let restored = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let session = restored
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert!(
+        !session.agent_has_unread_output(DEFAULT_LOCAL_USER_ID, &agent_id),
+        "acknowledged output must stay read after kernel restart"
+    );
+}

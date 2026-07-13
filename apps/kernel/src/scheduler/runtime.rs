@@ -158,13 +158,8 @@ pub fn schedule_workflow_node_prompt(
         workflow_node_run_id,
         node_id,
     );
-    let handoff_payloads_json = prompt
-        .split("Workflow handoff payloads (JSON array):\n")
-        .nth(1)
-        .and_then(|rest| rest.split("\n\n").next())
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && *value != "[]")
-        .map(str::to_string);
+    let handoff_payloads_json =
+        crate::scheduler::prompt_injection::workflow_handoff_payloads_from_prompt(prompt);
     app.sessions_mut().prepare_workflow_turn(
         session_id,
         workflow_run_id,

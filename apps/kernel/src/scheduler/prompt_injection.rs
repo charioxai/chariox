@@ -1,14 +1,25 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::prompt_assembly::{
-    bundled_metaagent_event_template, bundled_workflow_run_completion_template,
-    bundled_workflow_run_intermediate_output_template, bundled_workflow_turn_template,
+    assembled_prompt_component, bundled_metaagent_event_template,
+    bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
+    bundled_workflow_turn_template, prompt_component, unescape_prompt_component_delimiters,
     PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
 use crate::session::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowHandoffValidationPolicy, WorkflowMessage,
 };
 use std::path::PathBuf;
+
+const ENDPOINT_PROMPT_TAG: &str = "endpoint-prompt";
+const WORKFLOW_LEVEL_PROMPT_TAG: &str = "workflow-level-prompt";
+const NODE_LEVEL_PROMPT_TAG: &str = "node-level-prompt";
+const WORKFLOW_RUNTIME_INSTRUCTIONS_TAG: &str = "workflow-runtime-instructions";
+const SYSTEM_NODE_LEVEL_PROMPT_TAG: &str = "system-node-level-prompt";
+const WORKFLOW_HANDOFF_PAYLOADS_TAG: &str = "workflow-handoff-payloads";
+const OUTGOING_EDGE_CONTRACTS_TAG: &str = "outgoing-edge-contracts";
+const NODE_INSTRUCTION_REFERENCE_TAG: &str = "node-instruction-reference";
+const CONTROL_MAILBOX_TAG: &str = "control-mailbox";
 
 pub(crate) struct WorkflowPromptInjectionContext {
     pub workflow_ref: Option<String>,
@@ -71,6 +82,7 @@ pub(crate) fn render_metaagent_event_prompt_assembly(
         .replace("{{SOURCE}}", context.source.trim())
         .replace("{{TITLE}}", context.title.trim())
         .replace("{{BODY}}", context.body.trim());
+    let visible_user_prompt = prompt_component("metaagent-event", &visible_user_prompt);
     MetaagentEventPromptAssembly {
         visible_user_prompt,
         manifest,
@@ -210,16 +222,21 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     let reference_line = context
         .instruction_ref
         .as_deref()
-        .map(|path| format!("Node instruction reference (daemon-managed): {path}\n\n"))
+        .map(|path| prompt_component(NODE_INSTRUCTION_REFERENCE_TAG, path))
+        .map(|component| format!("{component}\n\n"))
         .unwrap_or_default();
     let control_line = context
         .control_mailbox
         .as_deref()
         .map(|content| {
-            format!(
-                "Control mailbox:\n{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output.\n\n"
+            prompt_component(
+                CONTROL_MAILBOX_TAG,
+                &format!(
+                    "{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output."
+                ),
             )
         })
+        .map(|component| format!("{component}\n\n"))
         .unwrap_or_default();
     let payload_block = if context
         .handoff_payloads_json
@@ -229,23 +246,49 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
         String::new()
     } else {
         format!(
-            "Workflow handoff payloads (JSON array):\n{}\n\n",
-            context.handoff_payloads_json.as_deref().unwrap_or("[]")
+            "{}\n\n",
+            prompt_component(
+                WORKFLOW_HANDOFF_PAYLOADS_TAG,
+                context.handoff_payloads_json.as_deref().unwrap_or("[]"),
+            )
+        )
+    };
+    let outgoing_edge_contracts_block = if context.outgoing_edge_contracts.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "{}\n\n",
+            prompt_component(
+                OUTGOING_EDGE_CONTRACTS_TAG,
+                &format!(
+                    "{}\nAll schema refs needed for this turn are listed above. Do not search the workspace for workflow metadata unless the workflow-level prompt explicitly asks you to.",
+                    strip_legacy_prompt_heading(
+                        &context.outgoing_edge_contracts,
+                        "Outgoing edge contracts:",
+                    )
+                ),
+            )
         )
     };
     let visible_user_prompt = if context.endpoint_prompt.trim().is_empty() {
         String::new()
     } else {
-        format!("Endpoint prompt:\n{}\n\n", context.endpoint_prompt.trim())
+        format!(
+            "{}\n\n",
+            prompt_component(ENDPOINT_PROMPT_TAG, &context.endpoint_prompt)
+        )
     };
-    let system_prompt = render_workflow_system_prompt(
-        context.base_directory.as_ref(),
-        &mut manifest,
-        &context.delivery_token,
-        &payload_block,
-        &context.outgoing_edge_contracts,
-        &reference_line,
-        &control_line,
+    let system_prompt = assembled_prompt_component(
+        WORKFLOW_RUNTIME_INSTRUCTIONS_TAG,
+        &render_workflow_system_prompt(
+            context.base_directory.as_ref(),
+            &mut manifest,
+            &context.delivery_token,
+            &payload_block,
+            &outgoing_edge_contracts_block,
+            &reference_line,
+            &control_line,
+        ),
     );
     let system_node_prompt = render_workflow_node_system_prompt(
         context.base_directory.as_ref(),
@@ -266,15 +309,15 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     }
     let mut instruction_sections = Vec::new();
     if !context.workflow_prompt.trim().is_empty() {
-        instruction_sections.push(format!(
-            "Workflow-level prompt:\n{}",
-            context.workflow_prompt.trim()
+        instruction_sections.push(prompt_component(
+            WORKFLOW_LEVEL_PROMPT_TAG,
+            &context.workflow_prompt,
         ));
     }
     if !context.node_instructions.trim().is_empty() {
-        instruction_sections.push(format!(
-            "Node-level instructions:\n{}",
-            context.node_instructions.trim()
+        instruction_sections.push(prompt_component(
+            NODE_LEVEL_PROMPT_TAG,
+            &context.node_instructions,
         ));
     }
     instruction_sections.push(system_prompt);
@@ -364,7 +407,7 @@ fn render_workflow_node_system_prompt(
     if fragments.is_empty() {
         return String::new();
     }
-    fragments.concat()
+    prompt_component(SYSTEM_NODE_LEVEL_PROMPT_TAG, &fragments.concat())
 }
 
 fn workflow_node_prompt_context(
@@ -409,13 +452,19 @@ fn workflow_node_prompt_fragments(
                 load_workflow_run_intermediate_output_prompt_template(base_directory)
             {
                 manifest.push_body(fragment.id.clone(), &fragment.body);
-                fragments.push(fragment.body);
+                fragments.push(strip_legacy_prompt_heading(
+                    &fragment.body,
+                    "System node-level prompt:",
+                ));
             }
         }
         if context.can_complete_workflow_run {
             if let Some(fragment) = load_workflow_run_completion_prompt_template(base_directory) {
                 manifest.push_body(fragment.id.clone(), &fragment.body);
-                fragments.push(fragment.body);
+                fragments.push(strip_legacy_prompt_heading(
+                    &fragment.body,
+                    "System node-level prompt:",
+                ));
             }
         }
         if let Some(fragment) = workflow_last_turn_notice_block(context) {
@@ -427,7 +476,7 @@ fn workflow_node_prompt_fragments(
 
 fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> String {
     let mut block = format!(
-        "System node-level prompt:\nThis is turn {} for this node in the current workflow run.\n",
+        "This is turn {} for this node in the current workflow run.\n",
         context.turn_index
     );
     if let Some(max_turns) = context.max_turns {
@@ -495,7 +544,7 @@ fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> O
         return None;
     }
     Some(format!(
-        "System node-level prompt:\nThis is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
+        "This is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
         turn_index = context.turn_index
     ))
 }
@@ -532,10 +581,35 @@ fn workflow_outgoing_edge_contracts_block(
         return String::new();
     }
 
-    format!(
-        "Outgoing edge contracts:\n{}\nAll schema refs needed for this turn are listed above. Do not search the workspace for workflow metadata unless the workflow-level prompt explicitly asks you to.\n\n",
-        lines.join("\n")
-    )
+    lines.join("\n")
+}
+
+fn strip_legacy_prompt_heading(body: &str, heading: &str) -> String {
+    body.trim()
+        .strip_prefix(heading)
+        .unwrap_or(body.trim())
+        .trim_start()
+        .to_string()
+}
+
+pub(crate) fn workflow_handoff_payloads_from_prompt(prompt: &str) -> Option<String> {
+    let open = format!("<{WORKFLOW_HANDOFF_PAYLOADS_TAG}>");
+    let close = format!("</{WORKFLOW_HANDOFF_PAYLOADS_TAG}>");
+    prompt
+        .split_once(&open)
+        .and_then(|(_, rest)| rest.split_once(&close).map(|(body, _)| body))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "[]")
+        .map(unescape_prompt_component_delimiters)
+        .or_else(|| {
+            prompt
+                .split("Workflow handoff payloads (JSON array):\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n\n").next())
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "[]")
+                .map(str::to_string)
+        })
 }
 
 fn workflow_outgoing_edge_contract_line(

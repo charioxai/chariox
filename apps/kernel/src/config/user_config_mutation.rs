@@ -66,6 +66,10 @@ impl ArrobaUserConfig {
                 self.history.operational.backend =
                     HistoryOperationalBackend::parse("history.operational.backend", &value)?
             }
+            "history.operational.enabled" => {
+                self.history.operational.enabled =
+                    parse_config_bool("history.operational.enabled", &value)?
+            }
             "history.operational.path" => {
                 self.history.operational.path =
                     Some(non_empty_config_string("history.operational.path", value)?)
@@ -418,6 +422,7 @@ impl ArrobaUserConfig {
                     message: "operational history backend cannot be unset",
                 });
             }
+            "history.operational.enabled" => self.history.operational.enabled = true,
             "history.operational.path" => self.history.operational.path = None,
             "history.operational.retention_days" => self.history.operational.retention_days = None,
             "history.operational.max_size_mb" => self.history.operational.max_size_mb = None,

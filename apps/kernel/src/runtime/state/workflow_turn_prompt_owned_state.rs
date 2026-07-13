@@ -89,7 +89,7 @@ impl KernelRuntimeOwnedState {
         if lines.is_empty() {
             String::new()
         } else {
-            format!("Outgoing edge contracts:\n{}\n\n", lines.join("\n"))
+            lines.join("\n")
         }
     }
 

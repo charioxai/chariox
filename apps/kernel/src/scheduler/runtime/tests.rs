@@ -480,7 +480,7 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
     )
     .expect("prompt should build");
 
-    assert!(prompt.contains("Outgoing edge contracts:"));
+    assert!(prompt.contains("<outgoing-edge-contracts>"));
     assert!(prompt.contains(&format!(
         "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), target_instructions: \"Analyze quantitative evidence and route only analysis tasks here.\", handoff_schema_ref: schema:analysis, validation_policy: halt"
     )));

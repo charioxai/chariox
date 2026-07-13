@@ -30,6 +30,8 @@ impl UserHistoryConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserOperationalHistoryConfig {
+    #[serde(default = "default_history_capture_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub backend: HistoryOperationalBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +51,7 @@ pub struct UserOperationalHistoryConfig {
 impl Default for UserOperationalHistoryConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             backend: HistoryOperationalBackend::Sqlite,
             path: Some("~/.arroba/history/operational.db".to_string()),
             retention_days: Some(30),
@@ -58,6 +61,10 @@ impl Default for UserOperationalHistoryConfig {
             archive_deleted_agents: Some(true),
         }
     }
+}
+
+const fn default_history_capture_enabled() -> bool {
+    true
 }
 
 impl UserOperationalHistoryConfig {

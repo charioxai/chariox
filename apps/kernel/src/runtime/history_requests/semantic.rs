@@ -50,7 +50,8 @@ pub(crate) fn semantic_recall_utility_input_from_search_request(
 ) -> SemanticRecallSearchUtilityInput {
     SemanticRecallSearchUtilityInput {
         query: request.query,
-        session_id: request.session_id,
+        // Agent-mode `session_id` selects the utility runner. Candidate recall remains global.
+        session_id: None,
         agent_id: request.agent_id,
         provider: request.provider,
         model: request.model,
@@ -149,6 +150,29 @@ where
 mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
+
+    #[test]
+    fn focused_agent_routing_session_does_not_scope_semantic_recall_candidates() {
+        let input =
+            semantic_recall_utility_input_from_search_request(SemanticSearchRecallRequest {
+                query: "find the deployment discussion".to_string(),
+                mode: Some(SemanticSearchRecallMode::Agent),
+                session_id: Some("session-with-focused-agent".to_string()),
+                agent_id: None,
+                provider: None,
+                model: None,
+                workflow_id: None,
+                machine_id: None,
+                repo_root: None,
+                worktree_path: None,
+                kind: None,
+                cursor: None,
+                limit: Some(8),
+            });
+
+        assert_eq!(input.session_id, None);
+        assert_eq!(input.query, "find the deployment discussion");
+    }
 
     #[test]
     fn semantic_utility_request_forces_knn_mode_and_preserves_filters() {

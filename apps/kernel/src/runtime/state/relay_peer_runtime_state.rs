@@ -75,14 +75,17 @@ impl KernelRuntimeState {
         if !should_check_snapshot {
             return result;
         }
-        let projected_snapshot = match self.read_only_session_snapshot_projection_for_attachment(
+        let projected_snapshot = match self.session_snapshot_projection_for_attachment(
             &session_id,
             &attachment_id,
             self.session_projection_change_sequence(),
         ) {
-            Ok(snapshot) => Box::new(
-                (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
-            ),
+            Ok(mut snapshot) => {
+                snapshot.metadata.last_event_id = self.session_projection_change_sequence();
+                Box::new(
+                    (previous_snapshot_for_compare.as_ref() != Some(&snapshot)).then_some(snapshot),
+                )
+            }
             Err(DaemonError::SessionNotFound { .. })
             | Err(DaemonError::AttachmentNotFound { .. })
             | Err(DaemonError::AttachmentNotInSession { .. }) => {

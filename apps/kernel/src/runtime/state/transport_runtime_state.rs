@@ -380,46 +380,6 @@ impl KernelRuntimeState {
         })
     }
 
-    fn read_only_session_snapshot_projection(
-        &self,
-        session_id: &str,
-        last_event_id: u64,
-    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
-        self.read_only_session_snapshot_projection_for_user(session_id, last_event_id, None)
-    }
-
-    fn read_only_session_snapshot_projection_for_user(
-        &self,
-        session_id: &str,
-        last_event_id: u64,
-        unread_for_user_id: Option<&str>,
-    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
-        let mut session = self.owned.session_store.get_session(session_id)?;
-        let agents = self.owned.agent_store.get_session_agents(session_id);
-        session.set_agents(agents);
-        self.owned.project_session_runtime_view(&mut session);
-        let provider_run = session
-            .active_provider_run_id()
-            .and_then(|provider_run_id| {
-                self.owned
-                    .provider_store
-                    .get_run(provider_run_id)
-                    .ok()
-                    .or_else(|| self.owned.provider_run_projection.get(provider_run_id))
-            });
-        let agent_activity =
-            self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
-        Ok(crate::runtime::projection::SessionSnapshotProjection {
-            metadata: crate::runtime::projection::ProjectionMetadata::new(
-                crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
-                last_event_id,
-            ),
-            session,
-            provider_run,
-            agent_activity,
-        })
-    }
-
     pub(crate) fn session_snapshot_projection_for_attachment(
         &self,
         session_id: &str,
@@ -434,51 +394,6 @@ impl KernelRuntimeState {
             });
         }
         let mut projection = self.session_snapshot_projection_for_user(
-            session_id,
-            last_event_id,
-            Some(attachment.owner_user_id()),
-        )?;
-        projection.session = projection
-            .session
-            .redacted_for_user(attachment.owner_user_id());
-        projection.agent_activity.retain(|agent_id, _| {
-            projection
-                .session
-                .agents()
-                .iter()
-                .any(|agent| agent.id() == agent_id)
-        });
-        if projection
-            .provider_run
-            .as_ref()
-            .and_then(|run| run.agent_instance_id())
-            .is_some_and(|agent_id| {
-                !projection
-                    .session
-                    .agents()
-                    .iter()
-                    .any(|agent| agent.id() == agent_id)
-            })
-        {
-            projection.provider_run = None;
-        }
-        Ok(projection)
-    }
-
-    pub(crate) fn read_only_session_snapshot_projection_for_attachment(
-        &self,
-        session_id: &str,
-        attachment_id: &str,
-        last_event_id: u64,
-    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
-        let attachment = self.owned.attachment_store.get_attachment(attachment_id)?;
-        if attachment.session_id() != session_id {
-            return Err(DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: attachment_id.to_string(),
-            });
-        }
-        let mut projection = self.read_only_session_snapshot_projection_for_user(
             session_id,
             last_event_id,
             Some(attachment.owner_user_id()),

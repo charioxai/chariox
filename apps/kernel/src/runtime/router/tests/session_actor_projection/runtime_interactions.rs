@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn get_session_state_keeps_activity_after_runtime_interaction_projection_refresh() {
+async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -47,6 +47,16 @@ async fn get_session_state_keeps_activity_after_runtime_interaction_projection_r
         .create_runtime_interaction(&session_id, interaction)
         .await
         .expect("interaction should register");
+    router.session_projection.update(session.clone());
+    assert!(
+        router
+            .session_projection
+            .get(&session_id)
+            .expect("stale session projection should exist")
+            .active_interactions()
+            .is_empty(),
+        "regression setup must replace the current projection with a stale snapshot",
+    );
 
     let app_guard = app.lock().await;
     let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
@@ -61,7 +71,7 @@ async fn get_session_state_keeps_activity_after_runtime_interaction_projection_r
     tokio::task::yield_now().await;
     assert!(
         state_task.is_finished(),
-        "warm GetSessionState should be served from the session projection without app lock access"
+        "GetSessionState should reconcile through owned stores without app lock access"
     );
 
     drop(app_guard);
@@ -263,6 +273,18 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
         .create_runtime_interaction(&session_id, interaction)
         .await
         .expect("interaction should register");
+    router
+        .session_projection
+        .update(initial_snapshot.session.clone());
+    assert!(
+        router
+            .session_projection
+            .get(&session_id)
+            .expect("stale session projection should exist")
+            .active_interactions()
+            .is_empty(),
+        "regression setup must replace the current projection with a stale snapshot",
+    );
 
     let update = router
         .relay_watch_subscription_state(
@@ -292,6 +314,16 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
             assert_eq!(
                 snapshot.session.active_interactions()[0].id(),
                 "interaction-subscription-1"
+            );
+            assert_eq!(
+                router
+                    .session_projection
+                    .get(&session_id)
+                    .expect("subscription reconciliation should republish the session")
+                    .active_interactions()[0]
+                    .id(),
+                "interaction-subscription-1",
+                "subscription reconciliation must heal a stale shared projection",
             );
         }
         crate::runtime_transport::WatchResult::Unavailable(message) => {

@@ -197,6 +197,7 @@ impl DaemonApp {
             config.operational_history_read_delay_ms,
             config.operational_history_max_size_bytes(),
         )?;
+        operational_history.set_capture_enabled(config.user_config.history.operational.enabled);
         crate::logging::info_with_fields(
             "daemon.startup",
             "operational history store opened",

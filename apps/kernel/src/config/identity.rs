@@ -66,6 +66,9 @@ fn kernel_registry_version() -> u32 {
     1
 }
 
+const MAX_RECENT_KERNEL_IDENTITIES: usize = 16;
+const PINNED_LOCAL_KERNEL_PORTS: [u16; 3] = [43118, 43119, 44120];
+
 pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
     let machine_identity = load_or_create_machine_identity();
     let endpoint_key = kernel_identity_key(host, port);
@@ -90,39 +93,43 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     }
 
     let now_ms = now_unix_ms();
-    let record = registry.kernels.entry(endpoint_key).or_insert_with(|| {
-        let legacy_identity = load_legacy_runtime_identity().filter(|identity| {
-            is_default_kernel_endpoint(host, port)
-                && identity.machine_id == machine_identity.machine_id
-                && !identity_is_invalid(identity)
-        });
-        if let Some(identity) = legacy_identity {
-            return KernelIdentityRecord {
-                kernel_id: identity.daemon_id,
-                kernel_alias: identity.daemon_alias,
+    let record = registry
+        .kernels
+        .entry(endpoint_key.clone())
+        .or_insert_with(|| {
+            let legacy_identity = load_legacy_runtime_identity().filter(|identity| {
+                is_default_kernel_endpoint(host, port)
+                    && identity.machine_id == machine_identity.machine_id
+                    && !identity_is_invalid(identity)
+            });
+            if let Some(identity) = legacy_identity {
+                return KernelIdentityRecord {
+                    kernel_id: identity.daemon_id,
+                    kernel_alias: identity.daemon_alias,
+                    host: host.trim().to_string(),
+                    port,
+                    relay_public_key: identity.relay_public_key,
+                    relay_private_key: identity.relay_private_key,
+                    created_at_ms: now_ms,
+                    last_seen_at_ms: now_ms,
+                };
+            }
+
+            let relay_private_key = relay_crypto::generate_private_key_base64();
+            let relay_public_key =
+                relay_crypto::public_key_from_private_key_base64(&relay_private_key)
+                    .unwrap_or_default();
+            KernelIdentityRecord {
+                kernel_id: format!("kernel-{}", generate_identity_suffix()),
+                kernel_alias: None,
                 host: host.trim().to_string(),
                 port,
-                relay_public_key: identity.relay_public_key,
-                relay_private_key: identity.relay_private_key,
+                relay_public_key,
+                relay_private_key,
                 created_at_ms: now_ms,
                 last_seen_at_ms: now_ms,
-            };
-        }
-
-        let relay_private_key = relay_crypto::generate_private_key_base64();
-        let relay_public_key = relay_crypto::public_key_from_private_key_base64(&relay_private_key)
-            .unwrap_or_default();
-        KernelIdentityRecord {
-            kernel_id: format!("kernel-{}", generate_identity_suffix()),
-            kernel_alias: None,
-            host: host.trim().to_string(),
-            port,
-            relay_public_key,
-            relay_private_key,
-            created_at_ms: now_ms,
-            last_seen_at_ms: now_ms,
-        }
-    });
+            }
+        });
     if record.host.trim().is_empty() {
         record.host = host.trim().to_string();
     }
@@ -140,9 +147,35 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
         relay_private_key: record_snapshot.relay_private_key.clone(),
     };
 
+    prune_kernel_registry(&mut registry, &endpoint_key);
     persist_kernel_registry(&registry_path, &registry);
     persist_kernel_identity(&identity, &record_snapshot);
     identity
+}
+
+fn prune_kernel_registry(registry: &mut KernelRegistry, current_endpoint_key: &str) {
+    let mut recent = registry
+        .kernels
+        .iter()
+        .filter(|(key, record)| {
+            key.as_str() != current_endpoint_key && !is_pinned_local_kernel(record)
+        })
+        .map(|(key, record)| (key.clone(), record.last_seen_at_ms))
+        .collect::<Vec<_>>();
+    recent.sort_unstable_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    recent.truncate(MAX_RECENT_KERNEL_IDENTITIES);
+    let recent = recent
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect::<std::collections::BTreeSet<_>>();
+    registry.kernels.retain(|key, record| {
+        key == current_endpoint_key || is_pinned_local_kernel(record) || recent.contains(key)
+    });
+}
+
+fn is_pinned_local_kernel(record: &KernelIdentityRecord) -> bool {
+    matches!(record.host.trim(), "127.0.0.1" | "localhost" | "::1")
+        && PINNED_LOCAL_KERNEL_PORTS.contains(&record.port)
 }
 
 pub(super) fn persist_runtime_display_aliases(
@@ -259,4 +292,47 @@ pub(super) fn generate_identity_suffix() -> String {
     let mut bytes = [0u8; 8];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kernel_registry_retains_current_pinned_and_recent_identities_only() {
+        let mut registry = KernelRegistry::default();
+        for index in 0..40_u16 {
+            let port = 50_000 + index;
+            registry
+                .kernels
+                .insert(format!("127.0.0.1:{port}"), record(port, u64::from(index)));
+        }
+        for port in PINNED_LOCAL_KERNEL_PORTS {
+            registry
+                .kernels
+                .insert(format!("127.0.0.1:{port}"), record(port, 0));
+        }
+
+        prune_kernel_registry(&mut registry, "127.0.0.1:50000");
+
+        assert_eq!(registry.kernels.len(), 20);
+        assert!(registry.kernels.contains_key("127.0.0.1:50000"));
+        for port in PINNED_LOCAL_KERNEL_PORTS {
+            assert!(registry.kernels.contains_key(&format!("127.0.0.1:{port}")));
+        }
+        for port in 50_024..50_040 {
+            assert!(registry.kernels.contains_key(&format!("127.0.0.1:{port}")));
+        }
+        assert!(!registry.kernels.contains_key("127.0.0.1:50001"));
+    }
+
+    fn record(port: u16, last_seen_at_ms: u64) -> KernelIdentityRecord {
+        KernelIdentityRecord {
+            kernel_id: format!("kernel-{port}"),
+            host: "127.0.0.1".to_string(),
+            port,
+            last_seen_at_ms,
+            ..KernelIdentityRecord::default()
+        }
+    }
 }

@@ -38,36 +38,33 @@ pub(crate) fn projected_session_state_response(
     request: &GetSessionStateRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    if let Some(session) = session_projection.get(&request.session_id) {
-        if !session.has_member(caller_user_id) {
-            return Some(Err(DaemonError::SessionAccessDenied {
-                session_id: session.id().to_string(),
-                user_id: caller_user_id.to_string(),
-            }));
-        }
-        let agent_activity =
-            runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
-        let redacted_session = session.clone().redacted_for_user(caller_user_id);
-        let visible_agent_ids = redacted_session
-            .agents()
-            .iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        return Some(Ok(LocalDaemonResponse::SessionState {
-            agent_activity: agent_activity
-                .into_iter()
-                .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
-                .collect(),
-            agent_activity_revision: session_projection.change_sequence(),
-            session: redacted_session,
+    let session = match runtime_state.session_state_response(request.clone()) {
+        Ok(LocalDaemonResponse::SessionState { session, .. }) => session,
+        Ok(_) => unreachable!("session state request returned a different response"),
+        Err(error) => return Some(Err(error)),
+    };
+    if !session.has_member(caller_user_id) {
+        return Some(Err(DaemonError::SessionAccessDenied {
+            session_id: session.id().to_string(),
+            user_id: caller_user_id.to_string(),
         }));
     }
-    if session_projection.has_warmed_list() {
-        return Some(Err(DaemonError::SessionNotFound {
-            session_id: request.session_id.clone(),
-        }));
-    }
-    None
+    let agent_activity =
+        runtime_state.agent_activity_for_session_with_unread(&session, Some(caller_user_id));
+    let redacted_session = session.redacted_for_user(caller_user_id);
+    let visible_agent_ids = redacted_session
+        .agents()
+        .iter()
+        .map(|agent| agent.id().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    Some(Ok(LocalDaemonResponse::SessionState {
+        agent_activity: agent_activity
+            .into_iter()
+            .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
+            .collect(),
+        agent_activity_revision: session_projection.change_sequence(),
+        session: redacted_session,
+    }))
 }
 
 pub(crate) fn projected_resolve_session_response(

@@ -33,7 +33,12 @@ impl DaemonApp {
         path: impl AsRef<str>,
         value: impl Into<String>,
     ) -> Result<(), DaemonError> {
-        self.config.set_user_config_value(path, value)?;
+        let path = path.as_ref().trim().to_string();
+        self.config.set_user_config_value(&path, value)?;
+        if path == "history.operational.enabled" {
+            self.operational_history
+                .set_capture_enabled(self.config.user_config.history.operational.enabled);
+        }
         self.config_projection.update(self.config.clone());
         Ok(())
     }
@@ -42,7 +47,12 @@ impl DaemonApp {
         &mut self,
         path: impl AsRef<str>,
     ) -> Result<(), DaemonError> {
-        self.config.unset_user_config_value(path)?;
+        let path = path.as_ref().trim().to_string();
+        self.config.unset_user_config_value(&path)?;
+        if path == "history.operational.enabled" {
+            self.operational_history
+                .set_capture_enabled(self.config.user_config.history.operational.enabled);
+        }
         self.config_projection.update(self.config.clone());
         Ok(())
     }

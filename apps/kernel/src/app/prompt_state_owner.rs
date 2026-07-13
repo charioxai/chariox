@@ -505,8 +505,19 @@ mod tests {
 }
 
 fn split_workflow_prompt_for_hidden_context(prompt: String) -> (String, String) {
-    const WORKFLOW_MARKER: &str = "Workflow-level prompt:\n";
-    if let Some(index) = prompt.find(WORKFLOW_MARKER) {
+    const HIDDEN_MARKERS: &[&str] = &[
+        crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
+        "<workflow-level-prompt>",
+        "<node-level-prompt>",
+        "<workflow-runtime-instructions>",
+        "<system-node-level-prompt>",
+        "Workflow-level prompt:\n",
+    ];
+    if let Some(index) = HIDDEN_MARKERS
+        .iter()
+        .filter_map(|marker| prompt.find(marker))
+        .min()
+    {
         let visible = prompt[..index].to_string();
         let hidden = prompt[index..].to_string();
         return (visible, strip_native_hidden_markers(hidden));
@@ -520,4 +531,42 @@ fn strip_native_hidden_markers(value: String) -> String {
         .replace(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, "")
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod workflow_prompt_split_tests {
+    use super::split_workflow_prompt_for_hidden_context;
+
+    #[test]
+    fn tagged_workflow_components_split_visible_endpoint_from_hidden_context() {
+        let prompt = "<endpoint-prompt>\nvisible\n</endpoint-prompt>\n\n<node-level-prompt>\nhidden\n</node-level-prompt>";
+
+        let (visible, hidden) = split_workflow_prompt_for_hidden_context(prompt.to_string());
+
+        assert_eq!(
+            visible.trim(),
+            "<endpoint-prompt>\nvisible\n</endpoint-prompt>"
+        );
+        assert_eq!(hidden, "<node-level-prompt>\nhidden\n</node-level-prompt>");
+    }
+
+    #[test]
+    fn node_component_is_hidden_when_endpoint_prompt_is_empty() {
+        let prompt = "<node-level-prompt>\nhidden\n</node-level-prompt>";
+
+        let (visible, hidden) = split_workflow_prompt_for_hidden_context(prompt.to_string());
+
+        assert!(visible.is_empty());
+        assert_eq!(hidden, prompt);
+    }
+
+    #[test]
+    fn legacy_workflow_heading_remains_compatible() {
+        let prompt = "visible\n\nWorkflow-level prompt:\nhidden";
+
+        let (visible, hidden) = split_workflow_prompt_for_hidden_context(prompt.to_string());
+
+        assert_eq!(visible.trim(), "visible");
+        assert_eq!(hidden, "Workflow-level prompt:\nhidden");
+    }
 }

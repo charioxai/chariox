@@ -289,6 +289,12 @@ impl KernelRuntimeState {
             return Ok(AgentOutputSeenAck { session, changed });
         }
         session.touch();
+        self.append_session_durable_event(
+            "session.updated",
+            &session,
+            "agent_output_seen_acknowledged",
+        )
+        .await?;
         self.owned.session_store.restore_session(session);
         Ok(AgentOutputSeenAck {
             session: self.owned.session_snapshot(session_id)?,

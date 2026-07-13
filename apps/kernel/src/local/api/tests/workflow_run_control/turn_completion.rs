@@ -159,8 +159,8 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     let active_mechanics = workflow_mechanics_text(active_prompt);
     assert!(active_prompt
         .prompt()
-        .contains("Endpoint prompt:\nkick off the ack flow"));
-    assert!(active_mechanics.contains("Node instruction reference (daemon-managed):"));
+        .contains("<endpoint-prompt>\nkick off the ack flow\n</endpoint-prompt>"));
+    assert!(active_mechanics.contains("<node-instruction-reference>"));
     assert!(active_mechanics.contains("`ack_workflow_turn`"));
     assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
 
@@ -259,7 +259,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
             .expect("second node prompt should be active")
     });
     let second_mechanics = workflow_mechanics_text(&second_active_prompt);
-    assert!(second_mechanics.contains("Workflow handoff payloads (JSON array):"));
+    assert!(second_mechanics.contains("<workflow-handoff-payloads>"));
     assert!(second_mechanics.contains("`ack_workflow_turn`"));
     let second_history_prompts = harness.with_app(|app| {
         app.operational_history_store()
@@ -272,7 +272,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .expect("second agent workflow prompt should be recorded");
     assert!(second_history_prompt
         .text
-        .contains("Workflow handoff payloads (JSON array):"));
+        .contains("<workflow-handoff-payloads>"));
     assert!(second_history_prompt.text.contains("`ack_workflow_turn`"));
 
     let second_run_id = routed
@@ -535,7 +535,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         .active_prompt_for_agent(second_agent.id())
         .expect("second node should be active")
         .clone();
-    assert!(second_active_prompt.prompt().contains("Control mailbox:"));
+    assert!(second_active_prompt.prompt().contains("<control-mailbox>"));
     assert!(second_active_prompt
         .prompt()
         .contains("output.message is not valid JSON"));
@@ -604,14 +604,14 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         .active_prompt_for_agent(first_agent.id())
         .expect("first node should be active again")
         .clone();
-    assert!(active_prompt.prompt().contains("Control mailbox:"));
+    assert!(active_prompt.prompt().contains("<control-mailbox>"));
     assert!(active_prompt
         .prompt()
         .contains("output.message is not valid JSON"));
     assert!(active_prompt
         .prompt()
         .contains("Treat the control mailbox as authoritative runtime feedback"));
-    assert!(active_prompt.prompt().contains("Outgoing edge contracts:"));
+    assert!(active_prompt.prompt().contains("<outgoing-edge-contracts>"));
     assert!(active_prompt
         .prompt()
         .contains(schema_path.to_string_lossy().as_ref()));

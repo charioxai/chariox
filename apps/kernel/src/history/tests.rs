@@ -1373,3 +1373,53 @@ fn operational_history_enforces_size_budget_for_temp_stores() {
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
+
+#[test]
+fn operational_history_capture_can_be_disabled_and_reenabled_live() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-operational-history-capture-{}-{}.db",
+        std::process::id(),
+        super::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store = OperationalHistoryStore::open(path.clone())
+        .expect("operational history store should open");
+
+    store.set_capture_enabled(false);
+    store
+        .append_operational_event(
+            HistoryEventKind::Notice,
+            Some(HistoryEventRole::System),
+            Some("not recorded".to_string()),
+            Default::default(),
+            HistoryEventTurnContext::default(),
+        )
+        .expect("disabled capture should be a successful no-op");
+    assert!(store
+        .query_events(HistoryEventQuery::default())
+        .expect("history should query")
+        .is_empty());
+
+    store.set_capture_enabled(true);
+    store
+        .append_operational_event(
+            HistoryEventKind::Notice,
+            Some(HistoryEventRole::System),
+            Some("recorded".to_string()),
+            Default::default(),
+            HistoryEventTurnContext::default(),
+        )
+        .expect("reenabled capture should append");
+    assert_eq!(
+        store
+            .query_events(HistoryEventQuery::default())
+            .expect("history should query")
+            .len(),
+        1
+    );
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}

@@ -120,6 +120,7 @@ fn history_and_state_config_defaults_are_available() {
         config.user_config.history.operational.backend,
         HistoryOperationalBackend::Sqlite
     );
+    assert!(config.user_config.history.operational.enabled);
     assert_eq!(
         config.user_config.history.operational.retention_days,
         Some(30)
@@ -170,6 +171,9 @@ fn history_and_state_config_can_be_changed_and_persisted() {
     config.user_config_path = path.clone();
 
     config
+        .set_user_config_value("history.operational.enabled", "false")
+        .expect("operational history capture should update");
+    config
         .set_user_config_value("history.operational.path", "~/.arroba/custom/history.db")
         .expect("operational history path should update");
     config
@@ -190,6 +194,7 @@ fn history_and_state_config_can_be_changed_and_persisted() {
         loaded.history.operational.path.as_deref(),
         Some("~/.arroba/custom/history.db")
     );
+    assert!(!loaded.history.operational.enabled);
     assert_eq!(loaded.history.operational.retention_days, Some(10));
     assert_eq!(loaded.history.archive.mode, HistoryArchiveMode::External);
     assert_eq!(

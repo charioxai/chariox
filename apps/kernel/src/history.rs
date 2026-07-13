@@ -554,6 +554,7 @@ pub struct OperationalHistoryStore {
     appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
     max_size_bytes: u64,
+    capture_enabled: Arc<AtomicBool>,
     writer: Arc<OperationalHistoryWriter>,
 }
 
@@ -651,6 +652,7 @@ impl OperationalHistoryStore {
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
+            capture_enabled: Arc::new(AtomicBool::new(true)),
             writer: Arc::new(OperationalHistoryWriter {
                 sender: Mutex::new(Some(writer_sender)),
                 worker: Mutex::new(Some(writer_worker)),
@@ -665,6 +667,14 @@ impl OperationalHistoryStore {
         if self.read_delay_ms > 0 {
             thread::sleep(Duration::from_millis(self.read_delay_ms));
         }
+    }
+
+    pub fn capture_enabled(&self) -> bool {
+        self.capture_enabled.load(Ordering::Acquire)
+    }
+
+    pub fn set_capture_enabled(&self, enabled: bool) {
+        self.capture_enabled.store(enabled, Ordering::Release);
     }
 
     pub(crate) fn lock_read_connection(
@@ -723,6 +733,9 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        if !self.capture_enabled() {
+            return Ok(None);
+        }
         entry.validate_for_history_append("replace operational history transcript")?;
         let connection =
             self.connection
@@ -860,7 +873,7 @@ impl OperationalHistoryStore {
     }
 
     pub fn append_many(&self, events: &[HistoryEvent]) -> Result<(), DaemonError> {
-        if events.is_empty() {
+        if events.is_empty() || !self.capture_enabled() {
             return Ok(());
         }
         let mut encoded_events = Vec::with_capacity(events.len());

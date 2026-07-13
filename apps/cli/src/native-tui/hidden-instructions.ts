@@ -10,7 +10,7 @@ const hiddenInstructionBlockPattern = new RegExp(
   "g",
 )
 
-const workflowInstructionBlockPattern = /(?:\r?\n|\n)?Workflow-level prompt:\n[\s\S]*$/g
+const workflowInstructionBlockPattern = /(?:\r?\n|\n)?(?:<workflow-level-prompt>|<node-level-prompt>|<workflow-runtime-instructions>|<system-node-level-prompt>|Workflow-level prompt:\n)[\s\S]*$/g
 
 export function redactHiddenInstructions(value: string): string {
   return value
