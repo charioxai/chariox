@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -397,6 +398,84 @@ test("deployed workflow TUI command keeps emergency admission and retention poli
     assert.equal(postBodies[1]?.idempotencyKey, "operations-resume-1")
     assert.deepEqual(postBodies[2]?.policy, savedPolicy)
     assert.equal(postBodies[2]?.idempotencyKey, "operations-set-1")
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("deployed workflow TUI command exports verified telemetry and deletes retained metadata", async () => {
+  const originalFetch = globalThis.fetch
+  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-telemetry-command-"))
+  const outputPath = join(root, "telemetry.json")
+  const corruptPath = join(root, "corrupt.json")
+  const content = Buffer.from("{\"schemaVersion\":1,\"records\":[]}\n", "utf8")
+  const sha256 = `sha256:${createHash("sha256").update(content).digest("hex")}`
+  const calls: Array<{
+    readonly method: string
+    readonly pathname: string
+    readonly body: Record<string, unknown> | null
+  }> = []
+  let corrupt = false
+  globalThis.fetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ method: init?.method ?? "GET", pathname, body })
+    if (pathname.endsWith("/telemetry/delete")) {
+      return jsonResponse({
+        deletedAt: "2026-07-13T12:00:00.000Z",
+        deletedInvocationCount: 2,
+        deletedLogCount: 3,
+        protectedActiveInvocationCount: 1,
+      })
+    }
+    return jsonResponse({
+      exportId: "export-1",
+      filename: "server-name.json",
+      mediaType: "application/json",
+      generatedAt: "2026-07-13T11:00:00.000Z",
+      byteSize: content.byteLength,
+      sha256: corrupt ? `sha256:${"0".repeat(64)}` : sha256,
+      contentBase64: content.toString("base64"),
+      counts: { invocationMetadata: 2, deploymentLogs: 3, auditEvents: 4 },
+    })
+  }
+  try {
+    const exported = await executeDeployedWorkflowCommand(profile, [
+      "telemetry", "export", "project/one", "environment/one", outputPath,
+    ])
+    assert.equal(await readFile(outputPath, "utf8"), content.toString("utf8"))
+    assert.equal((await stat(outputPath)).mode & 0o777, 0o600)
+    assert.match(exported.notice, /telemetry_export export-1/)
+    assert.match(exported.notice, /invocation_metadata 2/)
+    assert.equal(exported.footer, `deployment telemetry exported to ${outputPath}`)
+
+    const deleted = await executeDeployedWorkflowCommand(profile, [
+      "telemetry", "delete", "project/one", "environment/one",
+      "--idempotency-key", "telemetry-delete-1",
+    ])
+    assert.match(deleted.notice, /active_invocations_protected 1/)
+    assert.equal(deleted.footer, "5 retained metadata records deleted")
+
+    const base = "/deployment-projects/project%2Fone/environments/environment%2Fone/telemetry"
+    assert.deepEqual(calls.slice(0, 2).map((call) => [call.method, call.pathname]), [
+      ["POST", `${base}/export`],
+      ["POST", `${base}/delete`],
+    ])
+    assert.deepEqual(calls[0]?.body, { accountId: "account-1" })
+    assert.deepEqual(calls[1]?.body, {
+      accountId: "account-1",
+      idempotencyKey: "telemetry-delete-1",
+    })
+
+    corrupt = true
+    await assert.rejects(
+      executeDeployedWorkflowCommand(profile, [
+        "telemetry", "export", "project/one", "environment/one", corruptPath,
+      ]),
+      /digest does not match/,
+    )
+    await assert.rejects(readFile(corruptPath), /ENOENT/)
   } finally {
     globalThis.fetch = originalFetch
     await rm(root, { recursive: true, force: true })

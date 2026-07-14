@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { readFile, writeFile } from "node:fs/promises"
 
 import {
   acceptDeploymentClaim,
@@ -11,10 +11,12 @@ import {
   createDeploymentEnvironmentDomain,
   createDeploymentProject,
   createDeploymentRelease,
+  deleteDeploymentEnvironmentTelemetry,
   getDeploymentAccess,
   getDeploymentEnvironmentCredentials,
   getDeploymentEnvironmentDomains,
   getDeploymentEnvironmentUsage,
+  exportDeploymentEnvironmentTelemetry,
   getDeploymentProject,
   listDeploymentProjects,
   listDeploymentCredentialProfiles,
@@ -278,6 +280,50 @@ export async function executeDeployedWorkflowCommand(
       }
     }
     throw new Error(operationsUsage)
+  }
+  if (action === "telemetry") {
+    const telemetryAction = argv[1]
+    if (telemetryAction === "export") {
+      const projectId = requiredArg(argv[2], telemetryExportUsage)
+      const environmentId = requiredArg(argv[3], telemetryExportUsage)
+      const outputPath = requiredArg(argv[4], telemetryExportUsage)
+      const result = await exportDeploymentEnvironmentTelemetry(profile, projectId, environmentId)
+      await writeVerifiedTelemetryExport(result, outputPath)
+      return {
+        notice: [
+          `telemetry_export ${result.exportId}`,
+          `  file ${outputPath}`,
+          `  bytes ${result.byteSize}`,
+          `  sha256 ${result.sha256}`,
+          `  invocation_metadata ${result.counts.invocationMetadata}`,
+          `  deployment_logs ${result.counts.deploymentLogs}`,
+          `  audit_events ${result.counts.auditEvents}`,
+          `  generated_at ${result.generatedAt}`,
+        ].join("\n"),
+        footer: `deployment telemetry exported to ${outputPath}`,
+      }
+    }
+    if (telemetryAction === "delete") {
+      const projectId = requiredArg(argv[2], telemetryDeleteUsage)
+      const environmentId = requiredArg(argv[3], telemetryDeleteUsage)
+      const idempotencyKey = parseIdempotencyKey(argv.slice(4), telemetryDeleteUsage) ?? randomUUID()
+      const result = await deleteDeploymentEnvironmentTelemetry(profile, {
+        projectId,
+        environmentId,
+        idempotencyKey,
+      })
+      return {
+        notice: [
+          `telemetry_deleted project=${projectId} environment=${environmentId}`,
+          `  invocation_metadata ${result.deletedInvocationCount}`,
+          `  deployment_logs ${result.deletedLogCount}`,
+          `  active_invocations_protected ${result.protectedActiveInvocationCount}`,
+          `  deleted_at ${result.deletedAt}`,
+        ].join("\n"),
+        footer: `${result.deletedInvocationCount + result.deletedLogCount} retained metadata records deleted`,
+      }
+    }
+    throw new Error(telemetryUsage)
   }
   if (action === "credential" || action === "credentials") {
     const credentialAction = argv[1] ?? "list"
@@ -654,6 +700,25 @@ export function formatDeploymentEnvironmentUsage(usage: DeploymentEnvironmentUsa
   ].join("\n")
 }
 
+async function writeVerifiedTelemetryExport(
+  result: import("./deployed-workflow-types.js").DeploymentTelemetryExportResult,
+  outputPath: string,
+): Promise<void> {
+  const normalized = result.contentBase64.replace(/\s+/g, "")
+  const content = Buffer.from(normalized, "base64")
+  if (content.toString("base64").replace(/=+$/, "") !== normalized.replace(/=+$/, "")) {
+    throw new Error("deployment telemetry export content is not valid base64")
+  }
+  if (content.byteLength !== result.byteSize) {
+    throw new Error("deployment telemetry export byte size does not match")
+  }
+  const sha256 = `sha256:${createHash("sha256").update(content).digest("hex")}`
+  if (sha256 !== result.sha256) {
+    throw new Error("deployment telemetry export digest does not match")
+  }
+  await writeFile(outputPath, content, { flag: "wx", mode: 0o600 })
+}
+
 function formatDeploymentRuntimeLimits(limits: DeploymentRuntimeLimits): string {
   const values = runtimeLimitKeys.flatMap((key) => limits[key] === undefined ? [] : [`${key}=${limits[key]}`])
   return values.join(" ") || "platform_defaults"
@@ -763,7 +828,10 @@ const operationsDenyUsage = "usage: deployments operations deny <project-id> <en
 const operationsResumeUsage = "usage: deployments operations resume <project-id> <environment-id> [--idempotency-key value]"
 const operationsSetUsage = "usage: deployments operations set <project-id> <environment-id> <json-file> [--idempotency-key value]"
 const operationsUsage = "usage: deployments operations show|deny|resume|set ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const telemetryExportUsage = "usage: deployments telemetry export <project-id> <environment-id> <output-path>"
+const telemetryDeleteUsage = "usage: deployments telemetry delete <project-id> <environment-id> [--idempotency-key value]"
+const telemetryUsage = "usage: deployments telemetry export|delete ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`

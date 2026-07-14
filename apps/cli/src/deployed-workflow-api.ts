@@ -15,6 +15,8 @@ import type {
   DeploymentEnvironmentOperationsPolicy,
   DeploymentEnvironmentOperationsResult,
   DeploymentEnvironmentUsageResult,
+  DeploymentTelemetryDeletionResult,
+  DeploymentTelemetryExportResult,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
   DeploymentEnvironmentResult,
@@ -192,6 +194,30 @@ export async function updateDeploymentEnvironmentOperations(
     accountId: profile.accountId,
     idempotencyKey: input.idempotencyKey,
     policy: input.policy,
+  })
+}
+
+export async function exportDeploymentEnvironmentTelemetry(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+): Promise<DeploymentTelemetryExportResult> {
+  return postJson(profile, `${deploymentEnvironmentPath(projectId, environmentId)}/telemetry/export`, {
+    accountId: profile.accountId,
+  })
+}
+
+export async function deleteDeploymentEnvironmentTelemetry(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly idempotencyKey: string
+  },
+): Promise<DeploymentTelemetryDeletionResult> {
+  return postJson(profile, `${deploymentEnvironmentPath(input.projectId, input.environmentId)}/telemetry/delete`, {
+    accountId: profile.accountId,
+    idempotencyKey: input.idempotencyKey,
   })
 }
 

@@ -240,6 +240,28 @@ export interface DeploymentEnvironmentOperationsResult {
   readonly prunedLogCount: number
 }
 
+export interface DeploymentTelemetryExportResult {
+  readonly exportId: string
+  readonly filename: string
+  readonly mediaType: "application/json"
+  readonly generatedAt: string
+  readonly byteSize: number
+  readonly sha256: string
+  readonly contentBase64: string
+  readonly counts: {
+    readonly invocationMetadata: number
+    readonly deploymentLogs: number
+    readonly auditEvents: number
+  }
+}
+
+export interface DeploymentTelemetryDeletionResult {
+  readonly deletedAt: string
+  readonly deletedInvocationCount: number
+  readonly deletedLogCount: number
+  readonly protectedActiveInvocationCount: number
+}
+
 export interface ReleasePromotionResult {
   readonly promotion: ReleasePromotionSummary
   readonly environment: DeploymentEnvironmentSummary

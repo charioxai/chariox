@@ -11,6 +11,8 @@ import {
   createDeploymentCredentialProfile,
   createDeploymentProject,
   createDeploymentRelease,
+  deleteDeploymentEnvironmentTelemetry,
+  exportDeploymentEnvironmentTelemetry,
   getDeploymentAccess,
   getDeploymentEnvironmentCredentials,
   getDeploymentEnvironmentUsage,
@@ -322,6 +324,26 @@ test("deployed workflow API scopes runtime usage and limit updates", async () =>
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
     calls.push({ method: init?.method ?? "GET", url, body })
     if (init?.method === "POST") {
+      if (url.pathname.endsWith("/telemetry/export")) {
+        return jsonResponse({
+          exportId: "export-1",
+          filename: "telemetry.json",
+          mediaType: "application/json",
+          generatedAt: new Date(0).toISOString(),
+          byteSize: 3,
+          sha256: `sha256:${"0".repeat(64)}`,
+          contentBase64: "e30K",
+          counts: { invocationMetadata: 1, deploymentLogs: 2, auditEvents: 3 },
+        })
+      }
+      if (url.pathname.endsWith("/telemetry/delete")) {
+        return jsonResponse({
+          deletedAt: new Date(0).toISOString(),
+          deletedInvocationCount: 1,
+          deletedLogCount: 2,
+          protectedActiveInvocationCount: 1,
+        })
+      }
       return jsonResponse({
         environment: { ...environment(), limits: body?.limits, desiredRevision: 2 },
         changed: true,
@@ -339,17 +361,34 @@ test("deployed workflow API scopes runtime usage and limit updates", async () =>
       idempotencyKey: "limits-1",
     })
     assert.equal(updated.restartRequested, true)
+    assert.equal((await exportDeploymentEnvironmentTelemetry(
+      profile,
+      "project/one",
+      "environment/one",
+    )).exportId, "export-1")
+    assert.equal((await deleteDeploymentEnvironmentTelemetry(profile, {
+      projectId: "project/one",
+      environmentId: "environment/one",
+      idempotencyKey: "telemetry-delete-1",
+    })).protectedActiveInvocationCount, 1)
 
     const base = "/deployment-projects/project%2Fone/environments/environment%2Fone"
     assert.deepEqual(calls.map((call) => [call.method, call.url.pathname]), [
       ["GET", `${base}/usage`],
       ["POST", `${base}/limits`],
+      ["POST", `${base}/telemetry/export`],
+      ["POST", `${base}/telemetry/delete`],
     ])
     assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
     assert.deepEqual(calls[1]?.body, {
       accountId: "account-1",
       idempotencyKey: "limits-1",
       limits: { concurrency: 4, queue: 8 },
+    })
+    assert.deepEqual(calls[2]?.body, { accountId: "account-1" })
+    assert.deepEqual(calls[3]?.body, {
+      accountId: "account-1",
+      idempotencyKey: "telemetry-delete-1",
     })
   } finally {
     globalThis.fetch = originalFetch
