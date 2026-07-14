@@ -18,6 +18,8 @@ test("deployed workflow command renders portfolio convergence and attention", ()
     "Demo app",
     "agent_app",
     "ownership=internal_team",
+    "role=owner",
+    "capabilities=read,release,operate,manage",
     "production",
     "degraded",
     "release=#2:available",
@@ -258,6 +260,14 @@ const profile: RelayCloudProfile = {
 function portfolioItem(): DeploymentPortfolioItem {
   return {
     project: projectState().project,
+    control: {
+      role: "owner",
+      source: "account",
+      canRead: true,
+      canRelease: true,
+      canOperate: true,
+      canManage: true,
+    },
     defaultEnvironment: projectState().environments[0]!,
     latestRelease: projectState().releases[0]!,
     latestPromotion: projectState().promotions[0]!,

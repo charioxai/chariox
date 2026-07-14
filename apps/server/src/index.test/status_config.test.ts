@@ -107,6 +107,44 @@ test("GET /health reports package materialization and provider readiness", async
   }
 })
 
+test("GET /health treats the explicitly enabled development provider stub as internally ready", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-dev-stub-health-"))
+  const previousDevStub = process.env.ARROBA_PROVIDER_DEV_STUB
+  await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
+  await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+    schema_version: 1,
+    source_session: { id: "source-session-1" },
+    workflow: { id: "workflow-1", nodes: [] },
+    endpoint: { id: "endpoint-1" },
+    agents: [{ id: "agent-1", provider: "dev-stub", model: "default" }],
+  }))
+  await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+  setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", "1")
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json().provider_readiness, [{
+      provider: "dev-stub",
+      status: "provider_ready",
+      ready: true,
+      cli: { available: true, command: "internal:dev-stub", version: null },
+      auth: { status: "provider_ready", account_profile: "development-stub" },
+    }])
+  } finally {
+    await app.close()
+    setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", previousDevStub)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("GET publication status reports runtime binding", async () => {
   const { app } = buildServer({
     ...baseConfig,

@@ -230,11 +230,21 @@ export async function executeDeployedWorkflowCommand(
 export function formatDeploymentPortfolioItem(item: DeploymentPortfolioItem): string {
   const environment = item.defaultEnvironment
   const release = item.latestRelease
+  const capabilities = item.control
+    ? [
+        item.control.canRead ? "read" : null,
+        item.control.canRelease ? "release" : null,
+        item.control.canOperate ? "operate" : null,
+        item.control.canManage ? "manage" : null,
+      ].filter((capability): capability is string => capability !== null).join(",") || "none"
+    : "unknown"
   return [
     item.project.id,
     item.project.name,
     item.project.kind,
     `ownership=${item.project.ownershipMode ?? "internal_team"}`,
+    `role=${item.control?.role ?? "unknown"}`,
+    `capabilities=${capabilities}`,
     environment?.slug ?? "no_environment",
     environment?.observedState ?? "setup",
     release ? `release=#${release.sequence}:${release.status}` : "release=none",

@@ -262,6 +262,14 @@ function projectState() {
 function portfolioItem() {
   return {
     project: projectState().project,
+    control: {
+      role: "maintainer",
+      source: "project_member",
+      canRead: true,
+      canRelease: true,
+      canOperate: true,
+      canManage: false,
+    },
     defaultEnvironment: environment(),
     latestRelease: null,
     latestPromotion: null,

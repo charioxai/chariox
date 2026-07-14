@@ -74,8 +74,18 @@ export interface DeployedWorkflowProjectState {
   readonly promotions: readonly ReleasePromotionSummary[]
 }
 
+export interface DeploymentProjectControlSummary {
+  readonly role: DeploymentControlRole
+  readonly source: "account" | "project_member"
+  readonly canRead: boolean
+  readonly canRelease: boolean
+  readonly canOperate: boolean
+  readonly canManage: boolean
+}
+
 export interface DeploymentPortfolioItem {
   readonly project: DeploymentProjectSummary
+  readonly control?: DeploymentProjectControlSummary
   readonly defaultEnvironment?: DeploymentEnvironmentSummary | null
   readonly latestRelease?: PublicationReleaseSummary | null
   readonly latestPromotion?: ReleasePromotionSummary | null

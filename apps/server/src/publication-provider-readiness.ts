@@ -85,6 +85,15 @@ async function requiredPublicationProviders(publication: WorkflowPublicationConf
 }
 
 async function providerReadiness(provider: string, client: LocalIpcClient): Promise<PublicationProviderReadiness> {
+  if (provider === "dev-stub" && developmentProviderStubEnabled()) {
+    return {
+      provider,
+      status: "provider_ready",
+      ready: true,
+      cli: { available: true, command: "internal:dev-stub", version: null },
+      auth: { status: "provider_ready", account_profile: "development-stub" },
+    }
+  }
   const command = providerCommand(provider)
   const cli = await providerCliStatus(command)
   if (!cli.available) {
@@ -109,6 +118,12 @@ async function providerReadiness(provider: string, client: LocalIpcClient): Prom
     auth,
     ...(auth.status === "provider_auth_expired" ? { error: `${provider} authentication is expired or missing` } : {}),
   }
+}
+
+function developmentProviderStubEnabled(): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    process.env.ARROBA_PROVIDER_DEV_STUB?.trim().toLowerCase() ?? "",
+  )
 }
 
 async function providerCliStatus(command: string): Promise<PublicationProviderReadiness["cli"]> {
