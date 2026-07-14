@@ -352,6 +352,42 @@ impl SessionService {
         Ok(session.enqueue_workflow_prompt(queued))
     }
 
+    pub fn enqueue_workflow_prompt_and_maybe_create_run(
+        &mut self,
+        session_id: &str,
+        workflow_id: &str,
+        endpoint_id: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        source: WorkflowQueuedPromptSource,
+        watchdog_id: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+    ) -> Result<
+        (
+            WorkflowQueuedPrompt,
+            Option<(
+                WorkflowQueuedPrompt,
+                WorkflowRun,
+                WorkflowDefinition,
+                WorkflowEndpointDefinition,
+            )>,
+        ),
+        DaemonError,
+    > {
+        let queued_prompt = self.enqueue_workflow_prompt_with_publication_invocation(
+            session_id,
+            workflow_id,
+            endpoint_id,
+            prompt,
+            queue_ref,
+            source,
+            watchdog_id,
+            publication_invocation,
+        )?;
+        let claimed_run = self.dequeue_next_workflow_prompt_and_create_run(session_id)?;
+        Ok((queued_prompt, claimed_run))
+    }
+
     pub fn update_queued_workflow_prompt(
         &mut self,
         session_id: &str,
@@ -453,6 +489,44 @@ impl SessionService {
             return Ok(None);
         }
         Ok(session.pop_next_workflow_queued_prompt())
+    }
+
+    pub fn dequeue_next_workflow_prompt_and_create_run(
+        &mut self,
+        session_id: &str,
+    ) -> Result<
+        Option<(
+            WorkflowQueuedPrompt,
+            WorkflowRun,
+            WorkflowDefinition,
+            WorkflowEndpointDefinition,
+        )>,
+        DaemonError,
+    > {
+        loop {
+            let Some(queued_prompt) = self.dequeue_next_workflow_prompt(session_id)? else {
+                return Ok(None);
+            };
+            if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+                if !self.prepare_workflow_watchdog_queued_start(session_id, watchdog_id)? {
+                    continue;
+                }
+            }
+            let workflow = self.resolve_workflow_ref(session_id, queued_prompt.workflow_id())?;
+            let endpoint = self.resolve_workflow_endpoint_ref(
+                session_id,
+                queued_prompt.workflow_id(),
+                queued_prompt.endpoint_id(),
+            )?;
+            let workflow_run = self.invoke_workflow_endpoint_with_publication_invocation(
+                session_id,
+                workflow.id(),
+                endpoint.id(),
+                queued_prompt.prompt().map(str::to_string),
+                queued_prompt.publication_invocation().cloned(),
+            )?;
+            return Ok(Some((queued_prompt, workflow_run, workflow, endpoint)));
+        }
     }
 
     fn validate_workflow_runnable(

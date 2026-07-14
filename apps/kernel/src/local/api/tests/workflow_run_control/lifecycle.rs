@@ -16,6 +16,14 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching()
     );
 }
 
+#[test]
+fn local_request_api_serializes_concurrent_workflow_launch_admission() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-serializes-concurrent-workflow-launch-admission",
+        local_request_api_serializes_concurrent_workflow_launch_admission_inner,
+    );
+}
+
 fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: fn()) {
     let handle = std::thread::Builder::new()
         .name(name.to_string())
@@ -354,6 +362,137 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
         _ => panic!("unexpected local response"),
     };
     assert_eq!(queued_prompts, vec![queued_prompt]);
+}
+
+fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
+    const INVOCATION_COUNT: usize = 12;
+
+    let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-concurrent-launch", "worktree-concurrent-launch"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = harness.spawn_workflow_test_agent(session.id(), "concurrent-launch-agent");
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("concurrent-launch-workflow".to_string()),
+        }))
+        .expect("workflow create should succeed")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = harness.add_workflow_test_node(session.id(), workflow.id(), agent.id());
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should be created")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    harness.launch_workflow_test_provider(session.id(), agent.id());
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(INVOCATION_COUNT));
+    let mut handles = Vec::with_capacity(INVOCATION_COUNT);
+    for index in 0..INVOCATION_COUNT {
+        let harness = std::sync::Arc::clone(&harness);
+        let barrier = std::sync::Arc::clone(&barrier);
+        let session_id = session.id().to_string();
+        let workflow_id = workflow.id().to_string();
+        let endpoint_id = endpoint.id().to_string();
+        handles.push(
+            std::thread::Builder::new()
+                .name(format!("concurrent-workflow-launch-{index}"))
+                .stack_size(8 * 1024 * 1024)
+                .spawn(move || {
+                    barrier.wait();
+                    harness.dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                        InvokeWorkflowEndpointRequest {
+                            session_id,
+                            workflow_ref: workflow_id,
+                            endpoint_ref: endpoint_id,
+                            prompt: Some(format!("concurrent invocation {index}")),
+                            queue_ref: None,
+                            publication_invocation: None,
+                        },
+                    ))
+                })
+                .expect("concurrent workflow launch thread should spawn"),
+        );
+    }
+
+    let responses = handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+        })
+        .collect::<Vec<_>>();
+    let errors = responses
+        .iter()
+        .filter_map(|response| response.as_ref().err().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "concurrent invokes failed: {errors:?}");
+    let started = responses
+        .iter()
+        .filter(|response| matches!(response, Ok(LocalDaemonResponse::WorkflowRunInvoked { .. })))
+        .count();
+    let enqueued = responses
+        .iter()
+        .filter(|response| {
+            matches!(
+                response,
+                Ok(LocalDaemonResponse::WorkflowPromptEnqueued { .. })
+            )
+        })
+        .count();
+    assert_eq!(started, 1, "exactly one concurrent invoke should start");
+    assert_eq!(enqueued, INVOCATION_COUNT - 1);
+
+    let workflow_runs = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: Some(workflow.id().to_string()),
+            },
+        ))
+        .expect("workflow runs should list")
+    {
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        workflow_runs.len(),
+        1,
+        "concurrent admission created extra runs"
+    );
+    let queued_prompts = match harness
+        .dispatch(LocalDaemonRequest::ListQueuedWorkflowPrompts(
+            ListQueuedWorkflowPromptsRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("queued workflow prompts should list")
+    {
+        LocalDaemonResponse::QueuedWorkflowPromptsListed { queued_prompts } => queued_prompts,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(queued_prompts.len(), INVOCATION_COUNT - 1);
 }
 
 fn wait_for_workflow_run_status(
