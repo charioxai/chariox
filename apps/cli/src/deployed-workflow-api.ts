@@ -12,6 +12,8 @@ import type {
   DeploymentEnvironmentDomainsResult,
   DeploymentEnvironmentCredentialsResult,
   DeploymentEnvironmentLimitsResult,
+  DeploymentEnvironmentOperationsPolicy,
+  DeploymentEnvironmentOperationsResult,
   DeploymentEnvironmentUsageResult,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
@@ -174,6 +176,22 @@ export async function updateDeploymentEnvironmentLimits(
     accountId: profile.accountId,
     idempotencyKey: input.idempotencyKey,
     limits: input.limits,
+  })
+}
+
+export async function updateDeploymentEnvironmentOperations(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly policy: DeploymentEnvironmentOperationsPolicy
+    readonly idempotencyKey: string
+  },
+): Promise<DeploymentEnvironmentOperationsResult> {
+  return postJson(profile, `${deploymentEnvironmentPath(input.projectId, input.environmentId)}/operations`, {
+    accountId: profile.accountId,
+    idempotencyKey: input.idempotencyKey,
+    policy: input.policy,
   })
 }
 

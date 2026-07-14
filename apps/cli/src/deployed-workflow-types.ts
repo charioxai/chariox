@@ -13,6 +13,22 @@ export interface DeploymentRuntimeLimits {
   readonly ephemeral_storage_bytes?: number
 }
 
+export interface DeploymentAlertThresholds {
+  readonly errorRatePercent: number
+  readonly averageDurationMs: number
+  readonly queueDepthPercent: number
+  readonly dailyUsagePercent: number
+  readonly healthStaleSeconds: number
+}
+
+export interface DeploymentEnvironmentOperationsPolicy {
+  readonly admissionMode: "accepting" | "denied"
+  readonly admissionReason?: string | null
+  readonly invocationMetadataRetentionDays: number
+  readonly deploymentLogRetentionDays: number
+  readonly alertThresholds: DeploymentAlertThresholds
+}
+
 export interface DeploymentProjectSummary {
   readonly id: string
   readonly accountId: string
@@ -57,6 +73,8 @@ export interface DeploymentEnvironmentSummary {
   readonly desiredRevision: number
   readonly observedRevision: number
   readonly limits?: DeploymentRuntimeLimits | null
+  readonly operationsPolicy?: DeploymentEnvironmentOperationsPolicy | null
+  readonly operationsPolicyVersion?: number
   readonly publicUrl?: string | null
   readonly lastHealthAt?: string | null
   readonly lastError?: string | null
@@ -144,6 +162,8 @@ export interface DeploymentEnvironmentUsageSummary {
   readonly generatedAt: string
   readonly dayStartedAt: string
   readonly limits: DeploymentRuntimeLimits
+  readonly operationsPolicy?: DeploymentEnvironmentOperationsPolicy | null
+  readonly operationsPolicyVersion?: number
   readonly activeInvocations: number
   readonly invocationsLastMinute: number
   readonly invocationsToday: number
@@ -168,6 +188,13 @@ export interface DeploymentEnvironmentLimitsResult {
   readonly environment: DeploymentEnvironmentSummary
   readonly changed: boolean
   readonly restartRequested: boolean
+}
+
+export interface DeploymentEnvironmentOperationsResult {
+  readonly environment: DeploymentEnvironmentSummary
+  readonly changed: boolean
+  readonly prunedInvocationCount: number
+  readonly prunedLogCount: number
 }
 
 export interface ReleasePromotionResult {

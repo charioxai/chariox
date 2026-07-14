@@ -28,6 +28,7 @@ import {
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
   updateDeploymentEnvironmentLimits,
+  updateDeploymentEnvironmentOperations,
 } from "./deployed-workflow-api.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
@@ -39,6 +40,7 @@ import type {
   DeploymentEnvironmentDomainState,
   DeploymentEnvironmentCredentialState,
   DeploymentEnvironmentUsageSummary,
+  DeploymentEnvironmentOperationsPolicy,
   DeploymentPortfolioItem,
   DeploymentEnvironmentSummary,
   DeploymentOwnershipMode,
@@ -217,6 +219,65 @@ export async function executeDeployedWorkflowCommand(
       }
     }
     throw new Error(limitsUsage)
+  }
+  if (action === "operation" || action === "operations" || action === "ops" || action === "admission") {
+    const operationsAction = argv[1] ?? "show"
+    if (operationsAction === "show" || operationsAction === "status") {
+      const projectId = requiredArg(argv[2], operationsShowUsage)
+      const environmentId = requiredArg(argv[3], operationsShowUsage)
+      const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      return {
+        notice: formatDeploymentEnvironmentUsage(result.usage),
+        footer: `deployment operations ${effectiveOperationsPolicy(result.usage).admissionMode}`,
+      }
+    }
+    if (operationsAction === "deny" || operationsAction === "resume") {
+      const usage = operationsAction === "deny" ? operationsDenyUsage : operationsResumeUsage
+      const projectId = requiredArg(argv[2], usage)
+      const environmentId = requiredArg(argv[3], usage)
+      const options = parseOperationsMutationOptions(argv.slice(4), usage)
+      if (operationsAction === "deny" && !options.reason) throw new Error(operationsDenyUsage)
+      const current = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      await updateDeploymentEnvironmentOperations(profile, {
+        projectId,
+        environmentId,
+        idempotencyKey: options.idempotencyKey ?? randomUUID(),
+        policy: {
+          ...effectiveOperationsPolicy(current.usage),
+          admissionMode: operationsAction === "deny" ? "denied" : "accepting",
+          admissionReason: operationsAction === "deny" ? options.reason! : null,
+        },
+      })
+      const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      return {
+        notice: formatDeploymentEnvironmentUsage(result.usage),
+        footer: operationsAction === "deny"
+          ? "new deployment calls denied; in-flight calls continue"
+          : "deployment calls resumed",
+      }
+    }
+    if (operationsAction === "set") {
+      const projectId = requiredArg(argv[2], operationsSetUsage)
+      const environmentId = requiredArg(argv[3], operationsSetUsage)
+      const policyPath = requiredArg(argv[4], operationsSetUsage)
+      const policy = parseOperationsPolicy(await readJsonObject(policyPath, "operations policy"))
+      const idempotencyKey = parseIdempotencyKey(argv.slice(5), operationsSetUsage) ?? randomUUID()
+      const updated = await updateDeploymentEnvironmentOperations(profile, {
+        projectId,
+        environmentId,
+        idempotencyKey,
+        policy,
+      })
+      const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      const pruned = updated.prunedInvocationCount + updated.prunedLogCount
+      return {
+        notice: formatDeploymentEnvironmentUsage(result.usage),
+        footer: updated.changed
+          ? pruned > 0 ? `operations policy saved; ${pruned} expired records removed` : "operations policy saved"
+          : "operations policy already current",
+      }
+    }
+    throw new Error(operationsUsage)
   }
   if (action === "credential" || action === "credentials") {
     const credentialAction = argv[1] ?? "list"
@@ -550,10 +611,14 @@ export function formatDeploymentEnvironmentDomains(domains: DeploymentEnvironmen
 }
 
 export function formatDeploymentEnvironmentUsage(usage: DeploymentEnvironmentUsageSummary): string {
+  const operations = effectiveOperationsPolicy(usage)
   return [
     `runtime project=${usage.projectId} environment=${usage.environmentId}`,
     `deployment ${usage.deploymentId ?? "none"}`,
     `limits ${formatDeploymentRuntimeLimits(usage.limits)}`,
+    `operations admission=${operations.admissionMode} policy_version=${usage.operationsPolicyVersion ?? 1} reason=${operations.admissionReason ?? "none"}`,
+    `retention invocation_metadata_days=${operations.invocationMetadataRetentionDays} deployment_log_days=${operations.deploymentLogRetentionDays} content_capture=disabled`,
+    `alerts error_rate_percent=${operations.alertThresholds.errorRatePercent} average_duration_ms=${operations.alertThresholds.averageDurationMs} queue_depth_percent=${operations.alertThresholds.queueDepthPercent} daily_usage_percent=${operations.alertThresholds.dailyUsagePercent} health_stale_seconds=${operations.alertThresholds.healthStaleSeconds}`,
     `usage active=${usage.activeInvocations} minute=${usage.invocationsLastMinute} today=${usage.invocationsToday} units=${usage.usageUnitsToday}`,
     `outcomes succeeded=${usage.succeededToday} failed=${usage.failedToday} timed_out=${usage.timedOutToday} interrupted=${usage.interruptedToday}`,
     `latency average_ms=${formatMetric(usage.averageDurationMs)} maximum_ms=${formatMetric(usage.maximumDurationMs)} queue_average_ms=${formatMetric(usage.averageQueuedMs)}`,
@@ -663,7 +728,12 @@ const runtimeUsage = "usage: deployments usage <project-id> <environment-id>"
 const limitsShowUsage = "usage: deployments limits show <project-id> <environment-id>"
 const limitsSetUsage = "usage: deployments limits set <project-id> <environment-id> <json-file> [--idempotency-key value]"
 const limitsUsage = "usage: deployments limits show|set ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const operationsShowUsage = "usage: deployments operations show <project-id> <environment-id>"
+const operationsDenyUsage = "usage: deployments operations deny <project-id> <environment-id> --reason <text> [--idempotency-key value]"
+const operationsResumeUsage = "usage: deployments operations resume <project-id> <environment-id> [--idempotency-key value]"
+const operationsSetUsage = "usage: deployments operations set <project-id> <environment-id> <json-file> [--idempotency-key value]"
+const operationsUsage = "usage: deployments operations show|deny|resume|set ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`
@@ -828,6 +898,28 @@ function parseIdempotencyKey(argv: readonly string[], usage: string): string | u
   throw new Error(usage)
 }
 
+function parseOperationsMutationOptions(argv: readonly string[], usage: string): {
+  readonly reason?: string
+  readonly idempotencyKey?: string
+} {
+  let reason: string | undefined
+  let idempotencyKey: string | undefined
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index]
+    if (option === "--reason") {
+      reason = requiredArg(argv[index + 1], usage)
+      if (reason.length > 240) throw new Error("deployment admission reason must be at most 240 characters")
+      index += 1
+    } else if (option === "--idempotency-key") {
+      idempotencyKey = requiredArg(argv[index + 1], usage)
+      index += 1
+    } else {
+      throw new Error(usage)
+    }
+  }
+  return { ...(reason ? { reason } : {}), ...(idempotencyKey ? { idempotencyKey } : {}) }
+}
+
 async function readJsonObject(path: string, label: string): Promise<Record<string, unknown>> {
   const value = JSON.parse(await readFile(path, "utf8")) as unknown
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -862,6 +954,87 @@ function parseRuntimeLimits(value: Record<string, unknown>): DeploymentRuntimeLi
     limits[key] = candidate as number
   }
   return limits
+}
+
+const defaultDeploymentOperationsPolicy: DeploymentEnvironmentOperationsPolicy = {
+  admissionMode: "accepting",
+  admissionReason: null,
+  invocationMetadataRetentionDays: 30,
+  deploymentLogRetentionDays: 30,
+  alertThresholds: {
+    errorRatePercent: 20,
+    averageDurationMs: 30_000,
+    queueDepthPercent: 80,
+    dailyUsagePercent: 80,
+    healthStaleSeconds: 120,
+  },
+}
+
+function effectiveOperationsPolicy(usage: DeploymentEnvironmentUsageSummary): DeploymentEnvironmentOperationsPolicy {
+  return usage.operationsPolicy ?? defaultDeploymentOperationsPolicy
+}
+
+function parseOperationsPolicy(value: Record<string, unknown>): DeploymentEnvironmentOperationsPolicy {
+  assertOnlyFields(value, [
+    "admissionMode",
+    "admissionReason",
+    "invocationMetadataRetentionDays",
+    "deploymentLogRetentionDays",
+    "alertThresholds",
+  ], "deployment operations policy")
+  const admissionMode = value.admissionMode
+  if (admissionMode !== "accepting" && admissionMode !== "denied") {
+    throw new Error("deployment admissionMode must be accepting or denied")
+  }
+  const admissionReason = typeof value.admissionReason === "string" && value.admissionReason.trim()
+    ? value.admissionReason.trim()
+    : null
+  if (admissionMode === "denied" && !admissionReason) {
+    throw new Error("denied deployment operations policy requires admissionReason")
+  }
+  const thresholds = objectRecord(value.alertThresholds, "deployment alertThresholds")
+  assertOnlyFields(thresholds, [
+    "errorRatePercent",
+    "averageDurationMs",
+    "queueDepthPercent",
+    "dailyUsagePercent",
+    "healthStaleSeconds",
+  ], "deployment alert thresholds")
+  return {
+    admissionMode,
+    admissionReason: admissionMode === "denied" ? admissionReason : null,
+    invocationMetadataRetentionDays: requiredPolicyInteger(value.invocationMetadataRetentionDays, "invocationMetadataRetentionDays", 1, 365),
+    deploymentLogRetentionDays: requiredPolicyInteger(value.deploymentLogRetentionDays, "deploymentLogRetentionDays", 1, 365),
+    alertThresholds: {
+      errorRatePercent: requiredPolicyNumber(thresholds.errorRatePercent, "errorRatePercent", 0, 100),
+      averageDurationMs: requiredPolicyInteger(thresholds.averageDurationMs, "averageDurationMs", 100, 1_800_000),
+      queueDepthPercent: requiredPolicyNumber(thresholds.queueDepthPercent, "queueDepthPercent", 0, 100),
+      dailyUsagePercent: requiredPolicyNumber(thresholds.dailyUsagePercent, "dailyUsagePercent", 0, 100),
+      healthStaleSeconds: requiredPolicyInteger(thresholds.healthStaleSeconds, "healthStaleSeconds", 10, 86_400),
+    },
+  }
+}
+
+function objectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
+  return value as Record<string, unknown>
+}
+
+function assertOnlyFields(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const unknown = Object.keys(value).find((key) => !allowed.includes(key))
+  if (unknown) throw new Error(`${label} contains unsupported field ${unknown}`)
+}
+
+function requiredPolicyInteger(value: unknown, label: string, minimum: number, maximum: number): number {
+  if (!Number.isSafeInteger(value)) throw new Error(`deployment ${label} must be an integer`)
+  return requiredPolicyNumber(value, label, minimum, maximum)
+}
+
+function requiredPolicyNumber(value: unknown, label: string, minimum: number, maximum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`deployment ${label} must be between ${minimum} and ${maximum}`)
+  }
+  return value
 }
 
 function requiredArg(value: string | undefined, usage: string): string {

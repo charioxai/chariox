@@ -329,6 +329,75 @@ test("deployed workflow TUI command keeps runtime usage and limits in control-pl
   }
 })
 
+test("deployed workflow TUI command keeps emergency admission and retention policy in sync", async () => {
+  const originalFetch = globalThis.fetch
+  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-operations-command-"))
+  const policyPath = join(root, "operations.json")
+  const calls: Array<{
+    readonly method: string
+    readonly pathname: string
+    readonly body: Record<string, unknown> | null
+  }> = []
+  const savedPolicy = operationsPolicy({
+    invocationMetadataRetentionDays: 7,
+    deploymentLogRetentionDays: 14,
+  })
+  await writeFile(policyPath, JSON.stringify(savedPolicy))
+  let policy = operationsPolicy()
+  globalThis.fetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ method: init?.method ?? "GET", pathname, body })
+    if (init?.method === "POST") {
+      policy = body?.policy as typeof policy
+      return jsonResponse({
+        environment: { ...projectState().environments[0], operationsPolicy: policy, operationsPolicyVersion: 2 },
+        changed: true,
+        prunedInvocationCount: policy.invocationMetadataRetentionDays === 7 ? 2 : 0,
+        prunedLogCount: policy.deploymentLogRetentionDays === 14 ? 1 : 0,
+      })
+    }
+    return jsonResponse({ usage: { ...runtimeUsage({ concurrency: 2, queue: 8, duration_ms: 30_000 }), operationsPolicy: policy, operationsPolicyVersion: 2 } })
+  }
+  try {
+    const shown = await executeDeployedWorkflowCommand(profile, [
+      "operations", "show", "project/one", "environment/one",
+    ])
+    const denied = await executeDeployedWorkflowCommand(profile, [
+      "operations", "deny", "project/one", "environment/one",
+      "--reason", "provider incident", "--idempotency-key", "operations-deny-1",
+    ])
+    const resumed = await executeDeployedWorkflowCommand(profile, [
+      "operations", "resume", "project/one", "environment/one",
+      "--idempotency-key", "operations-resume-1",
+    ])
+    const saved = await executeDeployedWorkflowCommand(profile, [
+      "operations", "set", "project/one", "environment/one", policyPath,
+      "--idempotency-key", "operations-set-1",
+    ])
+
+    assert.match(shown.notice, /operations admission=accepting policy_version=2 reason=none/)
+    assert.match(shown.notice, /content_capture=disabled/)
+    assert.match(denied.notice, /admission=denied .*reason=provider incident/)
+    assert.equal(denied.footer, "new deployment calls denied; in-flight calls continue")
+    assert.match(resumed.notice, /admission=accepting .*reason=none/)
+    assert.equal(resumed.footer, "deployment calls resumed")
+    assert.match(saved.notice, /invocation_metadata_days=7 deployment_log_days=14/)
+    assert.equal(saved.footer, "operations policy saved; 3 expired records removed")
+    const postBodies = calls.filter((call) => call.method === "POST").map((call) => call.body)
+    assert.equal((postBodies[0]?.policy as { admissionMode: string }).admissionMode, "denied")
+    assert.equal((postBodies[0]?.policy as { admissionReason: string }).admissionReason, "provider incident")
+    assert.equal(postBodies[0]?.idempotencyKey, "operations-deny-1")
+    assert.equal((postBodies[1]?.policy as { admissionMode: string }).admissionMode, "accepting")
+    assert.equal(postBodies[1]?.idempotencyKey, "operations-resume-1")
+    assert.deepEqual(postBodies[2]?.policy, savedPolicy)
+    assert.equal(postBodies[2]?.idempotencyKey, "operations-set-1")
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("deployed workflow TUI command lists projects through the shared Cloud path", async () => {
   const originalFetch = globalThis.fetch
   const notices: string[] = []
@@ -711,6 +780,28 @@ function runtimeUsage(limits: { readonly concurrency: number; readonly queue: nu
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:00.240Z",
     }],
+  }
+}
+
+function operationsPolicy(overrides: Partial<{
+  readonly admissionMode: "accepting" | "denied"
+  readonly admissionReason: string | null
+  readonly invocationMetadataRetentionDays: number
+  readonly deploymentLogRetentionDays: number
+}> = {}) {
+  return {
+    admissionMode: "accepting" as const,
+    admissionReason: null,
+    invocationMetadataRetentionDays: 30,
+    deploymentLogRetentionDays: 30,
+    alertThresholds: {
+      errorRatePercent: 20,
+      averageDurationMs: 30_000,
+      queueDepthPercent: 80,
+      dailyUsagePercent: 80,
+      healthStaleSeconds: 120,
+    },
+    ...overrides,
   }
 }
 
