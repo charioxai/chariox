@@ -4,6 +4,7 @@ import test from "node:test"
 
 import {
   adoptLegacyDeploymentProject,
+  changeDeploymentEnvironmentLifecycle,
   createDeploymentProject,
   createDeploymentRelease,
   getDeploymentProject,
@@ -41,6 +42,9 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
     if (url.pathname.endsWith("/rollbacks")) {
       return jsonResponse(promotionResult("rollback-1", body))
     }
+    if (url.pathname.endsWith("/start") || url.pathname.endsWith("/stop") || url.pathname.endsWith("/restart")) {
+      return jsonResponse({ environment: environment() }, 202)
+    }
     if (url.pathname.endsWith("/legacy-adoptions") || (url.pathname === "/deployment-projects" && init?.method === "POST")) {
       return jsonResponse({ state: projectState() }, 201)
     }
@@ -76,8 +80,16 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       promotionId: "promotion-1",
       idempotencyKey: "rollback-key",
     })
+    for (const action of ["stop", "start", "restart"] as const) {
+      await changeDeploymentEnvironmentLifecycle(profile, {
+        projectId: "project-1",
+        environmentId: "environment-1",
+        action,
+        idempotencyKey: `${action}-key`,
+      })
+    }
 
-    assert.equal(calls.length, 7)
+    assert.equal(calls.length, 10)
     assert.ok(calls.every((call) => call.authorization === "Bearer session-token"))
     assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
     assert.equal(calls[1]?.url.pathname, "/deployment-projects/project%2Fone")
@@ -109,6 +121,20 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       promotionId: "promotion-1",
       idempotencyKey: "rollback-key",
     })
+    assert.deepEqual(calls.slice(7).map((call) => [call.method, call.url.pathname, call.body]), [
+      ["POST", "/deployment-projects/project-1/environments/environment-1/stop", {
+        accountId: "account-1",
+        idempotencyKey: "stop-key",
+      }],
+      ["POST", "/deployment-projects/project-1/environments/environment-1/start", {
+        accountId: "account-1",
+        idempotencyKey: "start-key",
+      }],
+      ["POST", "/deployment-projects/project-1/environments/environment-1/restart", {
+        accountId: "account-1",
+        idempotencyKey: "restart-key",
+      }],
+    ])
   } finally {
     globalThis.fetch = originalFetch
     await rm(packageRoot, { recursive: true, force: true })

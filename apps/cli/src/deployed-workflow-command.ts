@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 
 import {
   adoptLegacyDeploymentProject,
+  changeDeploymentEnvironmentLifecycle,
   createDeploymentProject,
   createDeploymentRelease,
   getDeploymentProject,
@@ -14,6 +15,7 @@ import { preparePublicationReleasePackage } from "./deployed-workflow-package.js
 import type {
   DeployedWorkflowProjectState,
   DeploymentPortfolioItem,
+  DeploymentEnvironmentSummary,
   DeploymentProjectKind,
   PublicationDeploymentMode,
   PublicationReleaseSummary,
@@ -125,7 +127,7 @@ export async function executeDeployedWorkflowCommand(
     const projectId = requiredArg(argv[1], rollbackUsage)
     const environmentId = requiredArg(argv[2], rollbackUsage)
     const promotionId = requiredArg(argv[3], rollbackUsage)
-    const idempotencyKey = parseIdempotencyKey(argv.slice(4)) ?? randomUUID()
+    const idempotencyKey = parseIdempotencyKey(argv.slice(4), rollbackUsage) ?? randomUUID()
     const result = await rollbackDeploymentEnvironment(profile, {
       projectId,
       environmentId,
@@ -133,6 +135,19 @@ export async function executeDeployedWorkflowCommand(
       idempotencyKey,
     })
     return formatPromotionOutput(result, "rollback")
+  }
+  if (action === "start" || action === "stop" || action === "restart") {
+    const usage = lifecycleUsage(action)
+    const projectId = requiredArg(argv[1], usage)
+    const environmentId = requiredArg(argv[2], usage)
+    const idempotencyKey = parseIdempotencyKey(argv.slice(3), usage) ?? randomUUID()
+    const result = await changeDeploymentEnvironmentLifecycle(profile, {
+      projectId,
+      environmentId,
+      action,
+      idempotencyKey,
+    })
+    return formatLifecycleOutput(result.environment, action)
   }
   throw new Error(deploymentsUsage)
 }
@@ -207,10 +222,30 @@ function formatPromotionOutput(
   }
 }
 
+function formatLifecycleOutput(
+  environment: DeploymentEnvironmentSummary,
+  action: "start" | "stop" | "restart",
+): DeployedWorkflowCommandOutput {
+  return {
+    notice: [
+      `${action} requested for ${environment.slug}`,
+      `state desired=${environment.desiredState} observed=${environment.observedState}`,
+      `release desired=${environment.desiredReleaseId ?? "none"} observed=${environment.observedReleaseId ?? "none"}`,
+      `revision ${environment.observedRevision}/${environment.desiredRevision}`,
+      `url ${environment.publicUrl ?? "pending"}`,
+    ].join("\n"),
+    footer: `${action} requested for ${environment.slug}`,
+  }
+}
+
 const createUsage = "usage: deployments create <name> [--kind workflow-endpoint|agent-app] [--mode local-runtime|hosted-container] [--slug value] [--region value]"
 const promoteUsage = "usage: deployments promote <project-id> <environment-id> <release-id> [--configuration json-file] [--limits json-file] [--idempotency-key value]"
 const rollbackUsage = "usage: deployments rollback <project-id> <environment-id> <promotion-id> [--idempotency-key value]"
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id>"
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id>"
+
+function lifecycleUsage(action: "start" | "stop" | "restart"): string {
+  return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`
+}
 
 function parseCreateOptions(argv: readonly string[]): {
   readonly kind: DeploymentProjectKind
@@ -277,12 +312,12 @@ async function parsePromotionOptions(argv: readonly string[]): Promise<{
   }
 }
 
-function parseIdempotencyKey(argv: readonly string[]): string | undefined {
+function parseIdempotencyKey(argv: readonly string[], usage: string): string | undefined {
   if (argv.length === 0) return undefined
   if (argv.length === 2 && argv[0] === "--idempotency-key") {
-    return requiredArg(argv[1], rollbackUsage)
+    return requiredArg(argv[1], usage)
   }
-  throw new Error(rollbackUsage)
+  throw new Error(usage)
 }
 
 async function readJsonObject(path: string, label: string): Promise<Record<string, unknown>> {

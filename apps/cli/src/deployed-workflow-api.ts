@@ -2,6 +2,7 @@ import type { RelayCloudProfile } from "./preferences.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
   DeploymentProjectKind,
+  DeploymentEnvironmentResult,
   DeploymentProjectResult,
   DeploymentProjectsResult,
   PublicationDeploymentMode,
@@ -111,6 +112,26 @@ export async function rollbackDeploymentEnvironment(
     {
       accountId: profile.accountId,
       promotionId: input.promotionId,
+      idempotencyKey: input.idempotencyKey,
+    },
+  )
+}
+
+export async function changeDeploymentEnvironmentLifecycle(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly action: "start" | "stop" | "restart"
+    readonly idempotencyKey: string
+  },
+): Promise<DeploymentEnvironmentResult> {
+  return postJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(input.projectId)}`
+      + `/environments/${encodeURIComponent(input.environmentId)}/${input.action}`,
+    {
+      accountId: profile.accountId,
       idempotencyKey: input.idempotencyKey,
     },
   )

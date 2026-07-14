@@ -91,6 +91,10 @@ export interface PublicationReleaseResult {
   readonly release: PublicationReleaseSummary
 }
 
+export interface DeploymentEnvironmentResult {
+  readonly environment: DeploymentEnvironmentSummary
+}
+
 export interface ReleasePromotionResult {
   readonly promotion: ReleasePromotionSummary
   readonly environment: DeploymentEnvironmentSummary

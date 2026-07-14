@@ -114,6 +114,41 @@ test("deployed workflow command parses create and promotion configuration", asyn
   }
 })
 
+test("deployed workflow TUI command changes environment lifecycle through the shared path", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ pathname: string; body: Record<string, unknown> }> = []
+  const notices: string[] = []
+  const footers: string[] = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      pathname: new URL(String(input)).pathname,
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    })
+    return jsonResponse({ environment: { ...projectState().environments[0], desiredState: "stopped" } }, 202)
+  }
+  try {
+    const handled = await handleDeployedWorkflowCloudCommand({
+      appendNotice: (message) => notices.push(message),
+      flashFooter: (message) => footers.push(message),
+    }, profile, "deployments", "stop", [
+      "project-1",
+      "environment-1",
+      "--idempotency-key",
+      "stable-stop",
+    ])
+
+    assert.equal(handled, true)
+    assert.deepEqual(calls, [{
+      pathname: "/deployment-projects/project-1/environments/environment-1/stop",
+      body: { accountId: "account-1", idempotencyKey: "stable-stop" },
+    }])
+    assert.match(notices[0] ?? "", /state desired=stopped observed=degraded/)
+    assert.equal(footers[0], "stop requested for production")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 const profile: RelayCloudProfile = {
   apiUrl: "https://cloud.example.test",
   email: "user@example.test",
