@@ -6,6 +6,10 @@ import type {
   DeploymentAccessResult,
   DeploymentClaimResult,
   DeploymentControlRole,
+  DeploymentCredentialKind,
+  DeploymentCredentialProfileResult,
+  DeploymentCredentialProfilesResult,
+  DeploymentEnvironmentCredentialsResult,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
   DeploymentEnvironmentResult,
@@ -238,6 +242,100 @@ export async function revokeDeploymentProjectMember(
     profile,
     `/deployment-projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberId)}/revoke`,
     { accountId: profile.accountId },
+  )
+}
+
+export async function listDeploymentCredentialProfiles(
+  profile: RelayCloudProfile,
+): Promise<DeploymentCredentialProfilesResult> {
+  return getJson(profile, "/deployment-credentials", { accountId: profile.accountId })
+}
+
+export async function createDeploymentCredentialProfile(
+  profile: RelayCloudProfile,
+  input: {
+    readonly kind: DeploymentCredentialKind
+    readonly provider?: string
+    readonly integration?: string
+    readonly label: string
+  },
+): Promise<DeploymentCredentialProfileResult> {
+  return postJson(profile, "/deployment-credentials", {
+    accountId: profile.accountId,
+    kind: input.kind,
+    ...(input.provider ? { provider: input.provider } : {}),
+    ...(input.integration ? { integration: input.integration } : {}),
+    label: input.label,
+  })
+}
+
+export async function requestDeploymentCredentialOperation(
+  profile: RelayCloudProfile,
+  profileId: string,
+  operation: "test" | "rotate" | "revoke" | "purge",
+): Promise<DeploymentCredentialProfileResult> {
+  return postJson(
+    profile,
+    `/deployment-credentials/${encodeURIComponent(profileId)}/${operation}`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function getDeploymentEnvironmentCredentials(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly releaseId?: string
+  },
+): Promise<DeploymentEnvironmentCredentialsResult> {
+  return getJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(input.projectId)}`
+      + `/environments/${encodeURIComponent(input.environmentId)}/credentials`,
+    {
+      accountId: profile.accountId,
+      ...(input.releaseId ? { releaseId: input.releaseId } : {}),
+    },
+  )
+}
+
+export async function bindDeploymentEnvironmentCredential(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly releaseId: string
+    readonly slotId: string
+    readonly profileId: string
+  },
+): Promise<DeploymentEnvironmentCredentialsResult> {
+  return postJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(input.projectId)}`
+      + `/environments/${encodeURIComponent(input.environmentId)}/credential-bindings`,
+    {
+      accountId: profile.accountId,
+      releaseId: input.releaseId,
+      slotId: input.slotId,
+      profileId: input.profileId,
+    },
+  )
+}
+
+export async function revokeDeploymentEnvironmentCredentialBinding(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly slotId: string
+  },
+): Promise<DeploymentEnvironmentCredentialsResult> {
+  return postJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(input.projectId)}`
+      + `/environments/${encodeURIComponent(input.environmentId)}/credential-bindings/revoke`,
+    { accountId: profile.accountId, slotId: input.slotId },
   )
 }
 

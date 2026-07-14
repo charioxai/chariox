@@ -4,17 +4,23 @@ import { readFile } from "node:fs/promises"
 import {
   acceptDeploymentClaim,
   adoptLegacyDeploymentProject,
+  bindDeploymentEnvironmentCredential,
   changeDeploymentEnvironmentLifecycle,
   createDeploymentClaim,
+  createDeploymentCredentialProfile,
   createDeploymentProject,
   createDeploymentRelease,
   getDeploymentAccess,
+  getDeploymentEnvironmentCredentials,
   getDeploymentProject,
   listDeploymentProjects,
+  listDeploymentCredentialProfiles,
   promoteDeploymentRelease,
   reviewDeploymentClaim,
+  requestDeploymentCredentialOperation,
   revokeDeploymentClaim,
   revokeDeploymentProjectMember,
+  revokeDeploymentEnvironmentCredentialBinding,
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
 } from "./deployed-workflow-api.js"
@@ -24,6 +30,8 @@ import type {
   DeploymentAccessState,
   DeploymentClaimSummary,
   DeploymentControlRole,
+  DeploymentCredentialProfileSummary,
+  DeploymentEnvironmentCredentialState,
   DeploymentPortfolioItem,
   DeploymentEnvironmentSummary,
   DeploymentOwnershipMode,
@@ -159,6 +167,86 @@ export async function executeDeployedWorkflowCommand(
       idempotencyKey,
     })
     return formatLifecycleOutput(result.environment, action)
+  }
+  if (action === "credential" || action === "credentials") {
+    const credentialAction = argv[1] ?? "list"
+    if (credentialAction === "list" || credentialAction === "ls") {
+      const result = await listDeploymentCredentialProfiles(profile)
+      return {
+        notice: result.profiles.length > 0
+          ? result.profiles.map(formatDeploymentCredentialProfile).join("\n")
+          : "No deployment credentials.",
+        footer: `${result.profiles.length} deployment credential${result.profiles.length === 1 ? "" : "s"}`,
+      }
+    }
+    if (credentialAction === "show" || credentialAction === "status") {
+      const projectId = requiredArg(argv[2], credentialShowUsage)
+      const environmentId = requiredArg(argv[3], credentialShowUsage)
+      const releaseId = argv[4]?.trim() || undefined
+      const result = await getDeploymentEnvironmentCredentials(profile, {
+        projectId,
+        environmentId,
+        ...(releaseId ? { releaseId } : {}),
+      })
+      return {
+        notice: formatDeploymentEnvironmentCredentials(result.credentials),
+        footer: result.credentials.ready ? "deployment credentials ready" : "deployment credentials require attention",
+      }
+    }
+    if (credentialAction === "connect") {
+      const kind = requiredArg(argv[2], credentialConnectUsage)
+      const identity = requiredArg(argv[3], credentialConnectUsage).toLowerCase()
+      const label = requiredArg(argv[4], credentialConnectUsage)
+      if (kind !== "provider" && kind !== "integration") throw new Error(credentialConnectUsage)
+      if (kind === "provider" && !["codex", "claude", "opencode"].includes(identity)) {
+        throw new Error("deployment credential provider must be codex, claude, or opencode")
+      }
+      const result = await createDeploymentCredentialProfile(profile, {
+        kind,
+        ...(kind === "provider" ? { provider: identity } : { integration: identity }),
+        label,
+      })
+      return formatDeploymentCredentialOperation(result.profile, result.job, "connection requested")
+    }
+    if (credentialAction === "test" || credentialAction === "rotate"
+      || credentialAction === "revoke" || credentialAction === "purge") {
+      const profileId = requiredArg(argv[2], credentialOperationUsage)
+      const result = await requestDeploymentCredentialOperation(profile, profileId, credentialAction)
+      return formatDeploymentCredentialOperation(result.profile, result.job, `${credentialAction} requested`)
+    }
+    if (credentialAction === "bind") {
+      const projectId = requiredArg(argv[2], credentialBindUsage)
+      const environmentId = requiredArg(argv[3], credentialBindUsage)
+      const releaseId = requiredArg(argv[4], credentialBindUsage)
+      const slotId = requiredArg(argv[5], credentialBindUsage)
+      const profileId = requiredArg(argv[6], credentialBindUsage)
+      const result = await bindDeploymentEnvironmentCredential(profile, {
+        projectId,
+        environmentId,
+        releaseId,
+        slotId,
+        profileId,
+      })
+      return {
+        notice: formatDeploymentEnvironmentCredentials(result.credentials),
+        footer: `credential bound to ${slotId}`,
+      }
+    }
+    if (credentialAction === "unbind") {
+      const projectId = requiredArg(argv[2], credentialUnbindUsage)
+      const environmentId = requiredArg(argv[3], credentialUnbindUsage)
+      const slotId = requiredArg(argv[4], credentialUnbindUsage)
+      const result = await revokeDeploymentEnvironmentCredentialBinding(profile, {
+        projectId,
+        environmentId,
+        slotId,
+      })
+      return {
+        notice: formatDeploymentEnvironmentCredentials(result.credentials),
+        footer: `credential removed from ${slotId}`,
+      }
+    }
+    throw new Error(credentialUsage)
   }
   if (action === "claim") {
     const claimAction = argv[1]
@@ -318,6 +406,53 @@ export function formatDeploymentAccess(access: DeploymentAccessState): string {
   ].join("\n")
 }
 
+export function formatDeploymentCredentialProfile(profile: DeploymentCredentialProfileSummary): string {
+  return [
+    `credential ${profile.id} ${profile.status}`,
+    `  kind ${profile.kind} ${profile.kind === "provider" ? profile.provider ?? "unknown" : profile.integration ?? "unknown"}`,
+    `  label ${profile.label}`,
+    `  account ${profile.accountLabel ?? "unverified"}`,
+    `  version ${profile.version}`,
+    `  runner ${profile.runnerConnected ? "online" : "offline"}`,
+    `  expires_at ${profile.expiresAt ?? "none"}`,
+    `  checked_at ${profile.lastCheckedAt ?? "never"}`,
+    ...(profile.statusCode ? [`  status_code ${profile.statusCode}`] : []),
+  ].join("\n")
+}
+
+export function formatDeploymentEnvironmentCredentials(credentials: DeploymentEnvironmentCredentialState): string {
+  return [
+    `credentials project=${credentials.projectId} environment=${credentials.environmentId}`,
+    `release ${credentials.releaseId}`,
+    `ready ${credentials.ready ? "yes" : "no"}`,
+    ...credentials.slots.map((state) => [
+      `slot ${state.slot.slotId} ${state.readiness}`,
+      `  kind ${state.slot.kind} ${state.slot.kind === "provider" ? state.slot.provider ?? "unknown" : state.slot.integration ?? "unknown"}`,
+      `  required ${state.slot.required ? "yes" : "no"}`,
+      `  uses ${state.slot.uses.join(",") || "none"}`,
+      `  profile ${state.binding?.profileId ?? "none"}`,
+      ...(state.binding ? [
+        `  binding ${state.binding.status} version=${state.binding.version}`,
+        `  label ${state.binding.profile.label}`,
+      ] : []),
+    ].join("\n")),
+  ].join("\n")
+}
+
+function formatDeploymentCredentialOperation(
+  profile: DeploymentCredentialProfileSummary,
+  job: { readonly id: string; readonly type: string; readonly status: string } | null | undefined,
+  footer: string,
+): DeployedWorkflowCommandOutput {
+  return {
+    notice: [
+      formatDeploymentCredentialProfile(profile),
+      ...(job ? [`job ${job.id} ${job.type} ${job.status}`] : []),
+    ].join("\n"),
+    footer,
+  }
+}
+
 function formatRelease(release: PublicationReleaseSummary): string {
   return [
     `release ${release.id} #${release.sequence} ${release.status}`,
@@ -374,7 +509,13 @@ const accessUsage = "usage: deployments access [show] <project-id>"
 const memberAddUsage = "usage: deployments member add <project-id> <grantee-account-id> <user-email> <admin|deployer|operator|viewer|billing|maintainer>"
 const memberRevokeUsage = "usage: deployments member revoke <project-id> <member-id>"
 const memberUsage = "usage: deployments member add|revoke ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const credentialShowUsage = "usage: deployments credentials show <project-id> <environment-id> [release-id]"
+const credentialConnectUsage = "usage: deployments credentials connect provider <codex|claude|opencode> <label> | integration <identity> <label>"
+const credentialOperationUsage = "usage: deployments credentials test|rotate|revoke|purge <profile-id>"
+const credentialBindUsage = "usage: deployments credentials bind <project-id> <environment-id> <release-id> <slot-id> <profile-id>"
+const credentialUnbindUsage = "usage: deployments credentials unbind <project-id> <environment-id> <slot-id>"
+const credentialUsage = "usage: deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`

@@ -5,17 +5,23 @@ import test from "node:test"
 import {
   acceptDeploymentClaim,
   adoptLegacyDeploymentProject,
+  bindDeploymentEnvironmentCredential,
   changeDeploymentEnvironmentLifecycle,
   createDeploymentClaim,
+  createDeploymentCredentialProfile,
   createDeploymentProject,
   createDeploymentRelease,
   getDeploymentAccess,
+  getDeploymentEnvironmentCredentials,
   getDeploymentProject,
   listDeploymentProjects,
+  listDeploymentCredentialProfiles,
   promoteDeploymentRelease,
   reviewDeploymentClaim,
+  requestDeploymentCredentialOperation,
   revokeDeploymentClaim,
   revokeDeploymentProjectMember,
+  revokeDeploymentEnvironmentCredentialBinding,
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
 } from "./deployed-workflow-api.js"
@@ -228,6 +234,84 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
   }
 })
 
+test("deployed workflow API scopes the destination credential lifecycle", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly method: string; readonly url: URL; readonly body: Record<string, unknown> | null }> = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ method: init?.method ?? "GET", url, body })
+    if (url.pathname.endsWith("/credentials") || url.pathname.includes("/credential-bindings")) {
+      return jsonResponse({ credentials: credentialState() })
+    }
+    if (url.pathname === "/deployment-credentials" && !init?.method) {
+      return jsonResponse({ profiles: [credentialProfile()] })
+    }
+    const type = url.pathname === "/deployment-credentials"
+      ? "connect"
+      : url.pathname.split("/").at(-1) ?? "test"
+    return jsonResponse({ profile: credentialProfile(), job: credentialJob(type) }, 202)
+  }
+  try {
+    await listDeploymentCredentialProfiles(profile)
+    await createDeploymentCredentialProfile(profile, {
+      kind: "provider",
+      provider: "codex",
+      label: "Production Codex",
+    })
+    for (const operation of ["test", "rotate", "revoke", "purge"] as const) {
+      await requestDeploymentCredentialOperation(profile, "profile/one", operation)
+    }
+    await getDeploymentEnvironmentCredentials(profile, {
+      projectId: "project/one",
+      environmentId: "environment/one",
+      releaseId: "release/one",
+    })
+    await bindDeploymentEnvironmentCredential(profile, {
+      projectId: "project/one",
+      environmentId: "environment/one",
+      releaseId: "release/one",
+      slotId: "provider:codex",
+      profileId: "profile/one",
+    })
+    await revokeDeploymentEnvironmentCredentialBinding(profile, {
+      projectId: "project/one",
+      environmentId: "environment/one",
+      slotId: "provider:codex",
+    })
+
+    assert.deepEqual(calls.map((call) => [call.method, call.url.pathname]), [
+      ["GET", "/deployment-credentials"],
+      ["POST", "/deployment-credentials"],
+      ["POST", "/deployment-credentials/profile%2Fone/test"],
+      ["POST", "/deployment-credentials/profile%2Fone/rotate"],
+      ["POST", "/deployment-credentials/profile%2Fone/revoke"],
+      ["POST", "/deployment-credentials/profile%2Fone/purge"],
+      ["GET", "/deployment-projects/project%2Fone/environments/environment%2Fone/credentials"],
+      ["POST", "/deployment-projects/project%2Fone/environments/environment%2Fone/credential-bindings"],
+      ["POST", "/deployment-projects/project%2Fone/environments/environment%2Fone/credential-bindings/revoke"],
+    ])
+    assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
+    assert.deepEqual(calls[1]?.body, {
+      accountId: "account-1",
+      kind: "provider",
+      provider: "codex",
+      label: "Production Codex",
+    })
+    assert.ok(calls.slice(2, 6).every((call) => call.body?.accountId === "account-1"))
+    assert.equal(calls[6]?.url.searchParams.get("releaseId"), "release/one")
+    assert.deepEqual(calls[7]?.body, {
+      accountId: "account-1",
+      releaseId: "release/one",
+      slotId: "provider:codex",
+      profileId: "profile/one",
+    })
+    assert.deepEqual(calls[8]?.body, { accountId: "account-1", slotId: "provider:codex" })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 const profile: RelayCloudProfile = {
   apiUrl: "https://cloud.example.test/",
   email: "user@example.test",
@@ -326,6 +410,63 @@ function accessState() {
     builderAccountId: "builder-account",
     claims: [claimSummary()],
     members: [],
+  }
+}
+
+function credentialProfile() {
+  return {
+    id: "profile-1",
+    accountId: "account-1",
+    kind: "provider",
+    provider: "codex",
+    label: "Production Codex",
+    accountLabel: "customer@example.test",
+    version: 2,
+    status: "ready",
+    runnerConnected: true,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function credentialJob(type: string) {
+  return {
+    id: `job-${type}`,
+    accountId: "account-1",
+    profileId: "profile-1",
+    type,
+    status: "pending",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function credentialState() {
+  return {
+    projectId: "project-1",
+    environmentId: "environment-1",
+    releaseId: "release-1",
+    ready: true,
+    slots: [{
+      slot: {
+        slotId: "provider:codex",
+        kind: "provider",
+        label: "Codex provider",
+        provider: "codex",
+        required: true,
+        scope: "environment",
+        uses: ["agent:primary"],
+        testMethod: "native_auth",
+      },
+      readiness: "ready",
+      binding: {
+        id: "binding-1",
+        profileId: "profile-1",
+        version: 2,
+        status: "active",
+        profile: credentialProfile(),
+      },
+    }],
   }
 }
 

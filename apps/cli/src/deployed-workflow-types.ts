@@ -180,3 +180,94 @@ export interface AcceptDeploymentClaimResult extends DeploymentClaimResult {
 export interface DeploymentAccessResult {
   readonly access: DeploymentAccessState
 }
+
+export type DeploymentCredentialKind = "provider" | "integration"
+export type DeploymentCredentialStatus = "connecting" | "ready" | "expiring" | "expired" | "revoked" | "error"
+export type DeploymentCredentialReadiness =
+  | "ready"
+  | "missing"
+  | "connecting"
+  | "expiring"
+  | "expired"
+  | "revoked"
+  | "error"
+  | "incompatible"
+
+export interface DeploymentCredentialProfileSummary {
+  readonly id: string
+  readonly accountId: string
+  readonly kind: DeploymentCredentialKind
+  readonly provider?: string | null
+  readonly integration?: string | null
+  readonly label: string
+  readonly accountLabel?: string | null
+  readonly version: number
+  readonly status: DeploymentCredentialStatus
+  readonly statusCode?: string | null
+  readonly runnerConnected: boolean
+  readonly expiresAt?: string | null
+  readonly lastCheckedAt?: string | null
+  readonly rotatedAt?: string | null
+  readonly revokedAt?: string | null
+  readonly purgedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentCredentialJobSummary {
+  readonly id: string
+  readonly accountId: string
+  readonly profileId: string
+  readonly type: "connect" | "test" | "rotate" | "revoke" | "purge"
+  readonly status: string
+  readonly lastError?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentCredentialSlotSummary {
+  readonly slotId: string
+  readonly kind: DeploymentCredentialKind
+  readonly label: string
+  readonly provider?: string | null
+  readonly integration?: string | null
+  readonly required: boolean
+  readonly scope: "environment"
+  readonly uses: readonly string[]
+  readonly testMethod: string
+}
+
+export interface DeploymentCredentialBindingSummary {
+  readonly id: string
+  readonly profileId: string
+  readonly version: number
+  readonly status: "active" | "revoked"
+  readonly profile: DeploymentCredentialProfileSummary
+}
+
+export interface DeploymentCredentialSlotState {
+  readonly slot: DeploymentCredentialSlotSummary
+  readonly readiness: DeploymentCredentialReadiness
+  readonly binding?: DeploymentCredentialBindingSummary | null
+}
+
+export interface DeploymentEnvironmentCredentialState {
+  readonly projectId: string
+  readonly environmentId: string
+  readonly releaseId: string
+  readonly ready: boolean
+  readonly slots: readonly DeploymentCredentialSlotState[]
+}
+
+export interface DeploymentCredentialProfilesResult {
+  readonly profiles: readonly DeploymentCredentialProfileSummary[]
+}
+
+export interface DeploymentCredentialProfileResult {
+  readonly profile: DeploymentCredentialProfileSummary
+  readonly job?: DeploymentCredentialJobSummary | null
+}
+
+export interface DeploymentEnvironmentCredentialsResult {
+  readonly credentials: DeploymentEnvironmentCredentialState
+}

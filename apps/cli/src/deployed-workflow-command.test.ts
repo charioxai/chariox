@@ -122,6 +122,93 @@ test("deployed workflow TUI command drives claim handoff and member access", asy
   }
 })
 
+test("deployed workflow TUI command drives destination credentials without exposing runtime references", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly pathname: string; readonly body: Record<string, unknown> | null }> = []
+  const notices: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ pathname, body })
+    if (pathname.endsWith("/credentials") || pathname.includes("/credential-bindings")) {
+      return jsonResponse({ credentials: credentialState() })
+    }
+    if (pathname === "/deployment-credentials" && !init?.method) {
+      return jsonResponse({ profiles: [{ ...credentialProfile(), runtimeRef: "runtime-ref-secret" }] })
+    }
+    const operation = pathname === "/deployment-credentials" ? "connect" : pathname.split("/").at(-1)
+    return jsonResponse({
+      profile: { ...credentialProfile(), runtimeRef: "runtime-ref-secret" },
+      job: {
+        id: `job-${operation}`,
+        type: operation,
+        status: "pending",
+        runtimeRef: "runtime-ref-secret",
+      },
+    }, 202)
+  }
+  try {
+    notices.push((await executeDeployedWorkflowCommand(profile, ["credentials", "list"])).notice)
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "show", "project/one", "environment/one", "release/one",
+    ])).notice)
+    await executeDeployedWorkflowCommand(profile, [
+      "credentials", "connect", "provider", "codex", "Production Codex",
+    ])
+    await executeDeployedWorkflowCommand(profile, [
+      "credentials", "connect", "integration", "slack", "Customer Slack",
+    ])
+    for (const operation of ["test", "rotate", "revoke", "purge"] as const) {
+      notices.push((await executeDeployedWorkflowCommand(profile, [
+        "credentials", operation, "profile/one",
+      ])).notice)
+    }
+    await executeDeployedWorkflowCommand(profile, [
+      "credentials", "bind", "project/one", "environment/one", "release/one",
+      "provider:codex", "profile/one",
+    ])
+    await executeDeployedWorkflowCommand(profile, [
+      "credentials", "unbind", "project/one", "environment/one", "provider:codex",
+    ])
+
+    assert.equal(calls.length, 10)
+    assert.deepEqual(calls.slice(0, 4).map((call) => call.pathname), [
+      "/deployment-credentials",
+      "/deployment-projects/project%2Fone/environments/environment%2Fone/credentials",
+      "/deployment-credentials",
+      "/deployment-credentials",
+    ])
+    assert.deepEqual(calls[2]?.body, {
+      accountId: "account-1",
+      kind: "provider",
+      provider: "codex",
+      label: "Production Codex",
+    })
+    assert.deepEqual(calls[3]?.body, {
+      accountId: "account-1",
+      kind: "integration",
+      integration: "slack",
+      label: "Customer Slack",
+    })
+    assert.deepEqual(calls[8]?.body, {
+      accountId: "account-1",
+      releaseId: "release/one",
+      slotId: "provider:codex",
+      profileId: "profile/one",
+    })
+    assert.deepEqual(calls[9]?.body, { accountId: "account-1", slotId: "provider:codex" })
+    assert.match(notices[0] ?? "", /credential profile-1 ready/)
+    assert.match(notices[1] ?? "", /slot provider:codex ready/)
+    assert.equal(notices.some((notice) => notice.includes("runtime-ref-secret")), false)
+    await assert.rejects(
+      executeDeployedWorkflowCommand(profile, ["credentials", "connect", "provider", "unknown", "Invalid"]),
+      /must be codex, claude, or opencode/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("deployed workflow TUI command lists projects through the shared Cloud path", async () => {
   const originalFetch = globalThis.fetch
   const notices: string[] = []
@@ -373,6 +460,52 @@ function accessState() {
       grantedByUserId: "user-1",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  }
+}
+
+function credentialProfile() {
+  return {
+    id: "profile-1",
+    accountId: "account-1",
+    kind: "provider",
+    provider: "codex",
+    label: "Production Codex",
+    accountLabel: "customer@example.test",
+    version: 2,
+    status: "ready",
+    runnerConnected: true,
+    lastCheckedAt: "2026-01-01T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function credentialState() {
+  return {
+    projectId: "project-1",
+    environmentId: "environment-1",
+    releaseId: "release-2",
+    ready: true,
+    slots: [{
+      slot: {
+        slotId: "provider:codex",
+        kind: "provider",
+        label: "Codex provider",
+        provider: "codex",
+        required: true,
+        scope: "environment",
+        uses: ["agent:primary"],
+        testMethod: "native_auth",
+      },
+      readiness: "ready",
+      binding: {
+        id: "binding-1",
+        profileId: "profile-1",
+        version: 2,
+        status: "active",
+        profile: credentialProfile(),
+      },
     }],
   }
 }
