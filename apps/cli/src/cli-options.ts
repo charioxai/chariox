@@ -280,6 +280,7 @@ function printUsage() {
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",
     "  /cloud deployments access|member inspect or change deployment access",
     "  /cloud deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind manage destination credentials",
+    "  /cloud deployments usage|limits inspect usage or change runtime limits",
     "  /cloud invite create [n] [--level private|transparent|full] create a cloud-backed collaboration invite",
     "  /cloud invite accept <url> accept a collaboration invite",
     "  /cloud members        list cloud members for the session",

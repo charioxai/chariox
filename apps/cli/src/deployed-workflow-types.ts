@@ -3,6 +3,16 @@ export type PublicationDeploymentMode = "local_runtime" | "hosted_container"
 export type DeploymentOwnershipMode = "customer_owned" | "builder_managed" | "internal_team"
 export type DeploymentControlRole = "owner" | "admin" | "deployer" | "operator" | "viewer" | "billing" | "maintainer"
 
+export interface DeploymentRuntimeLimits {
+  readonly concurrency?: number
+  readonly queue?: number
+  readonly invocations_per_minute?: number
+  readonly body_bytes?: number
+  readonly duration_ms?: number
+  readonly daily_usage_units?: number
+  readonly ephemeral_storage_bytes?: number
+}
+
 export interface DeploymentProjectSummary {
   readonly id: string
   readonly accountId: string
@@ -46,6 +56,7 @@ export interface DeploymentEnvironmentSummary {
   readonly observedReleaseId?: string | null
   readonly desiredRevision: number
   readonly observedRevision: number
+  readonly limits?: DeploymentRuntimeLimits | null
   readonly publicUrl?: string | null
   readonly lastHealthAt?: string | null
   readonly lastError?: string | null
@@ -107,6 +118,56 @@ export interface PublicationReleaseResult {
 
 export interface DeploymentEnvironmentResult {
   readonly environment: DeploymentEnvironmentSummary
+}
+
+export interface DeploymentInvocationUsageItem {
+  readonly invocationId: string
+  readonly transport: "http" | "websocket"
+  readonly state: "active" | "completed"
+  readonly outcome?: "succeeded" | "failed" | "timed_out" | "client_closed" | "upstream_closed" | "interrupted" | null
+  readonly statusCode?: number | null
+  readonly errorCode?: string | null
+  readonly queuedMs: number
+  readonly durationMs?: number | null
+  readonly requestBytes?: number | null
+  readonly responseBytes?: number | null
+  readonly usageUnits: number
+  readonly startedAt: string
+  readonly finishedAt?: string | null
+}
+
+export interface DeploymentEnvironmentUsageSummary {
+  readonly accountId: string
+  readonly projectId: string
+  readonly environmentId: string
+  readonly deploymentId?: string | null
+  readonly generatedAt: string
+  readonly dayStartedAt: string
+  readonly limits: DeploymentRuntimeLimits
+  readonly activeInvocations: number
+  readonly invocationsLastMinute: number
+  readonly invocationsToday: number
+  readonly usageUnitsToday: number
+  readonly succeededToday: number
+  readonly failedToday: number
+  readonly timedOutToday: number
+  readonly interruptedToday: number
+  readonly averageDurationMs?: number | null
+  readonly maximumDurationMs?: number | null
+  readonly averageQueuedMs?: number | null
+  readonly requestBytesToday: number
+  readonly responseBytesToday: number
+  readonly recentInvocations: readonly DeploymentInvocationUsageItem[]
+}
+
+export interface DeploymentEnvironmentUsageResult {
+  readonly usage: DeploymentEnvironmentUsageSummary
+}
+
+export interface DeploymentEnvironmentLimitsResult {
+  readonly environment: DeploymentEnvironmentSummary
+  readonly changed: boolean
+  readonly restartRequested: boolean
 }
 
 export interface ReleasePromotionResult {

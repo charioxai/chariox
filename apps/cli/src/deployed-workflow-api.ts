@@ -11,9 +11,12 @@ import type {
   DeploymentCredentialProfilesResult,
   DeploymentEnvironmentDomainsResult,
   DeploymentEnvironmentCredentialsResult,
+  DeploymentEnvironmentLimitsResult,
+  DeploymentEnvironmentUsageResult,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
   DeploymentEnvironmentResult,
+  DeploymentRuntimeLimits,
   DeploymentProjectResult,
   DeploymentProjectsResult,
   PublicationDeploymentMode,
@@ -90,7 +93,7 @@ export async function promoteDeploymentRelease(
     readonly releaseId: string
     readonly idempotencyKey: string
     readonly configuration?: Record<string, unknown>
-    readonly limits?: Record<string, unknown>
+    readonly limits?: DeploymentRuntimeLimits
   },
 ): Promise<ReleasePromotionResult> {
   return postJson(
@@ -146,6 +149,32 @@ export async function changeDeploymentEnvironmentLifecycle(
       idempotencyKey: input.idempotencyKey,
     },
   )
+}
+
+export async function getDeploymentEnvironmentUsage(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+): Promise<DeploymentEnvironmentUsageResult> {
+  return getJson(profile, `${deploymentEnvironmentPath(projectId, environmentId)}/usage`, {
+    accountId: profile.accountId,
+  })
+}
+
+export async function updateDeploymentEnvironmentLimits(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly limits: DeploymentRuntimeLimits
+    readonly idempotencyKey: string
+  },
+): Promise<DeploymentEnvironmentLimitsResult> {
+  return postJson(profile, `${deploymentEnvironmentPath(input.projectId, input.environmentId)}/limits`, {
+    accountId: profile.accountId,
+    idempotencyKey: input.idempotencyKey,
+    limits: input.limits,
+  })
 }
 
 export async function createDeploymentClaim(
@@ -382,8 +411,12 @@ export async function operateDeploymentEnvironmentDomain(
 }
 
 function deploymentDomainsPath(projectId: string, environmentId: string): string {
+  return `${deploymentEnvironmentPath(projectId, environmentId)}/domains`
+}
+
+function deploymentEnvironmentPath(projectId: string, environmentId: string): string {
   return `/deployment-projects/${encodeURIComponent(projectId)}`
-    + `/environments/${encodeURIComponent(environmentId)}/domains`
+    + `/environments/${encodeURIComponent(environmentId)}`
 }
 
 async function getJson<TResponse>(

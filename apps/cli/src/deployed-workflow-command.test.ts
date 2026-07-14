@@ -260,6 +260,75 @@ test("deployed workflow TUI command drives the complete domain lifecycle", async
   }
 })
 
+test("deployed workflow TUI command keeps runtime usage and limits in control-plane sync", async () => {
+  const originalFetch = globalThis.fetch
+  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-limits-command-"))
+  const calls: Array<{
+    readonly method: string
+    readonly pathname: string
+    readonly body: Record<string, unknown> | null
+  }> = []
+  const limitsPath = join(root, "limits.json")
+  await writeFile(limitsPath, JSON.stringify({ concurrency: 4, queue: 12, duration_ms: 20_000 }))
+  let limits = { concurrency: 2, queue: 8, duration_ms: 30_000 }
+  globalThis.fetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ method: init?.method ?? "GET", pathname, body })
+    if (init?.method === "POST") {
+      limits = body?.limits as typeof limits
+      return jsonResponse({
+        environment: { ...projectState().environments[0], limits, desiredRevision: 3 },
+        changed: true,
+        restartRequested: true,
+      })
+    }
+    return jsonResponse({ usage: runtimeUsage(limits) })
+  }
+  try {
+    const shown = await executeDeployedWorkflowCommand(profile, [
+      "usage", "project/one", "environment/one",
+    ])
+    const limitsShown = await executeDeployedWorkflowCommand(profile, [
+      "limits", "show", "project/one", "environment/one",
+    ])
+    const updated = await executeDeployedWorkflowCommand(profile, [
+      "limits", "set", "project/one", "environment/one", limitsPath,
+      "--idempotency-key", "limits-1",
+    ])
+
+    assert.match(shown.notice, /usage active=1 minute=2 today=4 units=4/)
+    assert.match(shown.notice, /invocation invocation-1 completed succeeded/)
+    assert.doesNotMatch(shown.notice, /caller-key-secret/)
+    assert.match(limitsShown.notice, /limits concurrency=2 queue=8 duration_ms=30000/)
+    assert.match(updated.notice, /limits concurrency=4 queue=12 duration_ms=20000/)
+    assert.equal(updated.footer, "runtime limits saved; restart requested")
+    const base = "/deployment-projects/project%2Fone/environments/environment%2Fone"
+    assert.deepEqual(calls.map((call) => [call.method, call.pathname]), [
+      ["GET", `${base}/usage`],
+      ["GET", `${base}/usage`],
+      ["POST", `${base}/limits`],
+      ["GET", `${base}/usage`],
+    ])
+    assert.deepEqual(calls[2]?.body, {
+      accountId: "account-1",
+      idempotencyKey: "limits-1",
+      limits: { concurrency: 4, queue: 12, duration_ms: 20_000 },
+    })
+
+    await writeFile(limitsPath, JSON.stringify({ concurency: 4 }))
+    await assert.rejects(
+      executeDeployedWorkflowCommand(profile, [
+        "limits", "set", "project/one", "environment/one", limitsPath,
+      ]),
+      /unsupported field concurency/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("deployed workflow TUI command lists projects through the shared Cloud path", async () => {
   const originalFetch = globalThis.fetch
   const notices: string[] = []
@@ -291,7 +360,7 @@ test("deployed workflow command parses create and promotion configuration", asyn
   const root = await mkdtemp(join(tmpdir(), "arroba-deployment-command-"))
   const bodies: Record<string, unknown>[] = []
   await writeFile(join(root, "configuration.json"), JSON.stringify({ feature: true }))
-  await writeFile(join(root, "limits.json"), JSON.stringify({ maxConcurrency: 3 }))
+  await writeFile(join(root, "limits.json"), JSON.stringify({ concurrency: 3 }))
   globalThis.fetch = async (input, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>
     bodies.push(body)
@@ -339,7 +408,7 @@ test("deployed workflow command parses create and promotion configuration", asyn
       releaseId: "release-2",
       idempotencyKey: "stable-key",
       configuration: { feature: true },
-      limits: { maxConcurrency: 3 },
+      limits: { concurrency: 3 },
     })
     assert.equal(promoted.footer, "promotion requested for production")
   } finally {
@@ -600,6 +669,47 @@ function domainState() {
       cnameTarget: "ingress.apps.example.test",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  }
+}
+
+function runtimeUsage(limits: { readonly concurrency: number; readonly queue: number; readonly duration_ms: number }) {
+  return {
+    accountId: "account-1",
+    projectId: "project/one",
+    environmentId: "environment/one",
+    deploymentId: "deployment-1",
+    generatedAt: "2026-01-01T00:00:01.000Z",
+    dayStartedAt: "2026-01-01T00:00:00.000Z",
+    limits,
+    activeInvocations: 1,
+    invocationsLastMinute: 2,
+    invocationsToday: 4,
+    usageUnitsToday: 4,
+    succeededToday: 3,
+    failedToday: 1,
+    timedOutToday: 0,
+    interruptedToday: 0,
+    averageDurationMs: 240,
+    maximumDurationMs: 400,
+    averageQueuedMs: 8,
+    requestBytesToday: 1_024,
+    responseBytesToday: 2_048,
+    recentInvocations: [{
+      invocationId: "invocation-1",
+      callerKeyHash: "caller-key-secret",
+      transport: "http",
+      state: "completed",
+      outcome: "succeeded",
+      statusCode: 200,
+      errorCode: null,
+      queuedMs: 8,
+      durationMs: 240,
+      requestBytes: 100,
+      responseBytes: 200,
+      usageUnits: 1,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:00.240Z",
     }],
   }
 }

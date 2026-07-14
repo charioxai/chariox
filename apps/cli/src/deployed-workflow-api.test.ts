@@ -13,6 +13,7 @@ import {
   createDeploymentRelease,
   getDeploymentAccess,
   getDeploymentEnvironmentCredentials,
+  getDeploymentEnvironmentUsage,
   getDeploymentProject,
   listDeploymentProjects,
   listDeploymentCredentialProfiles,
@@ -24,6 +25,7 @@ import {
   revokeDeploymentEnvironmentCredentialBinding,
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
+  updateDeploymentEnvironmentLimits,
 } from "./deployed-workflow-api.js"
 import { deployedWorkflowPackageFixture } from "./deployed-workflow-package.test-support.js"
 import type { RelayCloudProfile } from "./preferences.js"
@@ -85,7 +87,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       releaseId: "release-1",
       idempotencyKey: "promote-key",
       configuration: { feature: true },
-      limits: { maxConcurrency: 2 },
+      limits: { concurrency: 2 },
     })
     await rollbackDeploymentEnvironment(profile, {
       projectId: "project-1",
@@ -127,7 +129,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       releaseId: "release-1",
       idempotencyKey: "promote-key",
       configuration: { feature: true },
-      limits: { maxConcurrency: 2 },
+      limits: { concurrency: 2 },
     })
     assert.deepEqual(calls[6]?.body, {
       accountId: "account-1",
@@ -312,6 +314,48 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
   }
 })
 
+test("deployed workflow API scopes runtime usage and limit updates", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly method: string; readonly url: URL; readonly body: Record<string, unknown> | null }> = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ method: init?.method ?? "GET", url, body })
+    if (init?.method === "POST") {
+      return jsonResponse({
+        environment: { ...environment(), limits: body?.limits, desiredRevision: 2 },
+        changed: true,
+        restartRequested: true,
+      })
+    }
+    return jsonResponse({ usage: runtimeUsage() })
+  }
+  try {
+    await getDeploymentEnvironmentUsage(profile, "project/one", "environment/one")
+    const updated = await updateDeploymentEnvironmentLimits(profile, {
+      projectId: "project/one",
+      environmentId: "environment/one",
+      limits: { concurrency: 4, queue: 8 },
+      idempotencyKey: "limits-1",
+    })
+    assert.equal(updated.restartRequested, true)
+
+    const base = "/deployment-projects/project%2Fone/environments/environment%2Fone"
+    assert.deepEqual(calls.map((call) => [call.method, call.url.pathname]), [
+      ["GET", `${base}/usage`],
+      ["POST", `${base}/limits`],
+    ])
+    assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
+    assert.deepEqual(calls[1]?.body, {
+      accountId: "account-1",
+      idempotencyKey: "limits-1",
+      limits: { concurrency: 4, queue: 8 },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 const profile: RelayCloudProfile = {
   apiUrl: "https://cloud.example.test/",
   email: "user@example.test",
@@ -378,6 +422,32 @@ function environment() {
     publicUrl: "https://demo.example.test/",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function runtimeUsage() {
+  return {
+    accountId: "account-1",
+    projectId: "project/one",
+    environmentId: "environment/one",
+    deploymentId: "deployment-1",
+    generatedAt: "2026-01-01T00:00:01.000Z",
+    dayStartedAt: "2026-01-01T00:00:00.000Z",
+    limits: { concurrency: 2, queue: 8 },
+    activeInvocations: 1,
+    invocationsLastMinute: 2,
+    invocationsToday: 3,
+    usageUnitsToday: 3,
+    succeededToday: 2,
+    failedToday: 1,
+    timedOutToday: 0,
+    interruptedToday: 0,
+    averageDurationMs: 20,
+    maximumDurationMs: 30,
+    averageQueuedMs: 4,
+    requestBytesToday: 100,
+    responseBytesToday: 200,
+    recentInvocations: [],
   }
 }
 

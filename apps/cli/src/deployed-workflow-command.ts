@@ -14,6 +14,7 @@ import {
   getDeploymentAccess,
   getDeploymentEnvironmentCredentials,
   getDeploymentEnvironmentDomains,
+  getDeploymentEnvironmentUsage,
   getDeploymentProject,
   listDeploymentProjects,
   listDeploymentCredentialProfiles,
@@ -26,6 +27,7 @@ import {
   revokeDeploymentEnvironmentCredentialBinding,
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
+  updateDeploymentEnvironmentLimits,
 } from "./deployed-workflow-api.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
@@ -36,10 +38,12 @@ import type {
   DeploymentCredentialProfileSummary,
   DeploymentEnvironmentDomainState,
   DeploymentEnvironmentCredentialState,
+  DeploymentEnvironmentUsageSummary,
   DeploymentPortfolioItem,
   DeploymentEnvironmentSummary,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
+  DeploymentRuntimeLimits,
   PublicationDeploymentMode,
   PublicationReleaseSummary,
   ReleasePromotionResult,
@@ -171,6 +175,48 @@ export async function executeDeployedWorkflowCommand(
       idempotencyKey,
     })
     return formatLifecycleOutput(result.environment, action)
+  }
+  if (action === "usage" || action === "runtime") {
+    const projectId = requiredArg(argv[1], runtimeUsage)
+    const environmentId = requiredArg(argv[2], runtimeUsage)
+    const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+    return {
+      notice: formatDeploymentEnvironmentUsage(result.usage),
+      footer: `${result.usage.invocationsToday} invocation${result.usage.invocationsToday === 1 ? "" : "s"} today`,
+    }
+  }
+  if (action === "limit" || action === "limits") {
+    const limitsAction = argv[1] ?? "show"
+    if (limitsAction === "show" || limitsAction === "status") {
+      const projectId = requiredArg(argv[2], limitsShowUsage)
+      const environmentId = requiredArg(argv[3], limitsShowUsage)
+      const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      return {
+        notice: formatDeploymentEnvironmentUsage(result.usage),
+        footer: "deployment runtime limits",
+      }
+    }
+    if (limitsAction === "set") {
+      const projectId = requiredArg(argv[2], limitsSetUsage)
+      const environmentId = requiredArg(argv[3], limitsSetUsage)
+      const limitsPath = requiredArg(argv[4], limitsSetUsage)
+      const limits = parseRuntimeLimits(await readJsonObject(limitsPath, "limits"))
+      const idempotencyKey = parseIdempotencyKey(argv.slice(5), limitsSetUsage) ?? randomUUID()
+      const updated = await updateDeploymentEnvironmentLimits(profile, {
+        projectId,
+        environmentId,
+        limits,
+        idempotencyKey,
+      })
+      const result = await getDeploymentEnvironmentUsage(profile, projectId, environmentId)
+      return {
+        notice: formatDeploymentEnvironmentUsage(result.usage),
+        footer: updated.changed
+          ? updated.restartRequested ? "runtime limits saved; restart requested" : "runtime limits saved"
+          : "runtime limits already current",
+      }
+    }
+    throw new Error(limitsUsage)
   }
   if (action === "credential" || action === "credentials") {
     const credentialAction = argv[1] ?? "list"
@@ -503,6 +549,36 @@ export function formatDeploymentEnvironmentDomains(domains: DeploymentEnvironmen
   ].join("\n")
 }
 
+export function formatDeploymentEnvironmentUsage(usage: DeploymentEnvironmentUsageSummary): string {
+  return [
+    `runtime project=${usage.projectId} environment=${usage.environmentId}`,
+    `deployment ${usage.deploymentId ?? "none"}`,
+    `limits ${formatDeploymentRuntimeLimits(usage.limits)}`,
+    `usage active=${usage.activeInvocations} minute=${usage.invocationsLastMinute} today=${usage.invocationsToday} units=${usage.usageUnitsToday}`,
+    `outcomes succeeded=${usage.succeededToday} failed=${usage.failedToday} timed_out=${usage.timedOutToday} interrupted=${usage.interruptedToday}`,
+    `latency average_ms=${formatMetric(usage.averageDurationMs)} maximum_ms=${formatMetric(usage.maximumDurationMs)} queue_average_ms=${formatMetric(usage.averageQueuedMs)}`,
+    `traffic request_bytes=${usage.requestBytesToday} response_bytes=${usage.responseBytesToday}`,
+    `generated_at ${usage.generatedAt}`,
+    ...usage.recentInvocations.map((invocation) => [
+      `invocation ${invocation.invocationId} ${invocation.state} ${invocation.outcome ?? "pending"}`,
+      `  transport ${invocation.transport} status=${invocation.statusCode ?? "none"} error=${invocation.errorCode ?? "none"}`,
+      `  timing queued_ms=${invocation.queuedMs} duration_ms=${formatMetric(invocation.durationMs)}`,
+      `  bytes request=${invocation.requestBytes ?? "none"} response=${invocation.responseBytes ?? "none"} units=${invocation.usageUnits}`,
+      `  started_at ${invocation.startedAt}`,
+      `  finished_at ${invocation.finishedAt ?? "active"}`,
+    ].join("\n")),
+  ].join("\n")
+}
+
+function formatDeploymentRuntimeLimits(limits: DeploymentRuntimeLimits): string {
+  const values = runtimeLimitKeys.flatMap((key) => limits[key] === undefined ? [] : [`${key}=${limits[key]}`])
+  return values.join(" ") || "platform_defaults"
+}
+
+function formatMetric(value: number | null | undefined): string {
+  return value === null || value === undefined ? "none" : String(value)
+}
+
 function formatDeploymentCredentialOperation(
   profile: DeploymentCredentialProfileSummary,
   job: { readonly id: string; readonly type: string; readonly status: string } | null | undefined,
@@ -583,7 +659,11 @@ const domainShowUsage = "usage: deployments domains show <project-id> <environme
 const domainAddUsage = "usage: deployments domains add <project-id> <environment-id> <hostname>"
 const domainOperationUsage = "usage: deployments domains verify|canonical|remove <project-id> <environment-id> <domain-id>"
 const domainUsage = "usage: deployments domains show|add|verify|canonical|remove ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const runtimeUsage = "usage: deployments usage <project-id> <environment-id>"
+const limitsShowUsage = "usage: deployments limits show <project-id> <environment-id>"
+const limitsSetUsage = "usage: deployments limits set <project-id> <environment-id> <json-file> [--idempotency-key value]"
+const limitsUsage = "usage: deployments limits show|set ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`
@@ -718,17 +798,17 @@ function parseRuntimeMode(value: string): PublicationDeploymentMode {
 
 async function parsePromotionOptions(argv: readonly string[]): Promise<{
   readonly configuration?: Record<string, unknown>
-  readonly limits?: Record<string, unknown>
+  readonly limits?: DeploymentRuntimeLimits
   readonly idempotencyKey?: string
 }> {
   let configuration: Record<string, unknown> | undefined
-  let limits: Record<string, unknown> | undefined
+  let limits: DeploymentRuntimeLimits | undefined
   let idempotencyKey: string | undefined
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index]
     const value = requiredArg(argv[index + 1], promoteUsage)
     if (option === "--configuration") configuration = await readJsonObject(value, "configuration")
-    else if (option === "--limits") limits = await readJsonObject(value, "limits")
+    else if (option === "--limits") limits = parseRuntimeLimits(await readJsonObject(value, "limits"))
     else if (option === "--idempotency-key") idempotencyKey = value
     else throw new Error(`unknown deployments promote option ${option}`)
     index += 1
@@ -754,6 +834,34 @@ async function readJsonObject(path: string, label: string): Promise<Record<strin
     throw new Error(`${label} file must contain a JSON object`)
   }
   return value as Record<string, unknown>
+}
+
+const runtimeLimitRanges = {
+  concurrency: [1, 64],
+  queue: [0, 1_000],
+  invocations_per_minute: [1, 100_000],
+  body_bytes: [1, 16 * 1024 * 1024],
+  duration_ms: [100, 30 * 60 * 1_000],
+  daily_usage_units: [1, 1_000_000_000],
+  ephemeral_storage_bytes: [1024 * 1024, 10 * 1024 * 1024 * 1024],
+} as const satisfies Record<keyof DeploymentRuntimeLimits, readonly [number, number]>
+
+const runtimeLimitKeys = Object.keys(runtimeLimitRanges) as readonly (keyof DeploymentRuntimeLimits)[]
+
+function parseRuntimeLimits(value: Record<string, unknown>): DeploymentRuntimeLimits {
+  const unknown = Object.keys(value).find((key) => !(key in runtimeLimitRanges))
+  if (unknown) throw new Error(`deployment limits contain unsupported field ${unknown}`)
+  const limits: Partial<Record<keyof DeploymentRuntimeLimits, number>> = {}
+  for (const key of runtimeLimitKeys) {
+    const candidate = value[key]
+    if (candidate === undefined) continue
+    const [minimum, maximum] = runtimeLimitRanges[key]
+    if (!Number.isSafeInteger(candidate) || (candidate as number) < minimum || (candidate as number) > maximum) {
+      throw new Error(`deployment limit ${key} must be an integer between ${minimum} and ${maximum}`)
+    }
+    limits[key] = candidate as number
+  }
+  return limits
 }
 
 function requiredArg(value: string | undefined, usage: string): string {
