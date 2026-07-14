@@ -44,6 +44,7 @@ import {
 
 test("gateway materializes exported publication packages through the kernel", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-materialize-"))
+  const runtimeWorkspace = `${root}.runtime`
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -114,6 +115,7 @@ test("gateway materializes exported publication packages through the kernel", as
     const config = await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
       materialize: true,
+      runtimeWorkspace,
       client: {
         send: async (request) => {
           requests.push(request)
@@ -146,14 +148,25 @@ test("gateway materializes exported publication packages through the kernel", as
       "MaterializeWorkflowPublication",
       "AttachToSession",
     ])
-    assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: "/repo" } })
+    assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: runtimeWorkspace } })
     const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
       MaterializeWorkflowPublication: {
         snapshot: {
-          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+          source_session: { workspace_id: string; worktree_id: string }
+          agents: Array<{
+            provider: string
+            model: string | null
+            effort?: string | null
+            workspace_id?: string | null
+            worktree_id?: string | null
+          }>
         }
       }
     }
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.worktree_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "opencode")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "medium")
@@ -161,7 +174,7 @@ test("gateway materializes exported publication packages through the kernel", as
     assert.equal(config.session_id, "runtime-session-1")
     assert.equal(config.workflow_ref, "workflow-1")
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
@@ -263,12 +276,13 @@ test("gateway materializes Agent App replica sessions from package config", asyn
       "AttachToSession",
     ])
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
 test("gateway remaps portable package workspace paths before local materialization", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-server-portable-workspace-materialize-"))
+  const runtimeWorkspace = `${root}.runtime-${process.pid}`
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -355,12 +369,12 @@ test("gateway remaps portable package workspace paths before local materializati
         }
       }
     }
-    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, root)
-    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, root)
-    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, root)
-    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.worktree_id, root)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, runtimeWorkspace)
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.worktree_id, runtimeWorkspace)
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
@@ -462,7 +476,7 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
       effort: "high",
     })
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
@@ -554,7 +568,7 @@ test("gateway accepts provider-prefixed captured models when the provider matche
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5.5")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "high")
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
@@ -628,7 +642,7 @@ test("gateway fails before materialization when provider/model bindings cannot b
     )
     assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["GetProviderCatalog"])
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
 
@@ -710,6 +724,12 @@ test("gateway fails package materialization before runtime creation when require
       "ListCredentials",
     ])
   } finally {
-    await rm(root, { recursive: true, force: true })
+    await removeMaterializationFixture(root)
   }
 })
+
+async function removeMaterializationFixture(root: string): Promise<void> {
+  await rm(root, { recursive: true, force: true })
+  await rm(`${root}.runtime`, { recursive: true, force: true })
+  await rm(`${root}.runtime-${process.pid}`, { recursive: true, force: true })
+}

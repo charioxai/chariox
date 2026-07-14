@@ -6,6 +6,8 @@ use super::*;
 
 mod deployment_contract;
 
+const PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
+
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     session: &crate::session::RuntimeSession,
@@ -49,7 +51,7 @@ pub(super) fn workflow_publication_package_files(
         .iter()
         .map(|node| node.agent_id().to_string())
         .collect::<std::collections::BTreeSet<_>>();
-    let agents = session
+    let mut agents = session
         .agents()
         .iter()
         .filter(|agent| node_agent_ids.contains(agent.id()))
@@ -69,14 +71,18 @@ pub(super) fn workflow_publication_package_files(
             ),
         });
     }
+    for agent in &mut agents {
+        agent.set_workspace_id(Some(PUBLICATION_WORKSPACE_ROOT.to_string()));
+        agent.set_worktree_id(Some(PUBLICATION_WORKSPACE_ROOT.to_string()));
+    }
     let snapshot = crate::local::WorkflowPublicationSnapshot {
         schema_version: 1,
         captured_at_ms: Some(publication.created_at_ms()),
         source_session: Some(crate::local::WorkflowPublicationSourceSessionSnapshot {
             id: Some(session.id().to_string()),
             alias: session.alias().map(str::to_string),
-            workspace_id: session.workspace_id().to_string(),
-            worktree_id: session.worktree_id().to_string(),
+            workspace_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
+            worktree_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
         }),
         workflow: workflow.clone(),
         endpoint: Some(endpoint),

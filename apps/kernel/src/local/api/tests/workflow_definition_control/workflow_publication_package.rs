@@ -180,6 +180,23 @@ fn local_request_api_exports_agent_app_publication_package() {
         _ => panic!("unexpected repeated local response"),
     }
     let publication_json = package_json_file(&exported, "publication.json");
+    let workflow_snapshot = package_json_file(&exported, "workflow.snapshot.json");
+    assert_eq!(
+        workflow_snapshot["source_session"]["workspace_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["source_session"]["worktree_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["agents"][0]["workspace_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["agents"][0]["worktree_id"],
+        serde_json::json!("/workspace")
+    );
     assert_eq!(publication_json["package_version"], serde_json::json!(3));
     assert_eq!(
         publication_json["deployment_contract"],

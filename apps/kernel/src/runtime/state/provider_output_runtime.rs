@@ -100,6 +100,11 @@ impl KernelRuntimeState {
         {
             Ok(chunks) => chunks,
             Err(error) => {
+                if provider_run.state() == crate::provider::ProviderRunState::Starting
+                    && matches!(error, DaemonError::PtyProcessNotFound { .. })
+                {
+                    return Ok(Vec::new());
+                }
                 if self
                     .reconcile_provider_run_exit(session_id, provider_run_id)
                     .await?
