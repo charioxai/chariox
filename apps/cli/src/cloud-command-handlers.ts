@@ -117,7 +117,7 @@ export async function handleCloudSlashCommand(
   if (await handleCloudSessionCommand(deps, profile, area, action, args)) {
     return
   }
-  deps.flashFooter("usage: /cloud [open|link|status] | /cloud deployments list|show|create|adopt|preflight|release|promote|rollback|start|stop|restart|usage|limits|operations|credentials|domains | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")
+  deps.flashFooter("usage: /cloud [open|link|status] | /cloud deployments list|show|create|adopt|preflight|release|promote|rollback|start|stop|restart|usage|limits|operations|credentials|domains|audience | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")
 }
 
 export async function handleCollabSlashCommand(

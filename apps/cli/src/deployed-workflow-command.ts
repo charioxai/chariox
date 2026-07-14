@@ -32,6 +32,9 @@ import {
   updateDeploymentEnvironmentLimits,
   updateDeploymentEnvironmentOperations,
 } from "./deployed-workflow-api.js"
+import {
+  executeDeploymentAudienceCommand,
+} from "./deployed-workflow-audience-command.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
   DeployedWorkflowProjectState,
@@ -443,6 +446,9 @@ export async function executeDeployedWorkflowCommand(
     }
     throw new Error(domainUsage)
   }
+  if (action === "audience") {
+    return executeDeploymentAudienceCommand(profile, argv.slice(1))
+  }
   if (action === "claim") {
     const claimAction = argv[1]
     if (claimAction === "create") {
@@ -831,7 +837,7 @@ const operationsUsage = "usage: deployments operations show|deny|resume|set ..."
 const telemetryExportUsage = "usage: deployments telemetry export <project-id> <environment-id> <output-path>"
 const telemetryDeleteUsage = "usage: deployments telemetry delete <project-id> <environment-id> [--idempotency-key value]"
 const telemetryUsage = "usage: deployments telemetry export|delete ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | audience show|policy|grant|invite|key ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`

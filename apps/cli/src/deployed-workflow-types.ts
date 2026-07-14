@@ -465,3 +465,70 @@ export interface DeploymentEnvironmentDomainState {
 export interface DeploymentEnvironmentDomainsResult {
   readonly domains: DeploymentEnvironmentDomainState
 }
+
+export type DeploymentAudienceMode = "public" | "restricted"
+export type DeploymentAudienceGrantKind = "email" | "email_domain" | "account"
+export type DeploymentAudienceGrantStatus = "invited" | "active" | "revoked"
+
+export interface DeploymentAudienceRouteSummary {
+  readonly id: string
+  readonly path?: string | null
+  readonly transport?: string | null
+  readonly requiredRoles: readonly string[]
+}
+
+export interface DeploymentAudienceGrantSummary {
+  readonly id: string
+  readonly policyId: string
+  readonly kind: DeploymentAudienceGrantKind
+  readonly subject: string
+  readonly roles: readonly string[]
+  readonly status: DeploymentAudienceGrantStatus
+  readonly inviteTokenPrefix?: string | null
+  readonly expiresAt?: string | null
+  readonly verifiedAt?: string | null
+  readonly acceptedByUserId?: string | null
+  readonly acceptedAt?: string | null
+  readonly revokedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentAudienceApiKeySummary {
+  readonly id: string
+  readonly policyId: string
+  readonly name: string
+  readonly keyPrefix: string
+  readonly roles: readonly string[]
+  readonly expiresAt?: string | null
+  readonly lastUsedAt?: string | null
+  readonly revokedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentAudiencePolicySummary {
+  readonly id: string
+  readonly accountId: string
+  readonly projectId: string
+  readonly environmentId: string
+  readonly mode: DeploymentAudienceMode
+  readonly defaultRoles: readonly string[]
+  readonly routes: readonly DeploymentAudienceRouteSummary[]
+  readonly grants: readonly DeploymentAudienceGrantSummary[]
+  readonly apiKeys: readonly DeploymentAudienceApiKeySummary[]
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentAudienceResult {
+  readonly audience: DeploymentAudiencePolicySummary
+}
+
+export interface UpsertDeploymentAudienceGrantResult extends DeploymentAudienceResult {
+  readonly grantToken?: string
+}
+
+export interface CreateDeploymentAudienceApiKeyResult extends DeploymentAudienceResult {
+  readonly apiKey: string
+}

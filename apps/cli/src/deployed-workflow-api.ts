@@ -3,7 +3,11 @@ import { preparePublicationReleasePackage } from "./deployed-workflow-package.js
 import type {
   AcceptDeploymentClaimResult,
   CreateDeploymentClaimResult,
+  CreateDeploymentAudienceApiKeyResult,
   DeploymentAccessResult,
+  DeploymentAudienceGrantKind,
+  DeploymentAudienceMode,
+  DeploymentAudienceResult,
   DeploymentClaimResult,
   DeploymentControlRole,
   DeploymentCredentialKind,
@@ -26,6 +30,7 @@ import type {
   PublicationDeploymentMode,
   PublicationReleaseResult,
   ReleasePromotionResult,
+  UpsertDeploymentAudienceGrantResult,
 } from "./deployed-workflow-types.js"
 
 export async function listDeploymentProjects(
@@ -319,6 +324,105 @@ export async function revokeDeploymentProjectMember(
   )
 }
 
+export async function getDeploymentAudience(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+): Promise<DeploymentAudienceResult> {
+  return getJson(profile, deploymentAudiencePath(projectId, environmentId), {
+    accountId: profile.accountId,
+  })
+}
+
+export async function setDeploymentAudiencePolicy(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly mode: DeploymentAudienceMode
+    readonly defaultRoles: readonly string[]
+  },
+): Promise<DeploymentAudienceResult> {
+  return postJson(profile, `${deploymentAudiencePath(input.projectId, input.environmentId)}/policy`, {
+    accountId: profile.accountId,
+    mode: input.mode,
+    defaultRoles: input.defaultRoles,
+  })
+}
+
+export async function upsertDeploymentAudienceGrant(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly kind: DeploymentAudienceGrantKind
+    readonly subject: string
+    readonly roles: readonly string[]
+    readonly status: "active" | "invited"
+    readonly expiresInSeconds?: number | null
+  },
+): Promise<UpsertDeploymentAudienceGrantResult> {
+  return postJson(profile, `${deploymentAudiencePath(input.projectId, input.environmentId)}/grants`, {
+    accountId: profile.accountId,
+    kind: input.kind,
+    subject: input.subject,
+    roles: input.roles,
+    status: input.status,
+    ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}),
+  })
+}
+
+export async function revokeDeploymentAudienceGrant(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+  grantId: string,
+): Promise<DeploymentAudienceResult> {
+  return postJson(
+    profile,
+    `${deploymentAudiencePath(projectId, environmentId)}/grants/${encodeURIComponent(grantId)}/revoke`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function createDeploymentAudienceApiKey(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly name: string
+    readonly roles: readonly string[]
+    readonly expiresInSeconds?: number | null
+  },
+): Promise<CreateDeploymentAudienceApiKeyResult> {
+  return postJson(profile, `${deploymentAudiencePath(input.projectId, input.environmentId)}/api-keys`, {
+    accountId: profile.accountId,
+    name: input.name,
+    roles: input.roles,
+    ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}),
+  })
+}
+
+export async function revokeDeploymentAudienceApiKey(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+  apiKeyId: string,
+): Promise<DeploymentAudienceResult> {
+  return postJson(
+    profile,
+    `${deploymentAudiencePath(projectId, environmentId)}/api-keys/${encodeURIComponent(apiKeyId)}/revoke`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function acceptDeploymentAudienceInvitation(
+  profile: RelayCloudProfile,
+  grantToken: string,
+): Promise<DeploymentAudienceResult> {
+  return postJson(profile, "/deployment-audience-invitations/accept", { grantToken })
+}
+
 export async function listDeploymentCredentialProfiles(
   profile: RelayCloudProfile,
 ): Promise<DeploymentCredentialProfilesResult> {
@@ -456,6 +560,10 @@ export async function operateDeploymentEnvironmentDomain(
 
 function deploymentDomainsPath(projectId: string, environmentId: string): string {
   return `${deploymentEnvironmentPath(projectId, environmentId)}/domains`
+}
+
+function deploymentAudiencePath(projectId: string, environmentId: string): string {
+  return `${deploymentEnvironmentPath(projectId, environmentId)}/audience`
 }
 
 function deploymentEnvironmentPath(projectId: string, environmentId: string): string {
