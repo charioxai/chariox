@@ -16,6 +16,7 @@ import { runClaudeNativeTui } from "./native-tui/claude.js"
 import { runCodexNativeTui } from "./native-tui/codex.js"
 import { runOpenCodeNativeTui } from "./native-tui/opencode.js"
 import { runPublicationDeploymentCommand } from "./publication-deployment-command.js"
+import { runDeployedWorkflowCommand } from "./deployed-workflow-command.js"
 
 async function main() {
   const argv = process.argv.slice(2)
@@ -36,6 +37,9 @@ async function main() {
     return
   }
   if (await runPublicationDeploymentCommand(argv)) {
+    return
+  }
+  if (await runDeployedWorkflowCommand(argv)) {
     return
   }
 

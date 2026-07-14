@@ -16,6 +16,7 @@ import {
   handleRelayCloudCommand,
   type RelayCloudCommandHandlerDeps,
 } from "./relay-cloud-command-handlers.js"
+import { handleDeployedWorkflowCloudCommand } from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
   & CloudCommandLifecycleDeps
@@ -110,10 +111,13 @@ export async function handleCloudSlashCommand(
     deps.flashFooter("cloud profile missing; run /cloud link first", "error")
     return
   }
+  if (await handleDeployedWorkflowCloudCommand(deps, profile, area, action, args)) {
+    return
+  }
   if (await handleCloudSessionCommand(deps, profile, area, action, args)) {
     return
   }
-  deps.flashFooter("usage: /cloud [open|link|status] | /cloud invite create [max-uses] [--level private|transparent|full] | /cloud invite accept <invite-token-or-url> | /cloud members | /cloud collaborators", "error")
+  deps.flashFooter("usage: /cloud [open|link|status] | /cloud deployments list|show|create|adopt|preflight|release|promote|rollback | /cloud invite create|accept | /cloud members | /cloud collaborators", "error")
 }
 
 export async function handleCollabSlashCommand(

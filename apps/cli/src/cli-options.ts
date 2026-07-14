@@ -276,6 +276,7 @@ function printUsage() {
     "  /cloud                open Arroba Cloud terminal",
     "  /cloud link           link this machine to Arroba Cloud",
     "  /cloud status         show Cloud and relay status",
+    "  /cloud deployments    manage deployed workflow projects and releases",
     "  /cloud invite create [n] [--level private|transparent|full] create a cloud-backed collaboration invite",
     "  /cloud invite accept <url> accept a collaboration invite",
     "  /cloud members        list cloud members for the session",
