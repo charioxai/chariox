@@ -154,6 +154,45 @@ export interface DeploymentInvocationUsageItem {
   readonly finishedAt?: string | null
 }
 
+export interface DeploymentOperationalAlert {
+  readonly code: string
+  readonly severity: "warning" | "critical"
+  readonly message: string
+  readonly observedAt: string
+  readonly currentValue?: number | null
+  readonly threshold?: number | null
+  readonly unit?: string
+}
+
+export interface DeploymentOperationalDiagnostic {
+  readonly code: string
+  readonly status: "healthy" | "attention" | "blocked" | "unknown"
+  readonly message: string
+  readonly observedAt?: string | null
+  readonly details?: Readonly<Record<string, string | number | boolean | null>>
+}
+
+export interface DeploymentOperationalAuditEvent {
+  readonly auditEventId: string
+  readonly actorUserId?: string | null
+  readonly actorKind: "USER" | "CLIENT" | "MACHINE" | "SYSTEM"
+  readonly eventType: string
+  readonly subjectType?: string | null
+  readonly subjectId?: string | null
+  readonly metadata?: unknown
+  readonly occurredAt: string
+}
+
+export interface DeploymentTelemetryPrivacySummary {
+  readonly captureMode: "metadata_only"
+  readonly contentCaptureEnabled: false
+  readonly invocationMetadataRetentionDays: number
+  readonly deploymentLogRetentionDays: number
+  readonly activeInvocationsProtectedFromDeletion: true
+  readonly stateContract: "stateless_external_storage"
+  readonly ephemeralStoragePersistent: false
+}
+
 export interface DeploymentEnvironmentUsageSummary {
   readonly accountId: string
   readonly projectId: string
@@ -178,6 +217,10 @@ export interface DeploymentEnvironmentUsageSummary {
   readonly requestBytesToday: number
   readonly responseBytesToday: number
   readonly recentInvocations: readonly DeploymentInvocationUsageItem[]
+  readonly alerts?: readonly DeploymentOperationalAlert[]
+  readonly diagnostics?: readonly DeploymentOperationalDiagnostic[]
+  readonly auditEvents?: readonly DeploymentOperationalAuditEvent[]
+  readonly privacy?: DeploymentTelemetryPrivacySummary | null
 }
 
 export interface DeploymentEnvironmentUsageResult {

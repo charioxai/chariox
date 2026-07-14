@@ -298,6 +298,11 @@ test("deployed workflow TUI command keeps runtime usage and limits in control-pl
     ])
 
     assert.match(shown.notice, /usage active=1 minute=2 today=4 units=4/)
+    assert.match(shown.notice, /active_alerts 1/)
+    assert.match(shown.notice, /alert error_rate severity=warning current=25 threshold=20 unit=percent/)
+    assert.match(shown.notice, /diagnostic runtime_process healthy/)
+    assert.match(shown.notice, /audit deployment_environment\.limits_updated actor=user-1/)
+    assert.match(shown.notice, /privacy capture=metadata_only content_capture=disabled active_invocations_protected=yes state_contract=stateless_external_storage/)
     assert.match(shown.notice, /invocation invocation-1 completed succeeded/)
     assert.doesNotMatch(shown.notice, /caller-key-secret/)
     assert.match(limitsShown.notice, /limits concurrency=2 queue=8 duration_ms=30000/)
@@ -764,6 +769,40 @@ function runtimeUsage(limits: { readonly concurrency: number; readonly queue: nu
     averageQueuedMs: 8,
     requestBytesToday: 1_024,
     responseBytesToday: 2_048,
+    alerts: [{
+      code: "error_rate",
+      severity: "warning" as const,
+      message: "Invocation error rate is 25%",
+      observedAt: "2026-01-01T00:00:01.000Z",
+      currentValue: 25,
+      threshold: 20,
+      unit: "percent",
+    }],
+    diagnostics: [{
+      code: "runtime_process",
+      status: "healthy" as const,
+      message: "Runtime is ready with 1 ready replica",
+      observedAt: "2026-01-01T00:00:01.000Z",
+      details: { deployment_id: "deployment-1", queue_depth: 0 },
+    }],
+    auditEvents: [{
+      auditEventId: "audit-1",
+      actorUserId: "user-1",
+      actorKind: "USER" as const,
+      eventType: "deployment_environment.limits_updated",
+      subjectType: "deployment_environment",
+      subjectId: "environment/one",
+      occurredAt: "2026-01-01T00:00:01.000Z",
+    }],
+    privacy: {
+      captureMode: "metadata_only" as const,
+      contentCaptureEnabled: false as const,
+      invocationMetadataRetentionDays: 30,
+      deploymentLogRetentionDays: 30,
+      activeInvocationsProtectedFromDeletion: true as const,
+      stateContract: "stateless_external_storage" as const,
+      ephemeralStoragePersistent: false as const,
+    },
     recentInvocations: [{
       invocationId: "invocation-1",
       callerKeyHash: "caller-key-secret",

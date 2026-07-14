@@ -623,6 +623,25 @@ export function formatDeploymentEnvironmentUsage(usage: DeploymentEnvironmentUsa
     `outcomes succeeded=${usage.succeededToday} failed=${usage.failedToday} timed_out=${usage.timedOutToday} interrupted=${usage.interruptedToday}`,
     `latency average_ms=${formatMetric(usage.averageDurationMs)} maximum_ms=${formatMetric(usage.maximumDurationMs)} queue_average_ms=${formatMetric(usage.averageQueuedMs)}`,
     `traffic request_bytes=${usage.requestBytesToday} response_bytes=${usage.responseBytesToday}`,
+    `active_alerts ${usage.alerts?.length ?? 0}`,
+    ...(usage.alerts ?? []).map((alert) => (
+      `alert ${alert.code} severity=${alert.severity} current=${formatMetric(alert.currentValue)} threshold=${formatMetric(alert.threshold)} unit=${alert.unit ?? "none"}\n`
+      + `  ${alert.message}\n`
+      + `  observed_at ${alert.observedAt}`
+    )),
+    `diagnostics ${usage.diagnostics?.length ?? 0}`,
+    ...(usage.diagnostics ?? []).map((diagnostic) => (
+      `diagnostic ${diagnostic.code} ${diagnostic.status}\n`
+      + `  ${diagnostic.message}\n`
+      + `  details ${formatOperationalDetails(diagnostic.details)}\n`
+      + `  observed_at ${diagnostic.observedAt ?? "unknown"}`
+    )),
+    `audit_events ${usage.auditEvents?.length ?? 0}`,
+    ...(usage.auditEvents ?? []).map((event) => (
+      `audit ${event.eventType} actor=${event.actorUserId ?? event.actorKind.toLowerCase()} subject=${event.subjectType ?? "none"}:${event.subjectId ?? "none"}\n`
+      + `  occurred_at ${event.occurredAt}`
+    )),
+    `privacy capture=${usage.privacy?.captureMode ?? "metadata_only"} content_capture=disabled active_invocations_protected=yes state_contract=${usage.privacy?.stateContract ?? "stateless_external_storage"} persistent_ephemeral_storage=no`,
     `generated_at ${usage.generatedAt}`,
     ...usage.recentInvocations.map((invocation) => [
       `invocation ${invocation.invocationId} ${invocation.state} ${invocation.outcome ?? "pending"}`,
@@ -642,6 +661,17 @@ function formatDeploymentRuntimeLimits(limits: DeploymentRuntimeLimits): string 
 
 function formatMetric(value: number | null | undefined): string {
   return value === null || value === undefined ? "none" : String(value)
+}
+
+function formatOperationalDetails(
+  details: Readonly<Record<string, string | number | boolean | null>> | undefined,
+): string {
+  if (!details) return "none"
+  const values = Object.entries(details)
+    .filter(([, value]) => value !== null)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${String(value)}`)
+  return values.join(" ") || "none"
 }
 
 function formatDeploymentCredentialOperation(
