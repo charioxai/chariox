@@ -3,14 +3,15 @@ import { resolve as resolvePath } from "node:path"
 import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
+  WorkflowPublicationPackageFile,
 } from "./kernel-types.js"
 import {
   type CreateWorkflowPublicationOptions,
   createWorkflowPublicationRequest,
   disableWorkflowPublicationRequest,
+  exportWorkflowPublicationPackageRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
-  getSessionStateRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -68,16 +69,29 @@ export async function executeWorkflowPublicationCommand(
     }
     const options = parseWorkflowPublicationExportOptions(optionArgs)
     if (!options.ok) return { ok: false, message: options.message }
-    const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
-    const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
-    const sessionResponse = await deps.client.send(getSessionStateRequest(sessionId))
-    const session = expectVariant<{ session: RuntimeSession }>(sessionResponse, "SessionState").session
+    const response = await deps.client.send(exportWorkflowPublicationPackageRequest(
+      sessionId,
+      publicationRef,
+      options.kernelUrl ? { kernelUrl: options.kernelUrl } : {},
+    ))
+    const exported = expectVariant<{
+      publication: WorkflowPublicationDefinition
+      package_version: number
+      package_digest: string
+      package_files: WorkflowPublicationPackageFile[]
+    }>(response, "WorkflowPublicationPackageExported")
     const outputRoot = resolvePath(context.worktree ?? context.workspace ?? process.cwd(), outputDirectory)
-    const packageFiles = await writeWorkflowPublicationExportPackage(publication, session, outputRoot, options.kernelUrl)
+    const packageFiles = await writeWorkflowPublicationExportPackage(outputRoot, exported.package_files)
     return {
       ok: true,
-      message: `exported workflow publication ${formatWorkflowPublicationLabel(publication)} to ${outputRoot}`,
-      data: { publication, outputRoot, files: packageFiles },
+      message: `exported workflow publication ${formatWorkflowPublicationLabel(exported.publication)} package v${exported.package_version} ${exported.package_digest} to ${outputRoot}`,
+      data: {
+        publication: exported.publication,
+        outputRoot,
+        files: packageFiles,
+        packageVersion: exported.package_version,
+        packageDigest: exported.package_digest,
+      },
     }
   }
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -587,20 +587,44 @@ test("executeShellCommand exports a workflow publication package", async () => {
       mode: "async",
       queue_ref: "priority",
     })
-    const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
-    const watchdog = makeWorkflowWatchdog({ policy: "queue", invocation_prompt: "published schedule" })
-    const session = makeSession({
-      workflows: [makeWorkflow()],
-      workflow_publications: [publication],
-      workflow_prompt_queues: [queue],
-      workflow_watchdogs: [watchdog],
-    })
+    const deploymentContract = {
+      schema_version: 1,
+      package_id: `sha256:${"a".repeat(64)}`,
+    }
+    const publicationPackage = {
+      schema_version: 1,
+      package_version: 3,
+      publication_id: publication.id,
+      workflow_id: publication.workflow_id,
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+    }
     const fake = fakeClient((request) => {
-      if ("GetWorkflowPublication" in request) {
-        return { WorkflowPublication: { publication } }
-      }
-      if ("GetSessionState" in request) {
-        return { SessionState: { session } }
+      if ("ExportWorkflowPublicationPackage" in request) {
+        return {
+          WorkflowPublicationPackageExported: {
+            publication,
+            package_version: 3,
+            package_digest: `sha256:${"b".repeat(64)}`,
+            package_archive_base64: Buffer.from("archive").toString("base64"),
+            package_files: [
+              {
+                path: "publication.json",
+                content_base64: Buffer.from(JSON.stringify(publicationPackage)).toString("base64"),
+                executable: false,
+              },
+              {
+                path: "deployment-contract.json",
+                content_base64: Buffer.from(JSON.stringify(deploymentContract)).toString("base64"),
+                executable: false,
+              },
+              {
+                path: "run.sh",
+                content_base64: Buffer.from("#!/bin/sh\nexit 0\n").toString("base64"),
+                executable: true,
+              },
+            ],
+          },
+        }
       }
       throw new Error(`unexpected request ${JSON.stringify(request)}`)
     })
@@ -618,43 +642,25 @@ test("executeShellCommand exports a workflow publication package", async () => {
     )
 
     assert.equal(result.ok, true)
-    assert.match(result.message ?? "", /exported workflow publication publication-1/)
-    const config = JSON.parse(await readFile(join(root, "exported", "publication.config.json"), "utf8"))
-    assert.equal(config.publication_id, "publication-1")
-    assert.equal(config.kernel_endpoint, "ws://kernel.example")
-    assert.equal("auth" in config, false)
+    assert.match(result.message ?? "", /exported workflow publication publication-1 .*package v3 sha256:b+/)
     const packageJson = JSON.parse(await readFile(join(root, "exported", "publication.json"), "utf8"))
     assert.equal(packageJson.schema_version, 1)
-    assert.equal(packageJson.hooks[0].transport, "human_http")
-    assert.equal(packageJson.hooks[0].queue_ref, "priority")
-    const snapshot = JSON.parse(await readFile(join(root, "exported", "workflow.snapshot.json"), "utf8"))
-    assert.equal(snapshot.workflow.id, "workflow-1")
-    assert.equal(snapshot.endpoint.id, "endpoint-1")
-    assert.equal(snapshot.queues[0].id, "default")
-    assert.equal(snapshot.schedules[0].id, "watchdog-1")
-    assert.equal(snapshot.schedules[0].invocation_prompt, "published schedule")
-    assert.equal(snapshot.agents[0].id, "agent-1")
-    const requirements = JSON.parse(await readFile(join(root, "exported", "requirements.json"), "utf8"))
-    assert.deepEqual(requirements.mcps, [])
-    const bindings = JSON.parse(await readFile(join(root, "exported", "bindings.example.json"), "utf8"))
-    assert.equal(bindings.provider_model_overrides[0].agent_id, "agent-1")
-    const html = await readFile(join(root, "exported", "public", "index.html"), "utf8")
-    assert.match(html, /public_qa/)
-    const appJs = await readFile(join(root, "exported", "public", "app.js"), "utf8")
-    assert.match(appJs, /const routePattern = "\/qa"/)
-    assert.match(appJs, /routePattern\.indexOf\('\*'\)/)
-    assert.match(appJs, /window\.location\.href = invocationUrl\(prompt\)/)
-    assert.doesNotMatch(appJs, /window\.location\.href = `\/\$\{encodeURIComponent\(prompt\)\}`/)
-    const launcher = await readFile(join(root, "exported", "run.sh"), "utf8")
-    assert.match(launcher, /arroba-workflow-gateway/)
-    assert.match(launcher, /ARROBA_PUBLICATION_PACKAGE/)
-    const readme = await readFile(join(root, "exported", "README.md"), "utf8")
-    assert.match(readme, /arroba-workflow-call --package/)
-    assert.doesNotMatch(readme, /paired sender auth/)
-    assert.doesNotMatch(readme, /well-known\/arroba\/publication\/pair/)
+    assert.equal(packageJson.package_version, 3)
+    assert.deepEqual(
+      JSON.parse(await readFile(join(root, "exported", "deployment-contract.json"), "utf8")),
+      deploymentContract,
+    )
+    assert.notEqual((await stat(join(root, "exported", "run.sh"))).mode & 0o111, 0)
     assert.deepEqual(fake.requests, [
-      { GetWorkflowPublication: { session_id: "session-1", publication_ref: "publication-1" } },
-      { GetSessionState: { session_id: "session-1" } },
+      {
+        ExportWorkflowPublicationPackage: {
+          session_id: "session-1",
+          publication_ref: "publication-1",
+          kernel_url: "ws://kernel.example",
+          agent_app: null,
+          agent_app_assets_dir: null,
+        },
+      },
     ])
   } finally {
     await rm(root, { recursive: true, force: true })
