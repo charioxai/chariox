@@ -2,6 +2,7 @@
 set -euo pipefail
 
 export ARROBA_PUBLICATION_RUNTIME_STATE_DIR="${ARROBA_PUBLICATION_RUNTIME_STATE_DIR:-$ARROBA_DATA_DIR/publication-runtime}"
+export ARROBA_WORKSPACE_DIR="${ARROBA_WORKSPACE_DIR:-/workspace}"
 
 mkdir -p \
   "$ARROBA_CONFIG_DIR" \
@@ -10,7 +11,7 @@ mkdir -p \
   "$ARROBA_SESSION_HISTORY_DIR" \
   "$ARROBA_PUBLICATION_RUNTIME_STATE_DIR" \
   "$HOME/.cache" \
-  /workspace
+  "$ARROBA_WORKSPACE_DIR"
 
 run_as_arroba() {
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -27,8 +28,8 @@ spawn_as_arroba() {
   fi
 }
 
-import_provider_credentials() {
-  local profile_dir="${ARROBA_PROVIDER_CREDENTIALS_DIR:-/home/arroba/.provider-credentials}"
+import_credential_profile() {
+  local profile_dir="$1"
   if [[ ! -d "$profile_dir" ]]; then
     return
   fi
@@ -52,7 +53,27 @@ import_provider_credentials() {
   mkdir -p "$ARROBA_CONFIG_DIR" "$ARROBA_DATA_DIR" "$ARROBA_RUNTIME_DIR" "$ARROBA_SESSION_HISTORY_DIR" "$HOME/.cache"
 }
 
+import_provider_credentials() {
+  import_credential_profile "${ARROBA_PROVIDER_CREDENTIALS_DIR:-/home/arroba/.provider-credentials}"
+}
+
+import_credential_bindings() {
+  local bindings_root="${ARROBA_CREDENTIAL_BINDINGS_ROOT:-}"
+  if [[ -z "$bindings_root" || ! -d "$bindings_root" ]]; then
+    return
+  fi
+  shopt -s nullglob
+  local profile_dir
+  for profile_dir in "$bindings_root"/*; do
+    if [[ -d "$profile_dir" ]]; then
+      import_credential_profile "$profile_dir"
+    fi
+  done
+  shopt -u nullglob
+}
+
 import_provider_credentials
+import_credential_bindings
 chown arroba:arroba "$HOME" 2>/dev/null || true
 chmod 755 "$HOME" 2>/dev/null || true
 chown -R arroba:arroba \
@@ -61,7 +82,7 @@ chown -R arroba:arroba \
   "$ARROBA_RUNTIME_DIR" \
   "$ARROBA_SESSION_HISTORY_DIR" \
   "$ARROBA_PUBLICATION_RUNTIME_STATE_DIR" \
-  /workspace \
+  "$ARROBA_WORKSPACE_DIR" \
   "$HOME/.cache" \
   "$HOME/.codex" \
   "$HOME/.claude" \
