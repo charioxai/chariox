@@ -8,13 +8,16 @@ import {
   changeDeploymentEnvironmentLifecycle,
   createDeploymentClaim,
   createDeploymentCredentialProfile,
+  createDeploymentEnvironmentDomain,
   createDeploymentProject,
   createDeploymentRelease,
   getDeploymentAccess,
   getDeploymentEnvironmentCredentials,
+  getDeploymentEnvironmentDomains,
   getDeploymentProject,
   listDeploymentProjects,
   listDeploymentCredentialProfiles,
+  operateDeploymentEnvironmentDomain,
   promoteDeploymentRelease,
   reviewDeploymentClaim,
   requestDeploymentCredentialOperation,
@@ -31,6 +34,7 @@ import type {
   DeploymentClaimSummary,
   DeploymentControlRole,
   DeploymentCredentialProfileSummary,
+  DeploymentEnvironmentDomainState,
   DeploymentEnvironmentCredentialState,
   DeploymentPortfolioItem,
   DeploymentEnvironmentSummary,
@@ -248,6 +252,44 @@ export async function executeDeployedWorkflowCommand(
     }
     throw new Error(credentialUsage)
   }
+  if (action === "domain" || action === "domains") {
+    const domainAction = argv[1] ?? "show"
+    if (domainAction === "show" || domainAction === "status" || domainAction === "list") {
+      const projectId = requiredArg(argv[2], domainShowUsage)
+      const environmentId = requiredArg(argv[3], domainShowUsage)
+      const result = await getDeploymentEnvironmentDomains(profile, projectId, environmentId)
+      return {
+        notice: formatDeploymentEnvironmentDomains(result.domains),
+        footer: `${result.domains.domains.length} deployment domain${result.domains.domains.length === 1 ? "" : "s"}`,
+      }
+    }
+    if (domainAction === "add") {
+      const projectId = requiredArg(argv[2], domainAddUsage)
+      const environmentId = requiredArg(argv[3], domainAddUsage)
+      const hostname = requiredArg(argv[4], domainAddUsage)
+      const result = await createDeploymentEnvironmentDomain(profile, { projectId, environmentId, hostname })
+      return {
+        notice: formatDeploymentEnvironmentDomains(result.domains),
+        footer: `deployment domain ${hostname} added`,
+      }
+    }
+    if (domainAction === "verify" || domainAction === "canonical" || domainAction === "remove") {
+      const projectId = requiredArg(argv[2], domainOperationUsage)
+      const environmentId = requiredArg(argv[3], domainOperationUsage)
+      const domainId = requiredArg(argv[4], domainOperationUsage)
+      const result = await operateDeploymentEnvironmentDomain(profile, {
+        projectId,
+        environmentId,
+        domainId,
+        operation: domainAction,
+      })
+      return {
+        notice: formatDeploymentEnvironmentDomains(result.domains),
+        footer: `deployment domain ${domainAction} complete`,
+      }
+    }
+    throw new Error(domainUsage)
+  }
   if (action === "claim") {
     const claimAction = argv[1]
     if (claimAction === "create") {
@@ -439,6 +481,28 @@ export function formatDeploymentEnvironmentCredentials(credentials: DeploymentEn
   ].join("\n")
 }
 
+export function formatDeploymentEnvironmentDomains(domains: DeploymentEnvironmentDomainState): string {
+  return [
+    `domains project=${domains.projectId} environment=${domains.environmentId}`,
+    `canonical ${domains.canonicalHostname}`,
+    ...domains.domains.map((domain) => [
+      `domain ${domain.id} ${domain.kind} ${domain.status} canonical=${domain.isCanonical ? "yes" : "no"}`,
+      `  hostname ${domain.hostname}`,
+      `  url ${domain.publicUrl}`,
+      `  dns ${domain.dnsStatus}`,
+      `  tls ${domain.tlsStatus}`,
+      `  redirect_to_canonical ${domain.redirectToCanonical ? "yes" : "no"}`,
+      ...(domain.verificationName ? [`  txt_name ${domain.verificationName}`] : []),
+      ...(domain.verificationValue ? [`  txt_value ${domain.verificationValue}`] : []),
+      ...(domain.cnameTarget ? [`  cname ${domain.cnameTarget}`] : []),
+      `  checked_at ${domain.lastCheckedAt ?? "never"}`,
+      `  verified_at ${domain.verifiedAt ?? "never"}`,
+      `  activated_at ${domain.activatedAt ?? "never"}`,
+      ...(domain.lastError ? [`  error ${domain.lastError}`] : []),
+    ].join("\n")),
+  ].join("\n")
+}
+
 function formatDeploymentCredentialOperation(
   profile: DeploymentCredentialProfileSummary,
   job: { readonly id: string; readonly type: string; readonly status: string } | null | undefined,
@@ -515,7 +579,11 @@ const credentialOperationUsage = "usage: deployments credentials test|rotate|rev
 const credentialBindUsage = "usage: deployments credentials bind <project-id> <environment-id> <release-id> <slot-id> <profile-id>"
 const credentialUnbindUsage = "usage: deployments credentials unbind <project-id> <environment-id> <slot-id>"
 const credentialUsage = "usage: deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const domainShowUsage = "usage: deployments domains show <project-id> <environment-id>"
+const domainAddUsage = "usage: deployments domains add <project-id> <environment-id> <hostname>"
+const domainOperationUsage = "usage: deployments domains verify|canonical|remove <project-id> <environment-id> <domain-id>"
+const domainUsage = "usage: deployments domains show|add|verify|canonical|remove ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`

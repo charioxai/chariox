@@ -271,3 +271,44 @@ export interface DeploymentCredentialProfileResult {
 export interface DeploymentEnvironmentCredentialsResult {
   readonly credentials: DeploymentEnvironmentCredentialState
 }
+
+export type DeploymentDomainKind = "default" | "custom"
+export type DeploymentDomainStatus = "pending_dns" | "tls_pending" | "ready" | "failed" | "removed"
+export type DeploymentDomainDnsStatus = "not_required" | "pending" | "verified" | "failed"
+export type DeploymentDomainTlsStatus = "pending" | "ready" | "failed"
+
+export interface DeploymentDomainSummary {
+  readonly id: string
+  readonly accountId: string
+  readonly projectId: string
+  readonly environmentId: string
+  readonly kind: DeploymentDomainKind
+  readonly hostname: string
+  readonly publicUrl: string
+  readonly status: DeploymentDomainStatus
+  readonly dnsStatus: DeploymentDomainDnsStatus
+  readonly tlsStatus: DeploymentDomainTlsStatus
+  readonly isCanonical: boolean
+  readonly redirectToCanonical: boolean
+  readonly verificationName?: string | null
+  readonly verificationValue?: string | null
+  readonly cnameTarget?: string | null
+  readonly lastCheckedAt?: string | null
+  readonly verifiedAt?: string | null
+  readonly activatedAt?: string | null
+  readonly removedAt?: string | null
+  readonly lastError?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentEnvironmentDomainState {
+  readonly projectId: string
+  readonly environmentId: string
+  readonly canonicalHostname: string
+  readonly domains: readonly DeploymentDomainSummary[]
+}
+
+export interface DeploymentEnvironmentDomainsResult {
+  readonly domains: DeploymentEnvironmentDomainState
+}

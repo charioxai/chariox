@@ -209,6 +209,57 @@ test("deployed workflow TUI command drives destination credentials without expos
   }
 })
 
+test("deployed workflow TUI command drives the complete domain lifecycle", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{
+    readonly method: string
+    readonly pathname: string
+    readonly search: string
+    readonly body: Record<string, unknown> | null
+  }> = []
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input))
+    calls.push({
+      method: init?.method ?? "GET",
+      pathname: url.pathname,
+      search: url.search,
+      body: typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null,
+    })
+    return jsonResponse({ domains: domainState() })
+  }
+  try {
+    const shown = await executeDeployedWorkflowCommand(profile, [
+      "domains", "show", "project/one", "environment/one",
+    ])
+    const added = await executeDeployedWorkflowCommand(profile, [
+      "domains", "add", "project/one", "environment/one", "agents.customer.test",
+    ])
+    for (const operation of ["verify", "canonical", "remove"] as const) {
+      await executeDeployedWorkflowCommand(profile, [
+        "domains", operation, "project/one", "environment/one", "domain/one",
+      ])
+    }
+
+    const base = "/deployment-projects/project%2Fone/environments/environment%2Fone/domains"
+    assert.deepEqual(calls, [
+      { method: "GET", pathname: base, search: "?accountId=account-1", body: null },
+      { method: "POST", pathname: base, search: "", body: { accountId: "account-1", hostname: "agents.customer.test" } },
+      { method: "POST", pathname: `${base}/domain%2Fone/verify`, search: "", body: { accountId: "account-1" } },
+      { method: "POST", pathname: `${base}/domain%2Fone/canonical`, search: "", body: { accountId: "account-1" } },
+      { method: "POST", pathname: `${base}/domain%2Fone/remove`, search: "", body: { accountId: "account-1" } },
+    ])
+    assert.match(shown.notice, /canonical demo\.apps\.example\.test/)
+    assert.match(shown.notice, /domain domain-1 custom pending_dns canonical=no/)
+    assert.match(shown.notice, /txt_value arroba-domain-token/)
+    assert.match(shown.notice, /dns pending/)
+    assert.match(shown.notice, /tls pending/)
+    assert.equal(shown.footer, "2 deployment domains")
+    assert.equal(added.footer, "deployment domain agents.customer.test added")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("deployed workflow TUI command lists projects through the shared Cloud path", async () => {
   const originalFetch = globalThis.fetch
   const notices: string[] = []
@@ -506,6 +557,49 @@ function credentialState() {
         status: "active",
         profile: credentialProfile(),
       },
+    }],
+  }
+}
+
+function domainState() {
+  return {
+    projectId: "project/one",
+    environmentId: "environment/one",
+    canonicalHostname: "demo.apps.example.test",
+    domains: [{
+      id: "domain-default",
+      accountId: "account-1",
+      projectId: "project/one",
+      environmentId: "environment/one",
+      kind: "default",
+      hostname: "demo.apps.example.test",
+      publicUrl: "https://demo.apps.example.test",
+      status: "ready",
+      dnsStatus: "not_required",
+      tlsStatus: "ready",
+      isCanonical: true,
+      redirectToCanonical: false,
+      activatedAt: "2026-01-01T00:00:00.000Z",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }, {
+      id: "domain-1",
+      accountId: "account-1",
+      projectId: "project/one",
+      environmentId: "environment/one",
+      kind: "custom",
+      hostname: "agents.customer.test",
+      publicUrl: "https://agents.customer.test",
+      status: "pending_dns",
+      dnsStatus: "pending",
+      tlsStatus: "pending",
+      isCanonical: false,
+      redirectToCanonical: true,
+      verificationName: "_arroba-verification.agents.customer.test",
+      verificationValue: "arroba-domain-token",
+      cnameTarget: "ingress.apps.example.test",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
     }],
   }
 }

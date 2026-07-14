@@ -9,6 +9,7 @@ import type {
   DeploymentCredentialKind,
   DeploymentCredentialProfileResult,
   DeploymentCredentialProfilesResult,
+  DeploymentEnvironmentDomainsResult,
   DeploymentEnvironmentCredentialsResult,
   DeploymentOwnershipMode,
   DeploymentProjectKind,
@@ -337,6 +338,52 @@ export async function revokeDeploymentEnvironmentCredentialBinding(
       + `/environments/${encodeURIComponent(input.environmentId)}/credential-bindings/revoke`,
     { accountId: profile.accountId, slotId: input.slotId },
   )
+}
+
+export async function getDeploymentEnvironmentDomains(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+): Promise<DeploymentEnvironmentDomainsResult> {
+  return getJson(profile, deploymentDomainsPath(projectId, environmentId), {
+    accountId: profile.accountId,
+  })
+}
+
+export async function createDeploymentEnvironmentDomain(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly hostname: string
+  },
+): Promise<DeploymentEnvironmentDomainsResult> {
+  return postJson(profile, deploymentDomainsPath(input.projectId, input.environmentId), {
+    accountId: profile.accountId,
+    hostname: input.hostname,
+  })
+}
+
+export async function operateDeploymentEnvironmentDomain(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly domainId: string
+    readonly operation: "verify" | "canonical" | "remove"
+  },
+): Promise<DeploymentEnvironmentDomainsResult> {
+  return postJson(
+    profile,
+    `${deploymentDomainsPath(input.projectId, input.environmentId)}`
+      + `/${encodeURIComponent(input.domainId)}/${input.operation}`,
+    { accountId: profile.accountId },
+  )
+}
+
+function deploymentDomainsPath(projectId: string, environmentId: string): string {
+  return `/deployment-projects/${encodeURIComponent(projectId)}`
+    + `/environments/${encodeURIComponent(environmentId)}/domains`
 }
 
 async function getJson<TResponse>(
