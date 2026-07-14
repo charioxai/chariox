@@ -798,7 +798,7 @@
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: Phase 0 in progress; containment and local web/TUI parity green</span>
+        <span>Status: Phases 0-6 implemented; local web/TUI matrix green; hosted rerun capacity-gated</span>
       </div>
     </header>
 
@@ -1491,8 +1491,8 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="decision">
-            <strong>Required end-of-implementation deliverable</strong>
-            Before final production sign-off, produce a service-registration report listing only vendors that are still necessary, the measured reason each is needed, expected plan/cost, data region, security impact, credentials/configuration required, migration from the temporary path, and what remains functional without it. Do not ask the user to register early when a local, existing, or emulated path can validate the rest.
+            <strong>Current service-registration recommendation / 2026-07-14</strong>
+            No new vendor account is required to finish implementation or the local and hosted acceptance drills. Before the first real external beta, select a production secret boundary for customer provider credentials and confirm that the existing identity plan supports the required organizations and audience volume. Add transactional email only when invitations must be delivered rather than shared as expiring claim links. Move packages to an EU S3-compatible object store when measured package volume or database growth requires it. Keep direct Caddy custom-host routing until domain count, WAF needs, certificate operations, or static-asset latency justify a managed custom-hostname/CDN product. At each trigger, record current plan/cost, region, security impact, required credentials, migration steps, and degraded behavior before asking the user to register.
           </div>
         </section>
 
@@ -1524,7 +1524,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
                     <li>Cloud API coverage passed 127 tests; OSS server coverage passed 71 tests; the complete CLI set passed 1,348 tests with bounded concurrency. The TUI kernel restart drill retained the same session and agent through disconnect/reconnect after the teardown race was fixed.</li>
                     <li>The deployment drill peaked near 266 MB RSS, the local Cloud process near 146 MB RSS, and the TUI build-plus-restart drill near 491 MB RSS. Dedicated ports, processes, sockets, state roots, and <code>/tmp</code> artifacts were removed and verified absent; unrelated user processes and containers were left untouched.</li>
                   </ul>
-                  <p><strong>Still open for the Phase 0 exit:</strong> repeat the complete containment and parity smoke through the hosted Hetzner runtime from both web and TUI, and resolve or explicitly contain the report-only CSP diagnostics emitted by the embedded publication viewer.</p>
+                  <p><strong>Current gate:</strong> local containment and browser/TUI parity are green. Hosted attempts reached real web-initiated and TUI-initiated lifecycle operations and exposed an intermittent kernel SQLite <code>database or disk is full</code> failure. The root cause was provider bootstrap caches sharing a small HOME filesystem with kernel durable state. Cloud commit <code>987ca5ca</code> isolates <code>/home/arroba/.arroba</code> from provider caches and allocates mounts with the runtime image's UID/GID 1001; focused recovery tests, all 47 worker tests, the full Cloud workspace suite, lint, and direct exhaustion reproduction pass. Repeat the complete hosted two-surface matrix after the Hetzner host has at least the drill's 2.25 GiB free-disk floor.</p>
                 </div>
               </div>
             </details>
@@ -1637,6 +1637,18 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
                 <p>All launch criteria below pass, required external services are either configured or explicitly accepted as the only remaining production gate, and both worktrees are clean and pushed.</p>
               </div>
             </details>
+          </div>
+
+          <div class="callout info">
+            <strong>Implementation and validation checkpoint / 2026-07-14</strong>
+            <ul>
+              <li>Phases 1-6 now have working vertical paths across both repositories: versioned immutable release packages; project, release, environment and promotion records; the global Deployed web surface; matching TUI lifecycle commands; claimable customer ownership and revocable builder access; destination-owned credential connect, bind, test, rotate, revoke and purge; default and custom domains; HTTP SSE, WebSocket and MCP transports; limits, usage, emergency controls, retention, telemetry, rolling activation and runner recovery.</li>
+              <li>The complete local acceptance matrix ran on a dedicated relay, kernel, Cloud server, publication ingress and provider stubs using ports 59111-64111. Each of SSE, WebSocket and MCP was initiated once from the web terminal and once from the TUI terminal while the other client remained attached. The matrix also exercised release convergence, bidirectional start/stop, handoff in both directions, second-account claims, builder revocation, credential recovery, domain verification/canonical/removal, admission controls, exports, deletion and mobile layouts.</li>
+              <li>The green local artifact <code>.artifacts/deployed-workflows-platform/local-six-case-modal-refresh-final/</code> contains 60 browser screenshots, 150 TUI state captures and 10 geometry/visibility checkpoints. It reports no unexpected browser console or page errors. Manual inspection covered lifecycle, credentials, access, domains and transport states.</li>
+              <li>Cleanup evidence records no remaining drill PID, descendant, listener or temporary root, and all dedicated ports are reusable. Local and Hetzner diagnostics removed only run-owned containers, files and build artifacts; unrelated active slices and publications were left intact.</li>
+              <li>Current branch heads are OSS <code>0a7bd4d6d</code> and Cloud <code>987ca5ca</code>, both pushed. Cloud's complete workspace test suite and repository-wide lint/type checks pass at the checkpoint. Focused OSS package, kernel and server suites are green.</li>
+            </ul>
+            <p><strong>Open acceptance work:</strong> rerun the entire hosted web/TUI matrix, including remote machine/slice and collaborator cases, once unrelated active Hetzner volumes release enough disk; inspect its screenshots and cleanup manifest; then run live Claude credential cases after refreshed credentials are available. Do not weaken the capacity guard or remove unrelated active workloads to force the drill through.</p>
           </div>
         </section>
 
@@ -1790,7 +1802,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="footer">
-            <strong>Current implementation point:</strong> finish the remaining hosted Phase 0 containment and parity gate, then begin the immutable release contract and product model. Keep the global Deployed surface behind those contracts instead of expanding the existing sidebar around provisional runtime fields.
+            <strong>Current implementation point:</strong> the immutable release model and the first complete Deployed product slice are implemented in both repositories. Finish Phase 7 by obtaining a clean hosted web/TUI run on the current runtime, covering the remote/collaborator and refreshed-Claude cases, auditing screenshots and cleanup, and accepting the service-registration recommendations. Keep the launch gate closed until that evidence is green.
           </div>
         </section>
       </article>
