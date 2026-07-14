@@ -229,22 +229,31 @@ fn spawn_leased_projection_pump(
     outgoing_tx: RelayOutgoingSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if timeout(
-            RELAY_HEARTBEAT_APP_WORK_TIMEOUT,
+        await_leased_projection_pump(
             pump_leased_projection_events(&router, &outgoing_tx),
+            RELAY_HEARTBEAT_APP_WORK_SLOW_THRESHOLD,
         )
-        .await
-        .is_err()
-        {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "leased projection pump timed out",
-                serde_json::json!({
-                    "timeout_ms": RELAY_HEARTBEAT_APP_WORK_TIMEOUT.as_millis(),
-                }),
-            );
-        }
+        .await;
     })
+}
+
+async fn await_leased_projection_pump<F>(pump: F, slow_threshold: Duration)
+where
+    F: Future<Output = ()>,
+{
+    let started = Instant::now();
+    pump.await;
+    let elapsed = started.elapsed();
+    if elapsed >= slow_threshold {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "leased projection pump completed slowly",
+            serde_json::json!({
+                "elapsed_ms": elapsed.as_millis(),
+                "slow_threshold_ms": slow_threshold.as_millis(),
+            }),
+        );
+    }
 }
 
 async fn disconnect_relay(
