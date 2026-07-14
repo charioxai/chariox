@@ -576,25 +576,32 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        let slice_ref = agent
-            .remote_execution()
-            .and_then(|remote| {
-                self.owned
-                    .slice_store
-                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
-            })
-            .map(|slice| slice.id);
+        // Slice membership is the durable attachment authority. A worker kernel id can
+        // legitimately be stale after a slice or home-kernel restart, so inferring the
+        // attachment from remote execution would leave a deleted agent pinned to its
+        // slice forever.
+        let slice_refs = self
+            .owned
+            .slice_store
+            .list()
+            .into_iter()
+            .filter(|slice| slice.agent_ids.iter().any(|value| value == agent_id))
+            .map(|slice| slice.id)
+            .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         let destroyed = if agent.remote_execution().is_none() {
             self.owned.destroy_agent(agent_id, caller_user_id)?
         } else {
-            self.with_app_side_effect(|app| {
-                crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-            })
-            .await?
+            let destroyed = self
+                .with_app_side_effect(|app| {
+                    crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
+                })
+                .await?;
+            self.owned.destroy_agent(agent_id, caller_user_id)?;
+            destroyed
         };
-        if let Some(slice_ref) = slice_ref {
+        for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
                 destroyed.id(),

@@ -525,6 +525,110 @@ async fn attach_and_detach_use_owned_runtime_state_without_app_lock() {
 }
 
 #[tokio::test]
+async fn attach_remote_agent_does_not_resolve_worker_provider_run_locally() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, agent_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        app_locked
+            .agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-1".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("remote binding should succeed");
+        app_locked
+            .sessions
+            .set_active_provider_run(
+                session.id(),
+                Some("leased:leased-agent-1:provider-run-1".to_string()),
+            )
+            .expect("opaque remote run should become active");
+        (
+            session.id().to_string(),
+            agent.id().to_string(),
+            app_locked.terminal_stream_store(),
+        )
+    };
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        owned_runtime_state(&app).await,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+    let request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+        session_id: session_id.clone(),
+        client_id: "remote-client".to_string(),
+        capability_level: ClientCapabilityLevel::FullTerminal,
+    });
+    let command = KernelCommand::from_local_request("remote-attach", None, None, &request);
+
+    let response = runtime
+        .dispatch_session_command(command, request)
+        .await
+        .expect("remote-backed session attach should succeed");
+
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::SessionAttached { .. }
+    ));
+
+    let replacement_request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+        session_id: session_id.clone(),
+        client_id: "remote-client".to_string(),
+        capability_level: ClientCapabilityLevel::FullTerminal,
+    });
+    let replacement_command = KernelCommand::from_local_request(
+        "remote-attach-replacement",
+        None,
+        None,
+        &replacement_request,
+    );
+
+    let replacement = runtime
+        .dispatch_session_command(replacement_command, replacement_request)
+        .await
+        .expect("replacing a remote-backed session attachment should succeed");
+
+    assert!(matches!(
+        replacement,
+        LocalDaemonResponse::SessionAttached { .. }
+    ));
+
+    let focus_request = LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+        session_id,
+        agent_id,
+    });
+    let focus_command = KernelCommand::from_local_request(
+        "remote-focus-after-attach",
+        None,
+        None,
+        &focus_request,
+    );
+
+    let focused = runtime
+        .dispatch_session_command(focus_command, focus_request)
+        .await
+        .expect("focusing the remote agent should not resolve its worker run locally");
+
+    assert!(matches!(focused, LocalDaemonResponse::AgentFocused { .. }));
+}
+
+#[tokio::test]
 async fn focus_and_cycle_use_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

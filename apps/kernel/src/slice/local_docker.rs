@@ -289,6 +289,7 @@ pub fn collect_local_docker_slice_logs(
             ));
         }
     }
+    entries.push(local_docker_runtime_log_entry(record, tail_lines));
     entries.push(local_docker_container_log_entry(record, tail_lines));
     Ok(entries)
 }
@@ -371,6 +372,59 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
             source: "container".to_string(),
             path: None,
             text: format!("docker logs unavailable: {error}"),
+            truncated: false,
+        },
+    }
+}
+
+fn local_docker_runtime_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
+    let container = local_docker_container_name(record);
+    let tail_lines_arg = tail_lines.to_string();
+    let script = r#"
+set -eu
+found=0
+for file in /opt/arroba-slice/logs/*.log /home/slice/.local/state/arroba/logs/*.ndjson; do
+  [ -f "$file" ] || continue
+  found=1
+  printf '\n=== %s ===\n' "$file"
+  tail -n "$1" "$file"
+done
+if [ "$found" -eq 0 ]; then
+  printf '<no slice runtime logs>\n'
+fi
+"#;
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "slice",
+            &container,
+            "sh",
+            "-c",
+            script,
+            "slice-runtime-logs",
+            &tail_lines_arg,
+        ])
+        .output();
+    match output {
+        Ok(output) => {
+            let mut text = String::new();
+            text.push_str(&String::from_utf8_lossy(&output.stdout));
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() && text.trim().is_empty() {
+                text = format!("slice runtime logs failed with status {}", output.status);
+            }
+            SliceLogEntry {
+                source: "runtime".to_string(),
+                path: None,
+                text: text.trim().to_string(),
+                truncated: false,
+            }
+        }
+        Err(error) => SliceLogEntry {
+            source: "runtime".to_string(),
+            path: None,
+            text: format!("slice runtime logs unavailable: {error}"),
             truncated: false,
         },
     }

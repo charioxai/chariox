@@ -64,29 +64,37 @@ impl KernelRuntimeState {
         self.owned.slice_store.resolve(slice_ref)
     }
 
-    pub(crate) fn reconcile_slice_agent_attachments(
+    pub(crate) async fn reconcile_slice_agent_attachments(
         &self,
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let mut current = slice.clone();
         for agent_id in slice.agent_ids.clone() {
-            let detach = match self.owned.agent_store.get_agent(&agent_id) {
-                Ok(agent) => {
+            let matches_canonical_agent = self
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .ok()
+                .is_some_and(|agent| {
+                    let projection_has_agent = self
+                        .owned
+                        .session_projection
+                        .get(agent.session_id())
+                        .is_some_and(|session| {
+                            session
+                                .agents()
+                                .iter()
+                                .any(|candidate| candidate.id() == agent_id)
+                        });
                     let remote = agent.remote_execution();
-                    let matches_slice = remote.is_some_and(|remote| {
-                        slice.worker_kernel_id.as_deref() == Some(remote.worker_kernel_id.as_str())
-                            || slice.worker_kernel_ref == remote.worker_kernel_id
-                    });
-                    !matches_slice
-                        || self
-                            .owned
-                            .session_store
-                            .get_session(agent.session_id())
-                            .is_err()
-                }
-                Err(_) => true,
-            };
-            if detach {
+                    projection_has_agent
+                        && remote.is_some_and(|remote| {
+                            slice.worker_kernel_id.as_deref()
+                                == Some(remote.worker_kernel_id.as_str())
+                                || slice.worker_kernel_ref == remote.worker_kernel_id
+                        })
+                });
+            if !matches_canonical_agent {
                 current = self.owned.slice_store.detach_agent(
                     &current.id,
                     &agent_id,

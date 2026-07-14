@@ -40,6 +40,18 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
+        // The worker kernel owns provider lifecycle for remotely executed
+        // agents. The home session stores an opaque projected run id only for
+        // routing; trying to resolve or park it in the home provider store
+        // makes ordinary terminal attachment fail after a remote launch.
+        if self
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return Ok(());
+        }
         let current_active_run_id = self
             .session_store
             .get_session(session_id)?

@@ -406,6 +406,7 @@ mod tests {
             .expect("provision log should be present");
         assert_eq!(provision.text, "line-2\nline-3");
         assert!(provision.truncated);
+        assert!(entries.iter().any(|entry| entry.source == "runtime"));
         assert!(entries.iter().any(|entry| entry.source == "container"));
 
         let _ = fs::remove_dir_all(&root);

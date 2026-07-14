@@ -83,7 +83,9 @@ pub(super) async fn execute_save_slice_state_request(
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.state.save")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&slice, "state.save", "accepted", None, None)?;
-    let slice = runtime_state.reconcile_slice_agent_attachments(&slice)?;
+    let slice = runtime_state
+        .reconcile_slice_agent_attachments(&slice)
+        .await?;
     let mode = match (request.mode, slice.agent_ids.is_empty()) {
         (Some(mode), _) => mode,
         (None, true) => SliceStateSaveMode::Shutdown,
@@ -302,6 +304,9 @@ pub(super) async fn execute_start_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
     let initial_record = runtime_state.resolve_slice(&request.slice_ref)?;
+    let initial_record = runtime_state
+        .reconcile_slice_agent_attachments(&initial_record)
+        .await?;
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     let relay = local_docker_slice_relay(config_projection, &initial_record).await?;

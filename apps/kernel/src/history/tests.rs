@@ -1382,8 +1382,8 @@ fn operational_history_capture_can_be_disabled_and_reenabled_live() {
         super::unix_epoch_ms()
     ));
     let _ = std::fs::remove_file(&path);
-    let store = OperationalHistoryStore::open(path.clone())
-        .expect("operational history store should open");
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
 
     store.set_capture_enabled(false);
     store
