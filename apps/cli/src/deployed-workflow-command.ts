@@ -2,20 +2,31 @@ import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 
 import {
+  acceptDeploymentClaim,
   adoptLegacyDeploymentProject,
   changeDeploymentEnvironmentLifecycle,
+  createDeploymentClaim,
   createDeploymentProject,
   createDeploymentRelease,
+  getDeploymentAccess,
   getDeploymentProject,
   listDeploymentProjects,
   promoteDeploymentRelease,
+  reviewDeploymentClaim,
+  revokeDeploymentClaim,
+  revokeDeploymentProjectMember,
   rollbackDeploymentEnvironment,
+  upsertDeploymentProjectMember,
 } from "./deployed-workflow-api.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
   DeployedWorkflowProjectState,
+  DeploymentAccessState,
+  DeploymentClaimSummary,
+  DeploymentControlRole,
   DeploymentPortfolioItem,
   DeploymentEnvironmentSummary,
+  DeploymentOwnershipMode,
   DeploymentProjectKind,
   PublicationDeploymentMode,
   PublicationReleaseSummary,
@@ -149,6 +160,70 @@ export async function executeDeployedWorkflowCommand(
     })
     return formatLifecycleOutput(result.environment, action)
   }
+  if (action === "claim") {
+    const claimAction = argv[1]
+    if (claimAction === "create") {
+      const projectId = requiredArg(argv[2], claimCreateUsage)
+      const releaseId = requiredArg(argv[3], claimCreateUsage)
+      const options = parseClaimCreateOptions(argv.slice(4))
+      const result = await createDeploymentClaim(profile, { projectId, releaseId, ...options })
+      return {
+        notice: `${formatDeploymentClaim(result.claim)}\nclaim_token ${result.claimToken}`,
+        footer: "deployment claim created; token shown once",
+      }
+    }
+    if (claimAction === "review") {
+      const claimToken = requiredArg(argv[2], claimReviewUsage)
+      const result = await reviewDeploymentClaim(profile, claimToken)
+      return { notice: formatDeploymentClaim(result.claim), footer: `claim ${result.claim.status}` }
+    }
+    if (claimAction === "accept") {
+      const claimToken = requiredArg(argv[2], claimAcceptUsage)
+      const result = await acceptDeploymentClaim(profile, {
+        claimToken,
+        ...parseClaimAcceptOptions(argv.slice(3)),
+      })
+      return {
+        notice: `${formatDeploymentClaim(result.claim)}\n${formatDeploymentProjectState(result.state)}`,
+        footer: `claimed deployment ${result.state.project.slug}`,
+      }
+    }
+    if (claimAction === "revoke") {
+      const projectId = requiredArg(argv[2], claimRevokeUsage)
+      const claimId = requiredArg(argv[3], claimRevokeUsage)
+      const result = await revokeDeploymentClaim(profile, projectId, claimId)
+      return { notice: formatDeploymentClaim(result.claim), footer: "deployment claim revoked" }
+    }
+    throw new Error(claimUsage)
+  }
+  if (action === "access") {
+    const projectId = requiredArg(argv[1] === "show" ? argv[2] : argv[1], accessUsage)
+    const result = await getDeploymentAccess(profile, projectId)
+    return { notice: formatDeploymentAccess(result.access), footer: `deployment access ${projectId}` }
+  }
+  if (action === "member" || action === "members") {
+    const memberAction = argv[1]
+    if (memberAction === "add" || memberAction === "set") {
+      const projectId = requiredArg(argv[2], memberAddUsage)
+      const granteeAccountId = requiredArg(argv[3], memberAddUsage)
+      const userEmail = requiredArg(argv[4], memberAddUsage)
+      const role = parseMemberRole(requiredArg(argv[5], memberAddUsage))
+      const result = await upsertDeploymentProjectMember(profile, {
+        projectId,
+        granteeAccountId,
+        userEmail,
+        role,
+      })
+      return { notice: formatDeploymentAccess(result.access), footer: `deployment member ${role}` }
+    }
+    if (memberAction === "revoke") {
+      const projectId = requiredArg(argv[2], memberRevokeUsage)
+      const memberId = requiredArg(argv[3], memberRevokeUsage)
+      const result = await revokeDeploymentProjectMember(profile, projectId, memberId)
+      return { notice: formatDeploymentAccess(result.access), footer: "deployment member revoked" }
+    }
+    throw new Error(memberUsage)
+  }
   throw new Error(deploymentsUsage)
 }
 
@@ -159,6 +234,7 @@ export function formatDeploymentPortfolioItem(item: DeploymentPortfolioItem): st
     item.project.id,
     item.project.name,
     item.project.kind,
+    `ownership=${item.project.ownershipMode ?? "internal_team"}`,
     environment?.slug ?? "no_environment",
     environment?.observedState ?? "setup",
     release ? `release=#${release.sequence}:${release.status}` : "release=none",
@@ -174,6 +250,8 @@ export function formatDeploymentProjectState(state: DeployedWorkflowProjectState
     `name ${state.project.name}`,
     `slug ${state.project.slug}`,
     `kind ${state.project.kind}`,
+    `ownership ${state.project.ownershipMode ?? "internal_team"}`,
+    `builder_account ${state.project.builderAccountId ?? "none"}`,
     `origin ${state.project.origin}`,
     ...state.environments.flatMap((environment) => [
       `environment ${environment.id} ${environment.slug} ${environment.tier}`,
@@ -190,6 +268,42 @@ export function formatDeploymentProjectState(state: DeployedWorkflowProjectState
       `  release ${promotion.fromReleaseId ?? "none"} -> ${promotion.toReleaseId}`,
       `  revision ${promotion.desiredRevision}`,
       ...(promotion.errorMessage ? [`  error ${promotion.errorMessage}`] : []),
+    ].join("\n")),
+  ].join("\n")
+}
+
+export function formatDeploymentClaim(claim: DeploymentClaimSummary): string {
+  return [
+    `claim ${claim.id} ${claim.status}`,
+    `source ${claim.sourceProjectId} release=${claim.sourceReleaseId} sequence=${claim.sourceReleaseSequence}`,
+    `package_digest ${claim.sourcePackageDigest}`,
+    `ownership ${claim.ownershipMode}`,
+    `builder_role ${claim.builderRole ?? "none"}`,
+    `target_account ${claim.targetAccountId ?? "any"}`,
+    `target_email ${claim.targetEmail ?? "any"}`,
+    `token_prefix ${claim.tokenPrefix}`,
+    `expires_at ${claim.expiresAt}`,
+    `claimed_project ${claim.claimedProjectId ?? "none"}`,
+  ].join("\n")
+}
+
+export function formatDeploymentAccess(access: DeploymentAccessState): string {
+  return [
+    `access ${access.projectId}`,
+    `owner_account ${access.projectAccountId}`,
+    `ownership ${access.ownershipMode}`,
+    `builder_account ${access.builderAccountId ?? "none"}`,
+    ...access.claims.map((claim) => [
+      `claim ${claim.id} ${claim.status}`,
+      `  source ${claim.sourceProjectId} release=${claim.sourceReleaseId}`,
+      `  target account=${claim.targetAccountId ?? "any"} email=${claim.targetEmail ?? "any"}`,
+      `  expires_at ${claim.expiresAt}`,
+    ].join("\n")),
+    ...access.members.map((member) => [
+      `member ${member.id} ${member.status}`,
+      `  user ${member.userEmail} account=${member.granteeAccountId}`,
+      `  role ${member.role}`,
+      `  origin_claim ${member.originClaimId ?? "none"}`,
     ].join("\n")),
   ].join("\n")
 }
@@ -241,7 +355,16 @@ function formatLifecycleOutput(
 const createUsage = "usage: deployments create <name> [--kind workflow-endpoint|agent-app] [--mode local-runtime|hosted-container] [--slug value] [--region value]"
 const promoteUsage = "usage: deployments promote <project-id> <environment-id> <release-id> [--configuration json-file] [--limits json-file] [--idempotency-key value]"
 const rollbackUsage = "usage: deployments rollback <project-id> <environment-id> <promotion-id> [--idempotency-key value]"
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id>"
+const claimCreateUsage = "usage: deployments claim create <project-id> <release-id> [--ownership customer-owned|builder-managed|internal-team] [--builder-role maintainer|deployer|operator|viewer|none] [--target-account id] [--target-email email] [--expires-seconds value]"
+const claimReviewUsage = "usage: deployments claim review <claim-token>"
+const claimAcceptUsage = "usage: deployments claim accept <claim-token> [--name value] [--slug value] [--mode local-runtime|hosted-container]"
+const claimRevokeUsage = "usage: deployments claim revoke <project-id> <claim-id>"
+const claimUsage = "usage: deployments claim create|review|accept|revoke ..."
+const accessUsage = "usage: deployments access [show] <project-id>"
+const memberAddUsage = "usage: deployments member add <project-id> <grantee-account-id> <user-email> <admin|deployer|operator|viewer|billing|maintainer>"
+const memberRevokeUsage = "usage: deployments member revoke <project-id> <member-id>"
+const memberUsage = "usage: deployments member add|revoke ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`
@@ -286,6 +409,92 @@ function parseCreateOptions(argv: readonly string[]): {
     ...(slug ? { slug } : {}),
     ...(defaultRegion ? { defaultRegion } : {}),
   }
+}
+
+function parseClaimCreateOptions(argv: readonly string[]): {
+  readonly ownershipMode: DeploymentOwnershipMode
+  readonly builderRole?: DeploymentControlRole | null
+  readonly targetAccountId?: string
+  readonly targetEmail?: string
+  readonly expiresInSeconds?: number
+} {
+  let ownershipMode: DeploymentOwnershipMode = "customer_owned"
+  let builderRole: DeploymentControlRole | null | undefined
+  let targetAccountId: string | undefined
+  let targetEmail: string | undefined
+  let expiresInSeconds: number | undefined
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index]
+    const value = requiredArg(argv[index + 1], claimCreateUsage)
+    if (option === "--ownership") ownershipMode = parseOwnershipMode(value)
+    else if (option === "--builder-role") builderRole = parseBuilderRole(value)
+    else if (option === "--target-account") targetAccountId = value
+    else if (option === "--target-email") targetEmail = value
+    else if (option === "--expires-seconds") {
+      expiresInSeconds = Number(value)
+      if (!Number.isInteger(expiresInSeconds) || expiresInSeconds < 300 || expiresInSeconds > 2_592_000) {
+        throw new Error("--expires-seconds must be an integer between 300 and 2592000")
+      }
+    } else throw new Error(`unknown deployments claim create option ${option}`)
+    index += 1
+  }
+  return {
+    ownershipMode,
+    ...(builderRole !== undefined ? { builderRole } : {}),
+    ...(targetAccountId ? { targetAccountId } : {}),
+    ...(targetEmail ? { targetEmail } : {}),
+    ...(expiresInSeconds !== undefined ? { expiresInSeconds } : {}),
+  }
+}
+
+function parseClaimAcceptOptions(argv: readonly string[]): {
+  readonly projectName?: string
+  readonly projectSlug?: string
+  readonly runtimeMode?: PublicationDeploymentMode
+} {
+  let projectName: string | undefined
+  let projectSlug: string | undefined
+  let runtimeMode: PublicationDeploymentMode | undefined
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index]
+    const value = requiredArg(argv[index + 1], claimAcceptUsage)
+    if (option === "--name") projectName = value
+    else if (option === "--slug") projectSlug = value
+    else if (option === "--mode") runtimeMode = parseRuntimeMode(value)
+    else throw new Error(`unknown deployments claim accept option ${option}`)
+    index += 1
+  }
+  return {
+    ...(projectName ? { projectName } : {}),
+    ...(projectSlug ? { projectSlug } : {}),
+    ...(runtimeMode ? { runtimeMode } : {}),
+  }
+}
+
+function parseOwnershipMode(value: string): DeploymentOwnershipMode {
+  const normalized = value.replace(/-/g, "_")
+  if (normalized === "customer_owned" || normalized === "builder_managed" || normalized === "internal_team") {
+    return normalized
+  }
+  throw new Error("--ownership must be customer-owned, builder-managed, or internal-team")
+}
+
+function parseBuilderRole(value: string): DeploymentControlRole | null {
+  if (value === "none") return null
+  if (value === "maintainer" || value === "deployer" || value === "operator" || value === "viewer") return value
+  throw new Error("--builder-role must be maintainer, deployer, operator, viewer, or none")
+}
+
+function parseMemberRole(value: string): DeploymentControlRole {
+  if (value === "admin" || value === "deployer" || value === "operator" || value === "viewer"
+    || value === "billing" || value === "maintainer") return value
+  throw new Error("member role must be admin, deployer, operator, viewer, billing, or maintainer")
+}
+
+function parseRuntimeMode(value: string): PublicationDeploymentMode {
+  if (value === "local-runtime" || value === "local_runtime") return "local_runtime"
+  if (value === "hosted-container" || value === "hosted_container") return "hosted_container"
+  throw new Error("--mode must be local-runtime or hosted-container")
 }
 
 async function parsePromotionOptions(argv: readonly string[]): Promise<{

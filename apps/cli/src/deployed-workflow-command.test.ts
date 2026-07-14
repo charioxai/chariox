@@ -17,6 +17,7 @@ test("deployed workflow command renders portfolio convergence and attention", ()
     "project-1",
     "Demo app",
     "agent_app",
+    "ownership=internal_team",
     "production",
     "degraded",
     "release=#2:available",
@@ -24,6 +25,99 @@ test("deployed workflow command renders portfolio convergence and attention", ()
     "https://demo.example.test/",
     "attention=required",
   ].join("\t"))
+})
+
+test("deployed workflow TUI command drives claim handoff and member access", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly pathname: string; readonly body: Record<string, unknown> | null }> = []
+  const notices: string[] = []
+  const footers: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const pathname = new URL(String(input)).pathname
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
+    calls.push({ pathname, body })
+    if (pathname === "/deployment-claims/accept") {
+      return jsonResponse({ claim: { ...claimSummary(), status: "accepted", claimedProjectId: "customer-project" }, state: projectState() }, 201)
+    }
+    if (pathname.endsWith("/access") || pathname.includes("/members")) {
+      return jsonResponse({ access: accessState() })
+    }
+    return jsonResponse({ claim: claimSummary(), claimToken: "arroba_claim_one_time_secret" }, 201)
+  }
+  try {
+    const handled = await handleDeployedWorkflowCloudCommand({
+      appendNotice: (message) => notices.push(message),
+      flashFooter: (message) => footers.push(message),
+    }, profile, "deployments", "claim", [
+      "create",
+      "project-1",
+      "release-2",
+      "--ownership",
+      "customer-owned",
+      "--builder-role",
+      "viewer",
+      "--target-account",
+      "customer-account",
+      "--target-email",
+      "owner@customer.test",
+      "--expires-seconds",
+      "600",
+    ])
+    assert.equal(handled, true)
+    assert.match(notices[0] ?? "", /claim_token arroba_claim_one_time_secret/)
+    assert.equal(footers[0], "deployment claim created; token shown once")
+
+    await executeDeployedWorkflowCommand(profile, ["claim", "review", "arroba_claim_one_time_secret"])
+    const accepted = await executeDeployedWorkflowCommand(profile, [
+      "claim",
+      "accept",
+      "arroba_claim_one_time_secret",
+      "--name",
+      "Customer app",
+      "--slug",
+      "customer-app",
+      "--mode",
+      "local-runtime",
+    ])
+    const access = await executeDeployedWorkflowCommand(profile, ["access", "project-1"])
+    await executeDeployedWorkflowCommand(profile, [
+      "member",
+      "add",
+      "project-1",
+      "support-account",
+      "support@example.test",
+      "operator",
+    ])
+    await executeDeployedWorkflowCommand(profile, ["member", "revoke", "project-1", "member-1"])
+
+    assert.equal(accepted.footer, "claimed deployment demo")
+    assert.doesNotMatch(access.notice, /arroba_claim_one_time_secret/)
+    assert.match(access.notice, /member member-1 active/)
+    assert.deepEqual(calls[0]?.body, {
+      accountId: "account-1",
+      releaseId: "release-2",
+      ownershipMode: "customer_owned",
+      builderRole: "viewer",
+      targetAccountId: "customer-account",
+      targetEmail: "owner@customer.test",
+      expiresInSeconds: 600,
+    })
+    assert.deepEqual(calls[2]?.body, {
+      accountId: "account-1",
+      claimToken: "arroba_claim_one_time_secret",
+      projectName: "Customer app",
+      projectSlug: "customer-app",
+      runtimeMode: "local_runtime",
+    })
+    assert.deepEqual(calls[4]?.body, {
+      accountId: "account-1",
+      granteeAccountId: "support-account",
+      userEmail: "support@example.test",
+      role: "operator",
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test("deployed workflow TUI command lists projects through the shared Cloud path", async () => {
@@ -224,6 +318,51 @@ function projectState() {
       desiredRevision: 2,
       status: "failed",
       requestedAt: "2026-01-01T00:00:00.000Z",
+    }],
+  }
+}
+
+function claimSummary() {
+  return {
+    id: "claim-1",
+    sourceAccountId: "account-1",
+    sourceProjectId: "project-1",
+    sourceReleaseId: "release-2",
+    sourceProjectName: "Demo app",
+    sourceProjectSlug: "demo",
+    sourceReleaseSequence: 2,
+    sourcePackageDigest: `sha256:${"b".repeat(64)}`,
+    createdByUserId: "user-1",
+    targetAccountId: "customer-account",
+    targetEmail: "owner@customer.test",
+    ownershipMode: "customer_owned",
+    builderRole: "viewer",
+    tokenPrefix: "arroba_claim_",
+    status: "pending",
+    expiresAt: "2026-01-02T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function accessState() {
+  return {
+    projectId: "project-1",
+    projectAccountId: "account-1",
+    ownershipMode: "customer_owned",
+    builderAccountId: "builder-account",
+    claims: [claimSummary()],
+    members: [{
+      id: "member-1",
+      projectId: "project-1",
+      granteeAccountId: "support-account",
+      userId: "support-user",
+      userEmail: "support@example.test",
+      role: "operator",
+      status: "active",
+      grantedByUserId: "user-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
     }],
   }
 }

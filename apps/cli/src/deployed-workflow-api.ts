@@ -1,6 +1,12 @@
 import type { RelayCloudProfile } from "./preferences.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import type {
+  AcceptDeploymentClaimResult,
+  CreateDeploymentClaimResult,
+  DeploymentAccessResult,
+  DeploymentClaimResult,
+  DeploymentControlRole,
+  DeploymentOwnershipMode,
   DeploymentProjectKind,
   DeploymentEnvironmentResult,
   DeploymentProjectResult,
@@ -134,6 +140,104 @@ export async function changeDeploymentEnvironmentLifecycle(
       accountId: profile.accountId,
       idempotencyKey: input.idempotencyKey,
     },
+  )
+}
+
+export async function createDeploymentClaim(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly releaseId: string
+    readonly ownershipMode: DeploymentOwnershipMode
+    readonly builderRole?: DeploymentControlRole | null
+    readonly targetAccountId?: string
+    readonly targetEmail?: string
+    readonly expiresInSeconds?: number
+  },
+): Promise<CreateDeploymentClaimResult> {
+  return postJson(profile, `/deployment-projects/${encodeURIComponent(input.projectId)}/claims`, {
+    accountId: profile.accountId,
+    releaseId: input.releaseId,
+    ownershipMode: input.ownershipMode,
+    ...(input.builderRole !== undefined ? { builderRole: input.builderRole } : {}),
+    ...(input.targetAccountId ? { targetAccountId: input.targetAccountId } : {}),
+    ...(input.targetEmail ? { targetEmail: input.targetEmail } : {}),
+    ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}),
+  })
+}
+
+export async function reviewDeploymentClaim(
+  profile: RelayCloudProfile,
+  claimToken: string,
+): Promise<DeploymentClaimResult> {
+  return postJson(profile, "/deployment-claims/review", { claimToken })
+}
+
+export async function acceptDeploymentClaim(
+  profile: RelayCloudProfile,
+  input: {
+    readonly claimToken: string
+    readonly projectName?: string
+    readonly projectSlug?: string
+    readonly runtimeMode?: PublicationDeploymentMode
+  },
+): Promise<AcceptDeploymentClaimResult> {
+  return postJson(profile, "/deployment-claims/accept", {
+    accountId: profile.accountId,
+    claimToken: input.claimToken,
+    ...(input.projectName ? { projectName: input.projectName } : {}),
+    ...(input.projectSlug ? { projectSlug: input.projectSlug } : {}),
+    ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
+  })
+}
+
+export async function revokeDeploymentClaim(
+  profile: RelayCloudProfile,
+  projectId: string,
+  claimId: string,
+): Promise<DeploymentClaimResult> {
+  return postJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(projectId)}/claims/${encodeURIComponent(claimId)}/revoke`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function getDeploymentAccess(
+  profile: RelayCloudProfile,
+  projectId: string,
+): Promise<DeploymentAccessResult> {
+  return getJson(profile, `/deployment-projects/${encodeURIComponent(projectId)}/access`, {
+    accountId: profile.accountId,
+  })
+}
+
+export async function upsertDeploymentProjectMember(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly granteeAccountId: string
+    readonly userEmail: string
+    readonly role: DeploymentControlRole
+  },
+): Promise<DeploymentAccessResult> {
+  return postJson(profile, `/deployment-projects/${encodeURIComponent(input.projectId)}/members`, {
+    accountId: profile.accountId,
+    granteeAccountId: input.granteeAccountId,
+    userEmail: input.userEmail,
+    role: input.role,
+  })
+}
+
+export async function revokeDeploymentProjectMember(
+  profile: RelayCloudProfile,
+  projectId: string,
+  memberId: string,
+): Promise<DeploymentAccessResult> {
+  return postJson(
+    profile,
+    `/deployment-projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberId)}/revoke`,
+    { accountId: profile.accountId },
   )
 }
 

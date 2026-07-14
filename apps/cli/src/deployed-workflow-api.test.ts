@@ -3,14 +3,21 @@ import { rm } from "node:fs/promises"
 import test from "node:test"
 
 import {
+  acceptDeploymentClaim,
   adoptLegacyDeploymentProject,
   changeDeploymentEnvironmentLifecycle,
+  createDeploymentClaim,
   createDeploymentProject,
   createDeploymentRelease,
+  getDeploymentAccess,
   getDeploymentProject,
   listDeploymentProjects,
   promoteDeploymentRelease,
+  reviewDeploymentClaim,
+  revokeDeploymentClaim,
+  revokeDeploymentProjectMember,
   rollbackDeploymentEnvironment,
+  upsertDeploymentProjectMember,
 } from "./deployed-workflow-api.js"
 import { deployedWorkflowPackageFixture } from "./deployed-workflow-package.test-support.js"
 import type { RelayCloudProfile } from "./preferences.js"
@@ -141,6 +148,86 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
   }
 })
 
+test("deployed workflow API scopes claim and member handoff requests", async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly method: string; readonly url: URL; readonly body: Record<string, unknown> | null }> = []
+  globalThis.fetch = async (input, init) => {
+    calls.push({
+      method: init?.method ?? "GET",
+      url: new URL(String(input)),
+      body: typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null,
+    })
+    return jsonResponse({
+      claim: claimSummary(),
+      claimToken: "arroba_claim_secret",
+      state: projectState(),
+      access: accessState(),
+    })
+  }
+  try {
+    await createDeploymentClaim(profile, {
+      projectId: "project/one",
+      releaseId: "release-1",
+      ownershipMode: "customer_owned",
+      builderRole: "maintainer",
+      targetAccountId: "customer-account",
+      targetEmail: "owner@customer.test",
+      expiresInSeconds: 600,
+    })
+    await reviewDeploymentClaim(profile, "arroba_claim_secret")
+    await acceptDeploymentClaim(profile, {
+      claimToken: "arroba_claim_secret",
+      projectName: "Customer App",
+      projectSlug: "customer-app",
+      runtimeMode: "local_runtime",
+    })
+    await revokeDeploymentClaim(profile, "project/one", "claim/one")
+    await getDeploymentAccess(profile, "project/one")
+    await upsertDeploymentProjectMember(profile, {
+      projectId: "project/one",
+      granteeAccountId: "support-account",
+      userEmail: "support@example.test",
+      role: "operator",
+    })
+    await revokeDeploymentProjectMember(profile, "project/one", "member/one")
+
+    assert.deepEqual(calls.map((call) => [call.method, call.url.pathname]), [
+      ["POST", "/deployment-projects/project%2Fone/claims"],
+      ["POST", "/deployment-claims/review"],
+      ["POST", "/deployment-claims/accept"],
+      ["POST", "/deployment-projects/project%2Fone/claims/claim%2Fone/revoke"],
+      ["GET", "/deployment-projects/project%2Fone/access"],
+      ["POST", "/deployment-projects/project%2Fone/members"],
+      ["POST", "/deployment-projects/project%2Fone/members/member%2Fone/revoke"],
+    ])
+    assert.deepEqual(calls[0]?.body, {
+      accountId: "account-1",
+      releaseId: "release-1",
+      ownershipMode: "customer_owned",
+      builderRole: "maintainer",
+      targetAccountId: "customer-account",
+      targetEmail: "owner@customer.test",
+      expiresInSeconds: 600,
+    })
+    assert.deepEqual(calls[2]?.body, {
+      accountId: "account-1",
+      claimToken: "arroba_claim_secret",
+      projectName: "Customer App",
+      projectSlug: "customer-app",
+      runtimeMode: "local_runtime",
+    })
+    assert.equal(calls[4]?.url.searchParams.get("accountId"), "account-1")
+    assert.deepEqual(calls[5]?.body, {
+      accountId: "account-1",
+      granteeAccountId: "support-account",
+      userEmail: "support@example.test",
+      role: "operator",
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 const profile: RelayCloudProfile = {
   apiUrl: "https://cloud.example.test/",
   email: "user@example.test",
@@ -199,6 +286,38 @@ function environment() {
     publicUrl: "https://demo.example.test/",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function claimSummary() {
+  return {
+    id: "claim-1",
+    sourceAccountId: "account-1",
+    sourceProjectId: "project-1",
+    sourceReleaseId: "release-1",
+    sourceProjectName: "Demo",
+    sourceProjectSlug: "demo",
+    sourceReleaseSequence: 1,
+    sourcePackageDigest: "sha256:package",
+    createdByUserId: "user-1",
+    ownershipMode: "customer_owned",
+    builderRole: "maintainer",
+    tokenPrefix: "arroba_claim_",
+    status: "pending",
+    expiresAt: "2026-01-02T00:00:00.000Z",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function accessState() {
+  return {
+    projectId: "project-1",
+    projectAccountId: "account-1",
+    ownershipMode: "customer_owned",
+    builderAccountId: "builder-account",
+    claims: [claimSummary()],
+    members: [],
   }
 }
 
