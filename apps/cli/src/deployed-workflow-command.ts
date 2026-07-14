@@ -198,8 +198,8 @@ export async function executeDeployedWorkflowCommand(
       const identity = requiredArg(argv[3], credentialConnectUsage).toLowerCase()
       const label = requiredArg(argv[4], credentialConnectUsage)
       if (kind !== "provider" && kind !== "integration") throw new Error(credentialConnectUsage)
-      if (kind === "provider" && !["codex", "claude", "opencode"].includes(identity)) {
-        throw new Error("deployment credential provider must be codex, claude, or opencode")
+      if (kind === "provider" && !["codex", "claude", "opencode", "dev-stub"].includes(identity)) {
+        throw new Error("deployment credential provider must be codex, claude, opencode, or dev-stub")
       }
       const result = await createDeploymentCredentialProfile(profile, {
         kind,
@@ -510,7 +510,7 @@ const memberAddUsage = "usage: deployments member add <project-id> <grantee-acco
 const memberRevokeUsage = "usage: deployments member revoke <project-id> <member-id>"
 const memberUsage = "usage: deployments member add|revoke ..."
 const credentialShowUsage = "usage: deployments credentials show <project-id> <environment-id> [release-id]"
-const credentialConnectUsage = "usage: deployments credentials connect provider <codex|claude|opencode> <label> | integration <identity> <label>"
+const credentialConnectUsage = "usage: deployments credentials connect provider <codex|claude|opencode|dev-stub> <label> | integration <identity> <label>"
 const credentialOperationUsage = "usage: deployments credentials test|rotate|revoke|purge <profile-id>"
 const credentialBindUsage = "usage: deployments credentials bind <project-id> <environment-id> <release-id> <slot-id> <profile-id>"
 const credentialUnbindUsage = "usage: deployments credentials unbind <project-id> <environment-id> <slot-id>"

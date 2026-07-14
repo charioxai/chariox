@@ -202,7 +202,7 @@ test("deployed workflow TUI command drives destination credentials without expos
     assert.equal(notices.some((notice) => notice.includes("runtime-ref-secret")), false)
     await assert.rejects(
       executeDeployedWorkflowCommand(profile, ["credentials", "connect", "provider", "unknown", "Invalid"]),
-      /must be codex, claude, or opencode/,
+      /must be codex, claude, opencode, or dev-stub/,
     )
   } finally {
     globalThis.fetch = originalFetch
