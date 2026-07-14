@@ -112,53 +112,73 @@ fn local_request_api_exports_agent_app_publication_package() {
     std::fs::write(assets_root.join("assets/catalog.json"), "{\"items\":[]}")
         .expect("nested asset should write");
 
-    let exported = match harness
-        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+    let agent_app = serde_json::json!({
+        "enabled": true,
+        "assets": {
+            "public_dir": "app",
+            "index": "index.html"
+        },
+        "routes": [{
+            "path": "/add/*",
+            "hook_id": format!("{}-hook", publication.id()),
+            "prompt_source": "path_tail",
+            "response": "streaming_shell",
+            "required_role": "public",
+            "manipulation": {
+                "level": "state_and_overlay",
+                "scope": "session",
+                "allowed_actions": ["cart.search", "cart.add"]
+            }
+        }],
+        "replicas": {
+            "count": 1,
+            "per_caller_ordering": true
+        },
+        "persistent_patch": {
+            "enabled": false
+        }
+    });
+    let export_request = || {
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(
             ExportWorkflowPublicationPackageRequest {
                 session_id: session.id().to_string(),
                 publication_ref: publication.id().to_string(),
                 kernel_url: Some("ws://127.0.0.1:43118".to_string()),
-                agent_app: Some(serde_json::json!({
-                    "enabled": true,
-                    "assets": {
-                        "public_dir": "app",
-                        "index": "index.html"
-                    },
-                    "routes": [{
-                        "path": "/add/*",
-                        "hook_id": format!("{}-hook", publication.id()),
-                        "prompt_source": "path_tail",
-                        "response": "streaming_shell",
-                        "required_role": "public",
-                        "manipulation": {
-                            "level": "state_and_overlay",
-                            "scope": "session",
-                            "allowed_actions": ["cart.search", "cart.add"]
-                        }
-                    }],
-                    "replicas": {
-                        "count": 1,
-                        "per_caller_ordering": true
-                    },
-                    "persistent_patch": {
-                        "enabled": false
-                    }
-                })),
+                agent_app: Some(agent_app.clone()),
                 agent_app_assets_dir: Some(assets_root.to_string_lossy().to_string()),
             },
-        ))
+        )
+    };
+    let (package_digest, package_archive_base64, exported) = match harness
+        .dispatch(export_request())
         .expect("agent app publication package should export")
     {
         LocalDaemonResponse::WorkflowPublicationPackageExported {
             package_version,
+            package_digest,
+            package_archive_base64,
             package_files,
             ..
         } => {
             assert_eq!(package_version, 3);
-            package_files
+            (package_digest, package_archive_base64, package_files)
         }
         _ => panic!("unexpected local response"),
     };
+    match harness
+        .dispatch(export_request())
+        .expect("repeated agent app publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest: repeated_digest,
+            package_archive_base64: repeated_archive,
+            ..
+        } => {
+            assert_eq!(repeated_digest, package_digest);
+            assert_eq!(repeated_archive, package_archive_base64);
+        }
+        _ => panic!("unexpected repeated local response"),
+    }
     let publication_json = package_json_file(&exported, "publication.json");
     assert_eq!(publication_json["package_version"], serde_json::json!(3));
     assert_eq!(

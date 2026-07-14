@@ -71,7 +71,7 @@ pub(super) fn workflow_publication_package_files(
     }
     let snapshot = crate::local::WorkflowPublicationSnapshot {
         schema_version: 1,
-        captured_at_ms: Some(crate::session::unix_epoch_ms()),
+        captured_at_ms: Some(publication.created_at_ms()),
         source_session: Some(crate::local::WorkflowPublicationSourceSessionSnapshot {
             id: Some(session.id().to_string()),
             alias: session.alias().map(str::to_string),
