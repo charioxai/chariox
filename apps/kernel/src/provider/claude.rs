@@ -10,11 +10,15 @@ use super::executable_resolution::ExecutableResolutionState;
 
 mod catalog;
 mod launch_args;
+mod mcp_config;
 mod native_tui;
 
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
 use launch_args::claude_launch_args;
+#[cfg(test)]
+pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
+pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
@@ -117,7 +121,8 @@ fn plan_claude_launch_unlocked(
             "preparing Claude native TUI files",
             serde_json::json!({ "provider": request.provider.as_str() }),
         );
-        let native = prepare_claude_native_tui_files()?;
+        let mut native = prepare_claude_native_tui_files()?;
+        native.materialize_mcp_config(request)?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
@@ -137,17 +142,23 @@ fn plan_claude_launch_unlocked(
         );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
-        return Ok(ProviderLaunchResult {
+        let launch = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "claude:native-tui".to_string(),
             pty_target: None,
             pty_program: Some(executable.display().to_string()),
-            pty_args: claude_native_tui_args(request, &native.settings_file)?,
+            pty_args: claude_native_tui_args(
+                request,
+                &native.settings_file,
+                native.mcp_config_file(),
+            )?,
             pty_env,
             pty_env_remove: claude_provider_env_remove(Some(request)),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
-        });
+        };
+        native.persist_for_launch();
+        return Ok(launch);
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
         crate::logging::info_with_fields(
@@ -155,7 +166,8 @@ fn plan_claude_launch_unlocked(
             "preparing Claude headless native bridge files",
             serde_json::json!({ "provider": request.provider.as_str() }),
         );
-        let native = prepare_claude_native_tui_files()?;
+        let mut native = prepare_claude_native_tui_files()?;
+        native.materialize_mcp_config(request)?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
@@ -182,7 +194,8 @@ fn plan_claude_launch_unlocked(
             "building Claude headless native bridge args",
             serde_json::json!({ "provider": request.provider.as_str() }),
         );
-        let pty_args = claude_native_tui_args(request, &native.settings_file)?;
+        let pty_args =
+            claude_native_tui_args(request, &native.settings_file, native.mcp_config_file())?;
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "planned Claude headless native bridge launch",
@@ -191,7 +204,7 @@ fn plan_claude_launch_unlocked(
                 "arg_count": pty_args.len(),
             }),
         );
-        return Ok(ProviderLaunchResult {
+        let launch = ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "claude:headless".to_string(),
             pty_target: None,
@@ -201,9 +214,11 @@ fn plan_claude_launch_unlocked(
             pty_env_remove: claude_provider_env_remove(Some(request)),
             working_directory: request.working_directory.clone(),
             structured_endpoint: None,
-        });
+        };
+        native.persist_for_launch();
+        return Ok(launch);
     }
-    let native = prepare_claude_native_tui_files()?;
+    let mut native = prepare_claude_native_tui_files()?;
     let mut pty_env = BTreeMap::new();
     pty_env.insert(
         "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
@@ -230,7 +245,7 @@ fn plan_claude_launch_unlocked(
         "--settings".to_string(),
         native.settings_file.display().to_string(),
     ]);
-    Ok(ProviderLaunchResult {
+    let launch = ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::External,
         process_label: "claude:stream-json".to_string(),
         pty_target: None,
@@ -240,7 +255,9 @@ fn plan_claude_launch_unlocked(
         pty_env_remove: claude_provider_env_remove(Some(request)),
         working_directory: request.working_directory.clone(),
         structured_endpoint: Some(CLAUDE_STRUCTURED_ENDPOINT.to_string()),
-    })
+    };
+    native.persist_for_launch();
+    Ok(launch)
 }
 
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
@@ -340,7 +357,10 @@ mod tests {
         ProviderClientInterface, RuntimeMcpBinding,
     };
 
-    use super::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+    use super::{
+        claude_provider_catalog, plan_claude_launch, resolve_claude_executable,
+        CLAUDE_MCP_CONFIG_PLACEHOLDER,
+    };
 
     fn env_guard() -> crate::env_lock::EnvGuard {
         crate::env_lock::lock()
@@ -656,20 +676,11 @@ mod tests {
             .windows(2)
             .find_map(|pair| (pair[0] == "--mcp-config").then(|| pair[1].as_str()))
             .expect("mcp config should be passed");
-        let config: serde_json::Value =
-            serde_json::from_str(config_arg).expect("mcp config should be JSON");
-        assert_eq!(
-            config.pointer("/mcpServers/arroba/type"),
-            Some(&serde_json::json!("http"))
-        );
-        assert_eq!(
-            config.pointer("/mcpServers/arroba/url"),
-            Some(&serde_json::json!("http://127.0.0.1:43120/mcp"))
-        );
-        assert_eq!(
-            config.pointer("/mcpServers/arroba/headers/Authorization"),
-            Some(&serde_json::json!("Bearer token-123"))
-        );
+        assert_eq!(config_arg, CLAUDE_MCP_CONFIG_PLACEHOLDER);
+        assert!(launch
+            .pty_args
+            .iter()
+            .all(|arg| !arg.contains("token-123") && !arg.contains("mcpServers")));
         assert!(launch
             .pty_args
             .iter()
@@ -718,8 +729,29 @@ mod tests {
             .windows(2)
             .find_map(|pair| (pair[0] == "--mcp-config").then(|| pair[1].as_str()))
             .expect("mcp config should be passed");
-        let config: serde_json::Value =
-            serde_json::from_str(config_arg).expect("mcp config should be JSON");
+        let config_path = std::path::PathBuf::from(config_arg);
+        let config_root = config_path
+            .parent()
+            .expect("config should have a root")
+            .to_path_buf();
+        assert!(config_path.is_file());
+        assert!(launch
+            .pty_args
+            .iter()
+            .all(|arg| !arg.contains("token-123") && !arg.contains("mcpServers")));
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&config_path)
+                .expect("config metadata should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let config: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&config_path).expect("config should be readable by the kernel"),
+        )
+        .expect("config should be JSON");
         assert_eq!(
             config.pointer("/mcpServers/arroba/url"),
             Some(&serde_json::json!("http://127.0.0.1:43120/mcp"))
@@ -733,5 +765,6 @@ mod tests {
             .pty_args
             .windows(2)
             .any(|pair| pair == ["--allowedTools", "mcp__arroba__*"]));
+        std::fs::remove_dir_all(config_root).expect("test config root should clean up");
     }
 }

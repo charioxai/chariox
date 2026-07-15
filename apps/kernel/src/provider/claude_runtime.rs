@@ -10,6 +10,7 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
+use super::claude::materialize_runtime_claude_mcp_config;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
@@ -41,6 +42,11 @@ pub(crate) fn initialize_claude_runtime(
         })?
         .to_string();
     let mut args = run.pty_args().to_vec();
+    let mcp_config_file = materialize_runtime_claude_mcp_config(run)?;
+    install_claude_mcp_config_argument(
+        &mut args,
+        mcp_config_file.as_ref().map(|file| file.path()),
+    )?;
     let session_id = run
         .resume_state()
         .claude_session_id()
@@ -73,6 +79,7 @@ pub(crate) fn initialize_claude_runtime(
             working_directory,
             context_file,
             settings_file,
+            mcp_config_file,
             child,
             stdin,
             receiver,
@@ -96,6 +103,40 @@ pub(crate) fn initialize_claude_runtime(
             variant: run.variant().map(str::to_string),
         },
     })
+}
+
+fn install_claude_mcp_config_argument(
+    args: &mut Vec<String>,
+    config_file: Option<&std::path::Path>,
+) -> Result<(), DaemonError> {
+    let config_index = args.iter().position(|arg| arg == "--mcp-config");
+    match (config_index, config_file) {
+        (Some(index), Some(config_file)) => {
+            let value = args
+                .get_mut(index + 1)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "materialize claude mcp config argument",
+                    message: "Claude launch has --mcp-config without a value".to_string(),
+                })?;
+            *value = config_file.display().to_string();
+        }
+        (None, Some(config_file)) => {
+            args.extend([
+                "--mcp-config".to_string(),
+                config_file.display().to_string(),
+                "--strict-mcp-config".to_string(),
+            ]);
+        }
+        (Some(_), None) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "materialize claude mcp config argument",
+                message: "Claude launch has --mcp-config without a materialized config file"
+                    .to_string(),
+            });
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 pub(crate) fn submit_claude_prompt(
@@ -458,17 +499,24 @@ fn write_claude_hidden_context(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use base64::Engine as _;
     use serde_json::json;
 
-    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    use crate::provider::claude::CLAUDE_MCP_CONFIG_PLACEHOLDER;
+    use crate::provider::{
+        AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
+        ProviderLaunchResult, RuntimeMcpBinding, RuntimeProviderRun,
+    };
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
 
     use super::{
         claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
-        input::claude_user_content, new_claude_session_id, ClaudeRuntimeState,
-        ProviderPromptSignalBatch,
+        initialize_claude_runtime, input::claude_user_content, new_claude_session_id,
+        restart_claude_runtime, ClaudeRuntimeState, ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -491,6 +539,7 @@ mod tests {
                 working_directory: None,
                 context_file: None,
                 settings_file: None,
+                mcp_config_file: None,
                 child,
                 stdin,
                 receiver,
@@ -535,6 +584,150 @@ mod tests {
                 "/tmp/mcp.json".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn runtime_mcp_config_uses_private_file_not_argv_and_cleans_up_after_restart() {
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "runtime-bearer-token",
+                ));
+        let run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude:stream-json".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    "cat >/dev/null".to_string(),
+                    "--mcp-config".to_string(),
+                    CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
+                ],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        let mut binding = initialize_claude_runtime(&run)
+            .expect("Claude runtime should materialize and launch its MCP config");
+        let config_path = binding
+            .state
+            .args
+            .windows(2)
+            .find_map(|pair| {
+                (pair[0] == "--mcp-config").then(|| std::path::PathBuf::from(&pair[1]))
+            })
+            .expect("runtime should pass an MCP config path");
+        let config_root = config_path
+            .parent()
+            .expect("config should have a root")
+            .to_path_buf();
+
+        assert!(config_path.is_file());
+        assert!(binding
+            .state
+            .args
+            .iter()
+            .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers")));
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&config_path)
+                .expect("config metadata should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(std::fs::read_to_string(&config_path)
+            .expect("config should be readable by the kernel")
+            .contains("Bearer runtime-bearer-token"));
+
+        restart_claude_runtime(&run, &mut binding.state, "test_claude_restart")
+            .expect("Claude runtime should restart");
+        assert!(
+            config_path.is_file(),
+            "restart must retain the active config file"
+        );
+
+        drop(binding);
+        assert!(
+            !config_root.exists(),
+            "dropping the runtime must remove its private MCP config root"
+        );
+    }
+
+    #[test]
+    fn runtime_mcp_config_cleans_up_when_child_spawn_fails() {
+        let token = format!(
+            "runtime-bearer-spawn-failure-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
+        let missing_program = std::env::temp_dir().join(format!(
+            "arroba-missing-claude-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    &token,
+                ));
+        let run = RuntimeProviderRun::new(
+            "provider-run-spawn-failure",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude:stream-json".to_string(),
+                pty_target: None,
+                pty_program: Some(missing_program.display().to_string()),
+                pty_args: vec![
+                    "--mcp-config".to_string(),
+                    CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
+                ],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert!(
+            initialize_claude_runtime(&run).is_err(),
+            "missing Claude executable should fail"
+        );
+
+        let leaked_config = std::fs::read_dir(std::env::temp_dir())
+            .expect("kernel temp directory should be readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("mcp-config.json"))
+            .filter_map(|path| std::fs::read_to_string(path).ok())
+            .any(|config| config.contains(&token));
+        assert!(
+            !leaked_config,
+            "failed Claude startup must remove its private MCP config"
+        );
+    }
+
+    #[test]
+    fn rejects_unmaterialized_mcp_config_argument() {
+        let mut args = vec![
+            "--mcp-config".to_string(),
+            "{\"mcpServers\":{\"arroba\":{\"token\":\"inline-secret\"}}}".to_string(),
+        ];
+
+        let error = super::install_claude_mcp_config_argument(&mut args, None)
+            .expect_err("inline config must never reach Claude argv");
+
+        assert!(error.to_string().contains("materialized config file"));
     }
 
     #[test]
