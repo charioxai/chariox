@@ -50,6 +50,7 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     route: "/final/*",
     methods: ["GET"],
   })
+  assert.match(html, /<link rel="icon" href="data:,">/)
   const functionSource = html.match(/function publicationIngressPrefix\(\) \{[\s\S]*?\n\}/)?.[0]
   assert.ok(functionSource)
   const resolvePrefix = new Function(
