@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rand::RngCore;
 use zeroize::Zeroizing;
 
 use crate::error::DaemonError;
 use crate::local::{
+    deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, ArmDeploymentCredentialEnrollmentRequest,
     CredentialEnrollmentCallback, CredentialEnrollmentInteractionStatus, LocalDaemonResponse,
     RequestCredentialEnrollmentInteractionRequest,
@@ -298,7 +298,7 @@ pub(crate) async fn execute_credential_enrollment_interaction(
         crate::session::unix_epoch_ms(),
     )?;
 
-    let interaction_id = random_interaction_id();
+    let interaction_id = deployment_credential_enrollment_interaction_id(&request.enrollment_id);
     let interaction = RuntimeInteraction::new(
         &interaction_id,
         &request.agent_id,
@@ -424,16 +424,6 @@ fn validate_provider_authorization_url(value: &str) -> Result<(), DaemonError> {
 
 fn prune_expired_entries(entries: &mut BTreeMap<String, CredentialEnrollmentEntry>, now_ms: u64) {
     entries.retain(|_, entry| entry.expires_at_ms() > now_ms);
-}
-
-fn random_interaction_id() -> String {
-    let mut bytes = [0_u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let suffix = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("credential-enrollment-{suffix}")
 }
 
 fn enrollment_error(message: &'static str) -> DaemonError {

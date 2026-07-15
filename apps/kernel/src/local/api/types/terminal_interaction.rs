@@ -6,9 +6,14 @@ use zeroize::Zeroize;
 
 pub const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX: &str =
     "deployment-credential-enrollment:";
+pub const DEPLOYMENT_CREDENTIAL_ENROLLMENT_INTERACTION_ID_PREFIX: &str = "credential-enrollment:";
 
 pub fn deployment_credential_enrollment_service_subject(enrollment_id: &str) -> String {
     format!("{DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX}{enrollment_id}")
+}
+
+pub fn deployment_credential_enrollment_interaction_id(enrollment_id: &str) -> String {
+    format!("{DEPLOYMENT_CREDENTIAL_ENROLLMENT_INTERACTION_ID_PREFIX}{enrollment_id}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

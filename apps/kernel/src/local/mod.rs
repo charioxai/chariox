@@ -6,7 +6,10 @@ pub(crate) mod provider_requests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub use api::deployment_credential_enrollment_service_subject;
+pub use api::{
+    deployment_credential_enrollment_interaction_id,
+    deployment_credential_enrollment_service_subject,
+};
 pub use api::{
     AbortMetaagentTaskRequest, AcceptCloudSessionInviteRequest, AckMetaagentEventsRequest,
     AckWorkflowTurnRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,

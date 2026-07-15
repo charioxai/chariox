@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::local::{
+    deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject, ArmDeploymentCredentialEnrollmentRequest,
     CredentialEnrollmentInteractionStatus, GetDaemonHealthRequest,
     RequestCredentialEnrollmentInteractionRequest, RespondToInteractionRequest,
@@ -414,6 +415,107 @@ async fn credential_enrollment_cancel_and_timeout_return_no_callback() {
             status: CredentialEnrollmentInteractionStatus::TimedOut,
             callback: None,
         }
+    ));
+    assert!(env
+        .relay_router
+        .runtime_state
+        .session_snapshot_projection(&env.session_id, 0)
+        .expect("session projection should resolve")
+        .session
+        .active_interactions()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn matching_credential_service_can_cancel_only_its_own_interaction() {
+    let env = EnrollmentTestEnv::new();
+    let enrollment_id = "enrollment-worker-cancel";
+    env.arm(enrollment_id).await;
+
+    let helper_request = env.interaction_request(enrollment_id, 30);
+    let helper_command = service_command("helper-worker-cancel", enrollment_id, &helper_request);
+    let helper_router = Arc::clone(&env.relay_router);
+    let helper_task =
+        tokio::spawn(async move { helper_router.dispatch(helper_command, helper_request).await });
+    let interaction = env.wait_for_interaction().await;
+    assert_eq!(
+        interaction.id(),
+        deployment_credential_enrollment_interaction_id(enrollment_id)
+    );
+
+    for (command_id, subject, interaction_id, choice_id, custom_reply) in [
+        (
+            "worker-cancel-wrong-subject",
+            deployment_credential_enrollment_service_subject("other-enrollment"),
+            interaction.id().to_string(),
+            "cancel",
+            None,
+        ),
+        (
+            "worker-cancel-wrong-interaction",
+            deployment_credential_enrollment_service_subject(enrollment_id),
+            deployment_credential_enrollment_interaction_id("other-enrollment"),
+            "cancel",
+            None,
+        ),
+        (
+            "worker-cancel-wrong-choice",
+            deployment_credential_enrollment_service_subject(enrollment_id),
+            interaction.id().to_string(),
+            "submit_callback",
+            None,
+        ),
+        (
+            "worker-cancel-with-reply",
+            deployment_credential_enrollment_service_subject(enrollment_id),
+            interaction.id().to_string(),
+            "cancel",
+            Some("must-not-be-accepted".to_string()),
+        ),
+    ] {
+        let request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+            session_id: env.session_id.clone(),
+            interaction_id,
+            choice_id: choice_id.to_string(),
+            custom_reply,
+        });
+        let error = dispatch_boxed(
+            &env.relay_router,
+            service_command_with_subject(command_id, &subject, &request),
+            request,
+        )
+        .await
+        .expect_err("mismatched service cancellation must be denied");
+        assert!(error
+            .to_string()
+            .contains("hosted service identity is not authorized"));
+    }
+
+    let cancel_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+        session_id: env.session_id.clone(),
+        interaction_id: interaction.id().to_string(),
+        choice_id: "cancel".to_string(),
+        custom_reply: None,
+    });
+    let cancel_response = dispatch_boxed(
+        &env.relay_router,
+        service_command("worker-cancel-exact", enrollment_id, &cancel_request),
+        cancel_request,
+    )
+    .await
+    .expect("matching service should cancel its enrollment interaction");
+    assert!(matches!(
+        cancel_response,
+        LocalDaemonResponse::InteractionResponded { .. }
+    ));
+    assert!(matches!(
+        helper_task.await.expect("helper task should join"),
+        Ok(
+            LocalDaemonResponse::CredentialEnrollmentInteractionResolved {
+                status: CredentialEnrollmentInteractionStatus::Canceled,
+                callback: None,
+            }
+        )
     ));
     assert!(env
         .relay_router
