@@ -68,6 +68,32 @@ fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
 }
 
 #[test]
+fn local_docker_provisioner_override_supports_relocated_kernel_binaries() {
+    let root = test_root("slice-provisioner-override");
+    let script = root.join("provision-linux-docker-slice.sh");
+    std::fs::create_dir_all(&root).expect("provisioner root should be created");
+    std::fs::write(&script, "#!/bin/sh\n").expect("provisioner should be written");
+
+    let resolved =
+        resolve_linux_docker_slice_script(Some(script.clone()), Path::new("/source/apps/kernel"))
+            .expect("explicit provisioner should not depend on the build checkout");
+
+    assert_eq!(resolved, script);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_docker_provisioner_override_fails_closed_when_missing() {
+    let missing = test_root("missing-slice-provisioner").join("provision-linux-docker-slice.sh");
+
+    let error =
+        resolve_linux_docker_slice_script(Some(missing.clone()), Path::new("/source/apps/kernel"))
+            .expect_err("missing explicit provisioner should not fall back to the build checkout");
+
+    assert!(error.to_string().contains(&missing.display().to_string()));
+}
+
+#[test]
 fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let record = test_record();
     let options = test_options();

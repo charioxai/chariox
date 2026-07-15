@@ -48,6 +48,7 @@ pub struct LocalDockerSliceOptions {
 
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
+const SLICE_DOCKER_PROVISIONER_ENV: &str = "ARROBA_SLICE_DOCKER_PROVISIONER";
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
@@ -718,19 +719,33 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "slice.local_docker",
-            message: "failed to resolve repository root for slice scripts".to_string(),
-        })?;
-    let script = repo_root
-        .join("apps")
-        .join("kernel")
-        .join("slice-linux-docker")
-        .join("provision-linux-docker-slice.sh");
+    resolve_linux_docker_slice_script(
+        std::env::var_os(SLICE_DOCKER_PROVISIONER_ENV).map(PathBuf::from),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
+}
+
+fn resolve_linux_docker_slice_script(
+    configured: Option<PathBuf>,
+    manifest_dir: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let script = match configured {
+        Some(script) => script,
+        None => {
+            let repo_root = manifest_dir
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.local_docker",
+                    message: "failed to resolve repository root for slice scripts".to_string(),
+                })?;
+            repo_root
+                .join("apps")
+                .join("kernel")
+                .join("slice-linux-docker")
+                .join("provision-linux-docker-slice.sh")
+        }
+    };
     if script.is_file() {
         Ok(script)
     } else {
