@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 import {
   acquireAgentAppReplica,
   appendCloudPublicationDeploymentLogs,
@@ -41,6 +43,9 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import {
+  configurePublicationCallerClaimsRuntimeForTests,
+} from "../publication-caller-claims.js"
 import { publicationViewerPage } from "../publication-viewer.js"
 
 test("publication viewer preserves canonical and legacy Cloud ingress prefixes", () => {
@@ -653,3 +658,342 @@ test("human HTTP status page renders split trace viewer and sandboxed HTML outpu
     await app.close()
   }
 })
+
+test("managed publication transports enforce signed caller identity and route roles", async () => {
+  const root = await createManagedCallerClaimsPackage()
+  configurePublicationCallerClaimsRuntimeForTests({
+    deploymentId: "deployment-1",
+    environmentId: "environment-1",
+    secret: MANAGED_CALLER_CLAIMS_SECRET,
+    now: () => new Date(MANAGED_CALLER_CLAIMS_NOW_SECONDS * 1_000),
+  })
+  try {
+    const humanCallers: unknown[] = []
+    const human = buildServer(managedTransportConfig(root, "human", "human_http", "/managed/http", ["POST"]), {
+      invokeWorkflow: async (invocation) => {
+        humanCallers.push(invocation.caller)
+        return completedManagedInvocation("run-managed-human")
+      },
+    })
+    try {
+      const request = { method: "POST" as const, url: "/managed/http", payload: { prompt: "ship" } }
+      assert.equal((await human.app.inject({
+        ...request,
+        headers: { "x-arroba-agent-app-caller": "forged-human" },
+      })).statusCode, 401)
+      assert.equal((await human.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("human-forged", { secret: MANAGED_FORGED_SECRET }),
+      })).statusCode, 401)
+      assert.equal((await human.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("human-role", { roles: ["viewer"] }),
+      })).statusCode, 403)
+      const accepted = await human.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("human-valid", {
+          legacyCaller: "forged-human",
+          projectedRoles: "admin",
+          projectedSubject: "forged-subject",
+        }),
+      })
+      assert.equal(accepted.statusCode, 200)
+      assert.deepEqual(humanCallers, [expectedManagedCaller("human_http", "human-valid")])
+    } finally {
+      await human.app.close()
+    }
+
+    const apiCallers: unknown[] = []
+    const api = buildServer(managedTransportConfig(root, "api", "api_sse_json", "/managed/api", ["POST"]), {
+      invokeWorkflow: async (invocation) => {
+        apiCallers.push(invocation.caller)
+        return completedManagedInvocation("run-managed-api")
+      },
+    })
+    try {
+      const request = { method: "POST" as const, url: "/managed/api", payload: { prompt: "ship" } }
+      assert.equal((await api.app.inject({ ...request })).statusCode, 401)
+      assert.equal((await api.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("api-forged", { secret: MANAGED_FORGED_SECRET }),
+      })).statusCode, 401)
+      assert.equal((await api.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("api-role", { roles: ["viewer"] }),
+      })).statusCode, 403)
+      const accepted = await api.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("api-valid", { legacyCaller: "forged-api" }),
+      })
+      assert.equal(accepted.statusCode, 200)
+      assert.deepEqual(apiCallers, [expectedManagedCaller("api_sse_json", "api-valid")])
+    } finally {
+      await api.app.close()
+    }
+
+    const mcpCallers: unknown[] = []
+    const mcp = buildServer(managedTransportConfig(root, "mcp", "mcp", "/managed/mcp", ["POST"]), {
+      invokeWorkflow: async (invocation) => {
+        mcpCallers.push(invocation.caller)
+        return completedManagedInvocation("run-managed-mcp")
+      },
+    })
+    const mcpPayload = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "invoke_pub_managed_boundary", arguments: { prompt: "ship" } },
+    }
+    try {
+      const request = { method: "POST" as const, url: "/managed/mcp", payload: mcpPayload }
+      assert.equal((await mcp.app.inject({ ...request })).statusCode, 401)
+      assert.equal((await mcp.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("mcp-forged", { secret: MANAGED_FORGED_SECRET }),
+      })).statusCode, 401)
+      assert.equal((await mcp.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("mcp-role", { roles: ["viewer"] }),
+      })).statusCode, 403)
+      const accepted = await mcp.app.inject({
+        ...request,
+        headers: managedCallerClaimsHeaders("mcp-valid", { projectedSubject: "forged-subject" }),
+      })
+      assert.equal(accepted.statusCode, 200)
+      assert.deepEqual(mcpCallers, [expectedManagedCaller("mcp", "mcp-valid", {
+        tool_name: "invoke_pub_managed_boundary",
+      })])
+    } finally {
+      await mcp.app.close()
+    }
+
+    const webSocketCallers: unknown[] = []
+    const webSocket = buildServer(
+      managedTransportConfig(root, "websocket", "websocket_json", "/managed/ws", ["GET"]),
+      {
+        invokeWorkflow: async (invocation) => {
+          webSocketCallers.push(invocation.caller)
+          return completedManagedInvocation("run-managed-websocket")
+        },
+      },
+    )
+    try {
+      await webSocket.app.listen({ host: "127.0.0.1", port: 0 })
+      const address = webSocket.app.server.address()
+      const port = typeof address === "object" && address ? address.port : 0
+      const url = `ws://127.0.0.1:${port}/managed/ws`
+      assert.deepEqual(await rejectedManagedWebSocket(url, {
+        "x-arroba-agent-app-caller": "forged-websocket",
+      }), { statusCode: 401, code: "caller_authentication_required" })
+      assert.deepEqual(await rejectedManagedWebSocket(
+        url,
+        managedCallerClaimsHeaders("websocket-forged", { secret: MANAGED_FORGED_SECRET }),
+      ), { statusCode: 401, code: "caller_claims_invalid" })
+      assert.deepEqual(await rejectedManagedWebSocket(
+        url,
+        managedCallerClaimsHeaders("websocket-role", { roles: ["viewer"] }),
+      ), { statusCode: 403, code: "caller_role_denied" })
+
+      const socket = new WebSocket(url, {
+        headers: managedCallerClaimsHeaders("websocket-valid", {
+          legacyCaller: "forged-websocket",
+          projectedRoles: "admin",
+        }),
+      })
+      const reader = createWebSocketReader(socket)
+      try {
+        assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-managed-boundary" })
+        socket.send(JSON.stringify({ type: "invoke", input: { prompt: "ship" } }))
+        assert.equal((await reader.read() as { type?: string }).type, "accepted")
+        assert.deepEqual(webSocketCallers, [expectedManagedCaller("websocket_json", "websocket-valid")])
+      } finally {
+        socket.close()
+      }
+    } finally {
+      await webSocket.app.close()
+    }
+  } finally {
+    configurePublicationCallerClaimsRuntimeForTests(undefined)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+const MANAGED_CALLER_CLAIMS_SECRET = "managed-caller-claims-runtime-secret-0123456789"
+const MANAGED_FORGED_SECRET = "forged-caller-claims-runtime-secret-0123456789"
+const MANAGED_CALLER_CLAIMS_NOW_SECONDS = Math.floor(Date.parse("2026-07-15T12:00:00.000Z") / 1_000)
+
+async function createManagedCallerClaimsPackage(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-managed-caller-claims-"))
+  await writeFile(join(root, "publication.json"), JSON.stringify({
+    schema_version: 1,
+    package_version: 3,
+    publication_id: "pub-managed-boundary",
+    source_session_id: "session-1",
+    workflow_id: "workflow-1",
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }))
+  await writeFile(join(root, "deployment-contract.json"), JSON.stringify({
+    schema_version: 1,
+    package_id: `sha256:${"1".repeat(64)}`,
+    artifact: {
+      content_digest: `sha256:${"2".repeat(64)}`,
+      digest_algorithm: "sha256",
+      digest_scope: "package_files_excluding_deployment_contract",
+    },
+    source: {
+      publication_id: "pub-managed-boundary",
+      session_id: "session-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      creator_user_id: "user-1",
+      captured_at_ms: 1,
+    },
+    compatibility: {
+      package_version: 3,
+      minimum_kernel_version: "0.1.0",
+      minimum_local_daemon_protocol_version: 1,
+    },
+    routes: [
+      { id: "human-hook", path: "/managed/http", transport: "human_http", required_roles: ["member"] },
+      { id: "api-hook", path: "/managed/api", transport: "api_sse_json", required_roles: ["member"] },
+      { id: "mcp-hook", path: "/managed/mcp", transport: "mcp", required_roles: ["member"] },
+      { id: "websocket-hook", path: "/managed/ws", transport: "websocket_json", required_roles: ["member"] },
+    ],
+    provider_requirements: [],
+    credential_slots: [],
+    configuration: [],
+    capabilities: {},
+    resources: {},
+    presentation: {},
+    signatures: [],
+  }))
+  return root
+}
+
+function managedTransportConfig(
+  packageRoot: string,
+  hook: string,
+  transport: string,
+  route: string,
+  methods: Array<"GET" | "POST">,
+): WorkflowPublicationConfig {
+  return {
+    ...baseConfig,
+    publication_id: "pub-managed-boundary",
+    hook_id: `${hook}-hook`,
+    package_root: packageRoot,
+    transport,
+    route,
+    methods,
+  }
+}
+
+function managedCallerClaimsHeaders(
+  invocationId: string,
+  options: {
+    readonly legacyCaller?: string
+    readonly projectedRoles?: string
+    readonly projectedSubject?: string
+    readonly roles?: readonly string[]
+    readonly secret?: string
+  } = {},
+): Record<string, string> {
+  const encodedHeader = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
+  const encodedPayload = Buffer.from(JSON.stringify({
+    iss: "arroba-cloud",
+    aud: "deployment-1",
+    sub: "user:trusted-user",
+    org: "account-1",
+    roles: options.roles ?? ["member"],
+    deployment_id: "deployment-1",
+    environment_id: "environment-1",
+    invocation_id: invocationId,
+    nonce: `nonce-${invocationId}`,
+    iat: MANAGED_CALLER_CLAIMS_NOW_SECONDS,
+    exp: MANAGED_CALLER_CLAIMS_NOW_SECONDS + 60,
+  })).toString("base64url")
+  const unsigned = `${encodedHeader}.${encodedPayload}`
+  const signature = createHmac("sha256", options.secret ?? MANAGED_CALLER_CLAIMS_SECRET)
+    .update(unsigned)
+    .digest("base64url")
+  return {
+    "x-arroba-caller-claims": `${unsigned}.${signature}`,
+    "x-arroba-invocation-id": invocationId,
+    ...(options.legacyCaller ? { "x-arroba-agent-app-caller": options.legacyCaller } : {}),
+    ...(options.projectedRoles ? { "x-arroba-caller-roles": options.projectedRoles } : {}),
+    ...(options.projectedSubject ? { "x-arroba-caller-subject": options.projectedSubject } : {}),
+  }
+}
+
+function expectedManagedCaller(
+  transport: string,
+  invocationId: string,
+  proof: Record<string, unknown> = {},
+): unknown {
+  return {
+    type: "authenticated",
+    proof: {
+      transport,
+      ...proof,
+      publication_caller: {
+        account_id: "account-1",
+        deployment_id: "deployment-1",
+        environment_id: "environment-1",
+        invocation_id: invocationId,
+        roles: ["member"],
+        subject: "user:trusted-user",
+      },
+    },
+  }
+}
+
+function completedManagedInvocation(id: string) {
+  return {
+    accepted: true,
+    workflow_run: {
+      id,
+      status: "Completed",
+      final_output: { message: "done" },
+    },
+  }
+}
+
+async function rejectedManagedWebSocket(
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ readonly statusCode: number; readonly code: string | null }> {
+  return await new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { headers })
+    const timeout = setTimeout(() => {
+      socket.terminate()
+      reject(new Error("timed out waiting for managed WebSocket rejection"))
+    }, 5_000)
+    let responseReceived = false
+    socket.once("unexpected-response", (_request, response) => {
+      responseReceived = true
+      const chunks: Buffer[] = []
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
+      response.on("end", () => {
+        clearTimeout(timeout)
+        let code: string | null = null
+        try {
+          code = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { error?: { code?: string } }).error?.code ?? null
+        } catch {
+          code = null
+        }
+        resolve({ statusCode: response.statusCode ?? 0, code })
+      })
+      response.resume()
+    })
+    socket.once("open", () => {
+      clearTimeout(timeout)
+      socket.close()
+      reject(new Error("managed WebSocket unexpectedly opened"))
+    })
+    socket.once("error", (error) => {
+      if (responseReceived) return
+      clearTimeout(timeout)
+      reject(error)
+    })
+  })
+}

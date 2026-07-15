@@ -5,6 +5,11 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import {
+  publicationCallerForRequest,
+  publicationInvocationCaller,
+  type VerifiedPublicationCallerClaims,
+} from "./publication-caller-claims.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
@@ -74,6 +79,7 @@ export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPu
       return { error: "not found" }
     }
     reply.headers(mcpCorsHeaders())
+    const caller = publicationCallerForRequest(request)
 
     const rpc = parseJsonRpcRequest(request.body)
     if (!rpc) return jsonRpcError(null, -32600, "invalid request")
@@ -88,7 +94,9 @@ export function installPublicationMcpRoutes(app: McpApp, publication: WorkflowPu
       if (rpc.method === "resources/list") return jsonRpcResult(rpc.id, { resources: [] })
       if (rpc.method === "resources/templates/list") return jsonRpcResult(rpc.id, { resourceTemplates: [] })
       if (rpc.method === "prompts/list") return jsonRpcResult(rpc.id, { prompts: [] })
-      if (rpc.method === "tools/call") return await streamedToolsCallResponse(reply, rpc, publication, deps)
+      if (rpc.method === "tools/call") {
+        return await streamedToolsCallResponse(reply, rpc, publication, deps, caller)
+      }
       return jsonRpcError(rpc.id, -32601, "method not found")
     } catch (error) {
       return jsonRpcError(rpc.id, -32000, error instanceof Error ? error.message : String(error))
@@ -150,9 +158,12 @@ async function streamedToolsCallResponse(
   request: JsonRpcRequest,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   const raw = reply.raw
-  if (!reply.hijack || !raw?.writeHead || !raw.write || !raw.end) return await toolsCallResponse(request, publication, deps)
+  if (!reply.hijack || !raw?.writeHead || !raw.write || !raw.end) {
+    return await toolsCallResponse(request, publication, deps, caller)
+  }
   reply.hijack()
   raw.writeHead(200, {
     ...mcpCorsHeaders(),
@@ -162,7 +173,7 @@ async function streamedToolsCallResponse(
     if (!raw.destroyed) raw.write?.(" \n")
   }, mcpKeepaliveMs(publication))
   try {
-    const result = await toolsCallResponse(request, publication, deps)
+    const result = await toolsCallResponse(request, publication, deps, caller)
     raw.end(`${JSON.stringify(result)}\n`)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -177,6 +188,7 @@ async function toolsCallResponse(
   request: JsonRpcRequest,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   const params = request.params && typeof request.params === "object" ? request.params as Record<string, unknown> : {}
   const toolName = typeof params.name === "string" ? params.name : null
@@ -186,7 +198,7 @@ async function toolsCallResponse(
   const invocation: NormalizedInvocation = {
     publication_id: publication.publication_id,
     request_id: `mcp_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    caller: { type: "anonymous", proof: { transport: "mcp", tool_name: toolName } },
+    caller: publicationInvocationCaller(caller, { transport: "mcp", tool_name: toolName }),
     input,
     mode: "sync",
   }

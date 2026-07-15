@@ -34,6 +34,11 @@ import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
 import {
+  publicationCallerForRequest,
+  publicationInvocationCaller,
+  type VerifiedPublicationCallerClaims,
+} from "./publication-caller-claims.js"
+import {
   forwardHumanHttpResult,
 } from "./publication-human-http.js"
 import {
@@ -193,7 +198,8 @@ async function invokeAgentAppRoute(
   deps: GatewayDeps,
 ) {
   const prompt = promptFromRoute(request.url, route)
-  const callerSession = agentAppCallerSession(request.headers, randomUUID)
+  const caller = publicationCallerForRequest(request)
+  const callerSession = agentAppCallerSession(request.headers, randomUUID, caller)
   if (callerSession.setCookie) reply.header("set-cookie", callerSession.setCookie)
   const requestId = `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`
   rememberAgentAppInvocationRoute(publication, requestId, route, {
@@ -209,6 +215,7 @@ async function invokeAgentAppRoute(
         lease: queuedLease,
         requestId,
         callerKey: callerSession.callerKey,
+        caller,
         deps,
       })
     })
@@ -230,6 +237,7 @@ async function invokeAgentAppRoute(
     lease,
     requestId,
     callerKey: callerSession.callerKey,
+    caller,
     deps,
   })
   return forwardHumanHttpResult(reply as never, selectedPublication, result, requestId)
@@ -242,24 +250,22 @@ async function invokeSelectedAgentAppRoute(options: {
   lease: AgentAppReplicaLease
   requestId: string
   callerKey: string
+  caller: VerifiedPublicationCallerClaims | null
   deps: GatewayDeps
 }): Promise<{ selectedPublication: WorkflowPublicationConfig; result: WorkflowInvocationResult }> {
   const selectedPublication = options.lease.publication
   const invocation: NormalizedInvocation = {
     publication_id: selectedPublication.publication_id,
     request_id: options.requestId,
-    caller: {
-      type: "anonymous",
-      proof: {
-        transport: "agent_app_human_http",
-        route: options.route.path,
-        agent_app_session: options.callerKey,
-        agent_app_request_id: options.requestId,
-        replica_session_id: selectedPublication.session_id,
-        agent_app_actions: routeAgentAppActions(options.publication, options.route),
-        agent_app_audit: agentAppAuditProof(),
-      },
-    },
+    caller: publicationInvocationCaller(options.caller, {
+      transport: "agent_app_human_http",
+      route: options.route.path,
+      agent_app_session: options.callerKey,
+      agent_app_request_id: options.requestId,
+      replica_session_id: selectedPublication.session_id,
+      agent_app_actions: routeAgentAppActions(options.publication, options.route),
+      agent_app_audit: agentAppAuditProof(),
+    }),
     input: { prompt: options.prompt },
     mode: "async",
   }
@@ -446,7 +452,7 @@ async function serveAgentAppAsset(
   const parsedUrl = new URL(request.url, "http://agent-app.local")
   const pathname = parsedUrl.pathname
   const effectAsset = resolveAgentAppEffectAsset(publication, pathname, {
-    sessionKey: agentAppCallerKey(request.headers),
+    sessionKey: agentAppCallerKey(request.headers, publicationCallerForRequest(request)),
     invocationRequestId: parsedUrl.searchParams.get("arroba_invocation"),
   })
   if (effectAsset) {

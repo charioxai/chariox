@@ -2,6 +2,11 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path"
 import process from "node:process"
 
+import {
+  PublicationCallerClaimsError,
+  publicationCallerClaimsRuntimeConfigured,
+  type VerifiedPublicationCallerClaims,
+} from "./publication-caller-claims.js"
 import type {
   WorkflowPublicationConfig,
 } from "./publication-types.js"
@@ -53,9 +58,12 @@ export function clearAgentAppReplicaPoolsForTests(): void {
 export function agentAppCallerSession(
   headers: Record<string, string | string[] | undefined>,
   createSessionId: () => string,
+  caller: VerifiedPublicationCallerClaims | null = null,
 ): AgentAppCallerSession {
-  const explicit = firstHeader(headers["x-arroba-agent-app-caller"])
-  if (explicit) return { callerKey: explicit }
+  if (caller) return { callerKey: caller.subject }
+  if (publicationCallerClaimsRuntimeConfigured()) {
+    throw new PublicationCallerClaimsError("Agent app affinity requires verified caller claims")
+  }
 
   const cookie = agentAppSessionCookie(headers)
   if (cookie) return { callerKey: cookie }
@@ -67,9 +75,14 @@ export function agentAppCallerSession(
   }
 }
 
-export function agentAppCallerKey(headers: Record<string, string | string[] | undefined>): string {
-  const explicit = firstHeader(headers["x-arroba-agent-app-caller"])
-  if (explicit) return explicit
+export function agentAppCallerKey(
+  headers: Record<string, string | string[] | undefined>,
+  caller: VerifiedPublicationCallerClaims | null = null,
+): string {
+  if (caller) return caller.subject
+  if (publicationCallerClaimsRuntimeConfigured()) {
+    throw new PublicationCallerClaimsError("Agent app affinity requires verified caller claims")
+  }
   const cookie = agentAppSessionCookie(headers)
   if (cookie) return cookie
   const forwarded = firstHeader(headers["x-forwarded-for"])

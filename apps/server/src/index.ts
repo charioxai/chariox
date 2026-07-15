@@ -25,6 +25,10 @@ import {
   isApiSseJsonPublication,
 } from "./publication-api-sse.js"
 import {
+  publicationCallerForRequest,
+  publicationInvocationCaller,
+} from "./publication-caller-claims.js"
+import {
   forwardHumanHttpResult,
   HUMAN_HTTP_FORM_INVOKE_PATH,
   installHumanHttpRoutes,
@@ -92,11 +96,11 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const scheduleOnly = isScheduleOnlyPublication(publication)
   const webSocketServer = scheduleOnly ? null : installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
-  if (!scheduleOnly && !isAgentAppPublication(publication)) {
-    installPublicationViewerRoutes(app, publication)
-  }
   if (!scheduleOnly) {
     installHumanHttpRoutes(app, publication)
+  }
+  if (!scheduleOnly && !isAgentAppPublication(publication)) {
+    installPublicationViewerRoutes(app, publication)
   }
   if (!scheduleOnly && isApiSseJsonPublication(publication)) {
     installApiSseJsonRoutes(app, publication, deps)
@@ -128,7 +132,10 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     const invocation: NormalizedInvocation = {
       publication_id: publication.publication_id,
       request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      caller: { type: "anonymous", proof: { transport: "human_http_form" } },
+      caller: publicationInvocationCaller(
+        publicationCallerForRequest(request),
+        { transport: "human_http_form" },
+      ),
       input: parsed.input,
       mode: publication.mode ?? "sync",
     }
@@ -156,10 +163,13 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           if (isParseErrorPayload(parsed)) {
             return { error: parsed.__arroba_parse_error }
           }
+          const caller = publicationCallerForRequest(request)
           const invocation: NormalizedInvocation = {
             publication_id: publication.publication_id,
             request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-            caller: { type: "anonymous" },
+            caller: caller
+              ? publicationInvocationCaller(caller, { transport: "human_http" })
+              : { type: "anonymous" },
             input: parsed,
             mode: publication.mode ?? "sync",
           }
