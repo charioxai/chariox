@@ -178,10 +178,19 @@ fn validate_bound_service_sender(
     caller_identity: Option<&RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,
 ) -> Result<(), RelayError> {
-    let Some(expected_thumbprint) = caller_identity
-        .filter(|identity| identity.subject_kind == RelaySubjectKind::Service)
-        .and_then(|identity| identity.public_key_thumbprint.as_deref())
+    let Some(identity) =
+        caller_identity.filter(|identity| identity.subject_kind == RelaySubjectKind::Service)
     else {
+        return Ok(());
+    };
+    if identity.expires_at_ms <= crate::session::unix_epoch_ms() {
+        return Err(relay_error(
+            "unauthorized",
+            "relay service identity has expired",
+            false,
+        ));
+    }
+    let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() else {
         return Ok(());
     };
     let actual_thumbprint = public_key_thumbprint(&encrypted_request.sender_public_key);
@@ -376,6 +385,20 @@ mod tests {
             &encrypted_request("ephemeral-service-public-key"),
         )
         .expect_err("a stolen service token must not act as an unbound bearer token");
+
+        assert_eq!(error.code, "unauthorized");
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn expired_service_identity_is_rejected_before_dispatch() {
+        let mut identity = caller_identity(RelaySubjectKind::Service, None);
+        identity.expires_at_ms = 1;
+        let error = validate_bound_service_sender(
+            Some(&identity),
+            &encrypted_request("ephemeral-service-public-key"),
+        )
+        .expect_err("an authenticated socket must not outlive its service token");
 
         assert_eq!(error.code, "unauthorized");
         assert!(!error.retryable);
