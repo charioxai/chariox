@@ -150,6 +150,7 @@ export interface DeploymentInvocationUsageItem {
   readonly requestBytes?: number | null
   readonly responseBytes?: number | null
   readonly usageUnits: number
+  readonly admissionDeferred?: boolean
   readonly startedAt: string
   readonly finishedAt?: string | null
 }

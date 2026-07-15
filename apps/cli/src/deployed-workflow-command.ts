@@ -697,7 +697,9 @@ export function formatDeploymentEnvironmentUsage(usage: DeploymentEnvironmentUsa
     `generated_at ${usage.generatedAt}`,
     ...usage.recentInvocations.map((invocation) => [
       `invocation ${invocation.invocationId} ${invocation.state} ${invocation.outcome ?? "pending"}`,
-      `  transport ${invocation.transport} status=${invocation.statusCode ?? "none"} error=${invocation.errorCode ?? "none"}`,
+      `  transport ${invocation.transport} status=${invocation.statusCode ?? "none"}`
+      + ` error=${invocation.errorCode ?? "none"}`
+      + ` admission=${invocation.admissionDeferred ? "deferred_replay" : "live"}`,
       `  timing queued_ms=${invocation.queuedMs} duration_ms=${formatMetric(invocation.durationMs)}`,
       `  bytes request=${invocation.requestBytes ?? "none"} response=${invocation.responseBytes ?? "none"} units=${invocation.usageUnits}`,
       `  started_at ${invocation.startedAt}`,

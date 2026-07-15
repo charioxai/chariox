@@ -305,6 +305,7 @@ test("deployed workflow TUI command keeps runtime usage and limits in control-pl
     assert.match(shown.notice, /audit deployment_environment\.limits_updated actor=user-1/)
     assert.match(shown.notice, /privacy capture=metadata_only content_capture=disabled active_invocations_protected=yes state_contract=stateless_external_storage/)
     assert.match(shown.notice, /invocation invocation-1 completed succeeded/)
+    assert.match(shown.notice, /admission=deferred_replay/)
     assert.doesNotMatch(shown.notice, /caller-key-secret/)
     assert.match(limitsShown.notice, /limits concurrency=2 queue=8 duration_ms=30000/)
     assert.match(updated.notice, /limits concurrency=4 queue=12 duration_ms=20000/)
@@ -895,6 +896,7 @@ function runtimeUsage(limits: { readonly concurrency: number; readonly queue: nu
       requestBytes: 100,
       responseBytes: 200,
       usageUnits: 1,
+      admissionDeferred: true,
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:00.240Z",
     }],
