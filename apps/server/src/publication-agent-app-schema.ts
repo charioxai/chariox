@@ -102,11 +102,14 @@ function validateReplicas(count: unknown): void {
 function validateActionUrl(actionId: string, url: string): void {
   try {
     const parsed = new URL(url)
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("unsupported protocol")
+    if (parsed.protocol !== "http:") throw new Error("unsupported protocol")
+    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "[::1]") {
+      throw new Error("action server is not loopback")
     }
+    if (!parsed.port) throw new Error("action server port is required")
+    if (parsed.username || parsed.password || parsed.hash) throw new Error("URL credentials and fragments are forbidden")
   } catch {
-    throw new Error(`Agent App action ${actionId} has an invalid URL`)
+    throw new Error(`Agent App action ${actionId} must use an explicit loopback HTTP action-server URL`)
   }
 }
 

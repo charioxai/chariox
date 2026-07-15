@@ -991,7 +991,22 @@ test("agent app persistent patch effects survive gateway restart", async () => {
 
 test("agent app action proxy only exposes route-allowed manifest actions", async () => {
   const actionCalls: unknown[] = []
+  const actionPaths: string[] = []
   const actionServer = createServer((request, response) => {
+    actionPaths.push(request.url ?? "")
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/redirect-target" })
+      response.end()
+      return
+    }
+    if (request.url === "/large") {
+      response.writeHead(200, {
+        "content-type": "text/plain",
+        "content-length": String(1_048_577),
+      })
+      response.end("x".repeat(1_048_577))
+      return
+    }
     const chunks: Buffer[] = []
     request.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
     request.on("end", () => {
@@ -1022,7 +1037,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
         required_role: "public",
         manipulation: {
           level: "state_and_overlay",
-          allowed_actions: ["cart.add"],
+          allowed_actions: ["cart.add", "cart.redirect", "cart.large"],
         },
       }],
       actions: {
@@ -1036,6 +1051,12 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
         },
         "cart.admin": {
           transport: { kind: "http", method: "POST", url: actionUrl },
+        },
+        "cart.redirect": {
+          transport: { kind: "http", method: "POST", url: `http://127.0.0.1:${address.port}/redirect` },
+        },
+        "cart.large": {
+          transport: { kind: "http", method: "POST", url: `http://127.0.0.1:${address.port}/large` },
         },
       },
     },
@@ -1067,6 +1088,23 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
     })
     assert.equal(forbidden.statusCode, 403)
     assert.equal(actionCalls.length, 1)
+
+    const redirect = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.redirect",
+      payload: {},
+    })
+    assert.equal(redirect.statusCode, 400)
+    assert.match(redirect.json().error, /redirects are forbidden/)
+    assert.equal(actionPaths.includes("/redirect-target"), false)
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.large",
+      payload: {},
+    })
+    assert.equal(oversized.statusCode, 400)
+    assert.match(oversized.json().error, /exceeds the byte limit/)
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })

@@ -388,9 +388,14 @@ async function invokeHttpAction(
     method: transport.method ?? "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
+    redirect: "manual",
+    signal: AbortSignal.timeout(30_000),
   })
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("agent app action redirects are forbidden")
+  }
   const contentType = response.headers.get("content-type") ?? "application/json; charset=utf-8"
-  const text = await response.text()
+  const text = await readBoundedAgentAppActionResponse(response, 1_048_576)
   let body: unknown = text
   if (contentType.includes("application/json")) {
     try {
@@ -400,6 +405,36 @@ async function invokeHttpAction(
     }
   }
   return { status: response.status, contentType, body }
+}
+
+async function readBoundedAgentAppActionResponse(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel()
+    throw new Error("agent app action response exceeds the byte limit")
+  }
+  if (!response.body) return ""
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let byteLength = 0
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      byteLength += chunk.value.byteLength
+      if (byteLength > maxBytes) throw new Error("agent app action response exceeds the byte limit")
+      chunks.push(chunk.value)
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  const bytes = new Uint8Array(byteLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }
 
 function promptFromRoute(requestUrl: string, route: AgentAppRouteConfig): string {

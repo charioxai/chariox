@@ -112,9 +112,7 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
         }
     }
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_millis(request.timeout_ms))
-        .build();
+    let agent = http_agent(request.timeout_ms);
     let method = prepared.method.trim().to_ascii_uppercase();
     let mut http_request = agent.request(&method, url.as_str());
     for (name, value) in headers {
@@ -131,6 +129,13 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
     }
     .map_err(|error| error.to_string())?;
     decode_response(response, request.max_response_bytes)
+}
+
+fn http_agent(timeout_ms: u64) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .redirects(0)
+        .build()
 }
 
 fn prepare_config(config: &HttpConfig, arguments: &Value) -> Result<HttpConfig, String> {
@@ -206,7 +211,14 @@ fn parse_config(value: Value) -> Result<HttpConfig, String> {
 }
 
 fn validate_config(config: &HttpConfig) -> Result<(), String> {
-    url::Url::parse(&config.base_url).map_err(|error| format!("invalid base_url: {error}"))?;
+    let base_url =
+        url::Url::parse(&config.base_url).map_err(|error| format!("invalid base_url: {error}"))?;
+    if !matches!(base_url.scheme(), "http" | "https") {
+        return Err("HTTP config base_url must use http or https".to_string());
+    }
+    if !base_url.username().is_empty() || base_url.password().is_some() {
+        return Err("HTTP config base_url must not contain credentials".to_string());
+    }
     if config.path.trim().is_empty() {
         return Err("HTTP config path must not be empty".to_string());
     }
@@ -218,6 +230,57 @@ fn validate_config(config: &HttpConfig) -> Result<(), String> {
         return Err("body_text and body_json are mutually exclusive".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn http_agent_does_not_follow_redirects_after_policy_validation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
+        let address = listener
+            .local_addr()
+            .expect("read redirect fixture address");
+        let fixture = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept redirect request");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read redirect request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write redirect response");
+        });
+
+        let response = http_agent(1_000)
+            .get(&format!("http://{address}/allowed"))
+            .call()
+            .expect("redirect response must be returned without following it");
+        assert_eq!(response.status(), 302);
+        fixture.join().expect("redirect fixture thread");
+    }
+
+    #[test]
+    fn http_config_rejects_non_http_and_embedded_credentials() {
+        let config = |base_url: &str| HttpConfig {
+            base_url: base_url.to_string(),
+            method: "GET".to_string(),
+            path: "/resource".to_string(),
+            query: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            body_json: None,
+            body_text: None,
+        };
+
+        assert!(validate_config(&config("ftp://example.com")).is_err());
+        assert!(validate_config(&config("https://user:secret@example.com")).is_err());
+        assert!(validate_config(&config("https://api.example.com")).is_ok());
+    }
 }
 
 fn render_json_template(value: &Value, arguments: &Value) -> Result<Value, String> {
