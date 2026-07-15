@@ -239,6 +239,33 @@ fn local_request_api_exports_agent_app_publication_package() {
         deployment_contract["presentation"]["kind"],
         serde_json::json!("agent_app")
     );
+    assert_eq!(
+        deployment_contract["routes"][0]["id"],
+        serde_json::json!(format!("{}-hook", publication.id()))
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["path"],
+        serde_json::json!("/add/*")
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["methods"],
+        serde_json::json!(["GET"])
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["required_roles"],
+        serde_json::json!(["public"])
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["session"],
+        serde_json::json!({
+            "scope": "session",
+            "per_caller_ordering": true,
+        })
+    );
+    assert_eq!(
+        deployment_contract["resources"]["replicas"],
+        serde_json::json!(1)
+    );
     assert!(deployment_contract["presentation"]["assets"]
         .as_array()
         .is_some_and(|assets| assets.iter().any(|asset| {

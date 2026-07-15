@@ -10,6 +10,7 @@ import {
   createPublicationTraceStreamState,
   createServer,
   createWebSocketReader,
+  enqueueAgentAppReplicaDispatch,
   findWorkflowRunByInvocationRequestId,
   firstSetCookieValue,
   invokePublicationInput,
@@ -44,6 +45,7 @@ import {
 
 test("agent app replica selection preserves caller affinity across hidden sessions", async () => {
   const selectedReplicas: unknown[] = []
+  const selectedRequestIds: string[] = []
   const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replicas-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
@@ -67,6 +69,7 @@ test("agent app replica selection preserves caller affinity across hidden sessio
   }, {
     invokeWorkflow: async (invocation) => {
       selectedReplicas.push((invocation.caller.proof as Record<string, unknown>).replica_session_id)
+      selectedRequestIds.push(invocation.request_id)
       return {
         accepted: true,
         workflow_run: { id: `run-${selectedReplicas.length}`, status: "Running" },
@@ -77,12 +80,85 @@ test("agent app replica selection preserves caller affinity across hidden sessio
   try {
     await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
     await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
-    await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    assert.match(queued.body, /agent_app_pool_queued/)
+    assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2"])
+
+    releaseAgentAppReplicaInvocation(baseConfig, selectedRequestIds[0])
+    await waitForCondition(
+      () => selectedReplicas.length === 3,
+      "same caller should resume after its affinity replica is released",
+    )
     assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2", "replica-session-1"])
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("agent app replica scheduler preserves caller order without blocking other callers", async () => {
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-replica-caller-order",
+    replica_session_ids: ["replica-session-1", "replica-session-2"],
+    agent_app: {
+      enabled: true,
+      replicas: { count: 2, per_caller_ordering: true, max_queue_depth: 4 },
+      routes: [],
+    },
+  }
+  const callerA = acquireAgentAppReplica(publication, "caller-a")
+  const callerB = acquireAgentAppReplica(publication, "caller-b")
+  assert.equal(callerA?.publication.session_id, "replica-session-1")
+  assert.equal(callerB?.publication.session_id, "replica-session-2")
+  assert.equal(acquireAgentAppReplica(publication, "caller-a"), null)
+
+  const dispatched: string[] = []
+  assert.equal(enqueueAgentAppReplicaDispatch(publication, "caller-a", async (lease) => {
+    dispatched.push(`caller-a:${lease.publication.session_id}`)
+    lease.release()
+  }), true)
+  assert.equal(enqueueAgentAppReplicaDispatch(publication, "caller-c", async (lease) => {
+    dispatched.push(`caller-c:${lease.publication.session_id}`)
+    lease.release()
+  }), true)
+
+  callerB?.release()
+  await waitForCondition(
+    () => dispatched.length === 1,
+    "an eligible caller should use the idle replica",
+  )
+  assert.deepEqual(dispatched, ["caller-c:replica-session-2"])
+
+  callerA?.release()
+  await waitForCondition(
+    () => dispatched.length === 2,
+    "the queued affinity caller should resume in order",
+  )
+  assert.deepEqual(dispatched, [
+    "caller-c:replica-session-2",
+    "caller-a:replica-session-1",
+  ])
+})
+
+test("agent app single-replica configuration admits only one invocation at a time", () => {
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-single-replica-capacity",
+    replica_session_ids: ["replica-session-1"],
+    agent_app: {
+      enabled: true,
+      replicas: { count: 1, per_caller_ordering: true },
+      routes: [],
+    },
+  }
+  const first = acquireAgentAppReplica(publication, "caller-a")
+  assert.equal(first?.publication.session_id, "replica-session-1")
+  assert.equal(acquireAgentAppReplica(publication, "caller-b"), null)
+  first?.release()
+  const second = acquireAgentAppReplica(publication, "caller-b")
+  assert.equal(second?.publication.session_id, "replica-session-1")
+  second?.release()
 })
 
 test("agent app replica caller affinity survives gateway restart with runtime storage", async () => {

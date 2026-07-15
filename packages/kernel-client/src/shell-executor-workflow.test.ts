@@ -636,7 +636,7 @@ test("executeShellCommand exports a workflow publication package", async () => {
     })
 
     const result = await executeShellCommand(
-      parseShellCommand("workflow publication export publication-1 exported --kernel-url ws://kernel.example"),
+      parseShellCommand("workflow publication export publication-1 exported --kernel-url ws://kernel.example --agent-app-json '{\"enabled\":true,\"replicas\":{\"count\":2,\"per_caller_ordering\":true}}' --agent-app-assets-dir agent-app-dist"),
       context,
       { client: fake.client },
     )
@@ -657,8 +657,11 @@ test("executeShellCommand exports a workflow publication package", async () => {
           session_id: "session-1",
           publication_ref: "publication-1",
           kernel_url: "ws://kernel.example",
-          agent_app: null,
-          agent_app_assets_dir: null,
+          agent_app: {
+            enabled: true,
+            replicas: { count: 2, per_caller_ordering: true },
+          },
+          agent_app_assets_dir: join(root, "agent-app-dist"),
         },
       },
     ])

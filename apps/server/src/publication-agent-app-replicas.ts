@@ -82,22 +82,36 @@ export function acquireAgentAppReplica(
   callerKey: string,
 ): AgentAppReplicaLease | null {
   const sessions = normalizedReplicaSessions(publication)
-  if (sessions.length <= 1 || publication.agent_app?.replicas?.count === undefined) {
+  if (publication.agent_app?.replicas?.count === undefined) {
     return {
       publication,
       release: () => {},
     }
   }
   const pool = replicaPool(publication)
-  if (publication.agent_app.replicas.per_caller_ordering !== false) {
+  if (
+    publication.agent_app?.replicas?.per_caller_ordering !== false
+    && pool.pending.some((pending) => pending.callerKey === callerKey)
+  ) return null
+  return acquireIdleAgentAppReplica(publication, callerKey, sessions, pool)
+}
+
+function acquireIdleAgentAppReplica(
+  publication: WorkflowPublicationConfig,
+  callerKey: string,
+  sessions: string[],
+  pool: ReplicaPoolState,
+): AgentAppReplicaLease | null {
+  if (publication.agent_app?.replicas?.per_caller_ordering !== false) {
     const existing = pool.callerSessions.get(callerKey)
     if (existing && sessions.includes(existing)) {
+      if ((pool.busyCounts.get(existing) ?? 0) > 0) return null
       return leaseReplica(publication, existing, pool)
     }
   }
   const sessionId = nextIdleSession(sessions, pool)
   if (!sessionId) return null
-  if (publication.agent_app.replicas.per_caller_ordering !== false) {
+  if (publication.agent_app?.replicas?.per_caller_ordering !== false) {
     pool.callerSessions.set(callerKey, sessionId)
     persistReplicaPool(publication, pool)
   }
@@ -222,12 +236,24 @@ function leaseReplica(
 function drainReplicaPool(publication: WorkflowPublicationConfig): void {
   const pool = replicaPool(publication)
   while (pool.pending.length > 0) {
-    const pending = pool.pending[0]
-    if (!pending) return
-    const lease = acquireAgentAppReplica(pending.publication, pending.callerKey)
-    if (!lease) return
-    pool.pending.shift()
-    void pending.dispatch(lease).catch(() => lease.release())
+    let dispatched = false
+    for (let index = 0; index < pool.pending.length; index += 1) {
+      const pending = pool.pending[index]
+      if (!pending) continue
+      const sessions = normalizedReplicaSessions(pending.publication)
+      const lease = acquireIdleAgentAppReplica(
+        pending.publication,
+        pending.callerKey,
+        sessions,
+        pool,
+      )
+      if (!lease) continue
+      pool.pending.splice(index, 1)
+      void pending.dispatch(lease).catch(() => lease.release())
+      dispatched = true
+      break
+    }
+    if (!dispatched) return
   }
 }
 

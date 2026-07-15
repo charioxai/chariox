@@ -27,6 +27,7 @@ import {
 import {
   acquireAgentAppReplica,
   clearAgentAppReplicaPoolsForTests,
+  enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
 } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
@@ -63,6 +64,7 @@ export {
   rememberAgentAppInvocationRoute,
   acquireAgentAppReplica,
   clearAgentAppReplicaPoolsForTests,
+  enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
   findWorkflowRunByInvocationRequestId,
   collectPublicationTraceEvents,

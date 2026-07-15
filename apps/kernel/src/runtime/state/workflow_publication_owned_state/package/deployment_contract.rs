@@ -69,23 +69,37 @@ fn deployment_route(
     agent_app: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let transport = super::hook_transport(publication_value);
-    let path = super::string_field(publication_value, "route")
+    let publication_hook_id = format!("{}-hook", publication.id());
+    let publication_path = super::string_field(publication_value, "route")
         .unwrap_or_else(|| super::default_publication_route(publication_value));
-    let methods = publication_value
-        .get("methods")
-        .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
-        .cloned()
-        .unwrap_or_else(|| super::default_publication_methods(publication_value));
     let app_route = agent_app
+        .filter(|value| value.get("enabled").and_then(serde_json::Value::as_bool) == Some(true))
         .and_then(|value| value.get("routes"))
         .and_then(serde_json::Value::as_array)
         .and_then(|routes| {
-            routes.iter().find(|candidate| {
-                candidate.get("hook_id").and_then(serde_json::Value::as_str)
-                    == Some(&format!("{}-hook", publication.id()))
-                    || candidate.get("path").and_then(serde_json::Value::as_str) == Some(path)
-            })
+            routes
+                .iter()
+                .find(|candidate| {
+                    candidate.get("hook_id").and_then(serde_json::Value::as_str)
+                        == Some(publication_hook_id.as_str())
+                        || candidate.get("path").and_then(serde_json::Value::as_str)
+                            == Some(publication_path)
+                })
+                .or_else(|| routes.first())
         });
+    let path = app_route
+        .and_then(|value| value.get("path"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(publication_path);
+    let methods = if app_route.is_some() {
+        serde_json::json!(["GET"])
+    } else {
+        publication_value
+            .get("methods")
+            .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
+            .cloned()
+            .unwrap_or_else(|| super::default_publication_methods(publication_value))
+    };
     let required_role = app_route
         .and_then(|value| value.get("required_role"))
         .and_then(serde_json::Value::as_str)
@@ -108,7 +122,7 @@ fn deployment_route(
         });
 
     let mut route = serde_json::json!({
-        "id": format!("{}-hook", publication.id()),
+        "id": publication_hook_id,
         "transport": transport,
         "methods": methods,
         "input_schema": publication_value.get("input_schema").cloned().unwrap_or(serde_json::Value::Null),
