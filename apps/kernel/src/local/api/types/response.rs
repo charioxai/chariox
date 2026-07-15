@@ -209,6 +209,19 @@ pub enum LocalDaemonResponse {
     },
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
     InteractionResponded { interaction_id: String, session: RuntimeSession, },
+    DeploymentCredentialEnrollmentArmed {
+        enrollment_id: String,
+        profile_id: String,
+        target_version: u64,
+        session_id: String,
+        agent_id: String,
+        expires_at_ms: u64,
+    },
+    CredentialEnrollmentInteractionResolved {
+        status: CredentialEnrollmentInteractionStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        callback: Option<CredentialEnrollmentCallback>,
+    },
     PromptSubmitted {
         outcome: PromptSubmissionOutcome,
         session: RuntimeSession,

@@ -32,6 +32,17 @@ pub(crate) async fn authorize_session_membership(
     command: &KernelCommand,
     request: &LocalDaemonRequest,
 ) -> Result<String, DaemonError> {
+    if matches!(command.caller.caller_kind, KernelCallerKind::HostedService)
+        && !matches!(
+            request,
+            LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
+        )
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "authorize hosted service request",
+            message: "hosted service identity is not authorized for this request".to_string(),
+        });
+    }
     if is_implicit_local_session_caller(command) {
         return Ok(DEFAULT_LOCAL_USER_ID.to_string());
     }

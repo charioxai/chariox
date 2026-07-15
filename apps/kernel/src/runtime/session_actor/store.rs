@@ -237,15 +237,20 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let session_id = request.session_id.clone();
-        let interaction_id = request.interaction_id.clone();
+        let RespondToInteractionRequest {
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+        } = request;
+        let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
         let result = match self
             .state
             .resolve_runtime_interaction(
-                &request.session_id,
-                &request.interaction_id,
-                &request.choice_id,
-                request.custom_reply.as_deref(),
+                &session_id,
+                &interaction_id,
+                &choice_id,
+                custom_reply.as_deref().map(String::as_str),
             )
             .await
         {

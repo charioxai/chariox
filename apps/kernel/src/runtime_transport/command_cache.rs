@@ -98,6 +98,15 @@ pub(crate) enum CommandReservation {
     Conflict,
 }
 
+pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    !matches!(
+        request,
+        LocalDaemonRequest::RespondToInteraction(_)
+            | LocalDaemonRequest::RequestNativeProviderInteraction(_)
+            | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistentCommandResult {
     command_id: String,

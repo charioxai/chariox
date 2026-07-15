@@ -147,6 +147,45 @@ export type RequestNativeProviderInteractionRequest = {
   default_on_timeout?: string | null
 }
 
+export type ArmDeploymentCredentialEnrollmentRequest = {
+  session_id: string
+  attachment_id: string
+  agent_id: string
+  enrollment_id: string
+  profile_id: string
+  target_version: number
+}
+
+export type RequestCredentialEnrollmentInteractionRequest = {
+  session_id: string
+  agent_id: string
+  enrollment_id: string
+  profile_id: string
+  target_version: number
+  provider_authorization_url: string
+  timeout_sec?: number | null
+}
+
+export type CredentialEnrollmentInteractionStatus = "submitted" | "canceled" | "timed_out"
+
+export type DeploymentCredentialEnrollmentArmedResponse = {
+  DeploymentCredentialEnrollmentArmed: {
+    enrollment_id: string
+    profile_id: string
+    target_version: number
+    session_id: string
+    agent_id: string
+    expires_at_ms: number
+  }
+}
+
+export type CredentialEnrollmentInteractionResolvedResponse = {
+  CredentialEnrollmentInteractionResolved: {
+    status: CredentialEnrollmentInteractionStatus
+    callback?: string | null
+  }
+}
+
 export type NativeProviderInteractionResolution = {
   status: string
   choice_id?: string | null

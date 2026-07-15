@@ -11,6 +11,7 @@ use crate::history::{OperationalHistoryStore, SessionHistoryStore};
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{CapabilityExecutorHealthStore, CapabilityRuntimeStore};
+use crate::runtime::credential_enrollment_control::CredentialEnrollmentControl;
 use crate::runtime::native_interaction_bridge::install_provider_native_interaction_bridge;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -140,6 +141,7 @@ pub(super) struct RouterProjectionStores {
     pub(super) workspace_coordinator: WorkspaceCoordinator,
     pub(super) prompt_state_owner: PromptStateOwner,
     pub(super) prompt_id_allocator: PromptIdAllocator,
+    pub(super) credential_enrollment_control: CredentialEnrollmentControl,
 }
 
 pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterProjectionStores {
@@ -177,6 +179,7 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         workspace_coordinator: app.workspace_coordinator(),
         prompt_state_owner: app.prompt_state_owner(),
         prompt_id_allocator: app.prompt_id_allocator(),
+        credential_enrollment_control: app.credential_enrollment_control(),
     }
 }
 
@@ -242,6 +245,7 @@ pub(super) fn compose_command_router(
         workspace_coordinator,
         prompt_state_owner,
         prompt_id_allocator,
+        credential_enrollment_control,
     } = router_projection_stores(&app);
     let runtime_state = KernelRuntimeState::new_with_owned_state_and_lanes(
         Arc::clone(&app),
@@ -324,6 +328,7 @@ pub(super) fn compose_command_router(
         provider_catalog_projection,
         provider_run_projection,
         provider_process_projection,
+        credential_enrollment_control,
         active_turns,
         remote_relay_inventory_projection,
         config_projection,

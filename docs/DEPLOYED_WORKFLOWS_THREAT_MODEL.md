@@ -150,20 +150,24 @@ those boundaries.
 - Runner jobs use expiring leases and monotonic claim attempts. Heartbeats renew
   only the current attempt; restart may reclaim an expired lease on the same
   runner, and a superseded attempt cannot report progress or completion.
-- Cloud stores enrollment status, a short-lived privileged projection of a
-  sanitized provider setup URL/code when needed, account label when
-  provider-native verification returns one, and opaque runtime references. It
-  never receives provider credential files, provider tokens, OAuth callback
-  codes, or integration secret values.
-- Setup URLs can contain provider PKCE state and challenge parameters. They are
-  redacted from ordinary profile reads, logs, screenshots, and support bundles,
-  exposed only to destination owners/admins, bounded and cleared at terminal
-  state. Secret-bearing URL parameters fail closed.
-- The Cloud URL/code projection is a temporary bootstrap bridge. Production
-  activation requires the planned scoped direct runtime/relay setup channel.
-  Provider responses that must travel back to a login process, including Claude
-  OAuth callback codes, use that one-time channel and never ordinary Cloud form,
-  query, log, or runner-job fields.
+- Cloud stores enrollment status, account label when provider-native
+  verification returns one, and opaque runtime references. It never receives
+  provider setup URLs, provider credential files, provider tokens, OAuth
+  callback codes, or integration secret values.
+- Provider setup URLs and replies that must travel back to a login process,
+  including Claude callback values, use the encrypted relay client lane directly
+  between the hosted helper and home kernel. Relay-authenticated metadata must
+  prove the enrollment-specific hosted `Service` subject plus the armed user and
+  realm; body fields are not identity. Relay and Cloud see no URL or callback
+  payload.
+- Local daemon protocol 241 provides the OSS checkpoint: an attached client arms
+  an exact enrollment/profile/version/session/focused-agent tuple in bounded
+  kernel memory, the verified helper atomically consumes it, and one normal
+  secret `RuntimeInteraction` is projected to all attached clients. First reply
+  wins; cancel and timeout return no secret; callback-bearing commands bypass the
+  response cache and callback values are not persisted or reprojected.
+- The direct callback channel bridges the official Claude CLI. Arroba does not
+  implement provider OAuth authorization, token exchange, or PKCE.
 - Provider-native verification is an explicit runner attestation after the
   official provider harness reports ready. Copying a pre-existing file is not
   provider-native verification.
@@ -215,7 +219,7 @@ those boundaries.
 | Credential exfiltration | Provider-native stores, opaque bindings, redaction, egress policy |
 | Enrollment replay or runner swap | One-time account/profile/version/runner binding, expiry, atomic claim/consume, source manifest |
 | Worker crash or duplicate completion | Expiring same-runner lease, monotonic claim attempt, heartbeat, stale-attempt rejection |
-| Setup URL/code disclosure | Privileged transient projection, strict URL validation, ordinary-read redaction, terminal clearing |
+| Setup URL/code disclosure | Encrypted helper-to-kernel relay lane, exact signed service binding, strict URL validation, no Cloud projection |
 | OAuth callback or integration secret retained by Cloud | One-time direct runtime/relay input channel; no ordinary control-plane fields or logs |
 | Package action reads provider credentials | Separate UID/home, permission-restricted mounts, sanitized environment, denial probe |
 | Package action controls kernel over loopback | In-container random kernel auth, authenticated handshake, token removed before provider launch |

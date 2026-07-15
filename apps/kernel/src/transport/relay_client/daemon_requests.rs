@@ -11,7 +11,7 @@ use crate::local::LocalDaemonRequest;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
 use crate::runtime_transport::command_cache::{
-    CommandFingerprint, CommandReservation, CommandResultCache,
+    request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
 };
 use crate::transport::kernel_protocol::{
     map_kernel_error, KernelOutgoingFrame, KernelTransportError,
@@ -225,32 +225,35 @@ async fn dispatch_relay_client_request(
         None,
         &request,
     );
-    let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
-    match command_result_cache
-        .reserve(&command.command_id, &fingerprint)
-        .await
-    {
-        CommandReservation::Wait(wait_rx) => {
-            return match wait_rx.await {
-                Ok(cached) => cached_relay_dispatch_outcome(cached.response, cached.error),
-                Err(_) => RelayDispatchOutcome::RelayError(relay_error(
-                    "duplicate_command_unavailable",
-                    "original duplicate command result was unavailable",
-                    true,
-                )),
-            };
+    let fingerprint = request_is_cacheable(&request)
+        .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+    if let Some(fingerprint) = fingerprint.as_ref() {
+        match command_result_cache
+            .reserve(&command.command_id, fingerprint)
+            .await
+        {
+            CommandReservation::Wait(wait_rx) => {
+                return match wait_rx.await {
+                    Ok(cached) => cached_relay_dispatch_outcome(cached.response, cached.error),
+                    Err(_) => RelayDispatchOutcome::RelayError(relay_error(
+                        "duplicate_command_unavailable",
+                        "original duplicate command result was unavailable",
+                        true,
+                    )),
+                };
+            }
+            CommandReservation::Conflict => {
+                return RelayDispatchOutcome::RelayError(relay_error(
+                    "duplicate_command_conflict",
+                    &format!(
+                        "command_id `{}` was already used for a different request",
+                        command.command_id
+                    ),
+                    false,
+                ));
+            }
+            CommandReservation::Dispatch => {}
         }
-        CommandReservation::Conflict => {
-            return RelayDispatchOutcome::RelayError(relay_error(
-                "duplicate_command_conflict",
-                &format!(
-                    "command_id `{}` was already used for a different request",
-                    command.command_id
-                ),
-                false,
-            ));
-        }
-        CommandReservation::Dispatch => {}
     }
     let command_id = command.command_id.clone();
     let result = router.dispatch(command, request).await;
@@ -266,9 +269,11 @@ async fn dispatch_relay_client_request(
             error: Some(map_kernel_error(&error)),
         },
     };
-    command_result_cache
-        .complete(command_id, fingerprint, &outgoing)
-        .await;
+    if let Some(fingerprint) = fingerprint {
+        command_result_cache
+            .complete(command_id, fingerprint, &outgoing)
+            .await;
+    }
     let KernelOutgoingFrame::Response {
         response, error, ..
     } = outgoing

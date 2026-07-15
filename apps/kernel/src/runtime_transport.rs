@@ -37,7 +37,9 @@ mod outgoing;
 mod subscriptions;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
-use command_cache::{CommandFingerprint, CommandReservation, CommandResultCache};
+use command_cache::{
+    request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
+};
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
@@ -1017,21 +1019,44 @@ async fn handle_incoming_payload(
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
-            match runtime
-                .command_result_cache
-                .reserve(&command.command_id, &fingerprint)
-                .await
-            {
-                CommandReservation::Wait(wait_rx) => {
-                    let outgoing_tx = outgoing_tx.clone();
-                    let close_tx = close_tx.clone();
-                    let close_requested = Arc::clone(close_requested);
-                    let transport_health = runtime.transport_health.clone();
-                    let session_id = command.session_id.clone();
-                    let attachment_id = command.attachment_id.clone();
-                    tokio::spawn(async move {
-                        let Ok(cached) = wait_rx.await else {
+            let fingerprint = request_is_cacheable(&request)
+                .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+            if let Some(fingerprint) = fingerprint.as_ref() {
+                match runtime
+                    .command_result_cache
+                    .reserve(&command.command_id, fingerprint)
+                    .await
+                {
+                    CommandReservation::Wait(wait_rx) => {
+                        let outgoing_tx = outgoing_tx.clone();
+                        let close_tx = close_tx.clone();
+                        let close_requested = Arc::clone(close_requested);
+                        let transport_health = runtime.transport_health.clone();
+                        let session_id = command.session_id.clone();
+                        let attachment_id = command.attachment_id.clone();
+                        tokio::spawn(async move {
+                            let Ok(cached) = wait_rx.await else {
+                                let _ = try_send_outgoing_frame(
+                                    &outgoing_tx,
+                                    &close_tx,
+                                    &close_requested,
+                                    &transport_health,
+                                    KernelOutgoingFrame::Response {
+                                        request_id,
+                                        response: Box::new(None),
+                                        error: Some(KernelTransportError {
+                                            code: "duplicate_command_unavailable".to_string(),
+                                            message:
+                                                "original duplicate command result was unavailable"
+                                                    .to_string(),
+                                            retryable: true,
+                                        }),
+                                    },
+                                    session_id.as_deref(),
+                                    attachment_id.as_deref(),
+                                );
+                                return;
+                            };
                             let _ = try_send_outgoing_frame(
                                 &outgoing_tx,
                                 &close_tx,
@@ -1039,71 +1064,53 @@ async fn handle_incoming_payload(
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
-                                    response: Box::new(None),
-                                    error: Some(KernelTransportError {
-                                        code: "duplicate_command_unavailable".to_string(),
-                                        message:
-                                            "original duplicate command result was unavailable"
-                                                .to_string(),
-                                        retryable: true,
-                                    }),
+                                    response: cached.response,
+                                    error: cached.error,
                                 },
                                 session_id.as_deref(),
                                 attachment_id.as_deref(),
                             );
-                            return;
-                        };
+                        });
+                        return;
+                    }
+                    CommandReservation::Conflict => {
+                        runtime.transport_health.record_duplicate_command_conflict();
                         let _ = try_send_outgoing_frame(
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            &transport_health,
+                            outgoing_tx,
+                            close_tx,
+                            close_requested,
+                            &runtime.transport_health,
                             KernelOutgoingFrame::Response {
                                 request_id,
-                                response: cached.response,
-                                error: cached.error,
+                                response: Box::new(None),
+                                error: Some(KernelTransportError {
+                                    code: "duplicate_command_conflict".to_string(),
+                                    message: format!(
+                                        "command_id `{}` was already used for a different request",
+                                        command.command_id
+                                    ),
+                                    retryable: false,
+                                }),
                             },
-                            session_id.as_deref(),
-                            attachment_id.as_deref(),
+                            command.session_id.as_deref(),
+                            command.attachment_id.as_deref(),
                         );
-                    });
-                    return;
+                        return;
+                    }
+                    CommandReservation::Dispatch => {}
                 }
-                CommandReservation::Conflict => {
-                    runtime.transport_health.record_duplicate_command_conflict();
-                    let _ = try_send_outgoing_frame(
-                        outgoing_tx,
-                        close_tx,
-                        close_requested,
-                        &runtime.transport_health,
-                        KernelOutgoingFrame::Response {
-                            request_id,
-                            response: Box::new(None),
-                            error: Some(KernelTransportError {
-                                code: "duplicate_command_conflict".to_string(),
-                                message: format!(
-                                    "command_id `{}` was already used for a different request",
-                                    command.command_id
-                                ),
-                                retryable: false,
-                            }),
-                        },
-                        command.session_id.as_deref(),
-                        command.attachment_id.as_deref(),
-                    );
-                    return;
-                }
-                CommandReservation::Dispatch => {}
-            };
+            }
             let permit = match inbound_request_admission
                 .try_acquire(connection_inbound_request_permits, &command.priority)
             {
                 Ok(permit) => permit,
                 Err(error) => {
-                    runtime
-                        .command_result_cache
-                        .forget_pending(&command.command_id)
-                        .await;
+                    if fingerprint.is_some() {
+                        runtime
+                            .command_result_cache
+                            .forget_pending(&command.command_id)
+                            .await;
+                    }
                     runtime.transport_health.record_inbound_overload_rejection();
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
@@ -1170,10 +1177,12 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
-                runtime
-                    .command_result_cache
-                    .complete(command_id, fingerprint, &outgoing)
-                    .await;
+                if let Some(fingerprint) = fingerprint {
+                    runtime
+                        .command_result_cache
+                        .complete(command_id, fingerprint, &outgoing)
+                        .await;
+                }
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,

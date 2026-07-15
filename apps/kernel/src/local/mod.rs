@@ -6,6 +6,7 @@ pub(crate) mod provider_requests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use api::deployment_credential_enrollment_service_subject;
 pub use api::{
     AbortMetaagentTaskRequest, AcceptCloudSessionInviteRequest, AckMetaagentEventsRequest,
     AckWorkflowTurnRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,
@@ -15,23 +16,24 @@ pub use api::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
-    ApproveRemoteMachineRequest, AttachToSessionRequest, AttachWorkspaceLinkRequest,
-    BatchOperationFailure, BindWorkflowEndpointRequest, CancelActivePromptRequest,
-    CancelQueuedPromptRequest, CancelWorkflowRunRequest, CaptureScreenshotCapabilityRequest,
-    ClearWorkflowPromptQueueRequest, CloudCollaborator, CloudRelayLoginPoll,
-    CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile, CloudRelayRuntimeToken,
-    CloudRelayStatusRequest, CloudSessionInvite, CloudSessionInviteAcceptance,
-    CloudSessionInviteDetails, CloudSessionMember, CommitAndPushWorkspaceChangesRequest,
-    CommitWorkspaceChangesRequest, CompletePromptRequest, ConfigureRelayRequest,
-    ConnectCloudRelayRequest, ControlWorkflowPublicationRuntimeRequest,
+    ApproveRemoteMachineRequest, ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest,
+    AttachWorkspaceLinkRequest, BatchOperationFailure, BindWorkflowEndpointRequest,
+    CancelActivePromptRequest, CancelQueuedPromptRequest, CancelWorkflowRunRequest,
+    CaptureScreenshotCapabilityRequest, ClearWorkflowPromptQueueRequest, CloudCollaborator,
+    CloudRelayLoginPoll, CloudRelayLoginPollStatus, CloudRelayLoginStart, CloudRelayProfile,
+    CloudRelayRuntimeToken, CloudRelayStatusRequest, CloudSessionInvite,
+    CloudSessionInviteAcceptance, CloudSessionInviteDetails, CloudSessionMember,
+    CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest, CompletePromptRequest,
+    ConfigureRelayRequest, ConnectCloudRelayRequest, ControlWorkflowPublicationRuntimeRequest,
     CreateCloudSessionInviteRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
     CreateSliceBackupRequest, CreateSliceRequest, CreateTerminalPairingLinkRequest,
     CreateWorkflowCodeArtifactRequest, CreateWorkflowEndpointRequest,
     CreateWorkflowPromptQueueRequest, CreateWorkflowPublicationRequest, CreateWorkflowRequest,
     CreateWorkflowScheduleRequest, CreateWorkflowWatchdogRequest, CreateWorkspaceDirectoryRequest,
     CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
-    CycleAgentFocusRequest, DeleteCredentialSecretRequest, DeleteKernelRequest,
-    DeleteSessionRequest, DeleteWorkflowCodeArtifactRequest, DeleteWorkflowRegistryEntryRequest,
+    CredentialEnrollmentCallback, CredentialEnrollmentInteractionStatus, CycleAgentFocusRequest,
+    DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteSessionRequest,
+    DeleteWorkflowCodeArtifactRequest, DeleteWorkflowRegistryEntryRequest,
     DeleteWorkspaceWorktreeRequest, DestroyAgentRequest, DetachFromSessionRequest,
     DetachWorkspaceLinkRequest, DisableWorkflowPublicationRequest, EditFileCapabilityRequest,
     EndSessionRequest, ExportDebugBundleRequest, ExportWorkflowCodeArtifactRequest,
@@ -88,7 +90,8 @@ pub use api::{
     RemoveEnvironmentRequest, RemoveQueuedWorkflowPromptRequest, RemoveScriptRequest,
     RemoveSliceProviderAuthRequest, RemoveWorkflowEdgeRequest, RemoveWorkflowNodeRequest,
     RemoveWorkflowPromptQueueRequest, RemoveWorkflowScheduleRequest, RemoveWorkflowWatchdogRequest,
-    RenameRemoteMachineRequest, RequestNativeProviderInteractionRequest, ResizeTerminalRequest,
+    RenameRemoteMachineRequest, RequestCredentialEnrollmentInteractionRequest,
+    RequestNativeProviderInteractionRequest, ResizeTerminalRequest,
     ResolveKernelClientConnectionRequest, ResolveSessionRequest, ResolveWorkflowRequest,
     RespondToInteractionRequest, ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest,
     RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest, RevokePairedClientRequest,
@@ -139,7 +142,8 @@ pub use api::{
     WorkspaceLiveSyncConflictSummary, WorkspaceLiveSyncFooterState, WorkspaceLiveSyncGroupStatus,
     WorkspaceLiveSyncIgnoreStatus, WorkspaceLiveSyncStatus, WorkspaceLiveSyncTargetState,
     WorkspaceLiveSyncTargetStatus, WorkspacePullRequestRecord, WorkspaceRepoFileEntry,
-    WorkspaceRepoFileListing, WorkspaceWorktreeRecord, LOCAL_DAEMON_PROTOCOL_VERSION,
+    WorkspaceRepoFileListing, WorkspaceWorktreeRecord,
+    DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX, LOCAL_DAEMON_PROTOCOL_VERSION,
 };
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};

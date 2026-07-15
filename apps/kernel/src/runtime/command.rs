@@ -137,6 +137,27 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "value": "[redacted]"
             }
         }),
+        LocalDaemonRequest::RespondToInteraction(request) => serde_json::json!({
+            "RespondToInteraction": {
+                "session_id": request.session_id,
+                "interaction_id": request.interaction_id,
+                "choice_id": request.choice_id,
+                "custom_reply": request.custom_reply.as_ref().map(|_| "[redacted]")
+            }
+        }),
+        LocalDaemonRequest::RequestCredentialEnrollmentInteraction(request) => {
+            serde_json::json!({
+                "RequestCredentialEnrollmentInteraction": {
+                    "session_id": request.session_id,
+                    "agent_id": request.agent_id,
+                    "enrollment_id": request.enrollment_id,
+                    "profile_id": request.profile_id,
+                    "target_version": request.target_version,
+                    "provider_authorization_url": "[redacted]",
+                    "timeout_sec": request.timeout_sec
+                }
+            })
+        }
         _ => serde_json::to_value(request).unwrap_or(Value::Null),
     }
 }
@@ -149,6 +170,7 @@ mod tests {
     use crate::local::{
         AliasSessionRequest, AttachToSessionRequest, DestroyAgentRequest, EndSessionRequest,
         FocusAgentRequest, GetDaemonHealthRequest, LocalDaemonRequest, PollRuntimeNoticesRequest,
+        RequestCredentialEnrollmentInteractionRequest, RespondToInteractionRequest,
         SetCredentialSecretRequest, SpawnAgentRequest, SubmitPromptRequest,
         UpdateSessionConfigRequest,
     };
@@ -387,6 +409,48 @@ mod tests {
     }
 
     #[test]
+    fn redacts_credential_enrollment_interaction_secrets() {
+        let callback = "https://localhost/callback?code=callback-secret";
+        let response_request =
+            LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+                session_id: "session-1".to_string(),
+                interaction_id: "interaction-1".to_string(),
+                choice_id: "submit_callback".to_string(),
+                custom_reply: Some(callback.to_string()),
+            });
+        let response_command =
+            KernelCommand::from_local_request("credential-response", None, None, &response_request);
+        let authorization_url = "https://claude.com/oauth/authorize?state=provider-secret";
+        let helper_request = LocalDaemonRequest::RequestCredentialEnrollmentInteraction(
+            RequestCredentialEnrollmentInteractionRequest {
+                session_id: "session-1".to_string(),
+                agent_id: "agent-1".to_string(),
+                enrollment_id: "enrollment-1".to_string(),
+                profile_id: "profile-1".to_string(),
+                target_version: 1,
+                provider_authorization_url: authorization_url.to_string(),
+                timeout_sec: Some(30),
+            },
+        );
+        let helper_command =
+            KernelCommand::from_local_request("credential-helper", None, None, &helper_request);
+
+        let response_payload = serde_json::to_string(&response_command.payload).unwrap();
+        let helper_payload = serde_json::to_string(&helper_command.payload).unwrap();
+        assert!(!response_payload.contains(callback));
+        assert!(!helper_payload.contains(authorization_url));
+        assert_eq!(
+            response_command.payload["RespondToInteraction"]["custom_reply"],
+            "[redacted]"
+        );
+        assert_eq!(
+            helper_command.payload["RequestCredentialEnrollmentInteraction"]
+                ["provider_authorization_url"],
+            "[redacted]"
+        );
+    }
+
+    #[test]
     fn can_normalize_local_ipc_commands_with_ipc_source() {
         let request = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: "session-1".to_string(),
@@ -441,5 +505,37 @@ mod tests {
             command.caller.public_key_thumbprint.as_deref(),
             Some("thumbprint-1")
         );
+    }
+
+    #[test]
+    fn relay_service_identity_becomes_verified_hosted_service_caller() {
+        let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+        let command = KernelCommand::from_local_request_with_caller(
+            "relay-service-1",
+            KernelCommandSource::RelayClient,
+            KernelCaller::from_relay_identity(RelayCallerIdentity {
+                realm_id: "realm-1".to_string(),
+                subject: "deployment-credential-enrollment:enrollment-1".to_string(),
+                subject_kind: RelaySubjectKind::Service,
+                expires_at_ms: 20,
+                token_id: Some("service-token-1".to_string()),
+                user_id: Some("user-1".to_string()),
+                public_key_thumbprint: Some("service-thumbprint-1".to_string()),
+            }),
+            None,
+            None,
+            &request,
+        );
+
+        assert_eq!(command.source, KernelCommandSource::RelayClient);
+        assert_eq!(command.caller.caller_kind, KernelCallerKind::HostedService);
+        assert_eq!(
+            command.caller.caller_id,
+            "deployment-credential-enrollment:enrollment-1"
+        );
+        assert_eq!(command.caller.user_id.as_deref(), Some("user-1"));
+        assert_eq!(command.caller.realm_id.as_deref(), Some("realm-1"));
+        assert!(command.caller.client_id.is_none());
+        assert!(command.caller.machine_id.is_none());
     }
 }

@@ -147,6 +147,8 @@ pub struct DaemonApp {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    credential_enrollment_control:
+        crate::runtime::credential_enrollment_control::CredentialEnrollmentControl,
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
@@ -245,6 +247,9 @@ impl DaemonApp {
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
+            credential_enrollment_control:
+                crate::runtime::credential_enrollment_control::CredentialEnrollmentControl::default(
+                ),
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
@@ -324,6 +329,12 @@ impl DaemonApp {
 
     pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {
         Arc::clone(&self.relay_client_state)
+    }
+
+    pub(crate) fn credential_enrollment_control(
+        &self,
+    ) -> crate::runtime::credential_enrollment_control::CredentialEnrollmentControl {
+        self.credential_enrollment_control.clone()
     }
 
     pub(crate) fn config_projection_store(&self) -> DaemonConfigProjectionStore {

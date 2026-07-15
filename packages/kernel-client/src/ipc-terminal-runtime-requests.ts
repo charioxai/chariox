@@ -1,5 +1,11 @@
 import type { PromptAttachmentPart } from "./kernel-types.js"
 
+export const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX = "deployment-credential-enrollment:"
+
+export function deploymentCredentialEnrollmentServiceSubject(enrollmentId: string): string {
+  return `${DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX}${enrollmentId}`
+}
+
 export function readDirectoryTreeRequest(sessionId: string, attachmentId: string, treePath: string | null, maxDepth: number) {
   return {
     ReadDirectoryTree: {
@@ -272,6 +278,48 @@ export function respondToInteractionRequest(
       interaction_id: interactionId,
       choice_id: choiceId,
       custom_reply: customReply ?? null,
+    },
+  }
+}
+
+export function armDeploymentCredentialEnrollmentRequest(
+  sessionId: string,
+  attachmentId: string,
+  agentId: string,
+  enrollmentId: string,
+  profileId: string,
+  targetVersion: number,
+) {
+  return {
+    ArmDeploymentCredentialEnrollment: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      agent_id: agentId,
+      enrollment_id: enrollmentId,
+      profile_id: profileId,
+      target_version: targetVersion,
+    },
+  }
+}
+
+export function requestCredentialEnrollmentInteractionRequest(
+  sessionId: string,
+  agentId: string,
+  enrollmentId: string,
+  profileId: string,
+  targetVersion: number,
+  providerAuthorizationUrl: string,
+  timeoutSec = 300,
+) {
+  return {
+    RequestCredentialEnrollmentInteraction: {
+      session_id: sessionId,
+      agent_id: agentId,
+      enrollment_id: enrollmentId,
+      profile_id: profileId,
+      target_version: targetVersion,
+      provider_authorization_url: providerAuthorizationUrl,
+      timeout_sec: timeoutSec,
     },
   }
 }

@@ -16,6 +16,7 @@ pub(crate) mod cloud_session_control_executor;
 pub mod command;
 pub(crate) mod command_latency;
 pub(crate) mod command_response_refresh;
+pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
 pub(crate) mod debug_bundle_control;
 pub mod event_log;

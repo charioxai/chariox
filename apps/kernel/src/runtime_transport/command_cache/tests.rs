@@ -1,5 +1,7 @@
 use super::*;
-use crate::local::ListSessionsRequest;
+use crate::local::{
+    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest, RespondToInteractionRequest,
+};
 
 #[test]
 fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
@@ -11,6 +13,34 @@ fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
         estimated >= (byte_count * std::mem::size_of::<Value>()) as u64,
         "JSON byte arrays must be charged for each heap-resident Value: {estimated}"
     );
+}
+
+#[test]
+fn credential_interaction_requests_bypass_the_command_result_cache() {
+    let helper_request = LocalDaemonRequest::RequestCredentialEnrollmentInteraction(
+        RequestCredentialEnrollmentInteractionRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            enrollment_id: "enrollment-1".to_string(),
+            profile_id: "profile-1".to_string(),
+            target_version: 1,
+            provider_authorization_url: "https://claude.com/oauth/authorize?state=opaque"
+                .to_string(),
+            timeout_sec: Some(30),
+        },
+    );
+    let response_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+        session_id: "session-1".to_string(),
+        interaction_id: "interaction-1".to_string(),
+        choice_id: "submit_callback".to_string(),
+        custom_reply: Some("secret-callback".to_string()),
+    });
+
+    assert!(!request_is_cacheable(&helper_request));
+    assert!(!request_is_cacheable(&response_request));
+    assert!(request_is_cacheable(&LocalDaemonRequest::ListSessions(
+        ListSessionsRequest,
+    )));
 }
 
 #[tokio::test]
