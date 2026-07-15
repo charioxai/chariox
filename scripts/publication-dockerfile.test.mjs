@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises"
 import { test } from "node:test"
 
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
+const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
 
 test("publication image copies compile-time workflow examples before building the kernel", () => {
@@ -47,4 +48,10 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.doesNotMatch(dockerfile, /npm install -g\s+@openai\/codex(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+opencode-ai(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+@anthropic-ai\/claude-code(?:\s|$)/)
+})
+
+test("publication egress image runs only the dedicated unprivileged gateway", () => {
+  assert.match(egressDockerfile, /USER 10001:10001/)
+  assert.match(egressDockerfile, /ENTRYPOINT \["node", "\/opt\/arroba-egress\/gateway\.mjs"\]/)
+  assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
 })
