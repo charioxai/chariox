@@ -340,6 +340,15 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
+        let _permit = self.provider_runtime_lanes.acquire(started.run.id()).await;
+        self.finish_provider_launch_in_lane(started, binding).await;
+    }
+
+    async fn finish_provider_launch_in_lane(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) {
         let mut durable_agent_update = None;
         let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {
@@ -361,7 +370,7 @@ impl KernelRuntimeState {
                             }
                             Ok(None) => {}
                             Err(error) => {
-                                self.fail_provider_launch(started, &error).await;
+                                self.fail_provider_launch_in_lane(started, &error).await;
                                 return;
                             }
                         }
@@ -370,7 +379,7 @@ impl KernelRuntimeState {
                                 retry_metaagent_event_dispatches = dispatches;
                             }
                             Err(error) => {
-                                self.fail_provider_launch(started, &error).await;
+                                self.fail_provider_launch_in_lane(started, &error).await;
                                 return;
                             }
                         }
@@ -378,7 +387,7 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    self.fail_provider_launch(started, &error).await;
+                    self.fail_provider_launch_in_lane(started, &error).await;
                 }
             }
         }
@@ -388,7 +397,7 @@ impl KernelRuntimeState {
                 .append_agent_durable_event("agent.runtime_profile_updated", &agent, None)
                 .await
             {
-                self.fail_provider_launch(started, &error).await;
+                self.fail_provider_launch_in_lane(started, &error).await;
             }
         }
     }

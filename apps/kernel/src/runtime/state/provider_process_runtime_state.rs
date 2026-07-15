@@ -67,6 +67,7 @@ impl KernelRuntimeState {
                 .map(|tracked| tracked.owner_provider_run_ids.clone())
                 .unwrap_or_else(|| process.owner_provider_run_ids.clone());
             for run_id in run_ids {
+                let _permit = self.provider_runtime_lanes.acquire(&run_id).await;
                 let run = match self.owned.provider_store.get_run(&run_id) {
                     Ok(run) => run,
                     Err(_) => continue,

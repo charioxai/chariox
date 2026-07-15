@@ -506,12 +506,16 @@ fn teardown_provider_processes_refreshes_session_projection_without_app_lock() {
 }
 
 async fn teardown_provider_processes_refreshes_session_projection_without_app_lock_inner() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut config = DaemonConfig::for_tests();
+    config.provider_runtime_init_delay_ms = 25;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
+    let agent_store = app.agents().clone();
+    let provider_store = app.providers().clone();
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
@@ -533,10 +537,32 @@ async fn teardown_provider_processes_refreshes_session_projection_without_app_lo
         None,
         &launch_request,
     );
-    router
+    let launch_response = router
         .dispatch(launch_command, launch_request)
         .await
         .expect("provider launch should be accepted");
+    let provider_run_id = match launch_response {
+        LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunched { provider_run } => {
+            provider_run.id().to_string()
+        }
+        _ => panic!("unexpected launch response"),
+    };
+
+    let agent_guard = agent_store.write();
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if provider_store
+                .get_run(&provider_run_id)
+                .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("provider launch should reach running before teardown");
 
     let teardown_request =
         LocalDaemonRequest::TeardownProviderProcesses(TeardownProviderProcessesRequest {
@@ -545,9 +571,23 @@ async fn teardown_provider_processes_refreshes_session_projection_without_app_lo
         });
     let teardown_command =
         KernelCommand::from_local_request("cmd-teardown-refresh", None, None, &teardown_request);
-    let teardown_response = router
-        .dispatch(teardown_command, teardown_request)
+    let teardown_router = router.clone();
+    let mut teardown_task = tokio::spawn(async move {
+        teardown_router
+            .dispatch(teardown_command, teardown_request)
+            .await
+    });
+    assert!(
+        timeout(Duration::from_millis(250), &mut teardown_task)
+            .await
+            .is_err(),
+        "teardown must wait for in-flight provider launch settlement"
+    );
+    drop(agent_guard);
+    let teardown_response = timeout(Duration::from_secs(2), teardown_task)
         .await
+        .expect("teardown should complete after launch settlement")
+        .expect("teardown task should join")
         .expect("safe process teardown should succeed");
     match teardown_response {
         LocalDaemonResponse::ProviderProcessesTornDown { processes } => {
