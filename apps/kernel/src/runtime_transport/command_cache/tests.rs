@@ -103,6 +103,34 @@ async fn persistent_command_cache_compacts_to_retention_limit() {
 }
 
 #[tokio::test]
+async fn persistent_command_cache_defers_disk_compaction_after_memory_eviction() {
+    let path = temp_cache_path("defer-eviction-compaction");
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    let completed = COMMAND_RESULT_CACHE_LIMIT + 8;
+    for index in 0..completed {
+        cache
+            .insert_completed_for_test(
+                format!("command-{index}"),
+                CommandResultCache::fingerprint_from_bytes_for_test(
+                    format!("request-{index}").as_bytes(),
+                ),
+                Some(serde_json::json!({ "index": index })),
+            )
+            .await;
+    }
+
+    let persisted = fs::read_to_string(&path).expect("persistent cache should exist");
+    assert_eq!(
+        persisted.lines().count(),
+        completed,
+        "memory eviction must not rewrite the full disk snapshot on every completion"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn persistent_command_cache_compacts_by_age_on_load() {
     let path = temp_cache_path("compact-age");
     let now_ms = crate::session::unix_epoch_ms();
