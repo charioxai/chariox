@@ -1,6 +1,30 @@
 export const WORKFLOW_PUBLICATION_PACKAGE_VERSION = 3
 export const WORKFLOW_PUBLICATION_DEPLOYMENT_CONTRACT_VERSION = 1
 
+export interface WorkflowPublicationDeploymentNetworkDestination {
+  readonly id: string
+  readonly host: { readonly kind: "exact_dns"; readonly value: string }
+  readonly ports: readonly [443]
+  readonly protocols: readonly ["tls"]
+  readonly credential_slot_ids: readonly string[]
+}
+
+export interface WorkflowPublicationDeploymentProviderAccess {
+  readonly slot_id: string
+  readonly bundle_kind: "platform_managed" | "development_stub" | "unsupported"
+  readonly bundle_id: string
+}
+
+export type WorkflowPublicationDeploymentNetworkPolicy =
+  | { readonly kind: "legacy_unrestricted" }
+  | {
+    readonly kind: "enforced"
+    readonly policy_version: 1
+    readonly default_action: "deny"
+    readonly destinations: readonly WorkflowPublicationDeploymentNetworkDestination[]
+    readonly provider_access: readonly WorkflowPublicationDeploymentProviderAccess[]
+  }
+
 export interface WorkflowPublicationPackageContractMetadata {
   readonly package_version?: number
   readonly publication_id?: string
@@ -144,12 +168,20 @@ export function validateWorkflowPublicationDeploymentContract(
     throw new Error("deployment contract credential slot IDs must be unique")
   }
   requireArray(contract.configuration, "deployment contract configuration")
-  objectRecord(contract.capabilities, "deployment contract capabilities")
+  const capabilities = objectRecord(contract.capabilities, "deployment contract capabilities")
+  const networkPolicy = validateDeploymentNetworkPolicy(capabilities.network)
+  validateDeploymentNetworkBindings(networkPolicy, slots, contract.provider_requirements)
   objectRecord(contract.resources, "deployment contract resources")
   objectRecord(contract.presentation, "deployment contract presentation")
   requireArray(contract.signatures, "deployment contract signatures")
   assertNoSecretPayloadFields(contract)
   return contract as unknown as WorkflowPublicationDeploymentContract
+}
+
+export function workflowPublicationDeploymentNetworkPolicy(
+  contract: WorkflowPublicationDeploymentContract,
+): WorkflowPublicationDeploymentNetworkPolicy {
+  return validateDeploymentNetworkPolicy(objectRecord(contract.capabilities, "deployment contract capabilities").network)
 }
 
 export function assertWorkflowPublicationDeploymentRuntimeCompatibility(
@@ -198,6 +230,171 @@ function requireString(value: unknown, label: string): string {
 function requireSha256(value: unknown, label: string): void {
   if (typeof value !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value)) {
     throw new Error(`${label} must be a sha256 digest`)
+  }
+}
+
+function validateDeploymentNetworkPolicy(value: unknown): WorkflowPublicationDeploymentNetworkPolicy {
+  if (value === undefined) return { kind: "legacy_unrestricted" }
+  const policy = objectRecord(value, "deployment contract network policy")
+  if (policy.egress_policy === "deployment_tightens") {
+    requireExactKeys(policy, ["egress_policy"], "deployment contract legacy network policy")
+    return { kind: "legacy_unrestricted" }
+  }
+  requireExactKeys(
+    policy,
+    ["policy_version", "default_action", "destinations", "provider_access"],
+    "deployment contract network policy",
+  )
+  if (policy.policy_version !== 1 || policy.default_action !== "deny") {
+    throw new Error("deployment contract network policy must use version 1 and deny by default")
+  }
+  const destinations = requireArray(policy.destinations, "deployment contract network destinations")
+    .map((candidate, index) => validateNetworkDestination(candidate, index))
+  if (destinations.length > 256) throw new Error("deployment contract network destinations exceed 256 entries")
+  const destinationIds = destinations.map((destination) => destination.id)
+  const authorities = destinations.map((destination) => `${destination.host.value}:443`)
+  if (new Set(destinationIds).size !== destinationIds.length || new Set(authorities).size !== authorities.length) {
+    throw new Error("deployment contract network destination IDs and authorities must be unique")
+  }
+  const providerAccess = requireArray(policy.provider_access, "deployment contract provider access")
+    .map((candidate, index) => validateProviderAccess(candidate, index))
+  if (new Set(providerAccess.map((access) => access.slot_id)).size !== providerAccess.length) {
+    throw new Error("deployment contract provider access slot IDs must be unique")
+  }
+  return {
+    kind: "enforced",
+    policy_version: 1,
+    default_action: "deny",
+    destinations,
+    provider_access: providerAccess,
+  }
+}
+
+function validateNetworkDestination(value: unknown, index: number): WorkflowPublicationDeploymentNetworkDestination {
+  const destination = objectRecord(value, `deployment contract network destinations[${index}]`)
+  requireExactKeys(
+    destination,
+    ["id", "host", "ports", "protocols", "credential_slot_ids"],
+    `deployment contract network destinations[${index}]`,
+  )
+  const id = requireString(destination.id, `deployment contract network destinations[${index}].id`)
+  if (!/^[a-z][a-z0-9:_-]{0,127}$/.test(id)) throw new Error("deployment contract network destination id is invalid")
+  const host = objectRecord(destination.host, `deployment contract network destinations[${index}].host`)
+  requireExactKeys(host, ["kind", "value"], `deployment contract network destinations[${index}].host`)
+  if (host.kind !== "exact_dns" || typeof host.value !== "string" || !isCanonicalDnsName(host.value)) {
+    throw new Error("deployment contract network destination host must be an exact canonical DNS name")
+  }
+  if (!Array.isArray(destination.ports) || destination.ports.length !== 1 || destination.ports[0] !== 443) {
+    throw new Error("deployment contract network destination must permit TLS port 443 only")
+  }
+  if (!Array.isArray(destination.protocols) || destination.protocols.length !== 1 || destination.protocols[0] !== "tls") {
+    throw new Error("deployment contract network destination must use TLS only")
+  }
+  const credentialSlotIds = requireArray(
+    destination.credential_slot_ids,
+    `deployment contract network destinations[${index}].credential_slot_ids`,
+  ).map((slotId, slotIndex) => requireCredentialSlotId(
+    slotId,
+    `deployment contract network destinations[${index}].credential_slot_ids[${slotIndex}]`,
+  ))
+  if (new Set(credentialSlotIds).size !== credentialSlotIds.length) {
+    throw new Error("deployment contract network destination credential slot IDs must be unique")
+  }
+  return {
+    id,
+    host: { kind: "exact_dns", value: host.value },
+    ports: [443],
+    protocols: ["tls"],
+    credential_slot_ids: credentialSlotIds,
+  }
+}
+
+function validateProviderAccess(value: unknown, index: number): WorkflowPublicationDeploymentProviderAccess {
+  const access = objectRecord(value, `deployment contract provider_access[${index}]`)
+  requireExactKeys(access, ["slot_id", "bundle_kind", "bundle_id"], `deployment contract provider_access[${index}]`)
+  const slotId = requireCredentialSlotId(access.slot_id, `deployment contract provider_access[${index}].slot_id`)
+  if (!slotId.startsWith("provider:")) throw new Error("deployment contract provider access requires a provider slot")
+  if (!new Set(["platform_managed", "development_stub", "unsupported"]).has(String(access.bundle_kind))) {
+    throw new Error("deployment contract provider access bundle kind is invalid")
+  }
+  const bundleId = requireString(access.bundle_id, `deployment contract provider_access[${index}].bundle_id`)
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(bundleId)) throw new Error("deployment contract provider access bundle id is invalid")
+  return {
+    slot_id: slotId,
+    bundle_kind: access.bundle_kind as WorkflowPublicationDeploymentProviderAccess["bundle_kind"],
+    bundle_id: bundleId,
+  }
+}
+
+function validateDeploymentNetworkBindings(
+  policy: WorkflowPublicationDeploymentNetworkPolicy,
+  slots: unknown[],
+  providerRequirementsValue: unknown,
+): void {
+  if (policy.kind !== "enforced") return
+  const slotRecords = slots.map((slot, index) => objectRecord(slot, `deployment contract credential_slots[${index}]`))
+  const slotIds = new Set(slotRecords.map((slot, index) => requireCredentialSlotId(
+    slot.slot_id,
+    `deployment contract credential_slots[${index}].slot_id`,
+  )))
+  const destinationIds = new Set(policy.destinations.map((destination) => destination.id))
+  for (const destination of policy.destinations) {
+    for (const slotId of destination.credential_slot_ids) {
+      if (!slotIds.has(slotId)) throw new Error("deployment contract network destination references an unknown credential slot")
+    }
+  }
+  for (const [index, slot] of slotRecords.entries()) {
+    if (slot.allowed_destination_ids === undefined) continue
+    const allowed = requireArray(
+      slot.allowed_destination_ids,
+      `deployment contract credential_slots[${index}].allowed_destination_ids`,
+    ).map((id, destinationIndex) => requireString(
+      id,
+      `deployment contract credential_slots[${index}].allowed_destination_ids[${destinationIndex}]`,
+    ))
+    if (new Set(allowed).size !== allowed.length || allowed.some((id) => !destinationIds.has(id))) {
+      throw new Error("deployment contract credential slot allowed destination IDs are invalid")
+    }
+    const slotId = String(slot.slot_id)
+    const expected = policy.destinations
+      .filter((destination) => destination.credential_slot_ids.includes(slotId))
+      .map((destination) => destination.id)
+    if (allowed.length !== expected.length || allowed.some((id, allowedIndex) => id !== expected[allowedIndex])) {
+      throw new Error("deployment contract credential slot destination ceiling is inconsistent")
+    }
+  }
+  const providerRequirementSlots = new Set(requireArray(
+    providerRequirementsValue,
+    "deployment contract provider_requirements",
+  ).map((requirement, index) => requireCredentialSlotId(
+    objectRecord(requirement, `deployment contract provider_requirements[${index}]`).slot_id,
+    `deployment contract provider_requirements[${index}].slot_id`,
+  )))
+  for (const access of policy.provider_access) {
+    if (!slotIds.has(access.slot_id) || !providerRequirementSlots.has(access.slot_id)) {
+      throw new Error("deployment contract provider access references an unknown provider slot")
+    }
+  }
+}
+
+function requireCredentialSlotId(value: unknown, label: string): string {
+  const slotId = requireString(value, label)
+  if (!/^(provider|integration):[a-z0-9-]+$/.test(slotId)) throw new Error(`${label} is invalid`)
+  return slotId
+}
+
+function isCanonicalDnsName(value: string): boolean {
+  if (value.length > 253 || value !== value.toLowerCase() || value.endsWith(".") || value.includes("*") || /^\d+(?:\.\d+){3}$/.test(value)) {
+    return false
+  }
+  const labels = value.split(".")
+  return labels.length >= 2 && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+}
+
+function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const expected = new Set(keys)
+  if (Object.keys(record).some((key) => !expected.has(key)) || keys.some((key) => !(key in record))) {
+    throw new Error(`${label} fields are invalid`)
   }
 }
 

@@ -134,6 +134,13 @@ fn local_request_api_exports_agent_app_publication_package() {
             "count": 1,
             "per_caller_ordering": true
         },
+        "network": {
+            "destinations": [{
+                "id": "integration:catalog-api",
+                "host": "api.catalog.example",
+                "credential_slot_ids": []
+            }]
+        },
         "persistent_patch": {
             "enabled": false
         }
@@ -234,6 +241,29 @@ fn local_request_api_exports_agent_app_publication_package() {
     assert_eq!(
         deployment_contract["credential_slots"][0]["slot_id"],
         serde_json::json!("provider:dev-stub")
+    );
+    assert_eq!(
+        deployment_contract["credential_slots"][0]["allowed_destination_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        deployment_contract["capabilities"]["network"],
+        serde_json::json!({
+            "policy_version": 1,
+            "default_action": "deny",
+            "destinations": [{
+                "id": "integration:catalog-api",
+                "host": { "kind": "exact_dns", "value": "api.catalog.example" },
+                "ports": [443],
+                "protocols": ["tls"],
+                "credential_slot_ids": [],
+            }],
+            "provider_access": [{
+                "slot_id": "provider:dev-stub",
+                "bundle_kind": "development_stub",
+                "bundle_id": "dev-stub-v1",
+            }],
+        })
     );
     assert_eq!(
         deployment_contract["presentation"]["kind"],

@@ -91,7 +91,7 @@
         "manipulation_levels": { "$ref": "#/definitions/string_array" },
         "extensions": { "type": "object" },
         "filesystem": { "type": "object" },
-        "network": { "type": "object" }
+        "network": { "$ref": "#/definitions/network_policy" }
       },
       "additionalProperties": false
     },
@@ -222,6 +222,7 @@
         "required": { "type": "boolean" },
         "scope": { "const": "environment" },
         "uses": { "$ref": "#/definitions/string_array" },
+        "allowed_destination_ids": { "$ref": "#/definitions/string_array" },
         "test_method": { "enum": ["provider_native", "runtime_requirement"] }
       },
       "allOf": [
@@ -231,6 +232,76 @@
           "else": { "required": ["integration"] }
         }
       ]
+    },
+    "network_policy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["egress_policy"],
+          "properties": {
+            "egress_policy": { "const": "deployment_tightens" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["policy_version", "default_action", "destinations", "provider_access"],
+          "properties": {
+            "policy_version": { "const": 1 },
+            "default_action": { "const": "deny" },
+            "destinations": {
+              "type": "array",
+              "maxItems": 256,
+              "items": { "$ref": "#/definitions/network_destination" }
+            },
+            "provider_access": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/provider_access" }
+            }
+          }
+        }
+      ]
+    },
+    "network_destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "host", "ports", "protocols", "credential_slot_ids"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9:_-]{0,127}$" },
+        "host": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": { "const": "exact_dns" },
+            "value": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$", "maxLength": 253 }
+          }
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "const": 443 }
+        },
+        "protocols": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "const": "tls" }
+        },
+        "credential_slot_ids": { "$ref": "#/definitions/string_array" }
+      }
+    },
+    "provider_access": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot_id", "bundle_kind", "bundle_id"],
+      "properties": {
+        "slot_id": { "type": "string", "pattern": "^provider:[a-z0-9-]+$" },
+        "bundle_kind": { "enum": ["platform_managed", "development_stub", "unsupported"] },
+        "bundle_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+      }
     }
   }
 }

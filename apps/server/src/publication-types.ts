@@ -92,7 +92,18 @@ export type AgentAppConfig = {
   routes?: AgentAppRouteConfig[]
   actions?: Record<string, AgentAppActionConfig>
   replicas?: AgentAppReplicaConfig
+  network?: AgentAppNetworkConfig
   persistent_patch?: { enabled?: boolean }
+}
+
+export type AgentAppNetworkConfig = {
+  destinations?: AgentAppNetworkDestinationConfig[]
+}
+
+export type AgentAppNetworkDestinationConfig = {
+  id: string
+  host: string
+  credential_slot_ids?: string[]
 }
 
 export type AgentAppAssetsConfig = {

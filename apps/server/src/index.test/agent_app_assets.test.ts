@@ -147,6 +147,20 @@ test("agent app config validation rejects invalid launch config before serving",
         },
       }), /explicit loopback HTTP action-server URL/)
     }
+
+    for (const host of ["*.example.com", "EXAMPLE.com", "127.0.0.1", "localhost", "example.com."]) {
+      assert.throws(() => buildServer({
+        ...baseConfig,
+        publication_id: "pub-unsafe-network-host",
+        package_root: root,
+        agent_app: {
+          enabled: true,
+          assets: { public_dir: "app", index: "index.html" },
+          routes: [],
+          network: { destinations: [{ id: "integration:unsafe", host }] },
+        },
+      }), /exact canonical DNS host/)
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }

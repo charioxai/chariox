@@ -5,6 +5,7 @@ import {
   assertWorkflowPublicationDeploymentRuntimeCompatibility,
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
+  workflowPublicationDeploymentNetworkPolicy,
 } from "./workflow-publication-deployment-contract.js"
 
 const TARGET_RUNTIME = { targetLocalDaemonProtocolVersion: 240 }
@@ -83,6 +84,70 @@ test("publication deployment contract separates portable validation from target 
     () => assertWorkflowPublicationDeploymentRuntimeCompatibility(future.contract, TARGET_RUNTIME),
     /requires local daemon protocol version 241, but target runtime supports 240/,
   )
+})
+
+test("publication deployment contract validates an exact deny-by-default egress ceiling", () => {
+  const contract = fixture() as ReturnType<typeof fixture>
+  contract.provider_requirements = [{ slot_id: "provider:codex" }]
+  contract.credential_slots = [
+    { slot_id: "provider:codex", allowed_destination_ids: [] },
+    { slot_id: "integration:github", allowed_destination_ids: ["integration:github-api"] },
+  ]
+  contract.capabilities = {
+    network: {
+      policy_version: 1,
+      default_action: "deny",
+      destinations: [{
+        id: "integration:github-api",
+        host: { kind: "exact_dns", value: "api.github.com" },
+        ports: [443],
+        protocols: ["tls"],
+        credential_slot_ids: ["integration:github"],
+      }],
+      provider_access: [{
+        slot_id: "provider:codex",
+        bundle_kind: "platform_managed",
+        bundle_id: "codex-official-v1",
+      }],
+    },
+  }
+  const validated = resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, contract)
+  assert.equal(validated.kind, "native")
+  if (validated.kind !== "native") assert.fail("expected native deployment contract")
+  const policy = workflowPublicationDeploymentNetworkPolicy(validated.contract)
+  assert.equal(policy.kind, "enforced")
+  if (policy.kind !== "enforced") assert.fail("expected enforced network policy")
+  assert.equal(policy.destinations[0]?.host.value, "api.github.com")
+
+  const inconsistent = structuredClone(contract)
+  ;(inconsistent.credential_slots as Array<Record<string, unknown>>)[1]!.allowed_destination_ids = []
+  assert.throws(() => resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, inconsistent), /destination ceiling is inconsistent/)
+})
+
+test("publication deployment contract classifies missing and placeholder egress as legacy unrestricted", () => {
+  const contract = fixture()
+  const validated = resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, contract)
+  assert.equal(validated.kind, "native")
+  if (validated.kind !== "native") assert.fail("expected native deployment contract")
+  assert.deepEqual(workflowPublicationDeploymentNetworkPolicy(validated.contract), { kind: "legacy_unrestricted" })
+
+  contract.capabilities = { network: { egress_policy: "deployment_tightens" } }
+  const placeholder = resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, contract)
+  assert.equal(placeholder.kind, "native")
+  if (placeholder.kind !== "native") assert.fail("expected native deployment contract")
+  assert.deepEqual(workflowPublicationDeploymentNetworkPolicy(placeholder.contract), { kind: "legacy_unrestricted" })
 })
 
 function fixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {
