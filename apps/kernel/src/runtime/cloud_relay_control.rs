@@ -111,6 +111,9 @@ pub(crate) fn cloud_kernel_presence_body(
         serde_json::json!({
             "host": config.kernel_websocket_host,
             "port": config.kernel_websocket_port,
+            "relay_public_key": config.relay_public_key,
+            "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
             "available_providers": registration
                 .map(|registration| registration.available_providers.clone())
                 .unwrap_or_default(),
@@ -245,6 +248,15 @@ mod tests {
         assert_eq!(body["kernelAlias"], "dev kernel");
         assert_eq!(body["metadata"]["host"], "127.0.0.1");
         assert_eq!(body["metadata"]["port"], 43118);
+        assert_eq!(body["metadata"]["relay_public_key"], "public");
+        assert_eq!(
+            body["metadata"]["local_daemon_protocol_version"],
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            body["metadata"]["kernel_started_at_ms"],
+            serde_json::Value::Null
+        );
         assert_eq!(body["metadata"]["accepting_remote_leases"], true);
 
         let mut session_profile = profile();
@@ -314,6 +326,8 @@ mod tests {
             body["metadata"]["provider_accounts"][0]["account_id"],
             "acct-1"
         );
+        assert_eq!(body["metadata"]["relay_public_key"], "public");
+        assert_eq!(body["metadata"]["kernel_started_at_ms"], 0);
         assert_eq!(body["metadata"]["accepting_remote_leases"], true);
     }
 }
