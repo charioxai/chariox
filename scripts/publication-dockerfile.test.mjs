@@ -4,6 +4,7 @@ import { test } from "node:test"
 
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
 const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
+const kernelTypes = await readFile(new URL("../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
 
 test("publication image copies compile-time workflow examples before building the kernel", () => {
@@ -48,6 +49,23 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.doesNotMatch(dockerfile, /npm install -g\s+@openai\/codex(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+opencode-ai(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+@anthropic-ai\/claude-code(?:\s|$)/)
+})
+
+test("publication image labels the protocol version verified against its kernel", () => {
+  const protocolVersion = kernelTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)/)?.[1]
+  assert.ok(protocolVersion, "the shared kernel client protocol version must be readable")
+  assert.match(
+    dockerfile,
+    new RegExp(`ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=${protocolVersion}`, "g"),
+  )
+  assert.match(
+    dockerfile,
+    /arroba-kernel --print-local-daemon-protocol-version\)" = "\$\{ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
+  )
+  assert.match(
+    dockerfile,
+    /LABEL dev\.arroba\.local-daemon-protocol-version="\$\{ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
+  )
 })
 
 test("publication egress image runs only the dedicated unprivileged gateway", () => {
