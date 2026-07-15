@@ -456,7 +456,7 @@ test("gateway can load publication config from kernel lookup", async () => {
     {
       AttachToSession: {
         session_id: "session-1",
-        client_id: `arroba-publication-gateway-${process.pid}-pub-1`,
+        client_id: `arroba-publication-gateway-${process.pid}-pub-1-session-1`,
         capability_level: "FullTerminal",
       },
     },

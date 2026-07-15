@@ -11,6 +11,7 @@ import {
   createServer,
   createWebSocketReader,
   enqueueAgentAppReplicaDispatch,
+  ensurePublicationRuntimeAttached,
   findWorkflowRunByInvocationRequestId,
   firstSetCookieValue,
   invokePublicationInput,
@@ -307,6 +308,30 @@ test("agent app invocation event streams resolve the selected replica session", 
 
   assert.equal(publicationForAgentAppInvocation(publication, "request-1").session_id, "replica-session-2")
   assert.equal(publicationForAgentAppInvocation(publication, "missing-request").session_id, "base-session")
+})
+
+test("agent app replica sessions use distinct kernel attachment clients", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    async send(request: Record<string, unknown>) {
+      requests.push(request)
+      return { SessionAttached: { attachment: { id: `attachment-${requests.length}` } } }
+    },
+  }
+  const publication = {
+    ...baseConfig,
+    publication_id: "pub-replica-runtime-attachments",
+  }
+
+  await ensurePublicationRuntimeAttached(client, { ...publication, session_id: "replica-session-1" })
+  await ensurePublicationRuntimeAttached(client, { ...publication, session_id: "replica-session-2" })
+
+  const attachments = requests.map((request) => request.AttachToSession as {
+    readonly client_id: string
+    readonly session_id: string
+  })
+  assert.deepEqual(attachments.map(({ session_id }) => session_id), ["replica-session-1", "replica-session-2"])
+  assert.equal(new Set(attachments.map(({ client_id }) => client_id)).size, 2)
 })
 
 test("agent app overlay effects cannot write protected paths", async () => {

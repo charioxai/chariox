@@ -31,6 +31,7 @@ import {
   releaseAgentAppReplicaInvocation,
 } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
@@ -67,6 +68,7 @@ export {
   enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
   findWorkflowRunByInvocationRequestId,
+  ensurePublicationRuntimeAttached,
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
   visibleWorkflowRun,
