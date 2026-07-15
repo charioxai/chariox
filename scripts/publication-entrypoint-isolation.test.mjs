@@ -9,6 +9,7 @@ const execFileAsync = promisify(execFile)
 const repositoryRoot = resolve(import.meta.dirname, "..")
 const baseImage = "node:22-bookworm-slim"
 const dockerSkip = await cachedDockerImageSkipReason(baseImage)
+const CALLER_CLAIMS_SECRET = "caller-claims-bootstrap-secret-0123456789abcdef"
 
 test("publication entrypoint isolates actions while the gateway authenticates to the kernel", {
   skip: dockerSkip ?? false,
@@ -21,6 +22,7 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   const fakeGateway = join(root, "gateway.js")
   const wrapper = join(root, "run.sh")
   const auditBootstrap = join(root, "audit-url")
+  const callerClaimsBootstrap = join(root, "caller-claims.json")
   await copyFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), join(root, "entrypoint.sh"))
   await copyFile(join(repositoryRoot, "docker/publication/wait-for-tcp.mjs"), join(root, "wait-for-tcp.mjs"))
   await mkdir(join(publication, "app"), { recursive: true })
@@ -33,6 +35,13 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   await writeFile(fakeGateway, gatewayProbeSource())
   await writeFile(auditBootstrap, "http://audit-bridge.invalid/capability-sentinel")
   await chmod(auditBootstrap, 0o600)
+  await writeFile(callerClaimsBootstrap, JSON.stringify({
+    schema_version: 1,
+    deployment_id: "deployment-bootstrap",
+    environment_id: "environment-bootstrap",
+    secret: CALLER_CLAIMS_SECRET,
+  }))
+  await chmod(callerClaimsBootstrap, 0o600)
   await writeFile(wrapper, `#!/usr/bin/env bash
 set -euo pipefail
 useradd --create-home --uid 1001 --shell /bin/bash arroba
@@ -52,6 +61,7 @@ printf 'capability-victim-preserved' > /tmp/capability-victim
 /usr/sbin/runuser -u arroba -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/kernel/kernel-local-auth
 /usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/kernel-local-auth
 /usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/publication-audit-url
+/usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/publication-caller-claims.json
 cp /test/entrypoint.sh /usr/local/bin/arroba-publication-container
 cp /test/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
 cp /test/arroba-kernel /usr/local/bin/arroba-kernel
@@ -107,6 +117,8 @@ exec /usr/local/bin/arroba-publication-container standalone
       "-e",
       "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE=/test/audit-url",
       "-e",
+      "ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE=/test/caller-claims.json",
+      "-e",
       "OPENAI_API_KEY=provider-env-sentinel",
       "-e",
       "ARROBA_RELAY_URL=wss://relay.example.test",
@@ -145,7 +157,7 @@ exec /usr/local/bin/arroba-publication-container standalone
     const stdout = String(failure.stdout)
     assert.match(stdout, /provider readiness read credential-sentinel without inheriting kernel auth/)
     assert.match(stdout, /action uid 1002 denied credential, workspace, and unauthenticated kernel access/)
-    assert.match(stdout, /gateway uid 1003 authenticated with audit capability and preserved self-host configuration/)
+    assert.match(stdout, /gateway uid 1003 authenticated with isolated audit and caller claims capabilities/)
     assert.match(stdout, /capability symlinks replaced without modifying their target/)
     assert.match(String(failure.stderr), /publication standalone child exited: gateway \(status 0\)/)
   } finally {
@@ -440,6 +452,7 @@ for (const name of [
   "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY",
   "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL",
   "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
+  "ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE",
   "OPENAI_API_KEY",
   "ARROBA_RELAY_URL",
   "ARROBA_RELAY_TOKEN",
@@ -452,6 +465,7 @@ for (const name of [
   "ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN",
 ]) assert.equal(process.env[name], undefined)
 assert.equal(Object.values(process.env).some((value) => value.includes("capability-sentinel")), false)
+assert.equal(Object.values(process.env).some((value) => value.includes("${CALLER_CLAIMS_SECRET}")), false)
 for (const path of [
   "/home/arroba/.codex/credential-sentinel",
   "/home/arroba/.provider-credentials/home/.codex/credential-sentinel",
@@ -599,20 +613,33 @@ assert.equal(process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN, undefined)
 assert.equal(process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL, undefined)
 const tokenFile = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
 const auditFile = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
-assert.ok(tokenFile && auditFile)
+const callerClaimsFile = process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+assert.ok(tokenFile && auditFile && callerClaimsFile)
 const token = fs.readFileSync(tokenFile, "utf8")
 const auditUrl = fs.readFileSync(auditFile, "utf8")
+const callerClaims = fs.readFileSync(callerClaimsFile, "utf8")
 assert.ok(token && token.length >= 64)
 assert.equal(auditUrl, "http://audit-bridge.invalid/capability-sentinel")
+assert.deepEqual(JSON.parse(callerClaims), {
+  schema_version: 1,
+  deployment_id: "deployment-bootstrap",
+  environment_id: "environment-bootstrap",
+  secret: "${CALLER_CLAIMS_SECRET}",
+})
 assert.equal(fs.lstatSync(tokenFile).isSymbolicLink(), false)
 assert.equal(fs.lstatSync(auditFile).isSymbolicLink(), false)
+assert.equal(fs.lstatSync(callerClaimsFile).isSymbolicLink(), false)
+assert.equal(fs.statSync(callerClaimsFile).uid, 1003)
+assert.equal(fs.statSync(callerClaimsFile).mode & 0o777, 0o600)
 assert.equal(fs.readFileSync("/tmp/capability-victim", "utf8"), "capability-victim-preserved")
 console.log("capability symlinks replaced without modifying their target")
 fs.unlinkSync(tokenFile)
 fs.unlinkSync(auditFile)
+fs.unlinkSync(callerClaimsFile)
 delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
 delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
-const child = spawnSync(process.execPath, ["-e", "const fs=require('node:fs'); const parent=fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8'); if (Object.keys(process.env).some((name) => name.includes('AUTH_TOKEN') || name.includes('AUDIT')) || parent.includes('" + token + "') || parent.includes('capability-sentinel')) process.exit(2)"], {
+delete process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+const child = spawnSync(process.execPath, ["-e", "const fs=require('node:fs'); const parent=fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8'); if (Object.keys(process.env).some((name) => name.includes('AUTH_TOKEN') || name.includes('AUDIT') || name.includes('CALLER_CLAIMS')) || parent.includes('" + token + "') || parent.includes('capability-sentinel') || parent.includes('${CALLER_CLAIMS_SECRET}')) process.exit(2)"], {
   env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
 })
 assert.equal(child.status, 0)
@@ -622,7 +649,7 @@ socket.once("connect", () => socket.write(
 ))
 socket.once("data", (chunk) => {
   assert.match(String(chunk), /^HTTP\\/1\\.1 101 /)
-  console.log("gateway uid 1003 authenticated with audit capability and preserved self-host configuration")
+  console.log("gateway uid 1003 authenticated with isolated audit and caller claims capabilities")
   socket.destroy()
   const completion = setInterval(() => {
     if (fs.existsSync("/tmp/arroba-action-isolation-complete")) {

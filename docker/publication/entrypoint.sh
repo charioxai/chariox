@@ -16,6 +16,7 @@ readonly ARROBA_GATEWAY_CAPABILITY_DIR="$ARROBA_CAPABILITY_ROOT/gateway"
 readonly ARROBA_KERNEL_AUTH_FILE="$ARROBA_KERNEL_CAPABILITY_DIR/kernel-local-auth"
 readonly ARROBA_GATEWAY_AUTH_FILE="$ARROBA_GATEWAY_CAPABILITY_DIR/kernel-local-auth"
 readonly ARROBA_GATEWAY_AUDIT_FILE="$ARROBA_GATEWAY_CAPABILITY_DIR/publication-audit-url"
+readonly ARROBA_GATEWAY_CALLER_CLAIMS_FILE="$ARROBA_GATEWAY_CAPABILITY_DIR/publication-caller-claims.json"
 readonly ARROBA_GATEWAY_RUNTIME_STATE_DIR="$ARROBA_GATEWAY_HOME/.local/share/arroba/publication-runtime"
 
 mkdir -p \
@@ -423,10 +424,14 @@ fi
 gateway() {
   local kernel_local_auth_file="$1"
   local publication_audit_file="$2"
-  shift 2
+  local caller_claims_file="$3"
+  shift 3
   require_private_capability_file "$kernel_local_auth_file" arroba-gateway "kernel local auth token"
   if [[ -n "$publication_audit_file" ]]; then
     require_private_capability_file "$publication_audit_file" arroba-gateway "publication audit capability"
+  fi
+  if [[ -n "$caller_claims_file" ]]; then
+    require_private_capability_file "$caller_claims_file" arroba-gateway "caller claims configuration"
   fi
   clear_exported_environment
   local name
@@ -500,6 +505,9 @@ gateway() {
   export ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE="$kernel_local_auth_file"
   if [[ -n "$publication_audit_file" ]]; then
     export ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE="$publication_audit_file"
+  fi
+  if [[ -n "$caller_claims_file" ]]; then
+    export ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE="$caller_claims_file"
   fi
   cd /publication
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -645,18 +653,25 @@ start_action_server() {
 
 standalone() {
   local kernel_local_auth_token
+  local caller_claims_config=""
+  local caller_claims_source_file
+  local caller_claims_file=""
   local publication_audit_url
   local publication_audit_source_file
   local publication_audit_file=""
   kernel_local_auth_token="$(generate_kernel_local_auth_token)"
   publication_audit_url="${ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL:-}"
   publication_audit_source_file="${ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE:-}"
+  caller_claims_source_file="${ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE:-}"
   if [[ -n "$publication_audit_url" && -n "$publication_audit_source_file" ]]; then
     echo "publication audit URL and URL file cannot both be configured" >&2
     return 70
   fi
   if [[ -n "$publication_audit_source_file" ]]; then
     publication_audit_url="$(read_bootstrap_capability_file "$publication_audit_source_file" "audit URL")"
+  fi
+  if [[ -n "$caller_claims_source_file" ]]; then
+    caller_claims_config="$(read_bootstrap_capability_file "$caller_claims_source_file" "caller claims configuration")"
   fi
   prepare_capability_directories
   write_private_capability_file "$ARROBA_KERNEL_AUTH_FILE" arroba "$kernel_local_auth_token"
@@ -665,10 +680,17 @@ standalone() {
     write_private_capability_file "$ARROBA_GATEWAY_AUDIT_FILE" arroba-gateway "$publication_audit_url"
     publication_audit_file="$ARROBA_GATEWAY_AUDIT_FILE"
   fi
+  if [[ -n "$caller_claims_config" ]]; then
+    write_private_capability_file "$ARROBA_GATEWAY_CALLER_CLAIMS_FILE" arroba-gateway "$caller_claims_config"
+    caller_claims_file="$ARROBA_GATEWAY_CALLER_CLAIMS_FILE"
+  fi
   unset ARROBA_KERNEL_LOCAL_AUTH_TOKEN \
     ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL \
-    ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+    ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE \
+    ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
   kernel_local_auth_token=""
+  caller_claims_config=""
+  caller_claims_source_file=""
   publication_audit_url=""
   publication_audit_source_file=""
   trap cleanup_standalone_children EXIT
@@ -679,7 +701,7 @@ standalone() {
   start_action_server
 
   wait_for_kernel_readiness
-  gateway "$ARROBA_GATEWAY_AUTH_FILE" "$publication_audit_file" "$@" &
+  gateway "$ARROBA_GATEWAY_AUTH_FILE" "$publication_audit_file" "$caller_claims_file" "$@" &
   GATEWAY_PID="$!"
   supervise_standalone_children
 }
@@ -691,7 +713,11 @@ case "${1:-standalone}" in
     ;;
   gateway)
     shift || true
-    gateway "${ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE:-}" "${ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE:-}" "$@"
+    gateway \
+      "${ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE:-}" \
+      "${ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE:-}" \
+      "${ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE:-}" \
+      "$@"
     ;;
   kernel)
     shift || true
