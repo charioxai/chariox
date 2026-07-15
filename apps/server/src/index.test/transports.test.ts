@@ -73,6 +73,31 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
   )
   assert.equal(resolvePrefix({ location: { pathname: "/final/hello" } }, viewerConfig), "")
   assert.match(html, /window\.location\.href = publicationUrl\(viewerConfig\.humanPromptTarget\.prefix/)
+
+  const agentAppHtml = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/prompt/*",
+    methods: ["GET"],
+    agent_app: {
+      enabled: true,
+      routes: [{
+        path: "/agent/*",
+        hook_id: "agent-app-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+      }],
+    },
+  })
+  const serializedConfig = agentAppHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1]
+  assert.ok(serializedConfig)
+  const agentAppViewerConfig = JSON.parse(serializedConfig)
+  assert.deepEqual(agentAppViewerConfig.directRouteRoots, ["prompt", "agent"])
+  assert.equal(
+    resolvePrefix({ location: { pathname: "/agent/demo" } }, agentAppViewerConfig),
+    "",
+  )
 })
 
 test("gateway parses JSON and forwards transport-shaped workflow output", async () => {

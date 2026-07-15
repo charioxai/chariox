@@ -73,6 +73,7 @@ export function publicationViewerPage(
     websocketInvokePath: websocketInvokePath(publication),
     humanFormInvokePath: PUBLICATION_VIEWER_FORM_INVOKE_PATH,
     humanPromptTarget: promptTargetParts(publication.route ?? "/*"),
+    directRouteRoots: publicationDirectRouteRoots(publication),
   }
   return htmlDocument(
     "Workflow Run",
@@ -460,6 +461,8 @@ function publicationIngressPrefix() {
   if (parts[0] === '~d' && parts[1] && parts[2]) return '/' + parts.slice(0, 3).join('/');
   if (parts[0] === 'publication-ingress' && parts[1] === '~d' && parts[2] && parts[3]) return '/' + parts.slice(0, 4).join('/');
   if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
+  const directRouteRoots = Array.isArray(viewerConfig.directRouteRoots) ? viewerConfig.directRouteRoots : [];
+  if (directRouteRoots.includes(parts[0])) return '';
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
   if (routeFirst && parts[0] === routeFirst) return '';
   if (!routeFirst && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
@@ -472,6 +475,16 @@ function escapeText(value) {
 }
 })();
 `
+}
+
+function publicationDirectRouteRoots(publication: WorkflowPublicationConfig): string[] {
+  const roots = [
+    publication.route,
+    ...(publication.agent_app?.routes ?? []).map((route) => route.path),
+  ]
+    .map((route) => String(route ?? "").split("/").filter(Boolean)[0])
+    .filter((root): root is string => Boolean(root))
+  return [...new Set(roots)]
 }
 
 function promptTargetParts(route: string) {
