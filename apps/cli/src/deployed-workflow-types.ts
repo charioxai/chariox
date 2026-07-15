@@ -337,6 +337,16 @@ export interface DeploymentAccessResult {
 
 export type DeploymentCredentialKind = "provider" | "integration"
 export type DeploymentCredentialStatus = "connecting" | "ready" | "expiring" | "expired" | "revoked" | "error"
+export type DeploymentCredentialEnrollmentMode = "runner_seeded" | "provider_native"
+export type DeploymentCredentialEnrollmentStatus = "pending" | "claimed" | "consumed" | "failed" | "canceled" | "expired"
+export type DeploymentCredentialVerification =
+  | "setup_required"
+  | "setup_in_progress"
+  | "verified"
+  | "unverified"
+  | "failed"
+  | "expired"
+  | "revoked"
 export type DeploymentCredentialReadiness =
   | "ready"
   | "missing"
@@ -346,6 +356,24 @@ export type DeploymentCredentialReadiness =
   | "revoked"
   | "error"
   | "incompatible"
+
+export interface DeploymentCredentialEnrollmentSummary {
+  readonly id: string
+  readonly profileId: string
+  readonly targetVersion: number
+  readonly mode: DeploymentCredentialEnrollmentMode
+  readonly status: DeploymentCredentialEnrollmentStatus
+  readonly statusCode?: string | null
+  readonly instructions?: string | null
+  readonly verificationUrl?: string | null
+  readonly userCode?: string | null
+  readonly expiresAt: string
+  readonly claimedAt?: string | null
+  readonly consumedAt?: string | null
+  readonly finishedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
 
 export interface DeploymentCredentialProfileSummary {
   readonly id: string
@@ -358,6 +386,8 @@ export interface DeploymentCredentialProfileSummary {
   readonly version: number
   readonly status: DeploymentCredentialStatus
   readonly statusCode?: string | null
+  readonly verification?: DeploymentCredentialVerification
+  readonly enrollment?: DeploymentCredentialEnrollmentSummary | null
   readonly runnerConnected: boolean
   readonly expiresAt?: string | null
   readonly lastCheckedAt?: string | null
@@ -372,7 +402,7 @@ export interface DeploymentCredentialJobSummary {
   readonly id: string
   readonly accountId: string
   readonly profileId: string
-  readonly type: "connect" | "test" | "rotate" | "revoke" | "purge"
+  readonly type: "connect" | "retry" | "test" | "rotate" | "revoke" | "purge"
   readonly status: string
   readonly lastError?: string | null
   readonly createdAt: string
@@ -415,11 +445,17 @@ export interface DeploymentEnvironmentCredentialState {
 
 export interface DeploymentCredentialProfilesResult {
   readonly profiles: readonly DeploymentCredentialProfileSummary[]
+  readonly setupAccess: "available" | "restricted"
 }
 
 export interface DeploymentCredentialProfileResult {
   readonly profile: DeploymentCredentialProfileSummary
   readonly job?: DeploymentCredentialJobSummary | null
+  readonly setupDetailsStatus?: "available" | "unavailable"
+}
+
+export interface DeploymentCredentialEnrollmentResult {
+  readonly enrollment: DeploymentCredentialEnrollmentSummary | null
 }
 
 export interface DeploymentEnvironmentCredentialsResult {

@@ -14,6 +14,7 @@ import {
   deleteDeploymentEnvironmentTelemetry,
   exportDeploymentEnvironmentTelemetry,
   getDeploymentAccess,
+  getDeploymentCredentialEnrollment,
   getDeploymentEnvironmentCredentials,
   getDeploymentEnvironmentUsage,
   getDeploymentProject,
@@ -28,6 +29,7 @@ import {
   rollbackDeploymentEnvironment,
   upsertDeploymentProjectMember,
   updateDeploymentEnvironmentLimits,
+  waitForDeploymentCredentialEnrollment,
 } from "./deployed-workflow-api.js"
 import { deployedWorkflowPackageFixture } from "./deployed-workflow-package.test-support.js"
 import type { RelayCloudProfile } from "./preferences.js"
@@ -248,23 +250,41 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
     if (url.pathname.endsWith("/credentials") || url.pathname.includes("/credential-bindings")) {
       return jsonResponse({ credentials: credentialState() })
     }
+    if (url.pathname.endsWith("/enrollment")) {
+      return jsonResponse({ enrollment: credentialEnrollment() })
+    }
     if (url.pathname === "/deployment-credentials" && !init?.method) {
-      return jsonResponse({ profiles: [credentialProfile()] })
+      return jsonResponse({
+        profiles: [{ ...credentialProfile(), enrollment: credentialEnrollment() }],
+        setupAccess: "available",
+      })
     }
     const type = url.pathname === "/deployment-credentials"
       ? "connect"
       : url.pathname.split("/").at(-1) ?? "test"
-    return jsonResponse({ profile: credentialProfile(), job: credentialJob(type) }, 202)
+    const enrollmentActive = type === "connect" || type === "rotate" || type === "setup"
+    return jsonResponse({
+      profile: {
+        ...credentialProfile(),
+        ...(enrollmentActive ? {
+          status: "connecting",
+          enrollment: { ...credentialEnrollment(), verificationUrl: null, userCode: null },
+        } : {}),
+      },
+      job: credentialJob(type),
+    }, 202)
   }
   try {
-    await listDeploymentCredentialProfiles(profile)
-    await createDeploymentCredentialProfile(profile, {
+    const listed = await listDeploymentCredentialProfiles(profile)
+    const created = await createDeploymentCredentialProfile(profile, {
       kind: "provider",
       provider: "codex",
       label: "Production Codex",
     })
-    for (const operation of ["test", "rotate", "revoke", "purge"] as const) {
-      await requestDeploymentCredentialOperation(profile, "profile/one", operation)
+    let rotated: Awaited<ReturnType<typeof requestDeploymentCredentialOperation>> | undefined
+    for (const operation of ["test", "rotate", "retry", "revoke", "purge"] as const) {
+      const result = await requestDeploymentCredentialOperation(profile, "profile/one", operation)
+      if (operation === "rotate") rotated = result
     }
     await getDeploymentEnvironmentCredentials(profile, {
       projectId: "project/one",
@@ -284,11 +304,22 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
       slotId: "provider:codex",
     })
 
+    assert.equal(created.setupDetailsStatus, "available")
+    assert.equal(created.profile.enrollment?.userCode, "ABCD-1234")
+    assert.equal(rotated?.profile.enrollment?.verificationUrl, "https://auth.openai.com/codex/device?user_code=ABCD-1234")
+    assert.equal(listed.profiles[0]?.enrollment?.instructions, null)
+    assert.equal(listed.profiles[0]?.enrollment?.verificationUrl, null)
+    assert.equal(listed.profiles[0]?.enrollment?.userCode, null)
+
     assert.deepEqual(calls.map((call) => [call.method, call.url.pathname]), [
       ["GET", "/deployment-credentials"],
       ["POST", "/deployment-credentials"],
+      ["GET", "/deployment-credentials/profile-1/enrollment"],
       ["POST", "/deployment-credentials/profile%2Fone/test"],
       ["POST", "/deployment-credentials/profile%2Fone/rotate"],
+      ["GET", "/deployment-credentials/profile-1/enrollment"],
+      ["POST", "/deployment-credentials/profile%2Fone/setup"],
+      ["GET", "/deployment-credentials/profile-1/enrollment"],
       ["POST", "/deployment-credentials/profile%2Fone/revoke"],
       ["POST", "/deployment-credentials/profile%2Fone/purge"],
       ["GET", "/deployment-projects/project%2Fone/environments/environment%2Fone/credentials"],
@@ -302,15 +333,118 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
       provider: "codex",
       label: "Production Codex",
     })
-    assert.ok(calls.slice(2, 6).every((call) => call.body?.accountId === "account-1"))
-    assert.equal(calls[6]?.url.searchParams.get("releaseId"), "release/one")
-    assert.deepEqual(calls[7]?.body, {
+    assert.ok([calls[3], calls[4], calls[6], calls[8], calls[9]].every((call) => call?.body?.accountId === "account-1"))
+    assert.equal(calls[10]?.url.searchParams.get("releaseId"), "release/one")
+    assert.deepEqual(calls[11]?.body, {
       accountId: "account-1",
       releaseId: "release/one",
       slotId: "provider:codex",
       profileId: "profile/one",
     })
-    assert.deepEqual(calls[8]?.body, { accountId: "account-1", slotId: "provider:codex" })
+    assert.deepEqual(calls[12]?.body, { accountId: "account-1", slotId: "provider:codex" })
+    assert.equal("enrollmentMode" in (calls[1]?.body ?? {}), false)
+    assert.equal("enrollmentMode" in (calls[4]?.body ?? {}), false)
+    assert.equal("enrollmentMode" in (calls[6]?.body ?? {}), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("deployed workflow enrollment details propagate member authorization denial", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => jsonResponse({
+    error: { message: "Credential enrollment setup requires account owner or admin access" },
+  }, 403)
+  try {
+    await assert.rejects(
+      () => getDeploymentCredentialEnrollment(profile, "profile/member"),
+      /requires account owner or admin access/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("successful credential setup mutations report unavailable privileged details", async () => {
+  const originalFetch = globalThis.fetch
+  let request = 0
+  globalThis.fetch = async () => {
+    request += 1
+    if (request === 1) {
+      return jsonResponse({
+        profile: {
+          ...credentialProfile(),
+          status: "connecting",
+          enrollment: { ...credentialEnrollment(), verificationUrl: null, userCode: null },
+        },
+        job: credentialJob("connect"),
+      }, 201)
+    }
+    return jsonResponse({ error: { message: "credential setup details unavailable" } }, 503)
+  }
+  try {
+    const result = await createDeploymentCredentialProfile(profile, {
+      kind: "provider",
+      provider: "codex",
+      label: "Production Codex",
+    })
+    assert.equal(result.profile.id, "profile-1")
+    assert.equal(result.setupDetailsStatus, "unavailable")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("deployed workflow enrollment polling observes actionable and terminal transitions", async () => {
+  const originalFetch = globalThis.fetch
+  let responseIndex = 0
+  globalThis.fetch = async () => {
+    responseIndex += 1
+    return jsonResponse({
+      enrollment: responseIndex === 1
+        ? {
+            ...credentialEnrollment(),
+            status: "pending",
+            verificationUrl: null,
+            userCode: null,
+          }
+        : credentialEnrollment(),
+    })
+  }
+  try {
+    const actionable = await waitForDeploymentCredentialEnrollment(profile, "profile-1", {
+      intervalMs: 0,
+      maxAttempts: 3,
+    })
+    assert.equal(responseIndex, 2)
+    assert.equal(actionable.enrollment?.status, "claimed")
+    assert.equal(actionable.enrollment?.userCode, "ABCD-1234")
+
+    responseIndex = 0
+    globalThis.fetch = async () => {
+      responseIndex += 1
+      return jsonResponse({
+        enrollment: responseIndex === 1
+          ? {
+              ...credentialEnrollment(),
+              status: "pending",
+              verificationUrl: null,
+              userCode: null,
+            }
+          : {
+              ...credentialEnrollment(),
+              status: "expired",
+              verificationUrl: null,
+              userCode: null,
+            },
+      })
+    }
+    const terminal = await waitForDeploymentCredentialEnrollment(profile, "profile-1", {
+      intervalMs: 0,
+      maxAttempts: 3,
+    })
+    assert.equal(responseIndex, 2)
+    assert.equal(terminal.enrollment?.status, "expired")
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -535,6 +669,22 @@ function credentialProfile() {
     runnerConnected: true,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
+  }
+}
+
+function credentialEnrollment() {
+  return {
+    id: "enrollment-1",
+    profileId: "profile-1",
+    targetVersion: 2,
+    mode: "provider_native",
+    status: "claimed",
+    instructions: "Open the provider verification page.",
+    verificationUrl: "https://auth.openai.com/codex/device?user_code=ABCD-1234",
+    userCode: "ABCD-1234",
+    expiresAt: "2026-07-15T12:30:00.000Z",
+    createdAt: "2026-07-15T12:00:00.000Z",
+    updatedAt: "2026-07-15T12:01:00.000Z",
   }
 }
 

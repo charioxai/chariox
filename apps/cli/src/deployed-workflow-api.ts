@@ -13,6 +13,7 @@ import type {
   DeploymentClaimResult,
   DeploymentControlRole,
   DeploymentCredentialKind,
+  DeploymentCredentialEnrollmentResult,
   DeploymentCredentialProfileResult,
   DeploymentCredentialProfilesResult,
   DeploymentEnvironmentDomainsResult,
@@ -487,7 +488,45 @@ export async function acceptDeploymentAudienceInvitation(
 export async function listDeploymentCredentialProfiles(
   profile: RelayCloudProfile,
 ): Promise<DeploymentCredentialProfilesResult> {
-  return getJson(profile, "/deployment-credentials", { accountId: profile.accountId })
+  const result = await getJson<DeploymentCredentialProfilesResult>(
+    profile,
+    "/deployment-credentials",
+    { accountId: profile.accountId },
+  )
+  return {
+    profiles: result.profiles.map(withoutCredentialEnrollmentSetupDetails),
+    setupAccess: result.setupAccess === "available" ? "available" : "restricted",
+  }
+}
+
+export async function getDeploymentCredentialEnrollment(
+  profile: RelayCloudProfile,
+  profileId: string,
+): Promise<DeploymentCredentialEnrollmentResult> {
+  return getJson(
+    profile,
+    `/deployment-credentials/${encodeURIComponent(profileId)}/enrollment`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function waitForDeploymentCredentialEnrollment(
+  profile: RelayCloudProfile,
+  profileId: string,
+  options: {
+    readonly intervalMs?: number
+    readonly maxAttempts?: number
+  } = {},
+): Promise<DeploymentCredentialEnrollmentResult> {
+  const intervalMs = Math.max(0, options.intervalMs ?? 1_000)
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 6)
+  let latest: DeploymentCredentialEnrollmentResult = { enrollment: null }
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    latest = await getDeploymentCredentialEnrollment(profile, profileId)
+    if (credentialEnrollmentActionable(latest)) return latest
+    if (attempt + 1 < maxAttempts) await delay(intervalMs)
+  }
+  return latest
 }
 
 export async function createDeploymentCredentialProfile(
@@ -499,25 +538,30 @@ export async function createDeploymentCredentialProfile(
     readonly label: string
   },
 ): Promise<DeploymentCredentialProfileResult> {
-  return postJson(profile, "/deployment-credentials", {
+  const result = await postJson<DeploymentCredentialProfileResult>(profile, "/deployment-credentials", {
     accountId: profile.accountId,
     kind: input.kind,
     ...(input.provider ? { provider: input.provider } : {}),
     ...(input.integration ? { integration: input.integration } : {}),
     label: input.label,
   })
+  return withCredentialEnrollmentDetails(profile, result)
 }
 
 export async function requestDeploymentCredentialOperation(
   profile: RelayCloudProfile,
   profileId: string,
-  operation: "test" | "rotate" | "revoke" | "purge",
+  operation: "retry" | "test" | "rotate" | "revoke" | "purge",
 ): Promise<DeploymentCredentialProfileResult> {
-  return postJson(
+  const routeOperation = operation === "retry" ? "setup" : operation
+  const result = await postJson<DeploymentCredentialProfileResult>(
     profile,
-    `/deployment-credentials/${encodeURIComponent(profileId)}/${operation}`,
+    `/deployment-credentials/${encodeURIComponent(profileId)}/${routeOperation}`,
     { accountId: profile.accountId },
   )
+  return operation === "rotate" || operation === "retry"
+    ? withCredentialEnrollmentDetails(profile, result)
+    : result
 }
 
 export async function getDeploymentEnvironmentCredentials(
@@ -575,6 +619,65 @@ export async function revokeDeploymentEnvironmentCredentialBinding(
     `/deployment-projects/${encodeURIComponent(input.projectId)}`
       + `/environments/${encodeURIComponent(input.environmentId)}/credential-bindings/revoke`,
     { accountId: profile.accountId, slotId: input.slotId },
+  )
+}
+
+async function withCredentialEnrollmentDetails(
+  profile: RelayCloudProfile,
+  result: DeploymentCredentialProfileResult,
+): Promise<DeploymentCredentialProfileResult> {
+  const safeProfile = withoutCredentialEnrollmentSetupDetails(result.profile)
+  if (!credentialEnrollmentNeedsDetails(safeProfile.enrollment)) return { ...result, profile: safeProfile }
+  try {
+    const details = await waitForDeploymentCredentialEnrollment(profile, result.profile.id)
+    return details.enrollment
+      ? {
+          ...result,
+          profile: { ...safeProfile, enrollment: details.enrollment },
+          setupDetailsStatus: "available",
+        }
+      : { ...result, profile: safeProfile, setupDetailsStatus: "unavailable" }
+  } catch {
+    return { ...result, profile: safeProfile, setupDetailsStatus: "unavailable" }
+  }
+}
+
+function credentialEnrollmentActionable(result: DeploymentCredentialEnrollmentResult): boolean {
+  const enrollment = result.enrollment
+  if (!enrollment) return false
+  if (enrollment.mode === "runner_seeded") return true
+  if (enrollment.status !== "pending" && enrollment.status !== "claimed") return true
+  return Boolean(enrollment.verificationUrl || enrollment.userCode)
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function withoutCredentialEnrollmentSetupDetails(
+  profile: DeploymentCredentialProfileResult["profile"],
+): DeploymentCredentialProfileResult["profile"] {
+  if (!profile.enrollment) return profile
+  return {
+    ...profile,
+    enrollment: {
+      ...profile.enrollment,
+      instructions: credentialEnrollmentNeedsDetails(profile.enrollment)
+        ? null
+        : profile.enrollment.instructions ?? null,
+      verificationUrl: null,
+      userCode: null,
+    },
+  }
+}
+
+function credentialEnrollmentNeedsDetails(
+  enrollment: DeploymentCredentialProfileResult["profile"]["enrollment"],
+): boolean {
+  return Boolean(
+    enrollment
+    && enrollment.mode === "provider_native"
+    && (enrollment.status === "pending" || enrollment.status === "claimed"),
   )
 }
 

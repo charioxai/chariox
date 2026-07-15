@@ -280,7 +280,7 @@ function printUsage() {
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",
     "  /cloud deployments access|member inspect or change deployment access",
     "  /cloud deployments audience show|policy|grant|invite|key|jwt|webhook manage app-user access",
-    "  /cloud deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind manage destination credentials",
+    "  /cloud deployments credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind manage destination credentials",
     "  /cloud deployments usage|limits inspect usage or change runtime limits",
     "  /cloud deployments operations show|deny|resume|set manage admission, retention, and alerts",
     "  /cloud invite create [n] [--level private|transparent|full] create a cloud-backed collaboration invite",

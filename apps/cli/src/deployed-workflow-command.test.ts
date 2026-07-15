@@ -7,6 +7,8 @@ import test from "node:test"
 
 import {
   executeDeployedWorkflowCommand,
+  formatDeploymentCredentialEnrollment,
+  formatDeploymentCredentialProfile,
   formatDeploymentPortfolioItem,
   handleDeployedWorkflowCloudCommand,
 } from "./deployed-workflow-command.js"
@@ -134,12 +136,54 @@ test("deployed workflow TUI command drives destination credentials without expos
     if (pathname.endsWith("/credentials") || pathname.includes("/credential-bindings")) {
       return jsonResponse({ credentials: credentialState() })
     }
-    if (pathname === "/deployment-credentials" && !init?.method) {
-      return jsonResponse({ profiles: [{ ...credentialProfile(), runtimeRef: "runtime-ref-secret" }] })
+    if (pathname.endsWith("/enrollment")) {
+      return jsonResponse({
+        enrollment: credentialEnrollment(decodeURIComponent(pathname.split("/").at(-2) ?? "profile-1")),
+      })
     }
-    const operation = pathname === "/deployment-credentials" ? "connect" : pathname.split("/").at(-1)
+    if (pathname === "/deployment-credentials" && !init?.method) {
+      return jsonResponse({ profiles: [
+        {
+          ...credentialProfile(),
+          runtimeRef: "runtime-ref-secret",
+          runnerId: "runner-id-secret",
+          token: "token-secret",
+          sourcePath: "/private/credential/source",
+        },
+        { ...credentialProfile(), id: "profile/one", label: "Encoded Codex" },
+        {
+          ...credentialProfile(),
+          id: "profile-retry",
+          label: "Retry Codex",
+          status: "error",
+          verification: "expired",
+          enrollment: {
+            ...credentialEnrollment("profile-retry"),
+            status: "expired",
+            verificationUrl: null,
+            userCode: null,
+          },
+        },
+        { ...credentialProfile(), id: "profile-retired", label: "Retired Codex", status: "revoked" },
+      ], setupAccess: "available" })
+    }
+    const operation = pathname === "/deployment-credentials" || pathname.endsWith("/setup")
+      ? "connect"
+      : pathname.split("/").at(-1)
     return jsonResponse({
-      profile: { ...credentialProfile(), runtimeRef: "runtime-ref-secret" },
+      profile: {
+        ...credentialProfile(),
+        ...(operation === "connect" || operation === "rotate" || operation === "retry" ? {
+          status: "connecting",
+          verification: "setup_required",
+          enrollment: { ...credentialEnrollment("profile-1"), verificationUrl: null, userCode: null },
+        } : {}),
+        ...(operation === "purge" ? { id: "profile-retired", status: "revoked" } : {}),
+        runtimeRef: "runtime-ref-secret",
+        runnerId: "runner-id-secret",
+        token: "token-secret",
+        sourcePath: "/private/credential/source",
+      },
       job: {
         id: `job-${operation}`,
         type: operation,
@@ -153,17 +197,29 @@ test("deployed workflow TUI command drives destination credentials without expos
     notices.push((await executeDeployedWorkflowCommand(profile, [
       "credentials", "show", "project/one", "environment/one", "release/one",
     ])).notice)
-    await executeDeployedWorkflowCommand(profile, [
-      "credentials", "connect", "provider", "codex", "Production Codex",
-    ])
-    await executeDeployedWorkflowCommand(profile, [
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "setup", "provider", "codex", "Production Codex",
+    ])).notice)
+    notices.push((await executeDeployedWorkflowCommand(profile, [
       "credentials", "connect", "integration", "slack", "Customer Slack",
-    ])
-    for (const operation of ["test", "rotate", "revoke", "purge"] as const) {
+    ])).notice)
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "enrollment", "profile/one",
+    ])).notice)
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "retry", "profile-retry",
+    ])).notice)
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "setup", "profile-retry",
+    ])).notice)
+    for (const operation of ["test", "rotate", "revoke"] as const) {
       notices.push((await executeDeployedWorkflowCommand(profile, [
         "credentials", operation, "profile/one",
       ])).notice)
     }
+    notices.push((await executeDeployedWorkflowCommand(profile, [
+      "credentials", "purge", "profile-retired",
+    ])).notice)
     await executeDeployedWorkflowCommand(profile, [
       "credentials", "bind", "project/one", "environment/one", "release/one",
       "provider:codex", "profile/one",
@@ -172,39 +228,239 @@ test("deployed workflow TUI command drives destination credentials without expos
       "credentials", "unbind", "project/one", "environment/one", "provider:codex",
     ])
 
-    assert.equal(calls.length, 10)
-    assert.deepEqual(calls.slice(0, 4).map((call) => call.pathname), [
-      "/deployment-credentials",
-      "/deployment-projects/project%2Fone/environments/environment%2Fone/credentials",
-      "/deployment-credentials",
-      "/deployment-credentials",
-    ])
-    assert.deepEqual(calls[2]?.body, {
+    const setupCalls = calls.filter((call) => call.pathname === "/deployment-credentials" && call.body)
+    assert.equal(setupCalls.length, 2)
+    assert.deepEqual(setupCalls[0]?.body, {
       accountId: "account-1",
       kind: "provider",
       provider: "codex",
       label: "Production Codex",
     })
-    assert.deepEqual(calls[3]?.body, {
+    assert.deepEqual(setupCalls[1]?.body, {
       accountId: "account-1",
       kind: "integration",
       integration: "slack",
       label: "Customer Slack",
     })
-    assert.deepEqual(calls[8]?.body, {
+    assert.equal(setupCalls.some((call) => "enrollmentMode" in (call.body ?? {})), false)
+    assert.ok(calls.some((call) => call.pathname === "/deployment-credentials/profile%2Fone/enrollment"))
+    const rotation = calls.find((call) => call.pathname.endsWith("/rotate"))
+    assert.equal("enrollmentMode" in (rotation?.body ?? {}), false)
+    const retries = calls.filter((call) => call.pathname.endsWith("/setup"))
+    assert.equal(retries.length, 2)
+    assert.equal(retries.some((call) => "enrollmentMode" in (call.body ?? {})), false)
+    const binding = calls.find((call) => call.pathname.endsWith("/credential-bindings"))
+    assert.deepEqual(binding?.body, {
       accountId: "account-1",
       releaseId: "release/one",
       slotId: "provider:codex",
       profileId: "profile/one",
     })
-    assert.deepEqual(calls[9]?.body, { accountId: "account-1", slotId: "provider:codex" })
+    const unbinding = calls.find((call) => call.pathname.endsWith("/credential-bindings/revoke"))
+    assert.deepEqual(unbinding?.body, { accountId: "account-1", slotId: "provider:codex" })
     assert.match(notices[0] ?? "", /credential profile-1 ready/)
     assert.match(notices[1] ?? "", /slot provider:codex ready/)
-    assert.equal(notices.some((notice) => notice.includes("runtime-ref-secret")), false)
+    assert.ok(notices.some((notice) => notice.includes("verification_url https://auth.openai.com/codex/device?user_code=ABCD-1234")))
+    assert.ok(notices.some((notice) => notice.includes("user_code ABCD-1234")))
+    assert.equal(
+      notices.some((notice) => /runtime-ref-secret|runner-id-secret|token-secret|private\/credential\/source/.test(notice)),
+      false,
+    )
     await assert.rejects(
-      executeDeployedWorkflowCommand(profile, ["credentials", "connect", "provider", "unknown", "Invalid"]),
+      executeDeployedWorkflowCommand(profile, ["credentials", "setup", "provider", "unknown", "Invalid"]),
       /must be codex, claude, opencode, or dev-stub/,
     )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("deployment credential formatting preserves provider auth URLs and forces runner-seeded unverified", () => {
+  const runnerSeeded = formatDeploymentCredentialProfile({
+    ...credentialProfile(),
+    verification: "verified",
+    accountLabel: "misleading@example.test",
+    enrollment: {
+      ...credentialEnrollment("profile-1"),
+      mode: "runner_seeded",
+      status: "consumed",
+      verificationUrl: null,
+      userCode: null,
+    },
+  })
+  assert.match(runnerSeeded, /verification unverified/)
+  assert.match(runnerSeeded, /account unverified/)
+  assert.match(runnerSeeded, /actions test rotate revoke/)
+  assert.doesNotMatch(runnerSeeded, /retry_setup/)
+  assert.doesNotMatch(runnerSeeded, /misleading@example\.test|verification verified/)
+
+  const retryable = formatDeploymentCredentialProfile({
+    ...credentialProfile(),
+    status: "expired",
+    verification: "unverified",
+    enrollment: {
+      ...credentialEnrollment("profile-1"),
+      mode: "runner_seeded",
+      status: "expired",
+      verificationUrl: null,
+      userCode: null,
+    },
+  })
+  assert.match(retryable, /verification expired/)
+  assert.match(retryable, /actions retry_setup/)
+  assert.doesNotMatch(retryable, /actions test rotate revoke/)
+
+  const failedRunnerSeeded = formatDeploymentCredentialProfile({
+    ...credentialProfile(),
+    status: "error",
+    verification: "unverified",
+    enrollment: {
+      ...credentialEnrollment("profile-1"),
+      mode: "runner_seeded",
+      status: "failed",
+      verificationUrl: null,
+      userCode: null,
+    },
+  })
+  assert.match(failedRunnerSeeded, /verification failed/)
+  assert.match(failedRunnerSeeded, /actions retry_setup/)
+  assert.doesNotMatch(failedRunnerSeeded, /actions test rotate revoke/)
+
+  const claudeProfile = {
+    ...credentialProfile(),
+    id: "profile-claude",
+    provider: "claude",
+  }
+  const pkceUrl = "https://claude.com/cai/oauth/authorize"
+    + "?response_type=code"
+    + "&client_id=claude-code"
+    + "&redirect_uri=https%3A%2F%2Fclaude.com%2Fcai%2Foauth%2Fcode%2Fcallback"
+    + "&scope=org%3Acreate_api_key%20user%3Aprofile"
+    + "&code_challenge=Challenge-1234"
+    + "&code_challenge_method=S256"
+    + "&state=State-1234"
+  const pkce = formatDeploymentCredentialEnrollment({
+    ...credentialEnrollment("profile-claude"),
+    verificationUrl: pkceUrl,
+    userCode: null,
+  }, claudeProfile)
+  assert.match(pkce, new RegExp(`verification_url ${escapeRegex(pkceUrl)}`))
+
+  const unsafe = formatDeploymentCredentialEnrollment({
+    ...credentialEnrollment("profile-unsafe"),
+    verificationUrl: `${pkceUrl}&access_token=secret-token`,
+    userCode: null,
+  }, claudeProfile)
+  assert.doesNotMatch(unsafe, /verification_url|secret-token/)
+
+  for (const unsafeQuery of ["code-verifier=secret-verifier", "device.code=secret-device"]) {
+    const unsafeNormalizedName = formatDeploymentCredentialEnrollment({
+      ...credentialEnrollment("profile-unsafe"),
+      verificationUrl: `${pkceUrl}&${unsafeQuery}`,
+      userCode: null,
+    }, claudeProfile)
+    assert.doesNotMatch(unsafeNormalizedName, /verification_url|secret-/)
+  }
+
+  const excessiveParameters = formatDeploymentCredentialEnrollment({
+    ...credentialEnrollment("profile-excessive-parameters"),
+    verificationUrl: `${pkceUrl}&${Array.from({ length: 25 }, (_, index) => `state_${index}=safe`).join("&")}`,
+    userCode: null,
+  }, claudeProfile)
+  assert.doesNotMatch(excessiveParameters, /verification_url/)
+
+  const excessiveQuery = formatDeploymentCredentialEnrollment({
+    ...credentialEnrollment("profile-excessive-query"),
+    verificationUrl: `${pkceUrl}&state=${"a".repeat(1_536)}`,
+    userCode: null,
+  }, claudeProfile)
+  assert.doesNotMatch(excessiveQuery, /verification_url/)
+})
+
+test("deployed workflow TUI blocks credential operations while setup is active", async () => {
+  const originalFetch = globalThis.fetch
+  const methods: string[] = []
+  globalThis.fetch = async (_input, init) => {
+    methods.push(init?.method ?? "GET")
+    return jsonResponse({ profiles: [{
+      ...credentialProfile(),
+      verification: "setup_in_progress",
+      enrollment: { ...credentialEnrollment("profile-1"), status: "claimed" },
+    }], setupAccess: "available" })
+  }
+  try {
+    await assert.rejects(
+      () => executeDeployedWorkflowCommand(profile, ["credentials", "rotate", "profile-1"]),
+      /rotate is unavailable until setup finishes/,
+    )
+    assert.deepEqual(methods, ["GET"])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("explicit TUI enrollment command reports member authorization denial", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => jsonResponse({
+    error: { message: "Credential enrollment setup requires account owner or admin access" },
+  }, 403)
+  try {
+    await assert.rejects(
+      () => executeDeployedWorkflowCommand(profile, ["credentials", "enrollment", "profile-1"]),
+      /requires account owner or admin access/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("deployed workflow TUI advertises only safe credential actions to members", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => jsonResponse({
+    profiles: [
+      credentialProfile(),
+      { ...credentialProfile(), id: "profile-revoked", status: "revoked" },
+    ],
+    setupAccess: "restricted",
+  })
+  try {
+    const output = await executeDeployedWorkflowCommand(profile, ["credentials", "list"])
+    assert.match(output.notice, /credential profile-1 ready[\s\S]*actions test/)
+    assert.match(output.notice, /credential profile-revoked revoked[\s\S]*actions none/)
+    assert.doesNotMatch(output.notice, /actions (?:retry_setup|test rotate revoke|purge)/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test("TUI setup preserves a successful mutation when privileged details are unavailable", async () => {
+  const originalFetch = globalThis.fetch
+  let request = 0
+  globalThis.fetch = async () => {
+    request += 1
+    if (request === 1) {
+      return jsonResponse({ profiles: [], setupAccess: "available" })
+    }
+    if (request === 2) {
+      return jsonResponse({
+        profile: {
+          ...credentialProfile(),
+          status: "connecting",
+          verification: "setup_required",
+          enrollment: { ...credentialEnrollment("profile-1"), verificationUrl: null, userCode: null },
+        },
+        job: { id: "job-connect", type: "connect", status: "pending" },
+      }, 201)
+    }
+    return jsonResponse({ error: { message: "setup detail service unavailable" } }, 503)
+  }
+  try {
+    const output = await executeDeployedWorkflowCommand(profile, [
+      "credentials", "setup", "provider", "codex", "Production Codex",
+    ])
+    assert.match(output.notice, /credential profile-1 connecting/)
+    assert.match(output.notice, /setup_details unavailable/)
+    assert.match(output.footer, /setup details unavailable/)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -742,17 +998,37 @@ function credentialProfile() {
   return {
     id: "profile-1",
     accountId: "account-1",
-    kind: "provider",
+    kind: "provider" as const,
     provider: "codex",
     label: "Production Codex",
     accountLabel: "customer@example.test",
     version: 2,
-    status: "ready",
+    status: "ready" as const,
     runnerConnected: true,
     lastCheckedAt: "2026-01-01T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   }
+}
+
+function credentialEnrollment(profileId: string) {
+  return {
+    id: `enrollment-${profileId}`,
+    profileId,
+    targetVersion: 3,
+    mode: "provider_native" as const,
+    status: "claimed" as const,
+    instructions: "Open the provider verification page.",
+    verificationUrl: "https://auth.openai.com/codex/device?user_code=ABCD-1234",
+    userCode: "ABCD-1234",
+    expiresAt: "2026-07-15T12:30:00.000Z",
+    createdAt: "2026-07-15T12:00:00.000Z",
+    updatedAt: "2026-07-15T12:01:00.000Z",
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function credentialState() {

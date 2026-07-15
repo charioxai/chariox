@@ -31,6 +31,7 @@ import {
   upsertDeploymentProjectMember,
   updateDeploymentEnvironmentLimits,
   updateDeploymentEnvironmentOperations,
+  waitForDeploymentCredentialEnrollment,
 } from "./deployed-workflow-api.js"
 import {
   executeDeploymentAudienceCommand,
@@ -42,6 +43,9 @@ import type {
   DeploymentClaimSummary,
   DeploymentControlRole,
   DeploymentCredentialProfileSummary,
+  DeploymentCredentialEnrollmentSummary,
+  DeploymentCredentialProfilesResult,
+  DeploymentCredentialVerification,
   DeploymentEnvironmentDomainState,
   DeploymentEnvironmentCredentialState,
   DeploymentEnvironmentUsageSummary,
@@ -334,7 +338,10 @@ export async function executeDeployedWorkflowCommand(
       const result = await listDeploymentCredentialProfiles(profile)
       return {
         notice: result.profiles.length > 0
-          ? result.profiles.map(formatDeploymentCredentialProfile).join("\n")
+          ? result.profiles.map((credential) => formatDeploymentCredentialProfile(
+              credential,
+              result.setupAccess,
+            )).join("\n")
           : "No deployment credentials.",
         footer: `${result.profiles.length} deployment credential${result.profiles.length === 1 ? "" : "s"}`,
       }
@@ -353,7 +360,22 @@ export async function executeDeployedWorkflowCommand(
         footer: result.credentials.ready ? "deployment credentials ready" : "deployment credentials require attention",
       }
     }
-    if (credentialAction === "connect") {
+    const setupTarget = credentialAction === "setup" ? argv[2]?.trim() : undefined
+    if (
+      credentialAction === "retry"
+      || (setupTarget && setupTarget !== "provider" && setupTarget !== "integration" && !argv[3])
+    ) {
+      const profileId = requiredArg(credentialAction === "retry" ? argv[2] : setupTarget, credentialRetryUsage)
+      await requireCredentialOperationAvailable(profile, profileId, "retry")
+      const result = await requestDeploymentCredentialOperation(profile, profileId, "retry")
+      return formatDeploymentCredentialOperation(
+        result.profile,
+        result.job,
+        credentialSetupFooter(result.profile),
+        result.setupDetailsStatus,
+      )
+    }
+    if (credentialAction === "setup" || credentialAction === "connect") {
       const kind = requiredArg(argv[2], credentialConnectUsage)
       const identity = requiredArg(argv[3], credentialConnectUsage).toLowerCase()
       const label = requiredArg(argv[4], credentialConnectUsage)
@@ -361,18 +383,42 @@ export async function executeDeployedWorkflowCommand(
       if (kind === "provider" && !["codex", "claude", "opencode", "dev-stub"].includes(identity)) {
         throw new Error("deployment credential provider must be codex, claude, opencode, or dev-stub")
       }
+      await requireCredentialManagementAvailable(profile)
       const result = await createDeploymentCredentialProfile(profile, {
         kind,
         ...(kind === "provider" ? { provider: identity } : { integration: identity }),
         label,
       })
-      return formatDeploymentCredentialOperation(result.profile, result.job, "connection requested")
+      return formatDeploymentCredentialOperation(
+        result.profile,
+        result.job,
+        credentialSetupFooter(result.profile),
+        result.setupDetailsStatus,
+      )
+    }
+    if (credentialAction === "enrollment") {
+      const profileId = requiredArg(argv[2], credentialEnrollmentUsage)
+      const listed = await requireCredentialManagementAvailable(profile)
+      const credential = listed.profiles.find((candidate) => candidate.id === profileId)
+      if (!credential) throw new Error(`credential ${profileId} was not found`)
+      const result = await waitForDeploymentCredentialEnrollment(profile, profileId)
+      if (!result.enrollment) throw new Error(`credential ${profileId} has no enrollment`)
+      return {
+        notice: formatDeploymentCredentialEnrollment(result.enrollment, credential),
+        footer: `credential ${enrollmentStatusLabel(result.enrollment.status)}`,
+      }
     }
     if (credentialAction === "test" || credentialAction === "rotate"
       || credentialAction === "revoke" || credentialAction === "purge") {
       const profileId = requiredArg(argv[2], credentialOperationUsage)
+      await requireCredentialOperationAvailable(profile, profileId, credentialAction)
       const result = await requestDeploymentCredentialOperation(profile, profileId, credentialAction)
-      return formatDeploymentCredentialOperation(result.profile, result.job, `${credentialAction} requested`)
+      return formatDeploymentCredentialOperation(
+        result.profile,
+        result.job,
+        credentialAction === "rotate" ? credentialSetupFooter(result.profile) : `credential ${credentialAction} requested`,
+        result.setupDetailsStatus,
+      )
     }
     if (credentialAction === "bind") {
       const projectId = requiredArg(argv[2], credentialBindUsage)
@@ -380,6 +426,7 @@ export async function executeDeployedWorkflowCommand(
       const releaseId = requiredArg(argv[4], credentialBindUsage)
       const slotId = requiredArg(argv[5], credentialBindUsage)
       const profileId = requiredArg(argv[6], credentialBindUsage)
+      await requireCredentialManagementAvailable(profile)
       const result = await bindDeploymentEnvironmentCredential(profile, {
         projectId,
         environmentId,
@@ -396,6 +443,7 @@ export async function executeDeployedWorkflowCommand(
       const projectId = requiredArg(argv[2], credentialUnbindUsage)
       const environmentId = requiredArg(argv[3], credentialUnbindUsage)
       const slotId = requiredArg(argv[4], credentialUnbindUsage)
+      await requireCredentialManagementAvailable(profile)
       const result = await revokeDeploymentEnvironmentCredentialBinding(profile, {
         projectId,
         environmentId,
@@ -607,17 +655,49 @@ export function formatDeploymentAccess(access: DeploymentAccessState): string {
   ].join("\n")
 }
 
-export function formatDeploymentCredentialProfile(profile: DeploymentCredentialProfileSummary): string {
+export function formatDeploymentCredentialProfile(
+  profile: DeploymentCredentialProfileSummary,
+  setupAccess: DeploymentCredentialProfilesResult["setupAccess"] = "available",
+): string {
+  const verification = effectiveCredentialVerification(profile)
   return [
     `credential ${profile.id} ${profile.status}`,
     `  kind ${profile.kind} ${profile.kind === "provider" ? profile.provider ?? "unknown" : profile.integration ?? "unknown"}`,
     `  label ${profile.label}`,
-    `  account ${profile.accountLabel ?? "unverified"}`,
+    `  account ${verification === "verified" ? profile.accountLabel ?? "verified" : "unverified"}`,
+    `  verification ${verification}`,
     `  version ${profile.version}`,
     `  runner ${profile.runnerConnected ? "online" : "offline"}`,
     `  expires_at ${profile.expiresAt ?? "none"}`,
     `  checked_at ${profile.lastCheckedAt ?? "never"}`,
+    ...(profile.enrollment ? [
+      `  setup_mode ${profile.enrollment.mode}`,
+      `  setup_status ${profile.enrollment.status}`,
+      `  setup_expires_at ${profile.enrollment.expiresAt}`,
+      ...(profile.enrollment.instructions ? [`  setup_instructions ${profile.enrollment.instructions}`] : []),
+    ] : []),
     ...(profile.statusCode ? [`  status_code ${profile.statusCode}`] : []),
+    `  actions ${credentialProfileActions(profile, setupAccess)}`,
+  ].join("\n")
+}
+
+export function formatDeploymentCredentialEnrollment(
+  enrollment: DeploymentCredentialEnrollmentSummary,
+  profile: DeploymentCredentialProfileSummary,
+): string {
+  const verification = enrollmentVerification(enrollment)
+  const verificationUrl = safeCredentialVerificationUrl(enrollment.verificationUrl, profile)
+  const userCode = safeCredentialUserCode(enrollment.userCode)
+  return [
+    `setup ${enrollment.profileId} version=${enrollment.targetVersion}`,
+    `  mode ${enrollment.mode}`,
+    `  status ${enrollment.status}`,
+    `  verification ${verification}`,
+    `  expires_at ${enrollment.expiresAt}`,
+    ...(enrollment.statusCode ? [`  status_code ${enrollment.statusCode}`] : []),
+    ...(enrollment.instructions ? [`  instructions ${enrollment.instructions}`] : []),
+    ...(verificationUrl ? [`  verification_url ${verificationUrl}`] : []),
+    ...(userCode ? [`  user_code ${userCode}`] : []),
   ].join("\n")
 }
 
@@ -638,6 +718,220 @@ export function formatDeploymentEnvironmentCredentials(credentials: DeploymentEn
       ] : []),
     ].join("\n")),
   ].join("\n")
+}
+
+async function requireCredentialOperationAvailable(
+  cloudProfile: RelayCloudProfile,
+  profileId: string,
+  operation: "retry" | "test" | "rotate" | "revoke" | "purge",
+): Promise<void> {
+  const listed = await listDeploymentCredentialProfiles(cloudProfile)
+  if (operation !== "test") requireCredentialManagementAccess(listed)
+  const credential = listed.profiles.find((candidate) => candidate.id === profileId)
+  if (!credential) throw new Error(`credential ${profileId} was not found`)
+  if (credentialSetupActive(credential)) {
+    throw new Error(
+      `credential ${profileId} ${enrollmentStatusLabel(credential.enrollment?.status)}; ${operation} is unavailable until setup finishes`,
+    )
+  }
+  if (operation === "retry" && !credentialSetupRetryable(credential)) {
+    throw new Error(`credential ${profileId} does not require setup retry`)
+  }
+  if (operation === "purge" && credential.status !== "revoked") {
+    throw new Error(`credential ${profileId} must be revoked before purge`)
+  }
+  if (operation !== "purge" && credential.status === "revoked") {
+    throw new Error(`credential ${profileId} is revoked; only purge is available`)
+  }
+}
+
+async function requireCredentialManagementAvailable(
+  cloudProfile: RelayCloudProfile,
+): Promise<DeploymentCredentialProfilesResult> {
+  const listed = await listDeploymentCredentialProfiles(cloudProfile)
+  requireCredentialManagementAccess(listed)
+  return listed
+}
+
+function requireCredentialManagementAccess(listed: DeploymentCredentialProfilesResult): void {
+  if (listed.setupAccess === "restricted") {
+    throw new Error("Credential management requires account owner or admin access")
+  }
+}
+
+function credentialSetupActive(profile: DeploymentCredentialProfileSummary): boolean {
+  return profile.enrollment?.status === "pending"
+    || profile.enrollment?.status === "claimed"
+    || profile.verification === "setup_required"
+    || profile.verification === "setup_in_progress"
+}
+
+function effectiveCredentialVerification(profile: DeploymentCredentialProfileSummary): DeploymentCredentialVerification {
+  if (profile.status === "revoked") return "revoked"
+  if (profile.enrollment) return enrollmentVerification(profile.enrollment)
+  if (profile.verification) return profile.verification
+  if (profile.status === "ready") return "unverified"
+  if (profile.status === "expired") return "expired"
+  if (profile.status === "error") return "failed"
+  return "setup_in_progress"
+}
+
+function enrollmentVerification(enrollment: DeploymentCredentialEnrollmentSummary): DeploymentCredentialVerification {
+  if (enrollment.mode === "runner_seeded" && enrollment.status === "consumed") return "unverified"
+  if (enrollment.status === "pending") return "setup_required"
+  if (enrollment.status === "claimed") return "setup_in_progress"
+  if (enrollment.status === "consumed") return "verified"
+  if (enrollment.status === "expired") return "expired"
+  return "failed"
+}
+
+function credentialProfileActions(
+  profile: DeploymentCredentialProfileSummary,
+  setupAccess: DeploymentCredentialProfilesResult["setupAccess"],
+): string {
+  if (credentialSetupActive(profile)) return "disabled_while_setup_active"
+  if (setupAccess === "restricted") return profile.status === "revoked" ? "none" : "test"
+  if (credentialSetupRetryable(profile)) return "retry_setup"
+  return profile.status === "revoked" ? "purge" : "test rotate revoke"
+}
+
+function credentialSetupRetryable(profile: DeploymentCredentialProfileSummary): boolean {
+  if (profile.enrollment?.status === "consumed") return false
+  if (profile.status !== "connecting" && profile.status !== "error" && profile.status !== "expired") return false
+  const verification = effectiveCredentialVerification(profile)
+  return verification === "failed" || verification === "expired"
+}
+
+function credentialSetupFooter(profile: DeploymentCredentialProfileSummary): string {
+  const verification = effectiveCredentialVerification(profile)
+  if (verification === "setup_required") return "credential setup required"
+  if (verification === "setup_in_progress") return "credential setup in progress"
+  if (verification === "unverified") return "credential setup complete; identity unverified"
+  if (verification === "verified") return "credential setup verified"
+  return `credential setup ${verification}`
+}
+
+function enrollmentStatusLabel(
+  status: DeploymentCredentialEnrollmentSummary["status"] | undefined,
+): string {
+  if (status === "pending") return "setup required"
+  if (status === "claimed") return "setup in progress"
+  return status ? `setup ${status}` : "setup in progress"
+}
+
+function safeCredentialVerificationUrl(
+  value: string | null | undefined,
+  profile: DeploymentCredentialProfileSummary,
+): string | null {
+  if (!value || value.length > 2_048) return null
+  try {
+    const url = new URL(value)
+    if (url.protocol !== "https:" || url.username || url.password || url.hash || url.port) return null
+    if ([...url.searchParams].length > 24 || url.search.length > 1_536) return null
+    if ([...url.searchParams.keys()].some(secretBearingCredentialVerificationParameter)) return null
+    if ([...url.searchParams.keys()].some(redirectBearingCredentialVerificationParameter)) return null
+    const policy = providerVerificationUrlPolicies[credentialAdapter(profile)]
+    const matchedPolicy = policy?.find((entry) => entry.origin === url.origin && entry.pathname === url.pathname)
+    if (!matchedPolicy || !validProviderCredentialVerificationParameters(url, matchedPolicy)) return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+type ProviderVerificationUrlPolicy = {
+  readonly origin: string
+  readonly pathname: string
+  readonly redirectUri?: string
+  readonly responseType?: string
+  readonly requireClientId?: boolean
+}
+
+const providerVerificationUrlPolicies: Readonly<Record<string, readonly ProviderVerificationUrlPolicy[]>> = {
+  codex: [{ origin: "https://auth.openai.com", pathname: "/codex/device" }],
+  claude: [{
+    origin: "https://claude.com",
+    pathname: "/cai/oauth/authorize",
+    redirectUri: "https://claude.com/cai/oauth/code/callback",
+    responseType: "code",
+    requireClientId: true,
+  }],
+  opencode: [{ origin: "https://auth.openai.com", pathname: "/codex/device" }],
+}
+
+function validProviderCredentialVerificationParameters(
+  url: URL,
+  policy: ProviderVerificationUrlPolicy,
+): boolean {
+  const redirectUris = url.searchParams.getAll("redirect_uri")
+  if (policy.redirectUri) {
+    if (redirectUris.length !== 1 || redirectUris[0] !== policy.redirectUri) return false
+    let redirect: URL
+    try {
+      redirect = new URL(redirectUris[0])
+    } catch {
+      return false
+    }
+    if (
+      redirect.protocol !== "https:"
+      || redirect.username
+      || redirect.password
+      || redirect.port
+      || redirect.hash
+      || redirect.search
+      || redirect.toString() !== policy.redirectUri
+    ) return false
+  } else if (redirectUris.length > 0) {
+    return false
+  }
+  if (policy.responseType) {
+    const responseTypes = url.searchParams.getAll("response_type")
+    if (responseTypes.length !== 1 || responseTypes[0] !== policy.responseType) return false
+  }
+  if (policy.requireClientId) {
+    const clientIds = url.searchParams.getAll("client_id")
+    if (clientIds.length !== 1 || !clientIds[0]?.trim() || clientIds[0].length > 256) return false
+  }
+  return true
+}
+
+function secretBearingCredentialVerificationParameter(name: string): boolean {
+  const normalized = name.trim().toLowerCase().replaceAll("-", "_").replaceAll(".", "_")
+  const compact = normalized.replaceAll("_", "")
+  return normalized === "api_key"
+    || normalized === "password"
+    || normalized === "credential"
+    || normalized === "code_verifier"
+    || normalized === "device_code"
+    || normalized.endsWith("_token")
+    || normalized.endsWith("_secret")
+    || normalized.includes("password")
+    || normalized.includes("credential")
+    || compact === "apikey"
+    || compact === "accesstoken"
+    || compact === "refreshtoken"
+    || compact === "clientsecret"
+    || compact === "devicesecret"
+}
+
+function redirectBearingCredentialVerificationParameter(name: string): boolean {
+  const normalized = name.trim().toLowerCase().replaceAll("-", "_").replaceAll(".", "_")
+  return normalized === "redirect"
+    || normalized === "redirect_url"
+    || normalized === "return_to"
+    || normalized === "return_url"
+    || normalized === "continue"
+    || normalized === "next"
+    || normalized === "url"
+}
+
+function credentialAdapter(profile: DeploymentCredentialProfileSummary): string {
+  return (profile.kind === "provider" ? profile.provider : profile.integration)?.trim().toLowerCase() ?? ""
+}
+
+function safeCredentialUserCode(value: string | null | undefined): string | null {
+  const code = value?.trim()
+  return code && /^[A-Za-z0-9-]{4,64}$/.test(code) ? code : null
 }
 
 export function formatDeploymentEnvironmentDomains(domains: DeploymentEnvironmentDomainState): string {
@@ -751,13 +1045,16 @@ function formatDeploymentCredentialOperation(
   profile: DeploymentCredentialProfileSummary,
   job: { readonly id: string; readonly type: string; readonly status: string } | null | undefined,
   footer: string,
+  setupDetailsStatus?: "available" | "unavailable",
 ): DeployedWorkflowCommandOutput {
   return {
     notice: [
       formatDeploymentCredentialProfile(profile),
+      ...(profile.enrollment ? [formatDeploymentCredentialEnrollment(profile.enrollment, profile)] : []),
+      ...(setupDetailsStatus === "unavailable" ? ["setup_details unavailable"] : []),
       ...(job ? [`job ${job.id} ${job.type} ${job.status}`] : []),
     ].join("\n"),
-    footer,
+    footer: setupDetailsStatus === "unavailable" ? `${footer}; setup details unavailable` : footer,
   }
 }
 
@@ -818,11 +1115,13 @@ const memberAddUsage = "usage: deployments member add <project-id> <grantee-acco
 const memberRevokeUsage = "usage: deployments member revoke <project-id> <member-id>"
 const memberUsage = "usage: deployments member add|revoke ..."
 const credentialShowUsage = "usage: deployments credentials show <project-id> <environment-id> [release-id]"
-const credentialConnectUsage = "usage: deployments credentials connect provider <codex|claude|opencode|dev-stub> <label> | integration <identity> <label>"
+const credentialConnectUsage = "usage: deployments credentials setup provider <codex|claude|opencode|dev-stub> <label> | integration <identity> <label>"
+const credentialRetryUsage = "usage: deployments credentials setup <profile-id> | retry <profile-id>"
+const credentialEnrollmentUsage = "usage: deployments credentials enrollment <profile-id>"
 const credentialOperationUsage = "usage: deployments credentials test|rotate|revoke|purge <profile-id>"
 const credentialBindUsage = "usage: deployments credentials bind <project-id> <environment-id> <release-id> <slot-id> <profile-id>"
 const credentialUnbindUsage = "usage: deployments credentials unbind <project-id> <environment-id> <slot-id>"
-const credentialUsage = "usage: deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ..."
+const credentialUsage = "usage: deployments credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind ..."
 const domainShowUsage = "usage: deployments domains show <project-id> <environment-id>"
 const domainAddUsage = "usage: deployments domains add <project-id> <environment-id> <hostname>"
 const domainOperationUsage = "usage: deployments domains verify|canonical|remove <project-id> <environment-id> <domain-id>"
@@ -839,7 +1138,7 @@ const operationsUsage = "usage: deployments operations show|deny|resume|set ..."
 const telemetryExportUsage = "usage: deployments telemetry export <project-id> <environment-id> <output-path>"
 const telemetryDeleteUsage = "usage: deployments telemetry delete <project-id> <environment-id> [--idempotency-key value]"
 const telemetryUsage = "usage: deployments telemetry export|delete ..."
-const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|connect|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | audience show|policy|grant|invite|key|jwt|webhook ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
+const deploymentsUsage = "usage: deployments list | show <project-id> | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | audience show|policy|grant|invite|key|jwt|webhook ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ..."
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`
