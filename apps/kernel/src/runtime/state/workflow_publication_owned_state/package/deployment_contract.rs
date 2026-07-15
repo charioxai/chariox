@@ -11,7 +11,7 @@ pub(super) fn workflow_publication_deployment_contract_json(
     requirements: &serde_json::Value,
     package_files: &[crate::local::WorkflowPublicationPackageFile],
 ) -> Result<serde_json::Value, DaemonError> {
-    let package_digest = super::workflow_publication_package_digest(package_files);
+    let package_digest = super::workflow_publication_package_digest(package_files)?;
     let provider_requirements = provider_requirements(snapshot);
     let network_destinations = network_destinations(agent_app)?;
     let provider_slots = provider_requirements

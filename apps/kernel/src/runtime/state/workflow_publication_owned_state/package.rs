@@ -668,16 +668,28 @@ fn workflow_publication_styles_css() -> String {
 
 pub(super) fn workflow_publication_package_digest(
     files: &[crate::local::WorkflowPublicationPackageFile],
-) -> String {
+) -> Result<String, DaemonError> {
     let mut hash = Sha256::new();
     let mut files = files.iter().collect::<Vec<_>>();
     files.sort_by(|left, right| left.path.cmp(&right.path));
+    hash.update((files.len() as u64).to_be_bytes());
     for file in files {
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(&file.content_base64)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "digest workflow publication package",
+                message: format!(
+                    "failed to decode package file `{}` while hashing: {error}",
+                    file.path
+                ),
+            })?;
+        hash.update((file.path.len() as u64).to_be_bytes());
         hash.update(file.path.as_bytes());
-        hash.update(file.content_base64.as_bytes());
+        hash.update((content.len() as u64).to_be_bytes());
+        hash.update(&content);
         hash.update([u8::from(file.executable)]);
     }
-    format!("sha256:{:x}", hash.finalize())
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }
 
 pub(super) fn workflow_publication_package_archive_base64(
@@ -820,4 +832,53 @@ fn escape_html(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn publication_package_digest_length_frames_file_records() {
+        let left = vec![package_file("z", b"b", false)];
+        let right = vec![package_file("zYg==", b"", false)];
+
+        let left_digest = workflow_publication_package_digest(&left).expect("left digest");
+        let right_digest = workflow_publication_package_digest(&right).expect("right digest");
+
+        assert_eq!(
+            left_digest,
+            "sha256:586e9150a9d5fb2f9acdfda4a029feb0ea7aaa1c91332d142c1b5e305051f7e5"
+        );
+        assert_eq!(
+            right_digest,
+            "sha256:cf85ff5ab71aacd4309f63acea96197342afc4cf6e9af3eb955ddaf73a90a53c"
+        );
+        assert_ne!(left_digest, right_digest);
+    }
+
+    #[test]
+    fn publication_package_digest_matches_the_cloud_canonical_vector() {
+        let files = vec![
+            package_file("publication.json", b"{}", false),
+            package_file("entrypoint.sh", b"#!/bin/sh\nexit 0\n", true),
+        ];
+
+        assert_eq!(
+            workflow_publication_package_digest(&files).expect("package digest"),
+            "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
+        );
+    }
+
+    fn package_file(
+        path: &str,
+        content: &[u8],
+        executable: bool,
+    ) -> crate::local::WorkflowPublicationPackageFile {
+        crate::local::WorkflowPublicationPackageFile {
+            path: path.to_string(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+            executable,
+        }
+    }
 }
