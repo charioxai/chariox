@@ -33,3 +33,18 @@ test("publication image reserves isolated credential, action, and gateway identi
   assert.match(dockerfile, /ENTRYPOINT \["tini", "--", "arroba-publication-container"\]/)
   assert.doesNotMatch(dockerfile, /^USER\s+/m, "PID 1 must retain only the root bootstrap needed to prepare isolated role state")
 })
+
+test("publication image pins and verifies every official provider CLI", () => {
+  assert.match(dockerfile, /ARG ARROBA_CODEX_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /ARG ARROBA_OPENCODE_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /ARG ARROBA_CLAUDE_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /"@openai\/codex@\$\{ARROBA_CODEX_VERSION\}"/)
+  assert.match(dockerfile, /"opencode-ai@\$\{ARROBA_OPENCODE_VERSION\}"/)
+  assert.match(dockerfile, /"@anthropic-ai\/claude-code@\$\{ARROBA_CLAUDE_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(codex --version\)" = "codex-cli \$\{ARROBA_CODEX_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(opencode --version\)" = "\$\{ARROBA_OPENCODE_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(claude --version\)" = "\$\{ARROBA_CLAUDE_VERSION\} \(Claude Code\)"/)
+  assert.doesNotMatch(dockerfile, /npm install -g\s+@openai\/codex(?:\s|$)/)
+  assert.doesNotMatch(dockerfile, /npm install -g\s+opencode-ai(?:\s|$)/)
+  assert.doesNotMatch(dockerfile, /npm install -g\s+@anthropic-ai\/claude-code(?:\s|$)/)
+})

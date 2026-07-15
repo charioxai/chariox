@@ -27,6 +27,13 @@ FROM node:22-bookworm-slim
 LABEL org.opencontainers.image.title="Arroba workflow publication"
 LABEL org.opencontainers.image.description="Standalone Arroba kernel plus workflow publication gateway runtime."
 
+ARG ARROBA_CODEX_VERSION=0.144.0
+ARG ARROBA_OPENCODE_VERSION=1.4.1
+ARG ARROBA_CLAUDE_VERSION=2.1.207
+LABEL dev.arroba.provider.codex.version="${ARROBA_CODEX_VERSION}"
+LABEL dev.arroba.provider.opencode.version="${ARROBA_OPENCODE_VERSION}"
+LABEL dev.arroba.provider.claude.version="${ARROBA_CLAUDE_VERSION}"
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -36,7 +43,13 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
+RUN npm install -g \
+    "@openai/codex@${ARROBA_CODEX_VERSION}" \
+    "opencode-ai@${ARROBA_OPENCODE_VERSION}" \
+    "@anthropic-ai/claude-code@${ARROBA_CLAUDE_VERSION}" \
+  && test "$(codex --version)" = "codex-cli ${ARROBA_CODEX_VERSION}" \
+  && test "$(opencode --version)" = "${ARROBA_OPENCODE_VERSION}" \
+  && test "$(claude --version)" = "${ARROBA_CLAUDE_VERSION} (Claude Code)"
 
 RUN useradd --create-home --uid 1001 --shell /bin/bash arroba \
   && useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action \
