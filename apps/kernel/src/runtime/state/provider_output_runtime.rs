@@ -140,6 +140,8 @@ impl KernelRuntimeState {
             } else {
                 owned.note_prompt_response_content(provider_run_id);
             }
+            owned
+                .schedule_provider_output_check_after(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR);
         }
         let terminal_failure = crate::provider::classify_provider_terminal_failure_text(
             provider_run.adapter_key(),
@@ -206,6 +208,7 @@ impl KernelRuntimeState {
                 let _ = self
                     .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
                     .await?;
+                owned.ensure_provider_output_timeout_scheduled(provider_run_id);
             }
         }
         Ok(records)

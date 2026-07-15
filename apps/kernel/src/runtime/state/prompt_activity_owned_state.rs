@@ -307,7 +307,7 @@ impl KernelRuntimeOwnedState {
             self.active_turns.start(turn);
             self.active_turns
                 .mark_awaiting_first_output(provider_run_id);
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -320,7 +320,7 @@ impl KernelRuntimeOwnedState {
         };
         self.active_turns.mark_streaming(provider_run_id);
         if tracked {
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -347,7 +347,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if self.prompt_activity.read().contains_key(provider_run_id) {
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -367,10 +367,31 @@ impl KernelRuntimeOwnedState {
                 completion_recorded: false,
                 settlement_requested: true,
             });
-        self.schedule_provider_output_deadline(provider_run_id);
+        self.schedule_provider_output_timeout(provider_run_id);
     }
 
-    fn schedule_provider_output_deadline(&self, provider_run_id: &str) {
+    pub(super) fn schedule_provider_output_check_after(
+        &self,
+        provider_run_id: &str,
+        delay: std::time::Duration,
+    ) {
+        self.provider_output_deadlines.schedule(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(delay.as_millis() as u64),
+        );
+    }
+
+    pub(super) fn ensure_provider_output_timeout_scheduled(&self, provider_run_id: &str) {
+        if !self.prompt_activity.read().contains_key(provider_run_id) {
+            return;
+        }
+        self.provider_output_deadlines.schedule_if_absent(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
+        );
+    }
+
+    fn schedule_provider_output_timeout(&self, provider_run_id: &str) {
         self.provider_output_deadlines.schedule(
             provider_run_id,
             crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
