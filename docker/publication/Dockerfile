@@ -20,6 +20,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
+COPY examples/workflow-code examples/workflow-code
 RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin arroba-kernel
 
 FROM node:22-bookworm-slim
