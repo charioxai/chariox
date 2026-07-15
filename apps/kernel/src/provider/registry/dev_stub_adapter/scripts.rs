@@ -58,11 +58,8 @@ fn dev_stub_workflow_html_final_script() -> String {
                 "html": html
             }
         }
-    })
-    .to_string();
-    format!(
-        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) sleep 2; printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
-    )
+    });
+    dev_stub_workflow_intermediate_payload_script(payload, None, 2_000)
 }
 
 pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<String, String> {
@@ -73,6 +70,8 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
             | "workflow-delayed-output"
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"
+            | "workflow-html-final-node"
+            | "workflow-single-turn-node"
             | "workflow-code-topology-node"
             | "metaagent-workflow-code-author"
     ) {
@@ -521,11 +520,15 @@ fn dev_stub_workflow_output_script(summary: &str, value: i64) -> String {
 }
 
 fn dev_stub_workflow_read_through_script(summary: &str, value: i64) -> String {
-    let payload =
-        format!(r#"{{"summary":"{summary}","output":{{"message":{{"value":{value}}}}}}}"#);
-    format!(
-        "stty -echo 2>/dev/null || true; seen=' '; while IFS= read -r _line; do token=$(printf '%s' \"$_line\" | grep -Eo 'workflow-ack:[A-Za-z0-9_-]+' | tail -n 1); key=${{token:-__no_token__}}; case \"$seen\" in *\" $key \"*) ;; *) printf '%s\\n%s\\n%s\\n' '```json' '{payload}' '```'; seen=\"$seen$key \";; esac; done"
-    )
+    let payload = serde_json::json!({
+        "summary": summary,
+        "output": {
+            "message": {
+                "value": value,
+            },
+        },
+    });
+    dev_stub_workflow_intermediate_payload_script(payload, None, 0)
 }
 
 fn dev_stub_workflow_intermediate_script(
@@ -542,7 +545,7 @@ fn dev_stub_workflow_intermediate_script(
         },
     });
     let intermediate_output = serde_json::json!({ "value": intermediate });
-    dev_stub_workflow_intermediate_payload_script(final_payload, Some(intermediate_output), 0)
+    dev_stub_workflow_intermediate_payload_script(final_payload, Some(intermediate_output), 750)
 }
 
 fn dev_stub_workflow_delayed_output_script() -> String {
@@ -688,6 +691,7 @@ async function emitOnce() {{
   const tokenMatches = [...promptBuffer.matchAll(/workflow-ack:[A-Za-z0-9_-]+/g)];
   const deliveryToken = tokenMatches.length ? tokenMatches[tokenMatches.length - 1][0] : undefined;
   if (!deliveryToken) {{
+    if (runtimeUrl && runtimeToken) return;
     if (emittedWithoutToken) return;
     if (!fallbackTimer) {{
       fallbackTimer = setTimeout(() => {{
@@ -978,4 +982,65 @@ fn dev_stub_large_output_script() -> String {
     format!(
         "stty -echo 2>/dev/null || true; while IFS= read -r _line; do i=1; while [ \"$i\" -le {line_count} ]; do printf 'large-output-drill %06d ' \"$i\"; printf '%*s' {payload_bytes} '' | tr ' ' x; printf '\\n'; i=$((i + 1)); done; done"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider::RuntimeMcpBinding;
+
+    #[test]
+    fn html_final_fixture_waits_for_and_acknowledges_the_workflow_turn() {
+        let script = dev_stub_workflow_html_final_script();
+
+        assert!(script.contains("ARROBA_DEV_STUB_RUNTIME_MCP_URL"));
+        assert!(script.contains("ack_workflow_turn"));
+        assert!(script.contains("emittedDeliveryTokens"));
+        assert!(script.contains("if (runtimeUrl && runtimeToken) return;"));
+        assert!(!script.contains("__no_token__"));
+    }
+
+    #[test]
+    fn single_turn_fixture_waits_for_and_acknowledges_the_workflow_turn() {
+        let script = dev_stub_workflow_read_through_script("single turn", 1842);
+
+        assert!(script.contains("ARROBA_DEV_STUB_RUNTIME_MCP_URL"));
+        assert!(script.contains("ack_workflow_turn"));
+        assert!(script.contains("emittedDeliveryTokens"));
+        assert!(script.contains("if (runtimeUrl && runtimeToken) return;"));
+        assert!(!script.contains("__no_token__"));
+    }
+
+    #[test]
+    fn intermediate_fixture_keeps_the_partial_state_observable() {
+        let script = dev_stub_workflow_intermediate_script("intermediate", 1841, 1842);
+
+        assert!(script.contains("const outputDelayMs = 750;"));
+    }
+
+    #[test]
+    fn deterministic_final_fixtures_receive_the_runtime_mcp_binding() {
+        for model in ["workflow-html-final-node", "workflow-single-turn-node"] {
+            let request =
+                LaunchProviderRequest::new("session-1", "dev-stub", "dev-stub", "default", model)
+                    .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                        "http://127.0.0.1:1234/mcp",
+                        "test-token",
+                    ));
+
+            let env = dev_stub_pty_env(&request);
+            assert_eq!(
+                env.get("ARROBA_DEV_STUB_RUNTIME_MCP_URL")
+                    .map(String::as_str),
+                Some("http://127.0.0.1:1234/mcp"),
+                "model {model}"
+            );
+            assert_eq!(
+                env.get("ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN")
+                    .map(String::as_str),
+                Some("test-token"),
+                "model {model}"
+            );
+        }
+    }
 }

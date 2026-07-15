@@ -1,6 +1,6 @@
 const { addWorkflowNodeRequest, attachToSessionRequest, createSessionRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, createWorkflowRequest, getProviderRunRequest, launchProviderRunRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, spawnAgentRequest, updateWorkflowNodeInstructionsRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { logStep, REAL_DASHBOARD_PROMPT, variant } from './live-workflow-publication-drill-runtime.mjs'
-import { createDashboardPublicationSession, createDeterministicPublicationSession, createRealProviderDashboardPublicationSession } from './live-workflow-publication-drill-session-builders.mjs'
+import { createDashboardPublicationSession, createDeterministicPublicationSession, createRealProviderDashboardPublicationSession, publicationRequestTransportOptions } from './live-workflow-publication-drill-session-builders.mjs'
 import { waitForProviderRunReady } from './live-workflow-publication-drill-waiters.mjs'
 
 export async function createPublicationDrillSessionSuite(client, sessionIds, {
@@ -162,12 +162,11 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
   const websocketFinalPublication = variant(
     await client.send(createWorkflowPublicationRequest(websocketSession.id, websocketWorkflow.id, websocketEndpoint.id, {
       alias: 'public_websocket_final',
-      route: '/.well-known/arroba/publication/ws',
-      methods: ['GET'],
-      transport: { kind: 'websocket_json' },
-      parser: { kind: 'json' },
+      ...publicationRequestTransportOptions({
+        route: '/.well-known/arroba/publication/ws',
+        transportKind: 'websocket_json',
+      }),
       traceExposure: { nodes: { [websocketNode.id]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } },
-      mode: 'async',
     })),
     'WorkflowPublicationCreated',
   ).publication
@@ -181,7 +180,6 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     endpointAlias: 'websocket-tunnel',
     publicationAlias: 'public_websocket_tunnel_final',
     route: '/.well-known/arroba/publication/ws',
-    methods: ['GET'],
     transportKind: 'websocket_json',
     traceExposure: 'all',
   })
@@ -307,12 +305,12 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
   const mcpPublication = variant(
     await client.send(createWorkflowPublicationRequest(mcpSession.id, mcpWorkflow.id, mcpEndpoint.id, {
       alias: 'public_mcp',
-      route: '/mcp',
-      methods: ['POST'],
-      transport: { kind: 'mcp' },
-      parser: { kind: 'json' },
+      ...publicationRequestTransportOptions({
+        route: '/mcp',
+        methods: ['POST'],
+        transportKind: 'mcp',
+      }),
       traceExposure: { nodes: { [mcpNode.id]: ['output_summary', 'assistant_messages', 'thinking'] } },
-      mode: 'sync',
     })),
     'WorkflowPublicationCreated',
   ).publication

@@ -4,6 +4,19 @@ const { addWorkflowEdgeRequest, addWorkflowNodeRequest, attachToSessionRequest, 
 import { variant } from './live-workflow-publication-drill-runtime.mjs'
 import { waitForProviderRunReady } from './live-workflow-publication-drill-waiters.mjs'
 
+export function publicationRequestTransportOptions(options) {
+  const transportKind = options.transportKind
+  const supportsHttpMethods = transportKind !== 'websocket_json'
+  const supportsParser = transportKind !== 'websocket_json' && transportKind !== 'mcp'
+  return {
+    route: options.route,
+    ...(supportsHttpMethods && options.methods ? { methods: options.methods } : {}),
+    transport: { kind: transportKind },
+    ...(supportsParser ? { parser: { kind: 'json' } } : {}),
+    mode: transportKind === 'mcp' ? 'sync' : 'async',
+  }
+}
+
 export async function createDeterministicPublicationSession(client, sessionIds, options) {
   const model = options.model ?? 'workflow-intermediate-node'
   const session = variant(
@@ -40,14 +53,10 @@ export async function createDeterministicPublicationSession(client, sessionIds, 
   const publication = variant(
     await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
       alias: options.publicationAlias,
-      route: options.route,
-      methods: options.methods,
-      transport: { kind: options.transportKind },
-      parser: { kind: 'json' },
+      ...publicationRequestTransportOptions(options),
       traceExposure: options.traceExposure === 'all'
         ? { nodes: { [node.id]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } }
         : options.traceExposure ?? null,
-      mode: 'async',
     })),
     'WorkflowPublicationCreated',
   ).publication

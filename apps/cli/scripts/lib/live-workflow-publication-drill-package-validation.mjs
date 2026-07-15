@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 const { createDefaultShellContext, parseShellCommand } = await import('../../../../packages/kernel-client/dist/shell-core.js')
 const { executeShellCommand } = await import('../../../../packages/kernel-client/dist/shell-executor.js')
 const { createWorkflowScheduleRequest, endSessionRequest, getSessionStateRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
-import { hasAcceptedRunMetadata, logStep, repoRoot, run, startProcess, startServeWithProviderPrompt, stopProcess, variant, waitForProcessExit } from './live-workflow-publication-drill-runtime.mjs'
+import { hasAcceptedRunMetadata, logStep, publicationStatusWatchdogCount, publicationStatusWatchdogs, repoRoot, run, startProcess, startServeWithProviderPrompt, stopProcess, variant, waitForProcessExit } from './live-workflow-publication-drill-runtime.mjs'
 import { assertGatewayDoesNotListen, assertPackageDoesNotContain, assertPublicationRuntimeSessionHidden, createUnavailableProviderPackage, waitForGateway, waitForPublicationStatusLatestOutput, waitForScheduledWorkflowRun } from './live-workflow-publication-drill-waiters.mjs'
 import { runContainerPublicationValidation } from './live-workflow-publication-drill-containers.mjs'
 
@@ -74,7 +74,7 @@ export async function runPublicationPackageValidation({
       },
       'arroba-serve-exported',
     )
-    await waitForGateway(gatewayUrl)
+    await waitForPackageGateway(gatewayUrl, gateway)
     const exportedStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
     const exportedStatusBody = await exportedStatusResponse.json()
     const exportedRuntimeSessionId = exportedStatusBody.runtime_session_id
@@ -132,7 +132,7 @@ export async function runPublicationPackageValidation({
       model: 'publication-drill-model',
       effort: 'low',
     })
-    await waitForGateway(gatewayUrl)
+    await waitForPackageGateway(gatewayUrl, gateway)
     const overrideStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
     const overrideStatusBody = await overrideStatusResponse.json()
     const overrideRuntimeSessionId = overrideStatusBody.runtime_session_id
@@ -212,15 +212,19 @@ export async function runPublicationPackageValidation({
       },
       'arroba-serve-schedule',
     )
-    await waitForGateway(gatewayUrl)
+    await waitForPackageGateway(gatewayUrl, gateway)
     const statusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
     const statusBody = await statusResponse.json()
     const runtimeSessionId = statusBody.runtime_session_id
     if (statusResponse.status !== 200 || typeof runtimeSessionId !== 'string') {
       throw new Error(`expected publication status with runtime session id, got ${statusResponse.status}: ${JSON.stringify(statusBody)}`)
     }
-    if (statusBody.schedule_count !== 1 || statusBody.schedules?.[0]?.id !== schedule.id) {
+    const statusWatchdogs = publicationStatusWatchdogs(statusBody)
+    if (publicationStatusWatchdogCount(statusBody) !== 1 || statusWatchdogs[0]?.id !== schedule.id) {
       throw new Error(`expected publication status to expose schedule ${schedule.id}, got ${JSON.stringify(statusBody)}`)
+    }
+    if (statusWatchdogs[0].last_status !== 'warming_up') {
+      throw new Error(`expected publication schedule ${schedule.id} to honor materialization warm-up, got ${JSON.stringify(statusWatchdogs[0])}`)
     }
     sessionIds.push(runtimeSessionId)
     await assertPublicationRuntimeSessionHidden(client, runtimeSessionId)
@@ -228,13 +232,21 @@ export async function runPublicationPackageValidation({
       await client.send(getSessionStateRequest(runtimeSessionId)),
       'SessionState',
     ).session
-    if (scheduleRuntimeSession.workspace_id !== scheduleWorkspace || scheduleRuntimeSession.worktree_id !== scheduleWorkspace) {
-      throw new Error(`expected schedule runtime workspace ${scheduleWorkspace}, got ${JSON.stringify({
+    const scheduleRuntimeWorkspacePrefix = `${scheduleExportDir}.runtime-`
+    if (
+      !scheduleRuntimeSession.workspace_id?.startsWith(scheduleRuntimeWorkspacePrefix)
+      || scheduleRuntimeSession.worktree_id !== scheduleRuntimeSession.workspace_id
+      || scheduleRuntimeSession.workspace_id === scheduleWorkspace
+    ) {
+      throw new Error(`expected isolated schedule package runtime workspace under ${scheduleRuntimeWorkspacePrefix}, got ${JSON.stringify({
         workspace_id: scheduleRuntimeSession.workspace_id,
         worktree_id: scheduleRuntimeSession.worktree_id,
       })}`)
     }
-    const scheduleRun = await waitForScheduledWorkflowRun(client, runtimeSessionId, scheduleWorkflow.id, { requireOutput: true })
+    const scheduleRun = await waitForScheduledWorkflowRun(client, runtimeSessionId, scheduleWorkflow.id, {
+      requireOutput: true,
+      timeoutMs: 360_000,
+    })
     const statusAfterRun = await waitForPublicationStatusLatestOutput(gatewayUrl, scheduleRun.final_output?.message)
     logStep('schedule_publication_ok', {
       runtimeSessionId,
@@ -301,5 +313,18 @@ export async function runPublicationPackageValidation({
     gateway = null
   } finally {
     await stopProcess(gateway).catch(() => {})
+  }
+}
+
+async function waitForPackageGateway(baseUrl, gateway) {
+  try {
+    await waitForGateway(baseUrl)
+  } catch (error) {
+    throw new Error([
+      `publication package gateway did not become ready: ${error instanceof Error ? error.message : String(error)}`,
+      `process=${gateway?.name ?? 'unknown'} exit=${gateway?.exitCode ?? 'running'}`,
+      `stdout:\n${gateway?.logs?.stdout ?? ''}`,
+      `stderr:\n${gateway?.logs?.stderr ?? ''}`,
+    ].join('\n'))
   }
 }

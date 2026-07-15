@@ -33,6 +33,10 @@ export function envFlag(name, defaultValue = false) {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase())
 }
 
+export function withPublicationDrillProviderInventory(env) {
+  return { ...env, ARROBA_PROVIDER_DEV_STUB: '1' }
+}
+
 export function realDashboardOptionsFromEnv() {
   if (!envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD')) return null
   const provider = process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_PROVIDER || 'codex'
@@ -73,12 +77,57 @@ export function variant(response, key) {
   return response?.[key] ?? response
 }
 
+export function isTerminalWorkflowRunStatus(status) {
+  return ['completed', 'failed', 'stopped'].includes(String(status).toLowerCase())
+}
+
 export function hasAcceptedRunMetadata(body) {
   return !!body && (body.workflow_run?.id || body.queued === true)
 }
 
 export function sseEventNames(body) {
   return [...body.matchAll(/^event: (.+)$/gm)].map((match) => match[1])
+}
+
+export function publicationStatusWatchdogs(status) {
+  if (Array.isArray(status?.watchdogs)) return status.watchdogs
+  if (Array.isArray(status?.schedules)) return status.schedules
+  return []
+}
+
+export function publicationStatusWatchdogCount(status) {
+  if (Number.isInteger(status?.watchdog_count)) return status.watchdog_count
+  if (Number.isInteger(status?.schedule_count)) return status.schedule_count
+  return publicationStatusWatchdogs(status).length
+}
+
+export async function readSseUntilEvent(response, expectedEvent, options = {}) {
+  if (!response.body) throw new Error('SSE response did not include a readable body')
+  const timeoutMs = options.timeoutMs ?? 5_000
+  const maxChars = options.maxChars ?? 64 * 1024
+  const deadline = Date.now() + timeoutMs
+  const decoder = new TextDecoder()
+  const reader = response.body.getReader()
+  let body = ''
+  try {
+    while (Date.now() < deadline) {
+      const remainingMs = Math.max(1, deadline - Date.now())
+      const chunk = await withTimeout(reader.read(), remainingMs, `SSE ${expectedEvent} event`)
+      if (chunk.done) {
+        body += decoder.decode()
+        break
+      }
+      body += decoder.decode(chunk.value, { stream: true })
+      if (body.length > maxChars) {
+        throw new Error(`SSE stream exceeded ${maxChars} characters before ${expectedEvent}`)
+      }
+      if (sseEventNames(body).includes(expectedEvent)) return body
+    }
+    throw new Error(`SSE stream ended before ${expectedEvent}: ${tail(body, 400)}`)
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
 }
 
 export function createWebSocketReader(socket) {

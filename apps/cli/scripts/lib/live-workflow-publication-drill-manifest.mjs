@@ -79,6 +79,4 @@ export async function waitForStopSignal() {
   })
 }
 
-export function isTerminalWorkflowRunStatus(status) {
-  return ['completed', 'failed', 'stopped'].includes(String(status).toLowerCase())
-}
+export { isTerminalWorkflowRunStatus } from './live-workflow-publication-drill-runtime.mjs'
