@@ -2,17 +2,20 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  assertWorkflowPublicationDeploymentRuntimeCompatibility,
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
 } from "./workflow-publication-deployment-contract.js"
 
+const TARGET_RUNTIME = { targetLocalDaemonProtocolVersion: 240 }
+
 test("publication deployment contract adapter preserves legacy v1 and v2 packages", () => {
-  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 1 }), {
+  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 1 }, undefined), {
     kind: "legacy_adapter",
     packageVersion: 1,
     contract: null,
   })
-  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 2 }), {
+  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 2 }, undefined), {
     kind: "legacy_adapter",
     packageVersion: 2,
     contract: null,
@@ -62,7 +65,27 @@ test("publication deployment contract rejects unsafe paths, mismatches, and secr
   )
 })
 
-function fixture(): Record<string, unknown> {
+test("publication deployment contract separates portable validation from target runtime admission", () => {
+  const publicationPackage = {
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }
+
+  const compatible = resolveWorkflowPublicationDeploymentContract(publicationPackage, fixture(240))
+  assert.equal(compatible.kind, "native")
+  if (compatible.kind !== "native") assert.fail("expected native deployment contract")
+  assert.doesNotThrow(() => assertWorkflowPublicationDeploymentRuntimeCompatibility(compatible.contract, TARGET_RUNTIME))
+
+  const future = resolveWorkflowPublicationDeploymentContract(publicationPackage, fixture(241))
+  assert.equal(future.kind, "native")
+  if (future.kind !== "native") assert.fail("expected native deployment contract")
+  assert.throws(
+    () => assertWorkflowPublicationDeploymentRuntimeCompatibility(future.contract, TARGET_RUNTIME),
+    /requires local daemon protocol version 241, but target runtime supports 240/,
+  )
+})
+
+function fixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {
   const digest = `sha256:${"a".repeat(64)}`
   return {
     schema_version: 1,
@@ -83,7 +106,7 @@ function fixture(): Record<string, unknown> {
     compatibility: {
       package_version: 3,
       minimum_kernel_version: "0.1.0",
-      minimum_local_daemon_protocol_version: 239,
+      minimum_local_daemon_protocol_version: minimumLocalDaemonProtocolVersion,
     },
     routes: [{ id: "hook-1" }],
     provider_requirements: [],

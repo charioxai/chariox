@@ -13,7 +13,9 @@ import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
 } from "@arroba/kernel-client/kernel-types"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@arroba/kernel-client/kernel-types"
 import {
+  assertWorkflowPublicationDeploymentRuntimeCompatibility,
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
 } from "@arroba/kernel-client/workflow-publication-deployment-contract"
@@ -90,7 +92,12 @@ export async function loadPublicationPackageConfig(
   const deploymentContractValue = deploymentContractPath
     ? JSON.parse(await readFile(join(root, deploymentContractPath), "utf8")) as unknown
     : undefined
-  resolveWorkflowPublicationDeploymentContract(publicationPackage, deploymentContractValue)
+  const deploymentContract = resolveWorkflowPublicationDeploymentContract(publicationPackage, deploymentContractValue)
+  if (deploymentContract.kind === "native") {
+    assertWorkflowPublicationDeploymentRuntimeCompatibility(deploymentContract.contract, {
+      targetLocalDaemonProtocolVersion: LOCAL_DAEMON_PROTOCOL_VERSION,
+    })
+  }
   const snapshotPath = join(root, "workflow.snapshot.json")
   const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as WorkflowPublicationSnapshot
   const config = publicationConfigFromPackage(

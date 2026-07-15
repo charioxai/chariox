@@ -55,6 +55,10 @@ export type WorkflowPublicationDeploymentContractResolution =
     readonly contract: null
   }
 
+export interface WorkflowPublicationDeploymentAdmissionContext {
+  readonly targetLocalDaemonProtocolVersion: number
+}
+
 export function workflowPublicationDeploymentContractPath(
   publicationPackage: WorkflowPublicationPackageContractMetadata,
 ): string | null {
@@ -76,7 +80,7 @@ export function workflowPublicationDeploymentContractPath(
 
 export function resolveWorkflowPublicationDeploymentContract(
   publicationPackage: WorkflowPublicationPackageContractMetadata,
-  value?: unknown,
+  value: unknown,
 ): WorkflowPublicationDeploymentContractResolution {
   const packageVersion = normalizedPackageVersion(publicationPackage.package_version)
   const path = workflowPublicationDeploymentContractPath(publicationPackage)
@@ -146,6 +150,22 @@ export function validateWorkflowPublicationDeploymentContract(
   requireArray(contract.signatures, "deployment contract signatures")
   assertNoSecretPayloadFields(contract)
   return contract as unknown as WorkflowPublicationDeploymentContract
+}
+
+export function assertWorkflowPublicationDeploymentRuntimeCompatibility(
+  contract: WorkflowPublicationDeploymentContract,
+  admissionContext: WorkflowPublicationDeploymentAdmissionContext,
+): void {
+  const targetLocalDaemonProtocolVersion = admissionContext?.targetLocalDaemonProtocolVersion
+  if (!Number.isInteger(targetLocalDaemonProtocolVersion) || Number(targetLocalDaemonProtocolVersion) < 1) {
+    throw new Error("deployment contract admission requires a positive target local daemon protocol version")
+  }
+  const minimumLocalDaemonProtocolVersion = contract.compatibility.minimum_local_daemon_protocol_version
+  if (minimumLocalDaemonProtocolVersion > Number(targetLocalDaemonProtocolVersion)) {
+    throw new Error(
+      `deployment contract requires local daemon protocol version ${minimumLocalDaemonProtocolVersion}, but target runtime supports ${targetLocalDaemonProtocolVersion}`,
+    )
+  }
 }
 
 function normalizedPackageVersion(value: unknown): number {

@@ -20,3 +20,16 @@ test("publication image copies compile-time workflow examples before building th
   assert.ok(kernelBuild >= 0, "the Rust build stage must compile the kernel")
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
 })
+
+test("publication image reserves isolated credential, action, and gateway identities", () => {
+  assert.match(dockerfile, /useradd --create-home --uid 1001 .* arroba/)
+  assert.match(dockerfile, /useradd --create-home --uid 1002 .* arroba-action/)
+  assert.match(dockerfile, /useradd --create-home --uid 1003 .* arroba-gateway/)
+  assert.match(dockerfile, /chown -R root:root \/opt\/arroba/)
+  assert.match(dockerfile, /chmod -R go-w \/opt\/arroba/)
+  assert.doesNotMatch(dockerfile, /chown -R arroba:arroba \/opt\/arroba/)
+  assert.match(dockerfile, /chmod 700 \/home\/arroba \/home\/arroba-action \/home\/arroba-gateway/)
+  assert.match(dockerfile, /WORKDIR \/workspace/)
+  assert.match(dockerfile, /ENTRYPOINT \["tini", "--", "arroba-publication-container"\]/)
+  assert.doesNotMatch(dockerfile, /^USER\s+/m, "PID 1 must retain only the root bootstrap needed to prepare isolated role state")
+})

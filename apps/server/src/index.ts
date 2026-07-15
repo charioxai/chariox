@@ -1,7 +1,10 @@
 import process from "node:process"
 
 import Fastify from "fastify"
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import {
+  consumeKernelLocalAuthTokenFromEnv,
+  LocalIpcClient,
+} from "@arroba/kernel-client/ipc"
 import {
   registerWorkflowPublicationEndpointRequest,
 } from "@arroba/kernel-client/ipc-requests"
@@ -12,6 +15,7 @@ import {
 } from "./kernel-publication-client.js"
 import { ArrobaLogger, createProcessLogger } from "./logging.js"
 import {
+  consumeAgentAppAuditUrlFromEnv,
   installAgentAppRoutes,
   isAgentAppPublication,
 } from "./publication-agent-app.js"
@@ -58,6 +62,11 @@ import type {
   WorkflowPublicationConfig,
 } from "./publication-types.js"
 import { installPublicationWebSocket } from "./publication-websocket.js"
+
+// Keep the publication-only kernel capability in gateway memory so provider
+// readiness subprocesses cannot inherit it.
+consumeKernelLocalAuthTokenFromEnv()
+consumeAgentAppAuditUrlFromEnv()
 
 export type {
   PublicationInvocationOptions,

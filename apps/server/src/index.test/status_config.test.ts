@@ -617,7 +617,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       /deployment-contract\.json/,
     )
     const digest = `sha256:${"a".repeat(64)}`
-    await writeFile(join(root, "deployment-contract.json"), JSON.stringify({
+    const deploymentContract = {
       schema_version: 1,
       package_id: digest,
       artifact: {
@@ -636,7 +636,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       compatibility: {
         package_version: 3,
         minimum_kernel_version: "0.1.0",
-        minimum_local_daemon_protocol_version: 239,
+        minimum_local_daemon_protocol_version: 240,
       },
       routes: [{ id: "hook-1" }],
       provider_requirements: [],
@@ -646,10 +646,18 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       resources: {},
       presentation: {},
       signatures: [],
-    }))
+    }
+    await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
 
     const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
     assert.equal(config.publication_id, "pub-1")
+
+    deploymentContract.compatibility.minimum_local_daemon_protocol_version = 241
+    await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
+    await assert.rejects(
+      loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
+      /requires local daemon protocol version 241, but target runtime supports 240/,
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }

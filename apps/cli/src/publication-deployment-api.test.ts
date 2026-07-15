@@ -35,6 +35,16 @@ test("publication deployment API reads package metadata", async () => {
   }
 })
 
+test("publication deployment API leaves target protocol admission to Cloud runners", async () => {
+  const root = await publicationPackageFixture(undefined, 241)
+  try {
+    const metadata = await readPublicationPackageMetadata(root)
+    assert.equal(metadata.deploymentContract?.compatibility.minimum_local_daemon_protocol_version, 241)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("publication deployment API creates, uploads, and starts hosted deployments", async () => {
   const root = await publicationPackageFixture()
   const previousFetch = globalThis.fetch
@@ -158,11 +168,14 @@ test("managed Cloud deployment rejects persistent patch packages before network 
   }
 })
 
-async function publicationPackageFixture(agentApp: unknown = {
-  enabled: true,
-  routes: [{ path: "/add/*", prompt_source: "path_tail" }],
-  replicas: { count: 2 },
-}): Promise<string> {
+async function publicationPackageFixture(
+  agentApp: unknown = {
+    enabled: true,
+    routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+    replicas: { count: 2 },
+  },
+  minimumLocalDaemonProtocolVersion = 240,
+): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
@@ -179,11 +192,14 @@ async function publicationPackageFixture(agentApp: unknown = {
     agent_app: agentApp,
     deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
   }, null, 2))
-  await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContractFixture(), null, 2))
+  await writeFile(
+    join(root, "deployment-contract.json"),
+    JSON.stringify(deploymentContractFixture(minimumLocalDaemonProtocolVersion), null, 2),
+  )
   return root
 }
 
-function deploymentContractFixture(): Record<string, unknown> {
+function deploymentContractFixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {
   const digest = `sha256:${"a".repeat(64)}`
   return {
     schema_version: 1,
@@ -204,7 +220,7 @@ function deploymentContractFixture(): Record<string, unknown> {
     compatibility: {
       package_version: 3,
       minimum_kernel_version: "0.1.0",
-      minimum_local_daemon_protocol_version: 239,
+      minimum_local_daemon_protocol_version: minimumLocalDaemonProtocolVersion,
     },
     routes: [{ id: "hook-1" }],
     provider_requirements: [],

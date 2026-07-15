@@ -38,7 +38,9 @@ RUN apt-get update \
 
 RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
 
-RUN useradd --create-home --shell /bin/bash arroba
+RUN useradd --create-home --uid 1001 --shell /bin/bash arroba \
+  && useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action \
+  && useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
 
 WORKDIR /opt/arroba
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -49,7 +51,12 @@ COPY --from=rust-builder /opt/arroba/apps/kernel/target/release/arroba-kernel /u
 COPY docker/publication/entrypoint.sh /usr/local/bin/arroba-publication-container
 COPY docker/publication/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
 RUN chmod +x /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-wait-for-tcp.mjs \
-  && chown -R arroba:arroba /opt/arroba /home/arroba
+  && chown -R root:root /opt/arroba \
+  && chmod -R go-w /opt/arroba \
+  && chown -R arroba:arroba /home/arroba \
+  && chown -R arroba-action:arroba-action /home/arroba-action \
+  && chown -R arroba-gateway:arroba-gateway /home/arroba-gateway \
+  && chmod 700 /home/arroba /home/arroba-action /home/arroba-gateway
 
 WORKDIR /workspace
 ENV HOME=/home/arroba

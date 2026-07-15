@@ -1,4 +1,13 @@
 import { readFile, stat } from "node:fs/promises"
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs"
 import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
 
@@ -65,6 +74,82 @@ type AgentAppReply = {
 
 const AGENT_APP_AUDIT_PATH = "/.well-known/arroba/agent-app/audit-log"
 const AGENT_APP_AUDIT_TOKEN = randomUUID()
+const MAX_AGENT_APP_AUDIT_URL_BYTES = 8 * 1024
+let configuredAgentAppAuditUrl: string | undefined
+
+export function consumeAgentAppAuditUrlFromEnv(): void {
+  const directUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  const urlFile = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE?.trim()
+  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL
+  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+  if (directUrl && urlFile) throw new Error("publication audit URL and URL file cannot both be configured")
+  if (directUrl) {
+    configuredAgentAppAuditUrl = normalizeAgentAppAuditUrl(directUrl)
+    return
+  }
+  if (!urlFile) return
+  configuredAgentAppAuditUrl = readPrivateAgentAppAuditUrlFile(urlFile)
+}
+
+export function readPrivateAgentAppAuditUrlFile(path: string): string {
+  let descriptor: number
+  try {
+    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  } catch (error) {
+    throw new Error(`publication audit URL file could not be opened safely: ${String(error)}`)
+  }
+  try {
+    const metadata = fstatSync(descriptor)
+    const currentUid = process.getuid?.()
+    if (
+      !metadata.isFile()
+      || (metadata.mode & 0o077) !== 0
+      || (currentUid !== undefined && metadata.uid !== currentUid)
+      || metadata.nlink !== 1
+      || metadata.size > MAX_AGENT_APP_AUDIT_URL_BYTES
+    ) {
+      throw new Error(
+        "publication audit URL file must be a bounded, single-link owned regular file with mode 0600",
+      )
+    }
+    const pathMetadata = lstatSync(path)
+    if (
+      !pathMetadata.isFile()
+      || pathMetadata.isSymbolicLink()
+      || pathMetadata.dev !== metadata.dev
+      || pathMetadata.ino !== metadata.ino
+    ) {
+      throw new Error("publication audit URL file changed while it was being consumed")
+    }
+    unlinkSync(path)
+    if (fstatSync(descriptor).nlink !== 0) {
+      throw new Error("publication audit URL file was not consumed from its validated descriptor")
+    }
+    return normalizeAgentAppAuditUrl(readFileSync(descriptor, "utf8"))
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+function normalizeAgentAppAuditUrl(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error("publication audit URL must not be empty")
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error("publication audit URL must be an absolute HTTP(S) URL")
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:")
+    || url.username !== ""
+    || url.password !== ""
+    || url.hash !== ""
+  ) {
+    throw new Error("publication audit URL must be an absolute HTTP(S) URL without credentials or fragments")
+  }
+  return url.href
+}
 
 export function isAgentAppPublication(publication: WorkflowPublicationConfig): boolean {
   return publication.agent_app?.enabled === true
@@ -242,7 +327,8 @@ function normalizeAuditEntry(value: unknown): PublicationDeploymentLogEntry | nu
 }
 
 function agentAppAuditProof(): { url: string; token: string } | undefined {
-  const explicitUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  const explicitUrl = configuredAgentAppAuditUrl
+    ?? process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
   if (explicitUrl) {
     return { url: explicitUrl, token: AGENT_APP_AUDIT_TOKEN }
   }
