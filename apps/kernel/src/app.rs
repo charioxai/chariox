@@ -266,6 +266,20 @@ impl DaemonApp {
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        let restored_publication_tunnel_count = {
+            let sessions = app.sessions();
+            let mut relay_state = app.relay_client_state.try_write().map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "restore workflow publication tunnels",
+                    message: error.to_string(),
+                }
+            })?;
+            crate::runtime::state::workflow_publication_endpoint_runtime::restore_durable_workflow_publication_tunnels(
+                &mut relay_state,
+                &sessions,
+                crate::session::unix_epoch_ms(),
+            )
+        };
         app.seed_prompt_id_allocator()?;
         crate::logging::info_with_fields(
             "daemon.startup",
@@ -273,6 +287,7 @@ impl DaemonApp {
             serde_json::json!({
                 "restore_ms": restore_started.elapsed().as_millis(),
                 "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+                "restored_publication_tunnel_count": restored_publication_tunnel_count,
             }),
         );
         crate::logging::info_with_fields(

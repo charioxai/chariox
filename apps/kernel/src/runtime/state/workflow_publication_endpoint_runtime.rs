@@ -14,6 +14,60 @@ use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 use super::KernelRuntimeState;
 
 const PUBLICATION_TUNNEL_TTL_MS: u64 = 10 * 60 * 1_000;
+const PUBLICATION_TUNNEL_CAPABILITIES: [&str; 3] = ["http", "websocket", "publication"];
+
+pub(crate) fn restore_durable_workflow_publication_tunnels(
+    relay_state: &mut RelayClientState,
+    sessions: &crate::session::SessionService,
+    now_ms: u64,
+) -> usize {
+    let mut restored = 0;
+    for session in sessions.durable_sessions() {
+        for publication in session.workflow_publications() {
+            let Some(target) = durable_publication_tunnel_target(publication, now_ms) else {
+                continue;
+            };
+            relay_state.upsert_display_tunnel(target);
+            restored += 1;
+        }
+    }
+    restored
+}
+
+fn durable_publication_tunnel_target(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    now_ms: u64,
+) -> Option<RelayDisplayTunnelTarget> {
+    if !publication.enabled() {
+        return None;
+    }
+    let deployment = publication.deployment()?.as_object()?;
+    if deployment.get("kind")?.as_str()? != "tunnel" {
+        return None;
+    }
+    let expires_at_ms = deployment.get("expires_at_ms")?.as_u64()?;
+    if expires_at_ms <= now_ms {
+        return None;
+    }
+    let local_url = parse_local_publication_url(deployment.get("local_url")?.as_str()?).ok()?;
+    let local_base_url = local_publication_base_url(&local_url).ok()?;
+    let open_url = deployment
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| publication.open_url())?;
+    let tunnel_id = publication_tunnel_id(open_url)?;
+    Some(RelayDisplayTunnelTarget {
+        tunnel_id,
+        slice_id: format!(
+            "publication:{}:{}",
+            publication.session_id(),
+            publication.id()
+        ),
+        local_base_url,
+        expires_at_ms,
+        capabilities: publication_tunnel_capabilities(),
+    })
+}
 
 pub(crate) async fn execute_register_workflow_publication_endpoint_request(
     runtime_state: &KernelRuntimeState,
@@ -99,11 +153,7 @@ async fn tunneled_publication_endpoint(
             ),
             local_base_url,
             expires_at_ms,
-            capabilities: vec![
-                "http".to_string(),
-                "websocket".to_string(),
-                "publication".to_string(),
-            ],
+            capabilities: publication_tunnel_capabilities(),
         });
         (outgoing_tx, tunnel_url)
     };
@@ -112,11 +162,7 @@ async fn tunneled_publication_endpoint(
             registration: RelayDisplayTunnelRegistration {
                 tunnel_id: tunnel_id.clone(),
                 expires_at_ms,
-                capabilities: vec![
-                    "http".to_string(),
-                    "websocket".to_string(),
-                    "publication".to_string(),
-                ],
+                capabilities: publication_tunnel_capabilities(),
             },
         })
         .is_err()
@@ -184,6 +230,26 @@ fn relay_publication_endpoint_url(
     tunnel_url.set_path(&format!("/display/{tunnel_id}{local_path}"));
     tunnel_url.set_query(local_url.query());
     Ok(tunnel_url.to_string())
+}
+
+fn publication_tunnel_id(open_url: &str) -> Option<String> {
+    let url = url::Url::parse(open_url).ok()?;
+    let mut segments = url.path_segments()?;
+    if segments.next()? != "display" {
+        return None;
+    }
+    let tunnel_id = segments.next()?.trim();
+    if tunnel_id.is_empty() {
+        return None;
+    }
+    Some(tunnel_id.to_string())
+}
+
+fn publication_tunnel_capabilities() -> Vec<String> {
+    PUBLICATION_TUNNEL_CAPABILITIES
+        .iter()
+        .map(|capability| (*capability).to_string())
+        .collect()
 }
 
 fn random_hex_id() -> String {
