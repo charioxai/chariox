@@ -21,6 +21,7 @@ pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
             1841,
             1842,
         )),
+        "workflow-delayed-output" => Some(dev_stub_workflow_delayed_output_script()),
         "workflow-dashboard-producer-node" => Some(dev_stub_workflow_dashboard_producer_script()),
         "workflow-final-passthrough-node" => Some(dev_stub_workflow_final_passthrough_script()),
         "workflow-html-final-node" => Some(dev_stub_workflow_html_final_script()),
@@ -69,6 +70,7 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
     if matches!(
         request.model.as_str(),
         "workflow-intermediate-node"
+            | "workflow-delayed-output"
             | "workflow-dashboard-producer-node"
             | "workflow-final-passthrough-node"
             | "workflow-code-topology-node"
@@ -540,7 +542,24 @@ fn dev_stub_workflow_intermediate_script(
         },
     });
     let intermediate_output = serde_json::json!({ "value": intermediate });
-    dev_stub_workflow_intermediate_payload_script(final_payload, Some(intermediate_output))
+    dev_stub_workflow_intermediate_payload_script(final_payload, Some(intermediate_output), 0)
+}
+
+fn dev_stub_workflow_delayed_output_script() -> String {
+    let delay_ms = std::env::var("ARROBA_DEV_STUB_WORKFLOW_OUTPUT_DELAY_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(750)
+        .min(30_000);
+    let final_payload = serde_json::json!({
+        "summary": "workflow delayed output",
+        "output": {
+            "message": {
+                "value": 1842,
+            },
+        },
+    });
+    dev_stub_workflow_intermediate_payload_script(final_payload, None, delay_ms)
 }
 
 fn dev_stub_workflow_dashboard_producer_script() -> String {
@@ -568,12 +587,13 @@ fn dev_stub_workflow_dashboard_producer_script() -> String {
             },
         },
     });
-    dev_stub_workflow_intermediate_payload_script(final_payload, None)
+    dev_stub_workflow_intermediate_payload_script(final_payload, None, 0)
 }
 
 fn dev_stub_workflow_intermediate_payload_script(
     final_payload: serde_json::Value,
     intermediate_output: Option<serde_json::Value>,
+    output_delay_ms: u64,
 ) -> String {
     let payload = final_payload.to_string();
     let intermediate_output = intermediate_output
@@ -585,6 +605,7 @@ const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
 const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
 const finalPayload = {payload_json};
 const intermediateOutput = {intermediate_json};
+const outputDelayMs = {output_delay_ms};
 const emittedDeliveryTokens = new Set();
 let emittedWithoutToken = false;
 let promptBuffer = "";
@@ -630,17 +651,35 @@ function callRuntimeTool(name, args) {{
   }});
 }}
 
+async function acknowledgeWorkflowTurn(deliveryToken) {{
+  const transientCodes = new Set(["ECONNREFUSED", "ECONNRESET", "EPIPE"]);
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {{
+    try {{
+      return await callRuntimeTool("ack_workflow_turn", {{
+        delivery_token: deliveryToken,
+      }});
+    }} catch (error) {{
+      lastError = error;
+      if (!transientCodes.has(error && error.code) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }}
+  }}
+  throw lastError;
+}}
+
 async function emitForDeliveryToken(deliveryToken) {{
   if (deliveryToken) {{
-    await callRuntimeTool("ack_workflow_turn", {{
-      delivery_token: deliveryToken,
-    }});
+    await acknowledgeWorkflowTurn(deliveryToken);
   }}
   if (intermediateOutput !== null) {{
     await callRuntimeTool("validate_and_submit_intermediate_workflow_run_output", {{
       workflow_output_json: JSON.stringify(intermediateOutput),
       ...(deliveryToken ? {{ delivery_token: deliveryToken }} : {{}}),
     }});
+  }}
+  if (outputDelayMs > 0) {{
+    await new Promise((resolve) => setTimeout(resolve, outputDelayMs));
   }}
   process.stdout.write("```json\n" + JSON.stringify(finalPayload) + "\n```\n");
 }}
@@ -687,6 +726,7 @@ process.stdin.resume();
 "#,
         payload_json = payload,
         intermediate_json = intermediate_output,
+        output_delay_ms = output_delay_ms,
     );
     format!(
         "stty -echo 2>/dev/null || true; node -e {}",
