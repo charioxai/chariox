@@ -279,7 +279,7 @@ function printUsage() {
     "  /cloud deployments    manage deployed workflow projects and releases",
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",
     "  /cloud deployments access|member inspect or change deployment access",
-    "  /cloud deployments audience show|policy|grant|invite|key manage app-user access",
+    "  /cloud deployments audience show|policy|grant|invite|key|jwt|webhook manage app-user access",
     "  /cloud deployments credentials list|show|connect|test|rotate|revoke|purge|bind|unbind manage destination credentials",
     "  /cloud deployments usage|limits inspect usage or change runtime limits",
     "  /cloud deployments operations show|deny|resume|set manage admission, retention, and alerts",

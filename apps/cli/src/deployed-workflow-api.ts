@@ -4,8 +4,10 @@ import type {
   AcceptDeploymentClaimResult,
   CreateDeploymentClaimResult,
   CreateDeploymentAudienceApiKeyResult,
+  CreateDeploymentAudienceWebhookKeyResult,
   DeploymentAccessResult,
   DeploymentAudienceGrantKind,
+  DeploymentAudienceJsonWebKey,
   DeploymentAudienceMode,
   DeploymentAudienceResult,
   DeploymentClaimResult,
@@ -412,6 +414,65 @@ export async function revokeDeploymentAudienceApiKey(
   return postJson(
     profile,
     `${deploymentAudiencePath(projectId, environmentId)}/api-keys/${encodeURIComponent(apiKeyId)}/revoke`,
+    { accountId: profile.accountId },
+  )
+}
+
+export async function createDeploymentAudienceJwtIssuer(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly name: string
+    readonly issuer: string
+    readonly audience: string
+    readonly jwks: readonly DeploymentAudienceJsonWebKey[]
+    readonly roles: readonly string[]
+    readonly rolesClaim?: string | null
+    readonly expiresInSeconds?: number | null
+  },
+): Promise<DeploymentAudienceResult> {
+  return postJson(profile, `${deploymentAudiencePath(input.projectId, input.environmentId)}/jwt-issuers`, {
+    accountId: profile.accountId,
+    name: input.name,
+    issuer: input.issuer,
+    audience: input.audience,
+    jwks: input.jwks,
+    roles: input.roles,
+    ...(input.rolesClaim !== undefined ? { rolesClaim: input.rolesClaim } : {}),
+    ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}),
+  })
+}
+
+export async function createDeploymentAudienceWebhookKey(
+  profile: RelayCloudProfile,
+  input: {
+    readonly projectId: string
+    readonly environmentId: string
+    readonly name: string
+    readonly roles: readonly string[]
+    readonly replayWindowSeconds?: number
+    readonly expiresInSeconds?: number | null
+  },
+): Promise<CreateDeploymentAudienceWebhookKeyResult> {
+  return postJson(profile, `${deploymentAudiencePath(input.projectId, input.environmentId)}/webhook-keys`, {
+    accountId: profile.accountId,
+    name: input.name,
+    roles: input.roles,
+    ...(input.replayWindowSeconds !== undefined ? { replayWindowSeconds: input.replayWindowSeconds } : {}),
+    ...(input.expiresInSeconds !== undefined ? { expiresInSeconds: input.expiresInSeconds } : {}),
+  })
+}
+
+export async function revokeDeploymentAudienceMachineCredential(
+  profile: RelayCloudProfile,
+  projectId: string,
+  environmentId: string,
+  credentialId: string,
+): Promise<DeploymentAudienceResult> {
+  return postJson(
+    profile,
+    `${deploymentAudiencePath(projectId, environmentId)}/machine-credentials/${encodeURIComponent(credentialId)}/revoke`,
     { accountId: profile.accountId },
   )
 }

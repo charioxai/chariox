@@ -507,6 +507,49 @@ export interface DeploymentAudienceApiKeySummary {
   readonly updatedAt: string
 }
 
+export interface DeploymentAudienceJsonWebKey {
+  readonly kty: "RSA" | "EC" | "OKP"
+  readonly kid: string
+  readonly alg?: "RS256" | "ES256" | "EdDSA"
+  readonly use?: "sig"
+  readonly n?: string
+  readonly e?: string
+  readonly crv?: "P-256" | "Ed25519"
+  readonly x?: string
+  readonly y?: string
+}
+
+export interface DeploymentAudienceJwtIssuerSummary {
+  readonly id: string
+  readonly policyId: string
+  readonly name: string
+  readonly keyId: string
+  readonly issuer: string
+  readonly audience: string
+  readonly jwkKeyIds: readonly string[]
+  readonly roles: readonly string[]
+  readonly rolesClaim?: string | null
+  readonly expiresAt?: string | null
+  readonly lastUsedAt?: string | null
+  readonly revokedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export interface DeploymentAudienceWebhookKeySummary {
+  readonly id: string
+  readonly policyId: string
+  readonly name: string
+  readonly keyId: string
+  readonly roles: readonly string[]
+  readonly replayWindowSeconds: number
+  readonly expiresAt?: string | null
+  readonly lastUsedAt?: string | null
+  readonly revokedAt?: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
 export interface DeploymentAudiencePolicySummary {
   readonly id: string
   readonly accountId: string
@@ -517,6 +560,8 @@ export interface DeploymentAudiencePolicySummary {
   readonly routes: readonly DeploymentAudienceRouteSummary[]
   readonly grants: readonly DeploymentAudienceGrantSummary[]
   readonly apiKeys: readonly DeploymentAudienceApiKeySummary[]
+  readonly jwtIssuers: readonly DeploymentAudienceJwtIssuerSummary[]
+  readonly webhookKeys: readonly DeploymentAudienceWebhookKeySummary[]
   readonly createdAt: string
   readonly updatedAt: string
 }
@@ -531,4 +576,8 @@ export interface UpsertDeploymentAudienceGrantResult extends DeploymentAudienceR
 
 export interface CreateDeploymentAudienceApiKeyResult extends DeploymentAudienceResult {
   readonly apiKey: string
+}
+
+export interface CreateDeploymentAudienceWebhookKeyResult extends DeploymentAudienceResult {
+  readonly webhookSecret: string
 }
