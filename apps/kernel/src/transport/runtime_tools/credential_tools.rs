@@ -227,6 +227,13 @@ pub struct SliceBrowserSubmitArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SliceBrowserDialogArgs {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceBrowserWaitForTextArgs {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

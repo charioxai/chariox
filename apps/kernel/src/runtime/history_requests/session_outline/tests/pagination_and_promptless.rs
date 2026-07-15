@@ -297,18 +297,16 @@ fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
         model: Some("gpt-5".to_string()),
         ..HistoryEventTurnContext::default()
     };
-    let tool = HistoryEvent::transcript(
-        1,
-        &SessionHistoryEntry::provider_output(
-            "session-1",
-            "run-1",
-            Some("agent-1"),
-            TerminalOutputKind::ProviderTool,
-            Some("tool-1".to_string()),
-            r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
-        ),
-        context,
+    let mut tool_entry = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
     );
+    tool_entry.timestamp_ms = 1_234;
+    let tool = HistoryEvent::transcript(1, &tool_entry, context);
     store
         .append(&tool)
         .expect("promptless provider activity should append");
@@ -318,6 +316,8 @@ fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
 
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "run-1");
+    assert_eq!(outline.turns[0].started_at_ms, 1_234);
+    assert_eq!(outline.turns[0].completed_at_ms, Some(1_234));
     assert!(
         outline.turns[0]
             .user_prompt
@@ -462,6 +462,7 @@ fn agent_outline_preserves_external_identity_for_promptless_observed_activity() 
         Some("thread-1")
     );
     assert_eq!(turn.external_provider_turn_id.as_deref(), Some("tool-1"));
+    assert_eq!(turn.started_at_ms, 42);
     assert_eq!(turn.completed_at_ms, Some(42));
     assert_eq!(
         turn.lifecycle,

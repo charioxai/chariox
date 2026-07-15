@@ -145,6 +145,7 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
+                return self.finalize_active_prompt_cancellation(session_id, agent_id, None);
             }
             Err(error) => return Err(error),
         };

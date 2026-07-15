@@ -60,6 +60,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
         let home_prompt_id = leased_agent.active_home_prompt_id.clone();
+        let home_prompt_started_at_ms = leased_agent.active_home_prompt_started_at_ms;
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
         if pump_output {
@@ -94,6 +95,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         let mut projected_output_history_keys = Vec::new();
+        let mut projected_output_stream_keys = output_chunks
+            .iter()
+            .map(|chunk| leased_provider_run_stream_key(&leased_agent, provider_run_id, chunk))
+            .collect::<std::collections::BTreeSet<_>>();
+        projected_output_history_keys.extend(projected_output_stream_keys.iter().cloned());
         let mut history_chunks =
             self.leased_provider_run_output_history_chunks(&leased_agent, provider_run_id)?;
         let latest_output_history_completion_key = history_chunks
@@ -109,15 +115,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 provider_run_id,
                 history_chunk,
             );
-            !leased_agent
+            let stream_key =
+                leased_provider_run_stream_key(&leased_agent, provider_run_id, history_chunk);
+            let already_projected = leased_agent
                 .projected_output_history_keys
                 .iter()
-                .any(|key| key == &history_key)
-                && !output_chunks.iter().any(|chunk| {
-                    chunk.kind == history_chunk.kind
-                        && chunk.merge_key == history_chunk.merge_key
-                        && chunk.bytes == history_chunk.bytes
-                })
+                .any(|key| key == &history_key || key == &stream_key)
+                || projected_output_stream_keys.contains(&stream_key);
+            if already_projected {
+                projected_output_history_keys.push(history_key);
+                return false;
+            }
+            projected_output_stream_keys.insert(stream_key.clone());
+            projected_output_history_keys.push(stream_key);
+            true
         });
         for history_chunk in &history_chunks {
             projected_output_history_keys.push(leased_provider_run_history_chunk_key(
@@ -154,6 +165,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )
             .into_iter()
             .filter(|record| record.provider_run_id == provider_run_id)
+            .filter(|record| {
+                home_prompt_started_at_ms
+                    .is_none_or(|started_at_ms| record.completed_at_ms >= started_at_ms)
+            })
             .map(|record| RelayProjectedCompletion {
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
@@ -171,6 +186,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .iter()
                 .any(|key| key == &completion_key)
         });
+        let backing_active_prompt = self.app.prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )?;
         let mut prompts = Vec::new();
         let mut latest_home_origin_prompt_key = None;
         if let Ok(backing_session) = self
@@ -195,12 +214,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     entry.timestamp_ms,
                     stable_prompt_hash(&entry.text)
                 );
-                if entry
-                    .source_attachment_id
-                    .as_deref()
-                    .is_none_or(|source_attachment_id| {
-                        source_attachment_id == leased_agent.backing_attachment_id
-                    })
+                if (home_prompt_id.is_some()
+                    && backing_active_prompt
+                        .as_ref()
+                        .is_some_and(|prompt| prompt.prompt() == entry.text))
+                    || entry
+                        .source_attachment_id
+                        .as_deref()
+                        .is_none_or(|source_attachment_id| {
+                            source_attachment_id == leased_agent.backing_attachment_id
+                        })
                 {
                     latest_home_origin_prompt_key = Some(prompt_history_key);
                     continue;
@@ -217,12 +240,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
             }
         }
-        let backing_active_prompt = self.app.prompt_owner_active_prompt_for_agent(
-            &leased_agent.backing_session_id,
-            &leased_agent.backing_agent_id,
-        )?;
         if let Some(prompt) = backing_active_prompt.as_ref() {
-            if prompt.source_attachment_id() != leased_agent.backing_attachment_id
+            if home_prompt_id.is_none()
+                && prompt.source_attachment_id() != leased_agent.backing_attachment_id
                 && !leased_agent
                     .projected_prompt_ids
                     .iter()
@@ -354,6 +374,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
                 if agent.active_home_prompt_id.as_deref() == home_prompt_id.as_deref() {
                     agent.active_home_prompt_id = None;
+                    agent.active_home_prompt_started_at_ms = None;
                     agent.applied_home_steer_ids.clear();
                 }
             }
@@ -996,6 +1017,23 @@ fn leased_provider_run_history_chunk_key(
     )
 }
 
+fn leased_provider_run_stream_key(
+    leased_agent: &LeasedAgent,
+    provider_run_id: &str,
+    chunk: &RelayProjectedOutputChunk,
+) -> String {
+    format!(
+        "{}:{provider_run_id}:{}:{:?}:{}",
+        leased_agent.backing_session_id,
+        leased_agent
+            .active_home_prompt_id
+            .as_deref()
+            .unwrap_or("no-prompt"),
+        chunk.kind,
+        chunk.merge_key.as_deref().unwrap_or("")
+    )
+}
+
 fn stable_bytes_hash(bytes: &[u8]) -> u64 {
     let mut hash = 14_695_981_039_346_656_037_u64;
     for byte in bytes {
@@ -1121,6 +1159,10 @@ mod explicit_completion_tests {
             )
             .expect("active prompt should load")
             .is_some());
+        let started_at_ms = RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent.id)
+            .and_then(|agent| agent.active_home_prompt_started_at_ms)
+            .expect("active home prompt should remember its worker start time");
 
         app.terminal_mut().record_assistant_message_completion(
             &leased_agent.backing_session_id,
@@ -1128,7 +1170,7 @@ mod explicit_completion_tests {
             Some(&leased_agent.backing_agent_id),
             vec![leased_agent.backing_attachment_id.clone()],
             "assistant-msg-explicit",
-            1234,
+            started_at_ms.saturating_add(1),
         );
         let second = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)

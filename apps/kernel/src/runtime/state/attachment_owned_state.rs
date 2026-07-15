@@ -147,22 +147,35 @@ impl KernelRuntimeOwnedState {
                     })
                     .any(|projected_run_id| projected_run_id == active_provider_run_id);
                 if !active_run_is_remote {
-                    let run = self.provider_store.get_run(&active_provider_run_id)?;
-                    if run.state() != crate::provider::ProviderRunState::Ended {
-                        let outcome = self.provider_store.park_run_provider_only(
-                            attachment.session_id(),
-                            &active_provider_run_id,
-                        )?;
-                        if self
-                            .session_store
-                            .get_session(attachment.session_id())?
-                            .active_provider_run_id()
-                            == Some(outcome.run().id())
-                        {
+                    match self.provider_store.get_run(&active_provider_run_id) {
+                        Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {
+                            let outcome = self.provider_store.park_run_provider_only(
+                                attachment.session_id(),
+                                &active_provider_run_id,
+                            )?;
+                            if self
+                                .session_store
+                                .get_session(attachment.session_id())?
+                                .active_provider_run_id()
+                                == Some(outcome.run().id())
+                            {
+                                self.session_store
+                                    .set_active_provider_run(attachment.session_id(), None)?;
+                            }
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
+                        Ok(_) => {}
+                        Err(DaemonError::ProviderRunNotFound { .. }) => {
+                            if let Some(mut projected) =
+                                self.provider_run_projection.get(&active_provider_run_id)
+                            {
+                                projected.mark_ended();
+                                self.provider_run_projection.update(projected);
+                            }
                             self.session_store
                                 .set_active_provider_run(attachment.session_id(), None)?;
                         }
-                        self.provider_run_projection.update(outcome.into_run());
+                        Err(error) => return Err(error),
                     }
                 }
             }

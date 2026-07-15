@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_store_reconciles_stopped_record_with_running_host_to_unhealthy() {
+    fn slice_store_reconciles_stopped_record_with_running_host_to_running() {
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
@@ -299,8 +299,35 @@ mod tests {
         });
 
         assert_eq!(reconciled.len(), 1);
-        assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(reconciled[0].status, SliceStatus::Running);
+        assert_eq!(reconciled[0].last_error, None);
         assert_eq!(reconciled[0].updated_at_ms, 46);
+    }
+
+    #[test]
+    fn slice_store_recovers_unhealthy_record_when_host_is_running() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        store
+            .set_status(&slice.id, SliceStatus::Unhealthy, 45)
+            .expect("slice should be unhealthy");
+
+        let reconciled = store
+            .reconcile_after_kernel_restart_with_host_state(46, |_| SliceHostRuntimeState::Running);
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Running);
+        assert_eq!(
+            reconciled[0].last_operation.as_deref(),
+            Some("restart_reconcile")
+        );
+        assert_eq!(
+            reconciled[0].last_operation_status,
+            Some(SliceOperationStatus::Reconciled)
+        );
+        assert_eq!(reconciled[0].last_error, None);
     }
 
     #[test]

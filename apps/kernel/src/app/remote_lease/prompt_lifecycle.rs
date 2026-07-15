@@ -258,6 +258,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     agent.applied_home_steer_ids.clear();
                 }
                 agent.active_home_prompt_id = home_prompt_id;
+                agent.active_home_prompt_started_at_ms =
+                    backing_active.as_ref().map(|prompt| prompt.created_at_ms());
             }
         }
         if let Some(context) = workflow_context {

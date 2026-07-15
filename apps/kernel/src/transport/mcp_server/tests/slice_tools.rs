@@ -100,6 +100,12 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_wait_for_idle"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "arroba.slice_browser_dialog"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "slice_browser_dialog"));
 }
 
 #[cfg(unix)]

@@ -613,12 +613,8 @@ async fn attach_remote_agent_does_not_resolve_worker_provider_run_locally() {
         session_id,
         agent_id,
     });
-    let focus_command = KernelCommand::from_local_request(
-        "remote-focus-after-attach",
-        None,
-        None,
-        &focus_request,
-    );
+    let focus_command =
+        KernelCommand::from_local_request("remote-focus-after-attach", None, None, &focus_request);
 
     let focused = runtime
         .dispatch_session_command(focus_command, focus_request)

@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn outline_turn_joins_trailing_assistant_fragments_into_complete_summary() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    let fragments = ["The complete ", "assistant reply", "."]
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            HistoryEvent::transcript(
+                11 + index as u64,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-1",
+                    Some("agent-1"),
+                    TerminalOutputKind::ProviderOutput,
+                    None,
+                    text,
+                ),
+                context.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut events = vec![prompt.clone()];
+    events.extend(fragments);
+
+    let turn = outline_turn_from_events(&prompt, events, false).expect("turn should be outlined");
+
+    assert!(turn.entries.is_empty());
+    assert_eq!(
+        turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+        Some("The complete assistant reply.")
+    );
+}
+
+#[test]
 fn outline_turn_uses_transcript_admission_for_provider_status() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),

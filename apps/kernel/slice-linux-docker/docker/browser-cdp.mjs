@@ -106,6 +106,60 @@ async function evaluate(send, source, args = {}) {
   return result.result?.value;
 }
 
+async function showAgentCursor(send, x, y, clicked = false) {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  await evaluate(send, `
+    const cursorId = "__arroba-agent-cursor";
+    let cursor = document.getElementById(cursorId);
+    if (!cursor) {
+      cursor = document.createElement("div");
+      cursor.id = cursorId;
+      cursor.setAttribute("aria-hidden", "true");
+      cursor.style.cssText = [
+        "position:fixed",
+        "left:0",
+        "top:0",
+        "width:28px",
+        "height:36px",
+        "border:3px solid #151515",
+        "border-radius:999px",
+        "background:#f09352",
+        "box-shadow:0 2px 7px rgba(0,0,0,.55)",
+        "z-index:2147483647",
+        "pointer-events:none",
+        "opacity:0",
+        "transition:transform 90ms cubic-bezier(.2,.8,.2,1),opacity 160ms ease",
+      ].join(";");
+      cursor.innerHTML = \`
+        <svg data-arroba-pointer viewBox="0 0 19 25" aria-hidden="true" style="position:absolute;left:-4px;top:-4px;width:28px;height:37px;filter:drop-shadow(0 2px 2px rgba(0,0,0,.72))">
+          <path d="M1.5 1.7v18.1l4.7-4.2 3.2 7.4 3.2-1.4-3.1-7.2 6.4-.1L1.5 1.7Z" fill="#f09352" stroke="#151515" stroke-width="1.5" stroke-linejoin="round"/>
+        </svg>
+        <span data-arroba-tag style="position:absolute;left:24px;top:22px;padding:5px 9px;border:1px solid rgba(255,255,255,.72);border-radius:5px;background:rgba(18,18,18,.92);color:#f4f1ec;font:700 16px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;box-shadow:0 2px 7px rgba(0,0,0,.38)">agent</span>
+        <span data-arroba-ring style="position:absolute;left:-16px;top:-16px;width:32px;height:32px;border:3px solid #f09352;border-radius:999px;opacity:0"></span>
+      \`;
+      document.documentElement.appendChild(cursor);
+    }
+    cursor.style.transform = \`translate3d(\${__arrobaArgs.x}px, \${__arrobaArgs.y}px, 0)\`;
+    cursor.style.setProperty("opacity", "1", "important");
+    cursor.style.setProperty("display", "block", "important");
+    cursor.style.setProperty("visibility", "visible", "important");
+    window.clearTimeout(window.__arrobaAgentCursorFadeTimer);
+    window.__arrobaAgentCursorFadeTimer = window.setTimeout(() => {
+      cursor.style.setProperty("opacity", "0", "important");
+    // Keep the last automated pointer visible long enough for the agent's
+    // response and the remote screen stream to settle in the controlling UI.
+    }, 45000);
+    if (__arrobaArgs.clicked) {
+      const ring = cursor.querySelector?.("[data-arroba-ring]");
+      ring?.animate?.([
+        { transform: "scale(.35)", opacity: .95 },
+        { transform: "scale(1.8)", opacity: 0 },
+      ], { duration: 420, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+    return { ok: true };
+  `, { x, y, clicked });
+}
+
 async function typeIntoBrowser(text, options = {}) {
   await withSocket(async (send) => {
     if (options.useNativeInput) {
@@ -137,6 +191,7 @@ async function typeIntoBrowser(text, options = {}) {
         throw new Error(focusResult?.error ?? "browser_focus_failed");
       }
       if (focusResult.click) {
+        await showAgentCursor(send, focusResult.x, focusResult.y, true);
         await send("Input.dispatchMouseEvent", {
           type: "mouseMoved",
           x: focusResult.x,
@@ -273,18 +328,21 @@ async function typeIntoBrowser(text, options = {}) {
             active.value = text;
             active.dispatchEvent(new Event("input", { bubbles: true }));
             active.dispatchEvent(new Event("change", { bubbles: true }));
-            return { ok: true };
+            const rect = active.getBoundingClientRect();
+            return { ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           }
           if ("value" in active) {
             const expectedLength = (__arrobaArgs.append ? active.value.length : 0) + text.length;
             active.value = __arrobaArgs.append ? active.value + text : text;
             active.dispatchEvent(new Event("input", { bubbles: true }));
             active.dispatchEvent(new Event("change", { bubbles: true }));
-            return { ok: true, selector: selector || null, filled: String(active.value || "").length >= expectedLength };
+            const rect = active.getBoundingClientRect();
+            return { ok: true, selector: selector || null, filled: String(active.value || "").length >= expectedLength, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           }
           active.textContent = __arrobaArgs.append ? (active.textContent || "") + text : text;
           active.dispatchEvent(new Event("input", { bubbles: true }));
-          return { ok: true, selector: selector || null, filled: String(active.textContent || "").length >= text.length };
+          const rect = active.getBoundingClientRect();
+          return { ok: true, selector: selector || null, filled: String(active.textContent || "").length >= text.length, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     `, {
       text,
       selector: options.selector ?? null,
@@ -294,6 +352,7 @@ async function typeIntoBrowser(text, options = {}) {
     if (!result?.ok) {
       throw new Error(result?.error ?? "browser_type_failed");
     }
+    await showAgentCursor(send, result.x, result.y);
     if (!result.filled) {
       const focusResult = await evaluate(send, `
         ${browserDomScript()}
@@ -484,6 +543,7 @@ async function clickSelector(selector) {
       };
     `, { selector });
     if (!result?.ok) throw new Error(result?.error ?? "browser_click_failed");
+    await showAgentCursor(send, result.x, result.y, true);
     await send("Input.dispatchMouseEvent", {
       type: "mouseMoved",
       x: result.x,
@@ -520,6 +580,20 @@ async function submitSelector(selector) {
     `, { selector: selector ?? null });
     if (!result?.ok) throw new Error(result?.error ?? "browser_submit_failed");
   });
+}
+
+async function handleDialog(action, promptText) {
+  const accept = action === "accept";
+  if (!accept && action !== "dismiss") {
+    throw new Error("dialog_action_must_be_accept_or_dismiss");
+  }
+  await withSocket(async (send) => {
+    await send("Page.handleJavaScriptDialog", {
+      accept,
+      ...(accept && promptText ? { promptText } : {}),
+    });
+  });
+  return { ok: true, action };
 }
 
 async function waitForPredicate(label, timeoutMs, predicateSource, args = {}) {
@@ -585,6 +659,7 @@ if (command === "click") {
   const x = Number(args[0]);
   const y = Number(args[1]);
   await withSocket(async (send) => {
+    await showAgentCursor(send, x, y, true);
     await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
     await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
     await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
@@ -629,10 +704,18 @@ if (command === "click") {
   const selector = args[0];
   await clickSelector(selector);
   process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "cursor-status") {
+  const result = await withSocket(async (send) => evaluate(send, `
+    const cursor = document.getElementById("__arroba-agent-cursor");
+    return { visible: Boolean(cursor && cursor.style.opacity === "1") };
+  `));
+  process.stdout.write(JSON.stringify(result));
 } else if (command === "submit") {
   const selector = args[0] || null;
   await submitSelector(selector);
   process.stdout.write(JSON.stringify({ ok: true, selector }));
+} else if (command === "dialog") {
+  process.stdout.write(JSON.stringify(await handleDialog(args[0] || "", args[1] || "")));
 } else if (command === "wait-text") {
   const result = await waitForText(args[0] || "", args[1]);
   if (!result.ok) process.exitCode = 1;
@@ -650,6 +733,6 @@ if (command === "click") {
 } else if (command === "navigate") {
   await navigate(args[0]);
 } else {
-  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | secret-paste-submit-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | submit [selector] | close-browser | navigate <url>");
+  console.error("Usage: browser-cdp.mjs click <x> <y> | type <text> | type-stdin | secret-paste-stdin [selector] | secret-paste-submit-stdin [selector] | key <key> | text | status | find <query> [kind] | fill <selector> <text> | fill-stdin <selector> | click-selector <selector> | cursor-status | submit [selector] | dialog <accept|dismiss> [prompt-text] | close-browser | navigate <url>");
   process.exit(2);
 }

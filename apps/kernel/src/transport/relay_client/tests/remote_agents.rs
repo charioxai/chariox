@@ -1032,6 +1032,22 @@ async fn remote_machine_agents_cancel_prompts_through_the_home_session() {
         crate::session::PromptStatus::Cancelling
     );
 
+    let forced_cancellation = app_home
+        .lock()
+        .await
+        .cancel_active_prompt(&session_id, &attachment_id)
+        .expect("a repeated remote cancellation should force settlement");
+    assert_eq!(
+        forced_cancellation.prompt.status(),
+        crate::session::PromptStatus::Cancelled
+    );
+    assert!(app_home
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent(&session_id, &remote_agent_id)
+        .expect("home prompt state should remain readable")
+        .is_none());
+
     let _ = shutdown_home_tx.send(true);
     let _ = shutdown_worker_tx.send(true);
     connector_home.await.expect("home connector should join");

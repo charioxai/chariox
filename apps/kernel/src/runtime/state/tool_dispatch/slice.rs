@@ -283,6 +283,21 @@ impl KernelRuntimeState {
                 let output = run_slice_screen_command(command_args).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
+            crate::transport::runtime_tools::SLICE_BROWSER_DIALOG_TOOL => {
+                let args = serde_json::from_value::<
+                    crate::transport::runtime_tools::SliceBrowserDialogArgs,
+                >(arguments)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_dialog",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+                let mut command_args = vec!["browser-dialog".to_string(), args.action];
+                if let Some(prompt_text) = args.prompt_text {
+                    command_args.push(prompt_text);
+                }
+                let output = run_slice_screen_command(command_args).await?;
+                return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
+            }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
                 let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);

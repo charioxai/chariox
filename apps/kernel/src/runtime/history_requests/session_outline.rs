@@ -22,8 +22,8 @@ mod projection;
 use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS};
 use projection::{
     event_needs_outline_blob, event_projects_as_outline_entry, has_content,
-    outline_blobs_from_events, outline_page_entry_from_event, page_entry_from_event, parse_blob_id,
-    MAX_OUTLINE_INLINE_ENTRIES_PER_TURN,
+    outline_blobs_from_events, outline_page_entry_from_event, outline_page_entry_from_event_group,
+    page_entry_from_event, parse_blob_id, MAX_OUTLINE_INLINE_ENTRIES_PER_TURN,
 };
 
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
@@ -505,8 +505,12 @@ fn promptless_synthetic_prompt_entry(
     agent_id: &str,
     events: &[HistoryEvent],
 ) -> SessionHistoryEntry {
-    if let Some(identity) = outline_turn_external_identity(events) {
-        return SessionHistoryEntry::external_provider_observed(
+    let timestamp_ms = events
+        .iter()
+        .filter_map(|event| external_observed_at_ms(event).or(Some(event.timestamp_ms)))
+        .min();
+    let mut entry = if let Some(identity) = outline_turn_external_identity(events) {
+        SessionHistoryEntry::external_provider_observed(
             session_id,
             events
                 .iter()
@@ -522,9 +526,14 @@ fn promptless_synthetic_prompt_entry(
                 .filter_map(|event| event.to_session_history_entry())
                 .filter_map(|entry| entry.observed_at_ms)
                 .min(),
-        );
+        )
+    } else {
+        SessionHistoryEntry::user_prompt(session_id, "arroba-history", agent_id, PROMPTLESS_TEXT)
+    };
+    if let Some(timestamp_ms) = timestamp_ms {
+        entry.timestamp_ms = timestamp_ms;
     }
-    SessionHistoryEntry::user_prompt(session_id, "arroba-history", agent_id, PROMPTLESS_TEXT)
+    entry
 }
 
 fn ensure_unique_outline_turn_id(
@@ -572,22 +581,21 @@ fn outline_turn_from_events(
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, &events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms);
-    let summary_sequence = events
+    let summary_index = events
         .iter()
-        .rev()
-        .find(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event))
-        .map(|event| event.sequence);
-    let summary = summary_sequence.and_then(|sequence| {
-        events
-            .iter()
-            .find(|event| event.sequence == sequence)
-            .cloned()
-            .and_then(outline_page_entry_from_event)
-    });
+        .rposition(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event));
+    let summary_events = summary_index
+        .map(|index| trailing_provider_output_group(&events, index))
+        .unwrap_or_default();
+    let summary_sequences = summary_events
+        .iter()
+        .map(|event| event.sequence)
+        .collect::<BTreeSet<_>>();
+    let summary = outline_page_entry_from_event_group(&summary_events);
     let inline_entry_candidates = events
         .iter()
         .filter(|event| event.sequence != prompt.sequence)
-        .filter(|event| Some(event.sequence) != summary_sequence)
+        .filter(|event| !summary_sequences.contains(&event.sequence))
         .filter(|event| has_content(event))
         .filter(|event| event_projects_as_outline_entry(event))
         .filter(|event| !event_needs_outline_blob(event))
@@ -595,11 +603,17 @@ fn outline_turn_from_events(
     let overflow_entry_count = inline_entry_candidates
         .len()
         .saturating_sub(MAX_OUTLINE_INLINE_ENTRIES_PER_TURN);
-    let forced_blob_sequences = inline_entry_candidates
+    let mut forced_blob_sequences = inline_entry_candidates
         .iter()
         .take(overflow_entry_count)
         .map(|event| event.sequence)
         .collect::<BTreeSet<_>>();
+    if summary
+        .as_ref()
+        .is_some_and(|entry| entry.fragment_end < entry.total_chars)
+    {
+        forced_blob_sequences.extend(summary_sequences.iter().copied());
+    }
     let entries = inline_entry_candidates
         .into_iter()
         .skip(overflow_entry_count)
@@ -609,7 +623,7 @@ fn outline_turn_from_events(
     let blobs = outline_blobs_from_events(
         &events,
         prompt.sequence,
-        summary_sequence,
+        &summary_sequences,
         &forced_blob_sequences,
     );
     Some(SessionHistoryOutlineTurn {
@@ -635,6 +649,33 @@ fn outline_turn_from_events(
         summary,
         blobs,
     })
+}
+
+fn trailing_provider_output_group(
+    events: &[HistoryEvent],
+    summary_index: usize,
+) -> Vec<&HistoryEvent> {
+    let summary_event = &events[summary_index];
+    let summary_merge_key = history_event_merge_key(summary_event);
+    let mut start = summary_index;
+    while start > 0 {
+        let candidate = &events[start - 1];
+        if candidate.kind != HistoryEventKind::ProviderOutput
+            || candidate.provider_run_id != summary_event.provider_run_id
+            || history_event_merge_key(candidate) != summary_merge_key
+        {
+            break;
+        }
+        start -= 1;
+    }
+    events[start..=summary_index].iter().collect()
+}
+
+fn history_event_merge_key(event: &HistoryEvent) -> Option<&str> {
+    event
+        .metadata
+        .get("merge_key")
+        .and_then(|value| value.as_str())
 }
 
 fn outline_turn_lifecycle(completed_at_ms: Option<u64>) -> SessionHistoryOutlineTurnLifecycle {

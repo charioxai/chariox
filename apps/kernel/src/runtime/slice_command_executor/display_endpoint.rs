@@ -13,6 +13,7 @@ use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget}
 use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 const DISPLAY_TUNNEL_TTL_MS: u64 = 60_000;
+const DISPLAY_TUNNEL_RENEWAL_WINDOW_MS: u64 = 10_000;
 const DISPLAY_TUNNEL_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(super) async fn execute_get_slice_display_endpoint_request(
@@ -28,7 +29,7 @@ pub(super) async fn execute_get_slice_display_endpoint_request(
             config_projection.snapshot().relay_url,
             relay_state,
         )
-        .await
+        .await?
         .unwrap_or(endpoint),
         None => endpoint,
     };
@@ -39,30 +40,57 @@ async fn tunneled_display_endpoint(
     local_endpoint: SliceDisplayEndpoint,
     config_relay_url: Option<String>,
     relay_state: Arc<RwLock<RelayClientState>>,
-) -> Option<SliceDisplayEndpoint> {
+) -> Result<Option<SliceDisplayEndpoint>, DaemonError> {
     if local_endpoint.access != SliceDisplayEndpointAccess::Local {
-        return None;
+        return Ok(None);
     }
-    let local_base_url = local_display_base_url(&local_endpoint.url)?;
+    let Some(local_base_url) = local_display_base_url(&local_endpoint.url) else {
+        return Ok(None);
+    };
     let now_ms = crate::session::unix_epoch_ms();
     let expires_at_ms = now_ms.saturating_add(DISPLAY_TUNNEL_TTL_MS);
-    let tunnel_id = format!("display-{}", random_hex_id());
-    let (outgoing_tx, tunnel_url, registration_rx) = {
+    let (outgoing_tx, relay_base_url, tunnel_id, previous_target, registration_rx) = {
         let mut guard = relay_state.write().await;
+        let previous_target =
+            guard.display_tunnel_for_slice(&local_endpoint.slice_id, &local_base_url);
         guard.prune_expired_display_tunnels(now_ms);
-        let relay_url = guard.connected_relay_url().or(config_relay_url)?;
-        let relay_base_url = relay_display_base_url(&relay_url)?;
-        let tunnel_url = relay_display_endpoint_url(&relay_base_url, &tunnel_id, &local_endpoint)?;
-        let outgoing_tx = guard.outgoing_sender()?;
+        let Some(relay_url) = guard.connected_relay_url().or(config_relay_url) else {
+            return Ok(None);
+        };
+        let Some(relay_base_url) = relay_display_base_url(&relay_url) else {
+            return Ok(None);
+        };
+        if let Some(target) = previous_target.as_ref() {
+            if target.expires_at_ms > now_ms.saturating_add(DISPLAY_TUNNEL_RENEWAL_WINDOW_MS) {
+                return Ok(relay_tunneled_endpoint(
+                    &relay_base_url,
+                    target,
+                    local_endpoint,
+                ));
+            }
+            if guard.display_tunnel_registration_pending(&target.tunnel_id) {
+                return Err(display_tunnel_error(
+                    "renew slice display tunnel",
+                    "display tunnel renewal is already in progress",
+                ));
+            }
+        }
+        let tunnel_id = previous_target
+            .as_ref()
+            .map(|target| target.tunnel_id.clone())
+            .unwrap_or_else(|| format!("display-{}", random_hex_id()));
+        let Some(outgoing_tx) = guard.outgoing_sender() else {
+            return Ok(None);
+        };
         let (registration_tx, registration_rx) = oneshot::channel();
-        guard.upsert_display_tunnel(RelayDisplayTunnelTarget {
-            tunnel_id: tunnel_id.clone(),
-            slice_id: local_endpoint.slice_id.clone(),
-            local_base_url,
-            expires_at_ms,
-        });
         guard.insert_pending_display_tunnel_registration(tunnel_id.clone(), registration_tx);
-        (outgoing_tx, tunnel_url, registration_rx)
+        (
+            outgoing_tx,
+            relay_base_url,
+            tunnel_id,
+            previous_target,
+            registration_rx,
+        )
     };
     if outgoing_tx
         .try_send(RelayEnvelope::DaemonDisplayTunnelRegister {
@@ -75,31 +103,72 @@ async fn tunneled_display_endpoint(
         .is_err()
     {
         let mut guard = relay_state.write().await;
-        guard.remove_display_tunnel(&tunnel_id);
         guard.cancel_display_tunnel_registration(&tunnel_id);
-        return None;
+        return Err(display_tunnel_error(
+            "register slice display tunnel",
+            "relay connection is not accepting display registrations",
+        ));
     }
-    let registration_confirmed = matches!(
-        timeout(DISPLAY_TUNNEL_REGISTRATION_TIMEOUT, registration_rx).await,
-        Ok(Ok(None))
-    );
-    if !registration_confirmed {
+    let registration_error = match timeout(DISPLAY_TUNNEL_REGISTRATION_TIMEOUT, registration_rx)
+        .await
+    {
+        Ok(Ok(None)) => None,
+        Ok(Ok(Some(error))) => Some(error.message),
+        Ok(Err(_)) => Some("relay closed the display registration acknowledgment".to_string()),
+        Err(_) => Some("relay did not acknowledge the display registration in time".to_string()),
+    };
+    if let Some(message) = registration_error {
         let mut guard = relay_state.write().await;
-        guard.remove_display_tunnel(&tunnel_id);
         guard.cancel_display_tunnel_registration(&tunnel_id);
-        let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {
-            tunnel_id: tunnel_id.clone(),
-        });
-        return None;
+        if previous_target.is_none() {
+            let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {
+                tunnel_id: tunnel_id.clone(),
+            });
+        }
+        return Err(display_tunnel_error(
+            "register slice display tunnel",
+            message,
+        ));
     }
+    let target = RelayDisplayTunnelTarget {
+        tunnel_id,
+        slice_id: local_endpoint.slice_id.clone(),
+        local_base_url,
+        expires_at_ms,
+    };
+    relay_state
+        .write()
+        .await
+        .upsert_display_tunnel(target.clone());
+    Ok(relay_tunneled_endpoint(
+        &relay_base_url,
+        &target,
+        local_endpoint,
+    ))
+}
+
+fn relay_tunneled_endpoint(
+    relay_base_url: &url::Url,
+    target: &RelayDisplayTunnelTarget,
+    local_endpoint: SliceDisplayEndpoint,
+) -> Option<SliceDisplayEndpoint> {
+    let tunnel_url =
+        relay_display_endpoint_url(relay_base_url, &target.tunnel_id, &local_endpoint)?;
     Some(SliceDisplayEndpoint {
         slice_id: local_endpoint.slice_id,
         kind: local_endpoint.kind,
         url: tunnel_url,
         access: SliceDisplayEndpointAccess::Tunnel,
-        expires_at_ms: Some(expires_at_ms),
+        expires_at_ms: Some(target.expires_at_ms),
         capabilities: local_endpoint.capabilities,
     })
+}
+
+fn display_tunnel_error(operation: &'static str, message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: message.into(),
+    }
 }
 
 pub(super) async fn revoke_display_tunnels_for_slice(
@@ -227,6 +296,7 @@ mod tests {
         let endpoint = endpoint_task
             .await
             .expect("display endpoint task should finish")
+            .expect("display endpoint request should succeed")
             .expect("acknowledged wss relay should produce tunnel endpoint");
 
         assert_eq!(endpoint.access, SliceDisplayEndpointAccess::Tunnel);
@@ -271,10 +341,11 @@ mod tests {
                 }),
             );
 
-        assert!(endpoint_task
+        let error = endpoint_task
             .await
             .expect("display endpoint task should finish")
-            .is_none());
+            .expect_err("rejected registration should fail the endpoint request");
+        assert!(error.to_string().contains("registration rejected"));
         assert!(relay_state
             .read()
             .await
@@ -303,7 +374,102 @@ mod tests {
             relay_state,
         )
         .await
+        .expect("local relay lookup should succeed")
         .is_none());
+    }
+
+    #[tokio::test]
+    async fn display_tunnel_renewal_keeps_the_same_endpoint_url() {
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
+        let relay_state = Arc::new(RwLock::new(state));
+
+        let first_task = tokio::spawn(tunneled_display_endpoint(
+            local_novnc_endpoint(),
+            Some("wss://relay.example.test".to_string()),
+            Arc::clone(&relay_state),
+        ));
+        let first_registration = match priority_rx
+            .recv()
+            .await
+            .expect("initial display registration should be queued")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => registration,
+            other => panic!("unexpected relay envelope: {other:?}"),
+        };
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(&first_registration.tunnel_id, None);
+        let first_endpoint = first_task
+            .await
+            .expect("initial endpoint task should finish")
+            .expect("initial endpoint request should succeed")
+            .expect("initial endpoint should be tunneled");
+
+        let expiring_at_ms = crate::session::unix_epoch_ms().saturating_add(1_000);
+        relay_state
+            .write()
+            .await
+            .upsert_display_tunnel(RelayDisplayTunnelTarget {
+                tunnel_id: first_registration.tunnel_id.clone(),
+                slice_id: "slice-1".to_string(),
+                local_base_url: "http://127.0.0.1:5901/".to_string(),
+                expires_at_ms: expiring_at_ms,
+            });
+        let renewal_task = tokio::spawn(tunneled_display_endpoint(
+            local_novnc_endpoint(),
+            Some("wss://relay.example.test".to_string()),
+            Arc::clone(&relay_state),
+        ));
+        let renewal_registration = match priority_rx
+            .recv()
+            .await
+            .expect("display renewal should be queued")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => registration,
+            other => panic!("unexpected relay envelope: {other:?}"),
+        };
+        assert_eq!(
+            renewal_registration.tunnel_id, first_registration.tunnel_id,
+            "renewal must extend the existing tunnel identity"
+        );
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(&renewal_registration.tunnel_id, None);
+        let renewed_endpoint = renewal_task
+            .await
+            .expect("renewal endpoint task should finish")
+            .expect("renewal endpoint request should succeed")
+            .expect("renewed endpoint should remain tunneled");
+
+        assert_eq!(renewed_endpoint.url, first_endpoint.url);
+        assert!(renewed_endpoint.expires_at_ms > Some(expiring_at_ms));
+    }
+
+    #[tokio::test]
+    async fn healthy_display_tunnel_is_returned_without_reregistering() {
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
+        state.upsert_display_tunnel(test_tunnel("display-stable", "slice-1"));
+        let relay_state = Arc::new(RwLock::new(state));
+
+        let endpoint = tunneled_display_endpoint(
+            local_novnc_endpoint(),
+            Some("wss://relay.example.test".to_string()),
+            relay_state,
+        )
+        .await
+        .expect("cached endpoint lookup should succeed")
+        .expect("cached endpoint should remain tunneled");
+
+        assert!(endpoint.url.contains("/display/display-stable/vnc.html"));
+        assert!(priority_rx.try_recv().is_err());
     }
 
     #[tokio::test]

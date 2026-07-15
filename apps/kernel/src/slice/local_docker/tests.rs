@@ -68,6 +68,23 @@ fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
 }
 
 #[test]
+fn linux_docker_slice_provisioner_validation_requires_an_existing_file() {
+    let root = test_root("slice-provisioner");
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("provision.sh");
+    std::fs::write(&script, "#!/usr/bin/env bash\n").expect("script should be written");
+
+    assert_eq!(
+        validate_linux_docker_slice_script(script.clone())
+            .expect("existing provisioner should resolve"),
+        script
+    );
+    assert!(validate_linux_docker_slice_script(root.join("missing.sh")).is_err());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let record = test_record();
     let options = test_options();

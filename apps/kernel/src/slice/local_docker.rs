@@ -772,6 +772,11 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
+    if let Some(script) = std::env::var_os("ARROBA_SLICE_DOCKER_PROVISIONER") {
+        let script = expand_user_path_for_slice(&script.to_string_lossy());
+        return validate_linux_docker_slice_script(script);
+    }
+
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
@@ -785,13 +790,17 @@ fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
         .join("kernel")
         .join("slice-linux-docker")
         .join("provision-linux-docker-slice.sh");
-    if script.is_file() {
-        Ok(script)
-    } else {
+    validate_linux_docker_slice_script(script)
+}
+
+fn validate_linux_docker_slice_script(script: PathBuf) -> Result<PathBuf, DaemonError> {
+    if !script.is_file() {
         Err(DaemonError::LocalTransport {
             operation: "slice.local_docker",
             message: format!("slice Docker provisioner not found at {}", script.display()),
         })
+    } else {
+        Ok(script)
     }
 }
 

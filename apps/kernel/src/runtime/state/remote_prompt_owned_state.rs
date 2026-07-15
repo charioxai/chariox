@@ -264,6 +264,30 @@ impl KernelRuntimeOwnedState {
             dispatch: None,
         })
     }
+
+    pub(super) fn finalize_remote_prompt_cancellation_after_worker_settled(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        attachment_id: &str,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        let _ =
+            self.begin_remote_prompt_cancellation(session_id, target_agent_id, attachment_id)?;
+        let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
+            session_id,
+            target_agent_id,
+            None,
+        )?;
+        if cancellation.cancellation.prompt.workflow_run_id().is_some() {
+            self.workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
+        }
+        let session = self.session_snapshot(session_id)?;
+        Ok(crate::app::KernelPromptCancellation {
+            cancellation: cancellation.cancellation,
+            session,
+            dispatch: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +491,95 @@ mod tests {
         assert!(projected
             .queued_prompts_for_agent(&agent_id)
             .is_some_and(|queue| queue.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn worker_settled_remote_cancellation_clears_the_home_active_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-cancel",
+                "worktree-cancel",
+            ))
+            .expect("session should be created");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-remote-cancel",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-cancel".to_string(),
+                    worker_machine_id: "worker-machine-cancel".to_string(),
+                    execution_lease_id: "lease-cancel".to_string(),
+                    leased_agent_id: "leased-agent-cancel".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let attachment_id = attachment.id().to_string();
+        let prompt = PromptQueueItem::new(
+            "pending:cancel",
+            &attachment_id,
+            &agent_id,
+            "stale remote prompt",
+            PromptStatus::Queued,
+        );
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        runtime
+            .owned
+            .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should submit")
+            .expect("remote prompt should be handled");
+
+        let cancellation = runtime
+            .owned
+            .finalize_remote_prompt_cancellation_after_worker_settled(
+                &session_id,
+                &agent_id,
+                &attachment_id,
+            )
+            .expect("settled worker cancellation should finalize at home");
+
+        assert_eq!(
+            cancellation.cancellation.prompt.status(),
+            PromptStatus::Cancelled
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should remain available"),
+                &agent_id,
+            )
+            .is_none());
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .state(),
+            crate::agent::AgentState::Focused
+        );
     }
 }

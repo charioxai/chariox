@@ -82,13 +82,17 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
 pub(super) fn outline_blobs_from_events(
     events: &[HistoryEvent],
     prompt_sequence: u64,
-    summary_sequence: Option<u64>,
+    summary_sequences: &BTreeSet<u64>,
     forced_blob_sequences: &BTreeSet<u64>,
 ) -> Vec<SessionHistoryOutlineBlob> {
     let candidates = events
         .iter()
         .filter(|event| event.sequence != prompt_sequence)
-        .filter(|event| Some(event.sequence) != summary_sequence || event_needs_outline_blob(event))
+        .filter(|event| {
+            !summary_sequences.contains(&event.sequence)
+                || event_needs_outline_blob(event)
+                || forced_blob_sequences.contains(&event.sequence)
+        })
         .filter(|event| {
             forced_blob_sequences.contains(&event.sequence) || event_projects_as_outline_blob(event)
         })
@@ -168,6 +172,25 @@ pub(super) fn outline_page_entry_from_event(
     event: HistoryEvent,
 ) -> Option<SessionHistoryPageEntry> {
     page_entry_from_event_with_inline_limit(event, Some(MAX_OUTLINE_INLINE_CHARS))
+}
+
+pub(super) fn outline_page_entry_from_event_group(
+    events: &[&HistoryEvent],
+) -> Option<SessionHistoryPageEntry> {
+    let first = events.first()?;
+    let mut page_entry = outline_page_entry_from_event((*first).clone())?;
+    let text = events
+        .iter()
+        .filter_map(|event| event.to_session_history_entry())
+        .map(|entry| entry.text)
+        .collect::<String>();
+    let total_chars = text.chars().count();
+    let fragment_end = total_chars.min(MAX_OUTLINE_INLINE_CHARS);
+    page_entry.entry.text = text.chars().take(fragment_end).collect();
+    page_entry.fragment_start = 0;
+    page_entry.fragment_end = fragment_end;
+    page_entry.total_chars = total_chars;
+    Some(page_entry)
 }
 
 fn page_entry_from_event_with_inline_limit(
