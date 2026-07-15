@@ -616,10 +616,35 @@ async fn run_daemon_relay_connector_inner(
                         "connect_to_registration_ms": connect_started.elapsed().as_millis(),
                     }),
                 );
-                set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
+                let replayed_display_tunnel_count =
+                    match set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await {
+                        Ok(count) => count,
+                        Err(error) => {
+                            writer_task.abort();
+                            clear_remote_inventory_projection(&router);
+                            disconnect_relay(&router, &state, &error, static_relay.is_none()).await;
+                            let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                            record_relay_reconnect(&router, &relay_url, &error, delay);
+                            reconnect_attempt = reconnect_attempt.saturating_add(1);
+                            if wait_for_reconnect_delay(shutdown, delay).await {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
                 router
                     .transport_health_store()
                     .record_relay_connected(&relay_url);
+                if replayed_display_tunnel_count > 0 {
+                    crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "replayed display tunnels after relay reconnect",
+                        serde_json::json!({
+                            "relay_url": relay_url,
+                            "display_tunnel_count": replayed_display_tunnel_count,
+                        }),
+                    );
+                }
                 reconnect_attempt = 0;
                 let mut cloud_presence_task = None;
                 if static_relay.is_none() {

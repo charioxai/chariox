@@ -60,6 +60,7 @@ async fn tunneled_display_endpoint(
             slice_id: local_endpoint.slice_id.clone(),
             local_base_url,
             expires_at_ms,
+            capabilities: local_endpoint.capabilities.clone(),
         });
         guard.insert_pending_display_tunnel_registration(tunnel_id.clone(), registration_tx);
         (outgoing_tx, tunnel_url, registration_rx)
@@ -361,6 +362,7 @@ mod tests {
             slice_id: slice_id.to_string(),
             local_base_url: "http://127.0.0.1:5901/".to_string(),
             expires_at_ms: crate::session::unix_epoch_ms().saturating_add(60_000),
+            capabilities: vec!["view".to_string()],
         }
     }
 }

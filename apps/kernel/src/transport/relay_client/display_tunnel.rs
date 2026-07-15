@@ -471,6 +471,7 @@ mod tests {
             slice_id: "slice-1".to_string(),
             local_base_url: "http://127.0.0.1:5901".to_string(),
             expires_at_ms: u64::MAX,
+            capabilities: vec!["view".to_string()],
         };
 
         let url = local_display_url(&target, "/display/display-1/vnc.html?autoconnect=true")
@@ -490,6 +491,7 @@ mod tests {
             slice_id: "slice-1".to_string(),
             local_base_url: "http://127.0.0.1:5901".to_string(),
             expires_at_ms: u64::MAX,
+            capabilities: vec!["view".to_string(), "websocket".to_string()],
         };
 
         let url = local_display_websocket_url(&target, "/display/display-1/websockify")
@@ -554,6 +556,7 @@ mod tests {
             slice_id: "slice-1".to_string(),
             local_base_url: format!("http://{addr}"),
             expires_at_ms: u64::MAX,
+            capabilities: vec!["http".to_string()],
         });
         let state = Arc::new(RwLock::new(state));
         let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
@@ -674,6 +677,7 @@ mod tests {
             slice_id: "publication-1".to_string(),
             local_base_url: format!("http://{addr}"),
             expires_at_ms: u64::MAX,
+            capabilities: vec!["http".to_string(), "publication".to_string()],
         });
         let state = Arc::new(RwLock::new(state));
         let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);
@@ -752,6 +756,7 @@ mod tests {
             slice_id: "slice-1".to_string(),
             local_base_url: "http://127.0.0.1:1".to_string(),
             expires_at_ms: u64::MAX,
+            capabilities: vec!["http".to_string()],
         });
         let state = Arc::new(RwLock::new(state));
         let (outgoing_tx, mut priority_rx, mut event_rx) = RelayOutgoingSender::channel(16);

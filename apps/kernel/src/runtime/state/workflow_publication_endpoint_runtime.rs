@@ -99,6 +99,11 @@ async fn tunneled_publication_endpoint(
             ),
             local_base_url,
             expires_at_ms,
+            capabilities: vec![
+                "http".to_string(),
+                "websocket".to_string(),
+                "publication".to_string(),
+            ],
         });
         (outgoing_tx, tunnel_url)
     };
