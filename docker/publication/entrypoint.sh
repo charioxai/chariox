@@ -516,20 +516,94 @@ gateway() {
 ACTION_SERVER_PID=""
 KERNEL_PID=""
 GATEWAY_PID=""
+READINESS_PID=""
+COMPLETED_CHILD_LABEL=""
 
 cleanup_standalone_children() {
   local pid
   trap - INT TERM
-  for pid in "$GATEWAY_PID" "$ACTION_SERVER_PID" "$KERNEL_PID"; do
+  for pid in "$READINESS_PID" "$GATEWAY_PID" "$ACTION_SERVER_PID" "$KERNEL_PID"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
   done
-  for pid in "$GATEWAY_PID" "$ACTION_SERVER_PID" "$KERNEL_PID"; do
+  for pid in "$READINESS_PID" "$GATEWAY_PID" "$ACTION_SERVER_PID" "$KERNEL_PID"; do
     if [[ -n "$pid" ]]; then
       wait "$pid" 2>/dev/null || true
     fi
   done
+}
+
+record_standalone_child_exit() {
+  local pid="$1"
+  COMPLETED_CHILD_LABEL=""
+  if [[ -n "$READINESS_PID" && "$pid" == "$READINESS_PID" ]]; then
+    READINESS_PID=""
+    COMPLETED_CHILD_LABEL="kernel readiness probe"
+  elif [[ -n "$GATEWAY_PID" && "$pid" == "$GATEWAY_PID" ]]; then
+    GATEWAY_PID=""
+    COMPLETED_CHILD_LABEL="gateway"
+  elif [[ -n "$ACTION_SERVER_PID" && "$pid" == "$ACTION_SERVER_PID" ]]; then
+    ACTION_SERVER_PID=""
+    COMPLETED_CHILD_LABEL="action server"
+  elif [[ -n "$KERNEL_PID" && "$pid" == "$KERNEL_PID" ]]; then
+    KERNEL_PID=""
+    COMPLETED_CHILD_LABEL="kernel"
+  fi
+}
+
+unexpected_standalone_child_status() {
+  local label="$1"
+  local status="$2"
+  if [[ -z "$label" ]]; then
+    echo "publication standalone supervisor lost track of a child process" >&2
+    return 70
+  fi
+  echo "publication standalone child exited: $label (status $status)" >&2
+  if [[ "$status" -eq 0 ]]; then
+    return 70
+  fi
+  return "$status"
+}
+
+wait_for_kernel_readiness() {
+  node /usr/local/bin/arroba-wait-for-tcp.mjs \
+    "${ARROBA_KERNEL_HOST:-127.0.0.1}" \
+    "${ARROBA_KERNEL_PORT:-43118}" \
+    20000 &
+  READINESS_PID="$!"
+  local completed_pid=""
+  local status=0
+  local -a children=("$READINESS_PID" "$KERNEL_PID")
+  if [[ -n "$ACTION_SERVER_PID" ]]; then
+    children+=("$ACTION_SERVER_PID")
+  fi
+  if wait -n -p completed_pid "${children[@]}"; then
+    status=0
+  else
+    status="$?"
+  fi
+  record_standalone_child_exit "$completed_pid"
+  if [[ "$COMPLETED_CHILD_LABEL" == "kernel readiness probe" ]]; then
+    return "$status"
+  fi
+  unexpected_standalone_child_status "$COMPLETED_CHILD_LABEL" "$status"
+}
+
+supervise_standalone_children() {
+  local completed_pid=""
+  local status=0
+  local -a children=("$GATEWAY_PID" "$KERNEL_PID")
+  if [[ -n "$ACTION_SERVER_PID" ]]; then
+    children+=("$ACTION_SERVER_PID")
+  fi
+  if wait -n -p completed_pid "${children[@]}"; then
+    status=0
+  else
+    status="$?"
+  fi
+  record_standalone_child_exit "$completed_pid"
+  unexpected_standalone_child_status "$COMPLETED_CHILD_LABEL" "$status"
 }
 
 start_action_server() {
@@ -604,13 +678,10 @@ standalone() {
   KERNEL_PID="$!"
   start_action_server
 
-  node /usr/local/bin/arroba-wait-for-tcp.mjs "${ARROBA_KERNEL_HOST:-127.0.0.1}" "${ARROBA_KERNEL_PORT:-43118}" 20000
+  wait_for_kernel_readiness
   gateway "$ARROBA_GATEWAY_AUTH_FILE" "$publication_audit_file" "$@" &
   GATEWAY_PID="$!"
-  local gateway_status=0
-  wait "$GATEWAY_PID" || gateway_status="$?"
-  GATEWAY_PID=""
-  return "$gateway_status"
+  supervise_standalone_children
 }
 
 case "${1:-standalone}" in

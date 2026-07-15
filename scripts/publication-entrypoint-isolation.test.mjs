@@ -65,7 +65,7 @@ exec /usr/local/bin/arroba-publication-container standalone
   await Promise.all([chmod(fakeKernel, 0o755), chmod(wrapper, 0o755)])
 
   try {
-    const { stdout } = await execFileAsync("docker", [
+    const failure = await execFileAsync("docker", [
       "run",
       "--rm",
       "--security-opt",
@@ -135,12 +135,141 @@ exec /usr/local/bin/arroba-publication-container standalone
       "-v",
       `${root}:/test:ro`,
       baseImage,
-    ], { timeout: 40_000, maxBuffer: 1024 * 1024 })
+    ], { timeout: 40_000, maxBuffer: 1024 * 1024 }).then(
+      () => null,
+      (error) => error,
+    )
 
+    assert.ok(failure)
+    assert.equal(failure.code, 70, String(failure.stderr))
+    const stdout = String(failure.stdout)
     assert.match(stdout, /provider readiness read credential-sentinel without inheriting kernel auth/)
     assert.match(stdout, /action uid 1002 denied credential, workspace, and unauthenticated kernel access/)
     assert.match(stdout, /gateway uid 1003 authenticated with audit capability and preserved self-host configuration/)
     assert.match(stdout, /capability symlinks replaced without modifying their target/)
+    assert.match(String(failure.stderr), /publication standalone child exited: gateway \(status 0\)/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint exits and cleans up when the kernel or action server drops", {
+  skip: dockerSkip ?? false,
+  timeout: 45_000,
+}, async () => {
+  const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-supervision-"))
+  const publication = join(root, "publication")
+  const fakeKernel = join(root, "arroba-kernel")
+  const fakeGateway = join(root, "gateway.js")
+  const wrapper = join(root, "run.sh")
+  await copyFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), join(root, "entrypoint.sh"))
+  await copyFile(join(repositoryRoot, "docker/publication/wait-for-tcp.mjs"), join(root, "wait-for-tcp.mjs"))
+  await mkdir(join(publication, "app"), { recursive: true })
+  await writeFile(join(publication, "publication.json"), "{}\n")
+  await writeFile(join(publication, "app", "actions.mjs"), supervisedActionSource())
+  await writeFile(fakeKernel, supervisedKernelSource())
+  await writeFile(fakeGateway, supervisedGatewaySource())
+  await writeFile(wrapper, `#!/usr/bin/env bash
+set -euo pipefail
+useradd --create-home --uid 1001 --shell /bin/bash arroba
+useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action
+useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
+touch "/tmp/fail-\${FAIL_CHILD:?}"
+cp /test/entrypoint.sh /usr/local/bin/arroba-publication-container
+cp /test/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
+cp /test/arroba-kernel /usr/local/bin/arroba-kernel
+mkdir -p /opt/arroba/apps/server/dist
+cp /test/gateway.js /opt/arroba/apps/server/dist/index.js
+chmod 755 /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-kernel
+cp -a /test/publication /publication
+exec /usr/local/bin/arroba-publication-container standalone
+`)
+  await Promise.all([chmod(fakeKernel, 0o755), chmod(wrapper, 0o755)])
+
+  const scenarios = [
+    {
+      failure: "kernel-startup",
+      label: "kernel",
+      status: 25,
+      siblingMessages: ["supervision action terminated"],
+    },
+    {
+      failure: "action-startup",
+      label: "action server",
+      status: 26,
+      siblingMessages: ["supervision kernel terminated"],
+    },
+    {
+      failure: "kernel",
+      label: "kernel",
+      status: 23,
+      siblingMessages: ["supervision action terminated", "supervision gateway terminated"],
+    },
+    {
+      failure: "action",
+      label: "action server",
+      status: 24,
+      siblingMessages: ["supervision kernel terminated", "supervision gateway terminated"],
+    },
+  ]
+  try {
+    for (const scenario of scenarios) {
+      const failure = await execFileAsync("docker", [
+        "run",
+        "--rm",
+        "--security-opt",
+        "no-new-privileges",
+        "--cap-drop",
+        "ALL",
+        "--cap-add",
+        "CHOWN",
+        "--cap-add",
+        "SETUID",
+        "--cap-add",
+        "SETGID",
+        "--cap-add",
+        "DAC_OVERRIDE",
+        "--cap-add",
+        "FOWNER",
+        "--cap-add",
+        "KILL",
+        "--entrypoint",
+        "/test/run.sh",
+        "-e",
+        `FAIL_CHILD=${scenario.failure}`,
+        "-e",
+        "HOME=/home/arroba",
+        "-e",
+        "ARROBA_CONFIG_DIR=/home/arroba/.config/arroba",
+        "-e",
+        "ARROBA_DATA_DIR=/home/arroba/.local/share/arroba",
+        "-e",
+        "ARROBA_RUNTIME_DIR=/home/arroba/.cache/arroba/runtime",
+        "-e",
+        "ARROBA_SESSION_HISTORY_DIR=/home/arroba/.local/share/arroba/sessions",
+        "-e",
+        "ARROBA_PUBLICATION_PACKAGE=/publication",
+        "-v",
+        `${root}:/test:ro`,
+        baseImage,
+      ], { timeout: 20_000, maxBuffer: 512 * 1024 }).then(
+        () => null,
+        (error) => error,
+      )
+      assert.ok(failure)
+      assert.equal(failure.code, scenario.status, String(failure.stderr))
+      assert.match(
+        String(failure.stderr),
+        new RegExp(`publication standalone child exited: ${scenario.label} \\(status ${scenario.status}\\)`),
+      )
+      for (const message of scenario.siblingMessages) {
+        assert.match(
+          String(failure.stdout),
+          new RegExp(message),
+          `${scenario.failure} failure did not clean up sibling: ${String(failure.stderr)}`,
+        )
+      }
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -339,6 +468,7 @@ await assertKernelDeniesUnauthenticated()
 await assertGatewayEnvironmentHidden()
 console.log("action uid 1002 denied credential, workspace, and unauthenticated kernel access")
 await writeFile("/tmp/arroba-action-isolation-complete", "complete")
+setInterval(() => {}, 1000)
 async function assertKernelDeniesUnauthenticated() {
   const deadline = Date.now() + 3000
   for (;;) {
@@ -386,6 +516,53 @@ async function assertGatewayEnvironmentHidden() {
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
 }
+`
+}
+
+function supervisedKernelSource() {
+  return `#!/usr/bin/env node
+const fs = require("node:fs")
+const net = require("node:net")
+const server = net.createServer()
+process.on("SIGTERM", () => {
+  console.log("supervision kernel terminated")
+  process.exit(0)
+})
+if (fs.existsSync("/tmp/fail-kernel-startup")) {
+  setTimeout(() => process.exit(25), 400)
+} else {
+  const listenDelay = fs.existsSync("/tmp/fail-action-startup") ? 2000 : 0
+  setTimeout(() => server.listen(43118, "127.0.0.1", () => {
+    if (fs.existsSync("/tmp/fail-kernel")) {
+      setTimeout(() => process.exit(23), 1000)
+    }
+  }), listenDelay)
+}
+`
+}
+
+function supervisedActionSource() {
+  return `import fs from "node:fs"
+process.on("SIGTERM", () => {
+  console.log("supervision action terminated")
+  process.exit(0)
+})
+if (fs.existsSync("/tmp/fail-action")) {
+  setTimeout(() => process.exit(24), 1000)
+}
+if (fs.existsSync("/tmp/fail-action-startup")) {
+  setTimeout(() => process.exit(26), 400)
+}
+setInterval(() => {}, 1000)
+`
+}
+
+function supervisedGatewaySource() {
+  return `process.on("SIGTERM", () => {
+  console.log("supervision gateway terminated")
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
 `
 }
 
