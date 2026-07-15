@@ -458,6 +458,24 @@ export interface DeploymentCredentialEnrollmentResult {
   readonly enrollment: DeploymentCredentialEnrollmentSummary | null
 }
 
+export interface DeploymentCredentialCallbackChannelSummary {
+  readonly status: "armed"
+  readonly accountId: string
+  readonly enrollmentId: string
+  readonly profileId: string
+  readonly targetVersion: number
+  readonly realmId: string
+  readonly kernelTarget: string
+  readonly sessionId: string
+  readonly agentId: string
+  readonly armedAt: string
+  readonly expiresAt: string
+}
+
+export interface DeploymentCredentialCallbackChannelResult {
+  readonly channel: DeploymentCredentialCallbackChannelSummary
+}
+
 export interface DeploymentEnvironmentCredentialsResult {
   readonly credentials: DeploymentEnvironmentCredentialState
 }

@@ -4,6 +4,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import {
   acceptDeploymentClaim,
   adoptLegacyDeploymentProject,
+  armDeploymentCredentialCallbackChannel,
   bindDeploymentEnvironmentCredential,
   changeDeploymentEnvironmentLifecycle,
   createDeploymentClaim,
@@ -17,6 +18,7 @@ import {
   getDeploymentEnvironmentDomains,
   getDeploymentEnvironmentUsage,
   exportDeploymentEnvironmentTelemetry,
+  getDeploymentCredentialEnrollment,
   getDeploymentProject,
   listDeploymentProjects,
   listDeploymentCredentialProfiles,
@@ -34,6 +36,11 @@ import {
   waitForDeploymentCredentialEnrollment,
 } from "./deployed-workflow-api.js"
 import {
+  armClaudeCredentialEnrollment,
+  isClaudeCredentialProfile,
+  requiresClaudeCredentialCallbackChannel,
+} from "./deployed-workflow-credential-enrollment.js"
+import {
   executeDeploymentAudienceCommand,
 } from "./deployed-workflow-audience-command.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
@@ -44,6 +51,7 @@ import type {
   DeploymentControlRole,
   DeploymentCredentialProfileSummary,
   DeploymentCredentialEnrollmentSummary,
+  DeploymentCredentialProfileResult,
   DeploymentCredentialProfilesResult,
   DeploymentCredentialVerification,
   DeploymentEnvironmentDomainState,
@@ -59,11 +67,26 @@ import type {
   PublicationReleaseSummary,
   ReleasePromotionResult,
 } from "./deployed-workflow-types.js"
+import type { RuntimeAttachment, RuntimeSession } from "./cli-types.js"
 import { loadPreferences, relayCloudProfile, type RelayCloudProfile } from "./preferences.js"
 
 export interface DeployedWorkflowCommandOutput {
   readonly notice: string
   readonly footer: string
+}
+
+export interface DeployedWorkflowCommandRuntime {
+  readonly isAttached?: () => boolean
+  readonly sessionState?: () => RuntimeSession
+  readonly attachmentState?: () => RuntimeAttachment | null
+  readonly getRelayStatus?: () => Promise<{
+    readonly configured: boolean
+    readonly connected: boolean
+    readonly daemon_id: string
+  }>
+  readonly sendCredentialEnrollmentKernelRequest?: (
+    request: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
 }
 
 export async function runDeployedWorkflowCommand(argv: readonly string[]): Promise<boolean> {
@@ -76,7 +99,7 @@ export async function runDeployedWorkflowCommand(argv: readonly string[]): Promi
 }
 
 export async function handleDeployedWorkflowCloudCommand(
-  deps: {
+  deps: DeployedWorkflowCommandRuntime & {
     readonly appendCloudNotice?: (message: string) => void
     readonly appendNotice: (message: string) => void
     readonly flashFooter: (message: string, tone: "info" | "error") => void
@@ -87,7 +110,7 @@ export async function handleDeployedWorkflowCloudCommand(
   args: readonly string[],
 ): Promise<boolean> {
   if (area !== "deployments" && area !== "deployed") return false
-  const result = await executeDeployedWorkflowCommand(profile, [action ?? "list", ...args])
+  const result = await executeDeployedWorkflowCommand(profile, [action ?? "list", ...args], deps)
   ;(deps.appendCloudNotice ?? deps.appendNotice)(result.notice)
   deps.flashFooter(result.footer, "info")
   return true
@@ -96,6 +119,7 @@ export async function handleDeployedWorkflowCloudCommand(
 export async function executeDeployedWorkflowCommand(
   profile: RelayCloudProfile,
   argv: readonly string[],
+  runtime?: DeployedWorkflowCommandRuntime,
 ): Promise<DeployedWorkflowCommandOutput> {
   const action = argv[0] ?? "list"
   if (action === "list" || action === "ls") {
@@ -366,8 +390,11 @@ export async function executeDeployedWorkflowCommand(
       || (setupTarget && setupTarget !== "provider" && setupTarget !== "integration" && !argv[3])
     ) {
       const profileId = requiredArg(credentialAction === "retry" ? argv[2] : setupTarget, credentialRetryUsage)
-      await requireCredentialOperationAvailable(profile, profileId, "retry")
-      const result = await requestDeploymentCredentialOperation(profile, profileId, "retry")
+      const credential = await requireCredentialOperationAvailable(profile, profileId, "retry")
+      const result = await requestDeploymentCredentialOperation(profile, profileId, "retry", {
+        waitForEnrollmentDetails: !isClaudeCredentialProfile(credential),
+      })
+      await armClaudeCredentialMutation(profile, result, runtime)
       return formatDeploymentCredentialOperation(
         result.profile,
         result.job,
@@ -388,7 +415,10 @@ export async function executeDeployedWorkflowCommand(
         kind,
         ...(kind === "provider" ? { provider: identity } : { integration: identity }),
         label,
+      }, {
+        waitForEnrollmentDetails: kind !== "provider" || identity !== "claude",
       })
+      await armClaudeCredentialMutation(profile, result, runtime)
       return formatDeploymentCredentialOperation(
         result.profile,
         result.job,
@@ -401,8 +431,13 @@ export async function executeDeployedWorkflowCommand(
       const listed = await requireCredentialManagementAvailable(profile)
       const credential = listed.profiles.find((candidate) => candidate.id === profileId)
       if (!credential) throw new Error(`credential ${profileId} was not found`)
-      const result = await waitForDeploymentCredentialEnrollment(profile, profileId)
+      const result = isClaudeCredentialProfile(credential)
+        ? await getDeploymentCredentialEnrollment(profile, profileId)
+        : await waitForDeploymentCredentialEnrollment(profile, profileId)
       if (!result.enrollment) throw new Error(`credential ${profileId} has no enrollment`)
+      await armClaudeCredentialMutation(profile, {
+        profile: { ...credential, enrollment: result.enrollment },
+      }, runtime)
       return {
         notice: formatDeploymentCredentialEnrollment(result.enrollment, credential),
         footer: `credential ${enrollmentStatusLabel(result.enrollment.status)}`,
@@ -411,8 +446,13 @@ export async function executeDeployedWorkflowCommand(
     if (credentialAction === "test" || credentialAction === "rotate"
       || credentialAction === "revoke" || credentialAction === "purge") {
       const profileId = requiredArg(argv[2], credentialOperationUsage)
-      await requireCredentialOperationAvailable(profile, profileId, credentialAction)
-      const result = await requestDeploymentCredentialOperation(profile, profileId, credentialAction)
+      const credential = await requireCredentialOperationAvailable(profile, profileId, credentialAction)
+      const result = await requestDeploymentCredentialOperation(profile, profileId, credentialAction, {
+        waitForEnrollmentDetails: credentialAction !== "rotate" || !isClaudeCredentialProfile(credential),
+      })
+      if (credentialAction === "rotate") {
+        await armClaudeCredentialMutation(profile, result, runtime)
+      }
       return formatDeploymentCredentialOperation(
         result.profile,
         result.job,
@@ -724,7 +764,7 @@ async function requireCredentialOperationAvailable(
   cloudProfile: RelayCloudProfile,
   profileId: string,
   operation: "retry" | "test" | "rotate" | "revoke" | "purge",
-): Promise<void> {
+): Promise<DeploymentCredentialProfileSummary> {
   const listed = await listDeploymentCredentialProfiles(cloudProfile)
   if (operation !== "test") requireCredentialManagementAccess(listed)
   const credential = listed.profiles.find((candidate) => candidate.id === profileId)
@@ -743,6 +783,62 @@ async function requireCredentialOperationAvailable(
   if (operation !== "purge" && credential.status === "revoked") {
     throw new Error(`credential ${profileId} is revoked; only purge is available`)
   }
+  return credential
+}
+
+async function armClaudeCredentialMutation(
+  cloudProfile: RelayCloudProfile,
+  result: DeploymentCredentialProfileResult,
+  runtime: DeployedWorkflowCommandRuntime | undefined,
+): Promise<void> {
+  const enrollment = result.profile.enrollment
+  if (!isClaudeCredentialProfile(result.profile)) return
+  if (!enrollment) {
+    throw new Error("Claude credential setup did not return an enrollment")
+  }
+  if (enrollment.profileId !== result.profile.id || result.profile.accountId !== cloudProfile.accountId) {
+    throw new Error("Claude credential setup returned a mismatched enrollment")
+  }
+  if (!requiresClaudeCredentialCallbackChannel(result.profile, enrollment)) return
+
+  const attachment = runtime?.attachmentState?.() ?? null
+  const session = runtime?.sessionState?.()
+  if (!runtime?.isAttached?.() || !attachment || !session) {
+    throw new Error("Claude provider-native credential setup requires an attached Arroba TUI")
+  }
+  if (attachment.session_id !== session.id) {
+    throw new Error("Claude credential setup attachment is stale")
+  }
+  const agentId = session.focused_agent_id
+  if (!agentId || !session.agents.some((agent) => agent.id === agentId)) {
+    throw new Error("Claude credential setup requires a focused session agent")
+  }
+  if (!runtime.sendCredentialEnrollmentKernelRequest) {
+    throw new Error("Claude credential setup requires kernel protocol 241 support")
+  }
+  if (!runtime.getRelayStatus) {
+    throw new Error("Claude credential setup cannot resolve its kernel relay target")
+  }
+  const relayStatus = await runtime.getRelayStatus()
+  if (!relayStatus.configured || !relayStatus.connected || !relayStatus.daemon_id.trim()) {
+    throw new Error("Claude credential setup requires the attached kernel to be online in Cloud")
+  }
+
+  await armClaudeCredentialEnrollment({
+    sendKernelRequest: runtime.sendCredentialEnrollmentKernelRequest,
+    armCloudCallbackChannel: (binding) => armDeploymentCredentialCallbackChannel(cloudProfile, binding),
+  }, {
+    accountId: cloudProfile.accountId,
+    enrollmentId: enrollment.id,
+    profileId: result.profile.id,
+    targetVersion: enrollment.targetVersion,
+    enrollmentExpiresAt: enrollment.expiresAt,
+    realmId: cloudProfile.realmId,
+    kernelTarget: relayStatus.daemon_id,
+    sessionId: session.id,
+    attachmentId: attachment.id,
+    agentId,
+  })
 }
 
 async function requireCredentialManagementAvailable(

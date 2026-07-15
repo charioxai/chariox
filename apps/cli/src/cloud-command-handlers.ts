@@ -16,12 +16,16 @@ import {
   handleRelayCloudCommand,
   type RelayCloudCommandHandlerDeps,
 } from "./relay-cloud-command-handlers.js"
-import { handleDeployedWorkflowCloudCommand } from "./deployed-workflow-command.js"
+import {
+  handleDeployedWorkflowCloudCommand,
+  type DeployedWorkflowCommandRuntime,
+} from "./deployed-workflow-command.js"
 
 export type CloudCommandHandlerDeps =
   & CloudCommandLifecycleDeps
   & CloudSessionCommandHandlerDeps
   & RelayCloudCommandHandlerDeps
+  & DeployedWorkflowCommandRuntime
 
 export async function handleRelaySlashCommand(
   deps: CloudCommandHandlerDeps,

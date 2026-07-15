@@ -13,6 +13,7 @@ import type {
   DeploymentClaimResult,
   DeploymentControlRole,
   DeploymentCredentialKind,
+  DeploymentCredentialCallbackChannelResult,
   DeploymentCredentialEnrollmentResult,
   DeploymentCredentialProfileResult,
   DeploymentCredentialProfilesResult,
@@ -510,6 +511,30 @@ export async function getDeploymentCredentialEnrollment(
   )
 }
 
+export async function armDeploymentCredentialCallbackChannel(
+  profile: RelayCloudProfile,
+  input: {
+    readonly accountId: string
+    readonly enrollmentId: string
+    readonly profileId: string
+    readonly targetVersion: number
+    readonly realmId: string
+    readonly kernelTarget: string
+    readonly sessionId: string
+    readonly agentId: string
+  },
+): Promise<DeploymentCredentialCallbackChannelResult> {
+  if (input.accountId !== profile.accountId) {
+    throw new Error("credential callback channel account does not match the linked Cloud profile")
+  }
+  const { profileId, ...body } = input
+  return postJson(
+    profile,
+    `/deployment-credentials/${encodeURIComponent(profileId)}/enrollment/callback-channel/arm`,
+    body,
+  )
+}
+
 export async function waitForDeploymentCredentialEnrollment(
   profile: RelayCloudProfile,
   profileId: string,
@@ -537,6 +562,9 @@ export async function createDeploymentCredentialProfile(
     readonly integration?: string
     readonly label: string
   },
+  options: {
+    readonly waitForEnrollmentDetails?: boolean
+  } = {},
 ): Promise<DeploymentCredentialProfileResult> {
   const result = await postJson<DeploymentCredentialProfileResult>(profile, "/deployment-credentials", {
     accountId: profile.accountId,
@@ -545,13 +573,18 @@ export async function createDeploymentCredentialProfile(
     ...(input.integration ? { integration: input.integration } : {}),
     label: input.label,
   })
-  return withCredentialEnrollmentDetails(profile, result)
+  return options.waitForEnrollmentDetails === false
+    ? { ...result, profile: withoutCredentialEnrollmentSetupDetails(result.profile) }
+    : withCredentialEnrollmentDetails(profile, result)
 }
 
 export async function requestDeploymentCredentialOperation(
   profile: RelayCloudProfile,
   profileId: string,
   operation: "retry" | "test" | "rotate" | "revoke" | "purge",
+  options: {
+    readonly waitForEnrollmentDetails?: boolean
+  } = {},
 ): Promise<DeploymentCredentialProfileResult> {
   const routeOperation = operation === "retry" ? "setup" : operation
   const result = await postJson<DeploymentCredentialProfileResult>(
@@ -559,9 +592,10 @@ export async function requestDeploymentCredentialOperation(
     `/deployment-credentials/${encodeURIComponent(profileId)}/${routeOperation}`,
     { accountId: profile.accountId },
   )
-  return operation === "rotate" || operation === "retry"
-    ? withCredentialEnrollmentDetails(profile, result)
-    : result
+  if (operation !== "rotate" && operation !== "retry") return result
+  return options.waitForEnrollmentDetails === false
+    ? { ...result, profile: withoutCredentialEnrollmentSetupDetails(result.profile) }
+    : withCredentialEnrollmentDetails(profile, result)
 }
 
 export async function getDeploymentEnvironmentCredentials(
