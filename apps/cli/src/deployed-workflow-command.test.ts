@@ -362,6 +362,20 @@ test("deployment credential formatting preserves provider auth URLs and forces r
     assert.doesNotMatch(unsafeNormalizedName, /verification_url|secret-/)
   }
 
+  for (const unsafeQuery of [
+    "unexpected=safe-looking-value",
+    "state=Duplicate-State",
+    "code=callback-secret",
+    "code_challenge_method=plain",
+  ]) {
+    const unsafePolicyParameter = formatDeploymentCredentialEnrollment({
+      ...credentialEnrollment("profile-unsafe-policy"),
+      verificationUrl: `${pkceUrl}&${unsafeQuery}`,
+      userCode: null,
+    }, claudeProfile)
+    assert.doesNotMatch(unsafePolicyParameter, /verification_url|callback-secret/)
+  }
+
   const excessiveParameters = formatDeploymentCredentialEnrollment({
     ...credentialEnrollment("profile-excessive-parameters"),
     verificationUrl: `${pkceUrl}&${Array.from({ length: 25 }, (_, index) => `state_${index}=safe`).join("&")}`,

@@ -842,27 +842,63 @@ function safeCredentialVerificationUrl(
 type ProviderVerificationUrlPolicy = {
   readonly origin: string
   readonly pathname: string
+  readonly allowedParameters: readonly string[]
+  readonly requiredParameters?: readonly string[]
   readonly redirectUri?: string
   readonly responseType?: string
   readonly requireClientId?: boolean
+  readonly codeChallengeMethod?: string
 }
 
 const providerVerificationUrlPolicies: Readonly<Record<string, readonly ProviderVerificationUrlPolicy[]>> = {
-  codex: [{ origin: "https://auth.openai.com", pathname: "/codex/device" }],
+  codex: [{
+    origin: "https://auth.openai.com",
+    pathname: "/codex/device",
+    allowedParameters: ["user_code", "verification_code"],
+  }],
   claude: [{
     origin: "https://claude.com",
     pathname: "/cai/oauth/authorize",
+    allowedParameters: [
+      "client_id",
+      "response_type",
+      "redirect_uri",
+      "scope",
+      "code_challenge",
+      "code_challenge_method",
+      "state",
+    ],
+    requiredParameters: [
+      "client_id",
+      "response_type",
+      "redirect_uri",
+      "code_challenge",
+      "code_challenge_method",
+      "state",
+    ],
     redirectUri: "https://claude.com/cai/oauth/code/callback",
     responseType: "code",
     requireClientId: true,
+    codeChallengeMethod: "S256",
   }],
-  opencode: [{ origin: "https://auth.openai.com", pathname: "/codex/device" }],
+  opencode: [{
+    origin: "https://auth.openai.com",
+    pathname: "/codex/device",
+    allowedParameters: ["user_code", "verification_code"],
+  }],
 }
 
 function validProviderCredentialVerificationParameters(
   url: URL,
   policy: ProviderVerificationUrlPolicy,
 ): boolean {
+  const allowedParameters = new Set(policy.allowedParameters)
+  if ([...url.searchParams.keys()].some((name) => !allowedParameters.has(name))) return false
+  if ([...allowedParameters].some((name) => url.searchParams.getAll(name).length > 1)) return false
+  if ((policy.requiredParameters ?? []).some((name) => {
+    const values = url.searchParams.getAll(name)
+    return values.length !== 1 || !values[0]?.trim()
+  })) return false
   const redirectUris = url.searchParams.getAll("redirect_uri")
   if (policy.redirectUri) {
     if (redirectUris.length !== 1 || redirectUris[0] !== policy.redirectUri) return false
@@ -892,6 +928,10 @@ function validProviderCredentialVerificationParameters(
     const clientIds = url.searchParams.getAll("client_id")
     if (clientIds.length !== 1 || !clientIds[0]?.trim() || clientIds[0].length > 256) return false
   }
+  if (policy.codeChallengeMethod) {
+    const methods = url.searchParams.getAll("code_challenge_method")
+    if (methods.length !== 1 || methods[0] !== policy.codeChallengeMethod) return false
+  }
   return true
 }
 
@@ -899,6 +939,8 @@ function secretBearingCredentialVerificationParameter(name: string): boolean {
   const normalized = name.trim().toLowerCase().replaceAll("-", "_").replaceAll(".", "_")
   const compact = normalized.replaceAll("_", "")
   return normalized === "api_key"
+    || normalized === "code"
+    || normalized === "authorization_code"
     || normalized === "password"
     || normalized === "credential"
     || normalized === "code_verifier"
