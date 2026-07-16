@@ -95,6 +95,7 @@ pub(super) fn collect_ready_workflow_dispatches(
         dispatches.push(WorkflowDispatch {
             node_run,
             messages: selected_messages,
+            endpoint_prompt: None,
         });
         available_dispatch_slots = available_dispatch_slots.saturating_sub(1);
     }

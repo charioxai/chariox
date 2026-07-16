@@ -13,4 +13,5 @@ fn completion_with_message(message: impl Into<String>) -> WorkflowCompletionSnap
 mod downstream_dispatch;
 mod join_inputs;
 mod routed_edges;
+mod run_output_validation;
 mod schema_validation;

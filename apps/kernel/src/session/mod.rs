@@ -33,7 +33,7 @@ pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore}
 pub(crate) use service::prompt_id_number;
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
-    WorkflowHandoffValidationWarning, WorkflowWatchdogTickPlan,
+    WorkflowHandoffValidationWarning, WorkflowRunOutputValidationFailure, WorkflowWatchdogTickPlan,
 };
 pub use service::{PromptIdAllocator, SessionService};
 pub use store::SessionStore;

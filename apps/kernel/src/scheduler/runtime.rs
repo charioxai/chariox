@@ -90,7 +90,7 @@ pub fn schedule_workflow_dispatches(
             workflow_run_id,
             dispatch.node_run.id(),
             dispatch.node_run.node_id(),
-            "",
+            dispatch.endpoint_prompt.as_deref().unwrap_or(""),
             Some(&dispatch.messages),
         ) {
             Ok(prompt) => prompt,

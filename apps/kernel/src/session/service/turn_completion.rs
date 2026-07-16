@@ -1,5 +1,7 @@
 use super::*;
 
+const DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS: u32 = 3;
+
 impl SessionService {
     pub fn complete_workflow_node_run(
         &mut self,
@@ -16,6 +18,51 @@ impl SessionService {
         )?;
         let (emitted_messages, validation_warnings) =
             self.build_workflow_completion_messages(session_id, &context, completion.as_ref())?;
+        let candidate_final_output = context
+            .source_node_run
+            .turn_envelope()
+            .and_then(|envelope| {
+                envelope
+                    .pending_output_submission(WorkflowTurnSubmissionKind::Final)
+                    .cloned()
+            })
+            .or_else(|| {
+                Self::fallback_terminal_completion_as_final_output(&context, completion.as_ref())
+            });
+        let run_output_validation_failure = candidate_final_output
+            .as_ref()
+            .filter(|submission| !submission.valid())
+            .map(|submission| {
+                Self::workflow_run_output_validation_failure(&context, submission, max_turns)
+            });
+        let retry_dispatch = run_output_validation_failure
+            .as_ref()
+            .filter(|failure| failure.retry_scheduled)
+            .map(|failure| {
+                self.next_workflow_node_run_number += 1;
+                let node_run = WorkflowNodeRun::new(
+                    format!("workflow-node-run-{}", self.next_workflow_node_run_number),
+                    context.source_node_run.node_id().to_string(),
+                    context.source_node_run.agent_id().to_string(),
+                    context
+                        .workflow_run
+                        .node_runs()
+                        .iter()
+                        .filter(|node_run| node_run.node_id() == context.source_node_run.node_id())
+                        .map(WorkflowNodeRun::iteration_index)
+                        .max()
+                        .unwrap_or(0)
+                        + 1,
+                    WorkflowNodeRunStatus::Ready,
+                );
+                WorkflowDispatch {
+                    node_run,
+                    messages: Vec::new(),
+                    endpoint_prompt: Some(Self::workflow_run_output_correction_prompt(
+                        &context, failure,
+                    )),
+                }
+            });
 
         let session =
             self.store
@@ -55,11 +102,47 @@ impl SessionService {
         let mut pending_outputs =
             Self::take_pending_workflow_turn_outputs(node_run.turn_envelope_mut());
         if pending_outputs.final_output.is_none() {
-            pending_outputs.final_output =
-                Self::fallback_terminal_completion_as_final_output(&context, completion.as_ref());
+            pending_outputs.final_output = candidate_final_output;
         }
         Self::apply_workflow_node_completion(node_run, completion);
+        if run_output_validation_failure.is_some() {
+            node_run.set_status(WorkflowNodeRunStatus::Failed);
+            if let Some(envelope) = node_run.turn_envelope_mut() {
+                envelope.mark_failed();
+            }
+        }
         workflow_run.clear_active_node_run();
+        if let Some(failure) = run_output_validation_failure {
+            pending_outputs.final_output = None;
+            Self::commit_pending_workflow_turn_outputs(
+                workflow_run,
+                workflow_node_run_id,
+                pending_outputs,
+            );
+            for message in emitted_messages {
+                workflow_run.add_message(message);
+            }
+            let dispatches = retry_dispatch
+                .map(|dispatch| {
+                    let node_run = workflow_run.add_node_run(dispatch.node_run);
+                    workflow_run.set_status(WorkflowRunStatus::Waiting);
+                    vec![WorkflowDispatch {
+                        node_run,
+                        messages: dispatch.messages,
+                        endpoint_prompt: dispatch.endpoint_prompt,
+                    }]
+                })
+                .unwrap_or_else(|| {
+                    workflow_run.set_status(WorkflowRunStatus::Failed);
+                    Vec::new()
+                });
+            return Ok(WorkflowCompletionUpdate {
+                workflow_run: workflow_run.clone(),
+                dispatches,
+                validation_warnings,
+                run_output_validation_failure: Some(failure),
+            });
+        }
         Self::commit_pending_workflow_turn_outputs(
             workflow_run,
             workflow_node_run_id,
@@ -77,6 +160,7 @@ impl SessionService {
                     event.kind(),
                     WorkflowFailureKind::MissingStructuredOutput
                         | WorkflowFailureKind::OutputValidationFailed
+                        | WorkflowFailureKind::WorkflowRunOutputValidationFailed
                 ) && resolved_source_node_run_ids
                     .contains(event.source_node_run_id());
                 !resolved_failure
@@ -93,6 +177,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                run_output_validation_failure: None,
             });
         }
         let workflow_id = workflow_run.workflow_id().to_string();
@@ -140,6 +225,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                run_output_validation_failure: None,
             });
         }
         if max_turns_reached {
@@ -148,6 +234,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                run_output_validation_failure: None,
             });
         }
         workflow_run.set_status(if has_unconsumed_messages || has_pending_node_runs {
@@ -159,6 +246,7 @@ impl SessionService {
             workflow_run: workflow_run.clone(),
             dispatches,
             validation_warnings,
+            run_output_validation_failure: None,
         })
     }
 
@@ -423,6 +511,80 @@ impl SessionService {
             warning.is_none(),
             warning,
         ))
+    }
+
+    fn workflow_run_output_validation_failure(
+        context: &WorkflowCompletionContext,
+        submission: &WorkflowRunOutputSubmission,
+        max_turns: Option<usize>,
+    ) -> WorkflowRunOutputValidationFailure {
+        let source_node_id = context.source_node_run.node_id();
+        let source_node = context
+            .workflow
+            .node(source_node_id)
+            .expect("workflow completion context must contain its source node");
+        let max_attempts = source_node
+            .max_turns()
+            .unwrap_or(DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS)
+            .min(DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS)
+            .max(1);
+        let prior_validation_failures = context
+            .workflow_run
+            .failure_events()
+            .iter()
+            .filter(|event| event.kind() == WorkflowFailureKind::WorkflowRunOutputValidationFailed)
+            .filter(|event| {
+                context
+                    .workflow_run
+                    .node_runs()
+                    .iter()
+                    .find(|node_run| node_run.id() == event.source_node_run_id())
+                    .is_some_and(|node_run| node_run.node_id() == source_node_id)
+            })
+            .count() as u32;
+        let attempt = prior_validation_failures.saturating_add(1);
+        let completed_node_turns = context
+            .workflow_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == source_node_id)
+            .filter(|node_run| node_run.completion().is_some())
+            .count() as u32
+            + 1;
+        let node_budget_allows_retry = source_node
+            .max_turns()
+            .is_none_or(|limit| completed_node_turns < limit);
+        let workflow_budget_allows_retry = max_turns
+            .filter(|limit| *limit > 0)
+            .is_none_or(|limit| context.workflow_run.node_runs().len() < limit);
+        WorkflowRunOutputValidationFailure {
+            message: submission
+                .warning()
+                .unwrap_or("workflow run output validation failed")
+                .to_string(),
+            attempt,
+            max_attempts,
+            retry_scheduled: attempt < max_attempts
+                && node_budget_allows_retry
+                && workflow_budget_allows_retry,
+        }
+    }
+
+    fn workflow_run_output_correction_prompt(
+        context: &WorkflowCompletionContext,
+        failure: &WorkflowRunOutputValidationFailure,
+    ) -> String {
+        let invocation_prompt = context
+            .workflow_run
+            .invocation_prompt()
+            .map(str::trim)
+            .unwrap_or("");
+        format!(
+            "{invocation_prompt}\n\nThe previous final workflow output failed schema validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Produce corrected final output, call `validate_and_submit_workflow_run_output`, and do not finish until that tool returns `valid: true` with no warning.",
+            failure.attempt, failure.max_attempts, failure.message
+        )
+        .trim()
+        .to_string()
     }
 
     fn apply_workflow_node_completion(

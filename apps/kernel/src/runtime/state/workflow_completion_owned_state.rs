@@ -170,7 +170,7 @@ impl KernelRuntimeOwnedState {
                 ),
             );
         }
-        if update.workflow_run.final_output_valid() == Some(false) {
+        if let Some(failure) = update.run_output_validation_failure.as_ref() {
             self.workflow_record_failure(
                 session_id,
                 workflow_run_id,
@@ -178,14 +178,28 @@ impl KernelRuntimeOwnedState {
                     crate::session::WorkflowFailureKind::WorkflowRunOutputValidationFailed,
                     workflow_node_run_id,
                     Vec::new(),
-                    update
-                        .workflow_run
-                        .final_output_warning()
-                        .unwrap_or("workflow run output validation failed"),
+                    failure.message.clone(),
                 ),
             );
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                if failure.retry_scheduled {
+                    format!(
+                        "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                        failure.attempt, failure.max_attempts, failure.message
+                    )
+                } else {
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
+                        failure.attempt, failure.max_attempts, failure.message
+                    )
+                },
+            );
         }
-        if update.validation_warnings.is_empty() {
+        if update.validation_warnings.is_empty() && update.run_output_validation_failure.is_none() {
             let _ = self
                 .session_store
                 .write()
@@ -209,6 +223,7 @@ impl KernelRuntimeOwnedState {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completing => "is completing",
             crate::session::WorkflowRunStatus::Completed => "completed",
+            crate::session::WorkflowRunStatus::Failed => "failed",
             crate::session::WorkflowRunStatus::Stopped => "stopped",
             _ => "updated",
         };

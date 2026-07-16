@@ -115,6 +115,7 @@ pub fn on_workflow_prompt_completed(
         workflow_run,
         dispatches,
         validation_warnings,
+        run_output_validation_failure,
     } = match completion_result {
         Ok(update) => update,
         Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
@@ -193,7 +194,7 @@ pub fn on_workflow_prompt_completed(
             ),
         );
     }
-    if workflow_run.final_output_valid() == Some(false) {
+    if let Some(failure) = run_output_validation_failure.as_ref() {
         record_and_route_workflow_failure(
             app,
             session_id,
@@ -202,13 +203,27 @@ pub fn on_workflow_prompt_completed(
                 WorkflowFailureKind::WorkflowRunOutputValidationFailed,
                 workflow_node_run_id,
                 Vec::new(),
-                workflow_run
-                    .final_output_warning()
-                    .unwrap_or("workflow run output validation failed"),
+                failure.message.clone(),
             ),
         );
+        app.record_notice(
+            session_id,
+            provider_run_id,
+            app.attachments().list_session_attachment_ids(session_id),
+            if failure.retry_scheduled {
+                format!(
+                    "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                    failure.attempt, failure.max_attempts, failure.message
+                )
+            } else {
+                format!(
+                    "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
+                    failure.attempt, failure.max_attempts, failure.message
+                )
+            },
+        );
     }
-    if validation_warnings.is_empty() {
+    if validation_warnings.is_empty() && run_output_validation_failure.is_none() {
         let updated = app.sessions_mut().mark_workflow_turn_validated_completed(
             session_id,
             workflow_run_id,
