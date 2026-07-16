@@ -207,7 +207,10 @@ function normalizeProvider(provider: unknown): string | null {
   if (typeof provider !== "string") return null
   const trimmed = provider.trim().toLowerCase()
   if (!trimmed) return null
-  return trimmed.split(":")[0] ?? trimmed
+  const base = trimmed.split(":")[0] ?? trimmed
+  if (base === "default") return "opencode"
+  if (base === "claude-headless" || base === "claude-p") return "claude"
+  return base
 }
 
 async function fileExists(path: string): Promise<boolean> {

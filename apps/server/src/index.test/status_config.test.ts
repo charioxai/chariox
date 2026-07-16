@@ -145,6 +145,49 @@ test("GET /health treats the explicitly enabled development provider stub as int
   }
 })
 
+test("GET /health collapses provider runtime aliases before readiness probing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-provider-alias-health-"))
+  const previousClaudeBin = process.env.ARROBA_CLAUDE_BIN
+  await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
+  await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+    schema_version: 1,
+    source_session: { id: "source-session-1" },
+    workflow: { id: "workflow-1", nodes: [] },
+    endpoint: { id: "endpoint-1" },
+    agents: [
+      { id: "agent-1", provider: "claude-headless", model: "claude-sonnet-4-6" },
+      { id: "agent-2", provider: "claude-p", model: "claude-sonnet-4-6" },
+    ],
+  }))
+  await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+  const missingClaudeBin = join(root, "missing-claude")
+  setOptionalEnv("ARROBA_CLAUDE_BIN", missingClaudeBin)
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json().provider_readiness, [{
+      provider: "claude",
+      status: "provider_cli_missing",
+      ready: false,
+      cli: { available: false, command: missingClaudeBin, version: null },
+      auth: { status: "provider_auth_unknown" },
+      error: "claude CLI was not found",
+    }])
+  } finally {
+    await app.close()
+    setOptionalEnv("ARROBA_CLAUDE_BIN", previousClaudeBin)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("GET publication status reports runtime binding", async () => {
   const { app } = buildServer({
     ...baseConfig,
