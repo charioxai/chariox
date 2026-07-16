@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use rand::RngCore;
 
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
@@ -24,6 +27,8 @@ use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
 const CLAUDE_ENV_OVERRIDE: &str = "ARROBA_CLAUDE_BIN";
+const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
@@ -161,6 +166,7 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
+        ensure_claude_headless_onboarding_state()?;
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "preparing Claude headless native bridge files",
@@ -258,6 +264,74 @@ fn plan_claude_launch_unlocked(
     };
     native.persist_for_launch();
     Ok(launch)
+}
+
+fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
+    let state_path = if let Some(config_dir) = env::var_os(CLAUDE_CONFIG_DIR_ENV) {
+        PathBuf::from(config_dir).join(CLAUDE_HEADLESS_STATE_FILE)
+    } else {
+        let home = env::var_os("HOME").ok_or_else(|| DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: "HOME is unavailable".to_string(),
+        })?;
+        PathBuf::from(home).join(CLAUDE_HEADLESS_STATE_FILE)
+    };
+    if state_path.exists() {
+        return Ok(());
+    }
+    let parent = state_path
+        .parent()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: "Claude config directory is unavailable".to_string(),
+        })?;
+    fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
+        operation: "initialize Claude headless onboarding state",
+        message: error.to_string(),
+    })?;
+    let mut nonce = [0_u8; 8];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let pending_path = parent.join(format!(
+        ".claude-headless-onboarding-{}-{}.tmp",
+        std::process::id(),
+        u64::from_le_bytes(nonce),
+    ));
+    let mut pending_options = fs::OpenOptions::new();
+    pending_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        pending_options.mode(0o600);
+    }
+    let mut pending =
+        pending_options
+            .open(&pending_path)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: error.to_string(),
+            })?;
+    let write_result = pending
+        .write_all(b"{\"hasCompletedOnboarding\":true}\n")
+        .and_then(|()| pending.sync_all());
+    if let Err(error) = write_result {
+        drop(pending);
+        let _ = fs::remove_file(pending_path);
+        return Err(DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: error.to_string(),
+        });
+    }
+    drop(pending);
+    let result = match fs::hard_link(&pending_path, &state_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: error.to_string(),
+        }),
+    };
+    let _ = fs::remove_file(pending_path);
+    result
 }
 
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
@@ -358,8 +432,8 @@ mod tests {
     };
 
     use super::{
-        claude_provider_catalog, plan_claude_launch, resolve_claude_executable,
-        CLAUDE_MCP_CONFIG_PLACEHOLDER,
+        claude_provider_catalog, ensure_claude_headless_onboarding_state, plan_claude_launch,
+        resolve_claude_executable, CLAUDE_MCP_CONFIG_PLACEHOLDER,
     };
 
     fn env_guard() -> crate::env_lock::EnvGuard {
@@ -582,12 +656,17 @@ mod tests {
     #[test]
     fn plans_claude_headless_mode_without_print_stream_json() {
         let _guard = env_guard();
-        let path = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "arroba-claude-resolve-test-{}-headless-mode",
             std::process::id()
         ));
+        let path = root.join("claude");
+        let config_dir = root.join("config");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -599,7 +678,11 @@ mod tests {
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("ARROBA_CLAUDE_BIN");
-        let _ = fs::remove_file(&path);
+        if let Some(previous_config_dir) = previous_config_dir {
+            std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
         assert_eq!(launch.process_label, "claude:headless");
@@ -611,6 +694,49 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
         assert!(launch.pty_env.contains_key("ARROBA_CLAUDE_SETTINGS_FILE"));
+        let state_path = config_dir.join(".claude.json");
+        assert_eq!(
+            fs::read_to_string(&state_path).expect("headless state should exist"),
+            "{\"hasCompletedOnboarding\":true}\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&state_path)
+                .expect("headless state metadata should exist")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn preserves_existing_claude_headless_state() {
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "arroba-claude-existing-headless-state-{}",
+            std::process::id()
+        ));
+        let config_dir = root.join("config");
+        let state_path = config_dir.join(".claude.json");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
+        fs::write(&state_path, "{\"existing\":true}\n").expect("existing state should write");
+        let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
+
+        ensure_claude_headless_onboarding_state().expect("existing state should be accepted");
+
+        if let Some(previous_config_dir) = previous_config_dir {
+            std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);
+        } else {
+            std::env::remove_var("CLAUDE_CONFIG_DIR");
+        }
+        assert_eq!(
+            fs::read_to_string(&state_path).expect("existing state should remain"),
+            "{\"existing\":true}\n"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
