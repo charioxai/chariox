@@ -79,6 +79,12 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.s
 
 RUN chmod +x /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/validate-screen.sh
 
+USER root
+RUN apt-get update \
+  && apt-get install -y gh \
+  && rm -rf /var/lib/apt/lists/*
+USER slice
+
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace
 CMD ["sleep", "infinity"]

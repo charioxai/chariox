@@ -185,7 +185,7 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
                 .map(|call| call.timestamp_ms())
         })
         .unwrap_or(started_at_ms);
-    let provider_output = history
+    let provider_output_entries = history
         .into_iter()
         .filter(|entry| {
             entry.provider_run_id.as_deref() == Some(provider_run_id)
@@ -193,8 +193,8 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
                 && entry.kind == SessionHistoryEntryKind::ProviderOutput
         })
         .map(|entry| entry.text)
-        .collect::<Vec<_>>()
-        .join("");
+        .collect::<Vec<_>>();
+    let provider_output = provider_output_entries.join("");
     let structured_output = parse_workflow_structured_output(&provider_output);
     if structured_output.is_none() {
         if let Some(snapshot) =
@@ -210,6 +210,9 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
                 "workflow_run_id": workflow_run_id,
                 "workflow_node_run_id": workflow_node_run_id,
                 "provider_run_id": provider_run_id,
+                "output_started_at_ms": output_started_at_ms,
+                "provider_output_entry_count": provider_output_entries.len(),
+                "provider_output_char_count": provider_output.chars().count(),
             }),
         );
         return None;

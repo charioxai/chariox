@@ -6,9 +6,10 @@ mod store;
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,
-    inspect_local_docker_slice_host_runtime, local_docker_private_relay,
-    local_docker_private_relay_endpoint, local_docker_private_relay_token,
-    remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
+    inspect_local_docker_slice_host_runtime, inspect_local_docker_slice_provider_auth,
+    local_docker_private_relay, local_docker_private_relay_endpoint,
+    local_docker_private_relay_token, remove_local_docker_saved_state,
+    run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
     start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
@@ -310,6 +311,19 @@ mod tests {
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
+        let relay_endpoint = local_docker_private_relay_endpoint(&slice);
+        store
+            .set_worker_presence(
+                &slice.id,
+                Some("worker-1".to_string()),
+                Some("machine-2".to_string()),
+                vec!["codex".to_string()],
+                44,
+            )
+            .expect("slice worker presence should update");
+        store
+            .set_relay_endpoint(&slice.id, Some(relay_endpoint.clone()), 44)
+            .expect("slice relay endpoint should update");
         store
             .set_status(&slice.id, SliceStatus::Unhealthy, 45)
             .expect("slice should be unhealthy");
@@ -328,6 +342,13 @@ mod tests {
             Some(SliceOperationStatus::Reconciled)
         );
         assert_eq!(reconciled[0].last_error, None);
+        assert_eq!(reconciled[0].worker_kernel_id.as_deref(), Some("worker-1"));
+        assert_eq!(
+            reconciled[0].worker_machine_id.as_deref(),
+            Some("machine-2")
+        );
+        assert_eq!(reconciled[0].providers, vec!["codex"]);
+        assert_eq!(reconciled[0].relay_endpoint, Some(relay_endpoint));
     }
 
     #[test]

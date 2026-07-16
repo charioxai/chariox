@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn provider_completed_signal_settles_matching_active_prompt() {
+async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_interval() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -53,7 +53,244 @@ async fn provider_completed_signal_settles_matching_active_prompt() {
         .get_session(session.id())
         .expect("session should exist")
         .active_prompt_for_agent(agent.id())
+        .is_some());
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let settled = runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("quiet completion follow-up should settle");
+    assert!(settled.had_active_prompt);
+    assert!(!settled.started_next_prompt);
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
         .is_none());
+    let settlement_events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events_for_agent_sequence_range(session.id(), agent.id(), 0, i64::MAX as u64)
+        .expect("operational prompt history should load");
+    let settlement = settlement_events
+        .iter()
+        .find(|event| {
+            event
+                .metadata
+                .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+        })
+        .expect("authoritative prompt settlement should be persisted");
+    assert_eq!(settlement.prompt_id.as_deref(), Some("prompt-1"));
+    assert_eq!(settlement.content, None, "settlement marker stays hidden");
+}
+
+#[tokio::test]
+async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-dispatch-failure-settlement",
+            "worktree-dispatch-failure-settlement",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-dispatch-failure-settlement",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "prompt whose delivery will fail\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    let prompt_id = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("prompt should be active")
+        .id()
+        .to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: prompt_id.clone(),
+        target_active_prompt_id: None,
+        source_attachment_id: attachment.id().to_string(),
+        prompt: "prompt whose delivery will fail\n".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Arroba,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let result = runtime
+        .fail_prompt_dispatch(
+            dispatch,
+            crate::error::DaemonError::LocalTransport {
+                operation: "test prompt dispatch",
+                message: "provider did not acknowledge".to_string(),
+            },
+        )
+        .await;
+    assert!(result.is_err(), "dispatch failure should remain observable");
+    assert!(runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+
+    let events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events_for_agent_sequence_range(session.id(), agent.id(), 0, i64::MAX as u64)
+        .expect("operational prompt history should load");
+    let settlement = events
+        .iter()
+        .find(|event| {
+            event.prompt_id.as_deref() == Some(prompt_id.as_str())
+                && event
+                    .metadata
+                    .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+        })
+        .expect("failed dispatch should persist a terminal settlement marker");
+    assert_eq!(
+        settlement
+            .metadata
+            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            .and_then(serde_json::Value::as_str),
+        Some("cancelled")
+    );
+}
+
+#[tokio::test]
+async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-dispatch-failure-queue-advance",
+            "worktree-dispatch-failure-queue-advance",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-dispatch-failure-queue-advance",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "first prompt whose delivery will fail\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    let first_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("first prompt should be active");
+    let queued = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "second prompt should advance\n",
+            Vec::new(),
+        )
+        .expect("second prompt should queue");
+    let queued_prompt_id = match queued {
+        crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+        other => panic!("expected queued prompt, got {other:?}"),
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: first_prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: attachment.id().to_string(),
+        prompt: first_prompt.prompt().to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Arroba,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let result = runtime
+        .fail_prompt_dispatch(
+            dispatch,
+            crate::error::DaemonError::LocalTransport {
+                operation: "test queued prompt dispatch",
+                message: "provider did not acknowledge".to_string(),
+            },
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "original dispatch failure should remain observable"
+    );
+
+    let projected = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let active = projected
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should become active");
+    assert_ne!(active.id(), queued_prompt_id);
+    assert_eq!(active.prompt(), "second prompt should advance\n");
+    assert!(projected
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(|queued| queued.is_empty()));
 }
 
 #[tokio::test]
@@ -190,7 +427,7 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
 }
 
 #[tokio::test]
-async fn provider_completion_with_output_settles_after_fanning_out_records() {
+async fn provider_completion_with_output_waits_for_a_quiet_poll_before_settling() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -253,16 +490,51 @@ async fn provider_completion_with_output_settles_after_fanning_out_records() {
         .expect("completion batch with output should be accepted");
     assert_eq!(records.len(), 1);
 
-    let settled_session = runtime
+    let streaming_session = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
     assert!(
-        settled_session
+        streaming_session
             .active_prompt_for_agent(agent.id())
-            .is_none(),
-        "final output is fanned out before settlement, so a completed structured prompt must not wait for another poll"
+            .is_some(),
+        "a completion signal cannot settle while provider output is still arriving"
     );
+
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("immediate quiet follow-up batch should be accepted");
+    let still_draining_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("draining session snapshot should exist");
+    assert!(still_draining_session
+        .active_prompt_for_agent(agent.id())
+        .is_some());
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet follow-up after the drain interval should settle completion");
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("settled session snapshot should exist");
+    assert!(settled_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
 }
 
 #[tokio::test]

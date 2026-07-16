@@ -409,11 +409,23 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         .await
         .expect("home remote inventory should refresh");
 
-    let (session_id, attachment_id, steering_attachment_id) = {
+    let (session_id, attachment_id, steering_attachment_id, local_provider_run_id) = {
         let mut app_home = app_home.lock().await;
-        let (session, _) = crate::app::KernelSessionService::new(&mut app_home)
+        let (session, local_agent) = crate::app::KernelSessionService::new(&mut app_home)
             .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
             .expect("home session should be created");
+        let local_provider_run = app_home
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "native-tui-idle",
+                )
+                .with_agent_id(local_agent.id().to_string()),
+            )
+            .expect("home provider should launch to force a cross-kernel run-id collision");
         let attachment = crate::app::KernelSessionService::new(&mut app_home)
             .attach(AttachRequest::new(
                 session.id(),
@@ -432,6 +444,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
             session.id().to_string(),
             attachment.id().to_string(),
             steering_attachment.id().to_string(),
+            local_provider_run.id().to_string(),
         )
     };
 
@@ -560,6 +573,28 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         home_provider_running,
         "home agent must project the running worker provider run before follow-up steering"
     );
+    let (worker_provider_run_id, projected_provider_run_id) = {
+        let app = app_home.lock().await;
+        let worker_provider_run_id = app
+            .agents()
+            .get_agent(&remote_agent_id)
+            .expect("remote agent should remain available")
+            .remote_execution()
+            .and_then(|remote| remote.active_worker_provider_run_id.clone())
+            .expect("worker provider run should remain projected");
+        let projected_provider_run_id = app
+            .provider_run_projection_store()
+            .get_for_agent(&session_id, &remote_agent_id)
+            .expect("remote projected provider run should exist")
+            .id()
+            .to_string();
+        (worker_provider_run_id, projected_provider_run_id)
+    };
+    assert_eq!(
+        worker_provider_run_id, local_provider_run_id,
+        "the regression requires raw provider-run IDs to collide across kernels"
+    );
+    assert_ne!(projected_provider_run_id, local_provider_run_id);
 
     {
         let mut app = app_worker.lock().await;
@@ -657,6 +692,36 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         Some(remote_agent_id.as_str()),
         "remote steering echoes must stay scoped to the target agent"
     );
+    let steering_merge_key = crate::history::steering_prompt_merge_key(&queued_prompt_id);
+    let steering_history = app_home
+        .lock()
+        .await
+        .operational_history_store()
+        .load_session_events(&session_id, Some(&remote_agent_id))
+        .expect("remote steering history should load")
+        .into_iter()
+        .filter(|event| {
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(serde_json::Value::as_str)
+                == Some(steering_merge_key.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        steering_history.len(),
+        1,
+        "successful remote steering must persist one canonical history event"
+    );
+    assert_eq!(
+        steering_history[0].provider_run_id.as_deref(),
+        Some(projected_provider_run_id.as_str()),
+        "home history must reference the namespaced remote projection, not a colliding local run"
+    );
+    assert!(steering_history[0]
+        .content
+        .as_deref()
+        .is_some_and(|content| content.contains("REMOTE_QUEUE_STEER_DELIVERY")));
 
     let completion = app_home
         .lock()

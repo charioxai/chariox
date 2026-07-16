@@ -151,14 +151,16 @@ impl<'a> KernelAgentService<'a> {
         let source_attachment_id = self
             .app
             .promoted_prompt_source_attachment_id(session_id, active.source_attachment_id())?;
+        let history_text = crate::prompt_transcript::workflow_prompt_history_text(&active);
         self.app.spawn_user_prompt_history_append_with_prompt_id(
             session_id,
             &source_attachment_id,
             active.target_agent_id(),
-            active.prompt(),
+            &history_text,
             active.attachments(),
             active.prompt_origin(),
             active.id(),
+            active.created_at_ms(),
             active.workflow_run_id(),
             active.workflow_node_run_id(),
         )?;
@@ -170,7 +172,7 @@ impl<'a> KernelAgentService<'a> {
             active.prompt(),
             active.attachments(),
         );
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
+        let prompt_sent_at_ms = active.created_at_ms();
         self.app
             .agents
             .note_prompt_sent_at(agent_id, prompt_sent_at_ms)?;

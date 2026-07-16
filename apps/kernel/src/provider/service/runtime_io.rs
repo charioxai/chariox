@@ -181,7 +181,10 @@ impl ProviderProcessService {
         mode: PromptAssemblyMode,
         steering: bool,
     ) -> Result<(), DaemonError> {
-        let _ = self.record_run_activity(run.id());
+        if let Ok(active_run) = self.get_run_mut(run.id()) {
+            active_run.clear_terminal_diagnostic();
+            active_run.touch_activity();
+        }
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
                 operation: "enqueue structured prompt dispatch",

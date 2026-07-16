@@ -153,6 +153,24 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        let settled_at_ms = crate::session::unix_epoch_ms();
+        let archive_enabled = self
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive
+            .mode
+            == crate::config::HistoryArchiveMode::External;
+        self.operational_history_store.record_prompt_settlement(
+            archive_enabled,
+            session_id,
+            agent_id,
+            completed.id(),
+            Some(remote_provider_run_id),
+            settled_at_ms,
+            "completed",
+        );
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id);
@@ -161,7 +179,7 @@ impl KernelRuntimeOwnedState {
             remote_provider_run_id,
             recipient_attachment_ids,
             &format!("prompt-complete:{}", completed.id()),
-            crate::session::unix_epoch_ms(),
+            settled_at_ms,
         );
         let started_next = if let Some(expected_next) = next_queued_prompt {
             let active = self

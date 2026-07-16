@@ -644,7 +644,13 @@ impl KernelRuntimeState {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
                         if tokio::time::Instant::now() >= deadline {
-                            break;
+                            return Err(DaemonError::LocalTransport {
+                                operation: "submit Claude headless prompt",
+                                message: format!(
+                                    "provider `{}` did not acknowledge prompt `{}` after PTY injection",
+                                    dispatch.provider_run_id, dispatch.prompt_id
+                                ),
+                            });
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
@@ -711,6 +717,7 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
+        let mut next_dispatch = None;
         {
             let owned = &self.owned;
             owned.update_metaagent_event_prompt_delivery_for_prompt(
@@ -731,8 +738,32 @@ impl KernelRuntimeState {
                     &error.to_string(),
                 );
             }
-            let _ = owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
+            let cancelled = owned
+                .cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id)
+                .is_ok();
             let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
+            if cancelled {
+                match owned.advance_next_queued_prompt_dispatch(
+                    &dispatch.session_id,
+                    &dispatch.agent_id,
+                    &dispatch.provider_run_id,
+                ) {
+                    Ok(dispatch) => next_dispatch = dispatch,
+                    Err(advance_error) => {
+                        let recipients = owned
+                            .attachment_store
+                            .list_session_attachment_ids(&dispatch.session_id);
+                        owned.record_notice(
+                            &dispatch.session_id,
+                            Some(&dispatch.provider_run_id),
+                            recipients,
+                            format!(
+                                "Queued prompt remained pending after dispatch failure: {advance_error}"
+                            ),
+                        );
+                    }
+                }
+            }
             let _ = owned.session_snapshot(&dispatch.session_id);
             let recipients = owned
                 .attachment_store
@@ -746,8 +777,11 @@ impl KernelRuntimeState {
             if released_claim {
                 self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
             }
-            Err(error)
         }
+        if let Some(next_dispatch) = next_dispatch {
+            self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
+        }
+        Err(error)
     }
 
     pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {

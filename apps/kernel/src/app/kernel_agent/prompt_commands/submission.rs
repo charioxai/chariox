@@ -282,6 +282,7 @@ impl<'a> KernelAgentService<'a> {
             attachments,
             admission.prompt.prompt_origin(),
             prompt_id,
+            admission.prompt.created_at_ms(),
             admission.prompt.workflow_run_id(),
             admission.prompt.workflow_node_run_id(),
         )

@@ -117,7 +117,7 @@ fn plan_claude_launch_unlocked(
             "preparing Claude native TUI files",
             serde_json::json!({ "provider": request.provider.as_str() }),
         );
-        let native = prepare_claude_native_tui_files()?;
+        let native = prepare_claude_native_tui_files(request)?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
@@ -155,7 +155,7 @@ fn plan_claude_launch_unlocked(
             "preparing Claude headless native bridge files",
             serde_json::json!({ "provider": request.provider.as_str() }),
         );
-        let native = prepare_claude_native_tui_files()?;
+        let native = prepare_claude_native_tui_files(request)?;
         let mut pty_env = BTreeMap::new();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
@@ -203,7 +203,7 @@ fn plan_claude_launch_unlocked(
             structured_endpoint: None,
         });
     }
-    let native = prepare_claude_native_tui_files()?;
+    let native = prepare_claude_native_tui_files(request)?;
     let mut pty_env = BTreeMap::new();
     pty_env.insert(
         "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),

@@ -36,7 +36,23 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
             Vec::new(),
         )
         .expect("prompt should start");
-    assert!(matches!(prompt, PromptSubmissionOutcome::Started { .. }));
+    let PromptSubmissionOutcome::Started { prompt } = prompt else {
+        panic!("prompt should be active");
+    };
+    let started_at_ms = app
+        .operational_history_store()
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("prompt history should load")
+        .into_iter()
+        .find(|event| event.prompt_id.as_deref() == Some(prompt.id()))
+        .expect("prompt history event should exist")
+        .timestamp_ms;
+    let completed_at_ms = started_at_ms.saturating_add(9_000);
+    let projected_completion = RelayProjectedCompletion {
+        message_id: "assistant-msg-1".to_string(),
+        completed_at_ms,
+        home_prompt_id: Some(prompt.id().to_string()),
+    };
 
     RemoteLeaseRuntime::new(&mut app)
         .project_remote_runtime_projection(
@@ -51,11 +67,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
                 bytes: b"remote output".to_vec(),
             }],
             vec!["remote notice".to_string()],
-            vec![RelayProjectedCompletion {
-                message_id: "assistant-msg-1".to_string(),
-                completed_at_ms: 1234,
-                home_prompt_id: None,
-            }],
+            vec![projected_completion.clone(), projected_completion],
         )
         .expect("projection should succeed");
 
@@ -110,6 +122,40 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .get(agent.id())
         .and_then(|state| state.active_prompt())
         .is_none());
+
+    let operational_history = app.operational_history_store();
+    drop(app);
+    let response = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("history runtime should build")
+        .block_on(
+            crate::runtime::history_requests::execute_session_history_outline_request(
+                operational_history,
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: session.id().to_string(),
+                    agent_ids: Some(vec![agent.id().to_string()]),
+                    latest_prompt_count: Some(4),
+                    cursor: None,
+                },
+            ),
+        )
+        .expect("history outline should reload");
+    let crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+        panic!("history outline response should load");
+    };
+    let turn = agents
+        .first()
+        .and_then(|agent| agent.turns.first())
+        .expect("remote turn should reload");
+    assert_eq!(turn.prompt_id.as_deref(), Some(prompt.id()));
+    assert_eq!(
+        turn.lifecycle,
+        crate::local::SessionHistoryOutlineTurnLifecycle::Completed
+    );
+    assert_eq!(turn.started_at_ms, started_at_ms);
+    assert_eq!(turn.completed_at_ms, Some(completed_at_ms));
+    assert!(completed_at_ms > turn.started_at_ms);
 }
 
 #[test]

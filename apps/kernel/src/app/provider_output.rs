@@ -932,13 +932,13 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn drain_claude_native_headless_transcripts_for_runtime(
+    pub(crate) fn finish_deferred_claude_native_headless_stop_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self).drain_headless_transcripts_for_context(
+        ProviderOutputClaudeNativeBridge::new(self).finish_deferred_headless_stop(
             session_id,
             provider_run_id,
             provider_run,

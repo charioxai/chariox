@@ -7,6 +7,7 @@ use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::session::{PromptQueueItem, PromptStatus};
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
+const STRUCTURED_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 
 pub(crate) struct ProviderOutputPromptSettlement<'a> {
     app: &'a mut DaemonApp,
@@ -46,6 +47,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         else {
             return Ok(());
         };
+        if prompt_completed {
+            crate::transport::flow_control::mark_prompt_completion_recorded(
+                self.app,
+                provider_run_id,
+            );
+        }
         let completion_recorded =
             crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
         let mut settlement_pending =
@@ -53,6 +60,18 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 self.app,
                 provider_run_id,
             );
+        if prompt_completed || settlement_pending {
+            let quiet_after_response =
+                crate::transport::flow_control::prompt_output_quiet_after_response(
+                    self.app,
+                    provider_run_id,
+                    STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+                );
+            if !settlement_pending || saw_settlement_blocking_activity || !quiet_after_response {
+                self.note_prompt_settlement_requested(provider_run_id);
+                return Ok(());
+            }
+        }
         if !prompt_completed && !settlement_pending && completion_recorded {
             self.note_prompt_settlement_requested(provider_run_id);
             let _ =

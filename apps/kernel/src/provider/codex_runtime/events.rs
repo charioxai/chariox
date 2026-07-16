@@ -12,9 +12,9 @@ use crate::terminal::TerminalOutputKind;
 
 use super::transcript::{
     append_text_delta, append_tool_output_delta, append_tool_progress, codex_exec_command_item,
-    codex_item_status_is_terminal, decode_codex_output_delta_chunk, is_codex_tool_item,
-    normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
-    text_from_content_value, CodexTextTranscriptState, CodexToolTranscriptState,
+    decode_codex_output_delta_chunk, normalize_codex_item_type, sync_completed_text_item,
+    sync_tool_item_with_manifest, text_from_content_value, CodexTextTranscriptState,
+    CodexToolTranscriptState,
 };
 use super::turn::{
     note_assistant_item_completed, note_tool_item_completed, note_tool_item_started,
@@ -229,6 +229,7 @@ pub(super) fn apply_notification_with_manifest(
             turn_id,
             status,
             error_message,
+            items,
         } => {
             if active_turn_id.as_deref() != Some(turn_id.as_str()) {
                 crate::logging::debug_with_fields(
@@ -242,6 +243,17 @@ pub(super) fn apply_notification_with_manifest(
                     }),
                 );
                 return;
+            }
+            for item in &items {
+                note_tool_item_completed(turn_tracker, item);
+                note_assistant_item_completed(turn_tracker, item);
+                if let Some(chunk) =
+                    sync_tool_item_with_manifest(tool_items, item, remote_extension_manifest)
+                {
+                    chunks.push(chunk);
+                } else if let Some(chunk) = sync_completed_text_item(text_items, item) {
+                    chunks.push(chunk);
+                }
             }
             crate::logging::debug_with_fields(
                 "daemon.provider.codex",
@@ -266,7 +278,7 @@ pub(super) fn apply_notification_with_manifest(
     }
 }
 
-pub(super) fn backfill_external_completed_turn(
+pub(super) fn backfill_completed_turn(
     client: &CodexClient,
     state: &mut CodexRuntimeState,
     remote_extension_manifest: &RemoteExtensionManifest,
@@ -349,14 +361,13 @@ pub(super) fn codex_completed_turn_has_settlement_evidence(
         return true;
     }
     items.is_some_and(|items| {
-        items.iter().any(|item| {
-            codex_completed_turn_item_has_assistant_text(item)
-                || (is_codex_tool_item(item) && codex_item_status_is_terminal(item))
-        })
+        items
+            .iter()
+            .any(codex_completed_turn_item_has_final_assistant_text)
     })
 }
 
-fn codex_completed_turn_item_has_assistant_text(item: &Value) -> bool {
+fn codex_completed_turn_item_has_final_assistant_text(item: &Value) -> bool {
     let Some("agentMessage") = item
         .get("type")
         .and_then(Value::as_str)
@@ -364,6 +375,13 @@ fn codex_completed_turn_item_has_assistant_text(item: &Value) -> bool {
     else {
         return false;
     };
+    if item
+        .get("phase")
+        .and_then(Value::as_str)
+        .is_some_and(|phase| !matches!(phase, "finalAnswer" | "final_answer" | "final"))
+    {
+        return false;
+    }
     item.get("text")
         .and_then(Value::as_str)
         .is_some_and(|text| !text.is_empty())

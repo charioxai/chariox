@@ -807,8 +807,20 @@ impl KernelRuntimeState {
         &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
     ) {
+        // A stale projection drain can discover a dead lease while the initial
+        // dispatch is already refreshing that same binding. Both paths submit
+        // the active prompt, so serialize them per agent to prevent one browser
+        // prompt from starting on two freshly-created worker agents.
+        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_recoveries),
+            &dispatch.session_id,
+            &dispatch.agent_id,
+        ) else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
+            let _claim = claim;
             crate::logging::info_with_fields(
                 "daemon.remote_prompt_dispatch",
                 "remote prompt dispatch starting",
@@ -1156,6 +1168,10 @@ mod tests {
             RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
                 .expect("first drain should claim the agent");
 
+        let other_agent =
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-2", "agent-2")
+                .expect("a different agent must remain independently dispatchable");
+
         assert!(
             RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
                 .is_none(),
@@ -1174,6 +1190,7 @@ mod tests {
             RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
             "an atomically released claim must allow reconnect recovery to start a new drain"
         );
+        drop(other_agent);
     }
 
     #[test]

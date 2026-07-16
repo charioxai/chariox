@@ -23,6 +23,16 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        let provider_run_id = self
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string());
+        self.record_cancelled_prompt_settlement(
+            session_id,
+            agent_id,
+            cancelled.id(),
+            provider_run_id.as_deref(),
+        );
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
@@ -49,15 +59,21 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        let provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
+        let cancellation_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.provider_store
                 .get_run_for_agent(session_id, agent_id)
                 .map(|run| run.id().to_string())
         });
-        let released_claim = provider_run_id
+        self.record_cancelled_prompt_settlement(
+            session_id,
+            agent_id,
+            prompt.id(),
+            cancellation_provider_run_id.as_deref(),
+        );
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let released_claim = cancellation_provider_run_id
             .as_deref()
             .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
             .unwrap_or(false);
@@ -69,9 +85,10 @@ impl KernelRuntimeOwnedState {
             let next_prompt = self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
-            if let (Some(provider_run_id), Some(next_prompt)) =
-                (provider_run_id.as_deref(), next_prompt.as_ref())
-            {
+            if let (Some(provider_run_id), Some(next_prompt)) = (
+                cancellation_provider_run_id.as_deref(),
+                next_prompt.as_ref(),
+            ) {
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
@@ -126,9 +143,10 @@ impl KernelRuntimeOwnedState {
         if started_next.is_none() {
             self.sync_focused_provider_run_if_idle(session_id)?;
         }
-        let dispatch = if let (Some(provider_run_id), Some(started_next)) =
-            (provider_run_id.as_deref(), started_next.as_ref())
-        {
+        let dispatch = if let (Some(provider_run_id), Some(started_next)) = (
+            cancellation_provider_run_id.as_deref(),
+            started_next.as_ref(),
+        ) {
             let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
             let source_attachment_id = self.promoted_prompt_source_attachment_id(
                 session_id,
@@ -213,6 +231,32 @@ impl KernelRuntimeOwnedState {
             released_claim,
             dispatch,
         })
+    }
+
+    fn record_cancelled_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) {
+        let archive_enabled = self
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive
+            .mode
+            == crate::config::HistoryArchiveMode::External;
+        self.operational_history_store.record_prompt_settlement(
+            archive_enabled,
+            session_id,
+            agent_id,
+            prompt_id,
+            provider_run_id,
+            crate::session::unix_epoch_ms(),
+            "cancelled",
+        );
     }
 
     pub(super) fn cancel_local_prompt(

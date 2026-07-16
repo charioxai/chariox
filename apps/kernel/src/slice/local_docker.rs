@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
+use crate::slice_provider_auth::{SliceProviderAuthState, SliceProviderAuthSummary};
 
 use super::model::{
     LocalDockerSliceAction, SliceBackendKind, SliceDisplayMode, SliceLogEntry,
@@ -248,6 +249,105 @@ pub fn start_local_docker_slice_provider_login(
         status: "started".to_string(),
         message: clean,
     })
+}
+
+pub fn inspect_local_docker_slice_provider_auth(
+    record: &SliceRecord,
+    provider: &str,
+) -> Result<Vec<SliceProviderAuthSummary>, DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.inspect",
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    let container = local_docker_container_name(record);
+    let checks = match provider {
+        "all" => vec![
+            ("codex", "/home/slice/.codex/auth.json"),
+            ("opencode", "/home/slice/.local/share/opencode/auth.json"),
+            ("claude", "/home/slice/.claude/.credentials.json"),
+        ],
+        "codex" => vec![("codex", "/home/slice/.codex/auth.json")],
+        "opencode" => vec![("opencode", "/home/slice/.local/share/opencode/auth.json")],
+        "claude" => vec![("claude", "/home/slice/.claude/.credentials.json")],
+        "github" => Vec::new(),
+        value if value.starts_with("opencode:") => {
+            vec![("opencode", "/home/slice/.local/share/opencode/auth.json")]
+        }
+        _ => {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!("unsupported slice provider `{provider}`"),
+            });
+        }
+    };
+    let mut summaries = Vec::new();
+    for (summary_provider, path) in checks {
+        let status = Command::new("docker")
+            .args(["exec", "-u", "slice", &container, "test", "-s", path])
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!(
+                    "failed to inspect {summary_provider} auth in slice `{}`: {error}",
+                    record.name
+                ),
+            })?;
+        if status.success() {
+            summaries.push(SliceProviderAuthSummary {
+                provider: summary_provider.to_string(),
+                state: SliceProviderAuthState::Configured,
+                auth_type: None,
+                account_id: None,
+                email: None,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: None,
+                alias: None,
+                source: "slice_provider_auth_file".to_string(),
+            });
+        }
+    }
+    if provider == "all" || provider == "github" {
+        let status = Command::new("docker")
+            .args([
+                "exec",
+                "-u",
+                "slice",
+                &container,
+                "gh",
+                "auth",
+                "token",
+                "--hostname",
+                "github.com",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!(
+                    "failed to inspect github auth in slice `{}`: {error}",
+                    record.name
+                ),
+            })?;
+        if status.success() {
+            summaries.push(SliceProviderAuthSummary {
+                provider: "github".to_string(),
+                state: SliceProviderAuthState::Configured,
+                auth_type: Some("oauth_token".to_string()),
+                account_id: None,
+                email: None,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: None,
+                alias: None,
+                source: "slice_github_cli".to_string(),
+            });
+        }
+    }
+    Ok(summaries)
 }
 
 pub fn collect_local_docker_slice_logs(

@@ -12,6 +12,8 @@ pub(super) struct ClaudeTranscriptCursor {
     files: BTreeMap<String, ClaudeTranscriptFileCursor>,
     #[serde(default)]
     seen_keys: BTreeSet<String>,
+    #[serde(default)]
+    seen_assistant_message_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -71,9 +73,18 @@ pub(super) fn known_claude_transcript_paths(context_file: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn drain_claude_transcript_file(
     transcript_path: &str,
     cursor: &mut ClaudeTranscriptCursor,
+) -> ClaudeTranscriptDrain {
+    drain_claude_transcript_file_since(transcript_path, cursor, None)
+}
+
+pub(super) fn drain_claude_transcript_file_since(
+    transcript_path: &str,
+    cursor: &mut ClaudeTranscriptCursor,
+    minimum_timestamp_ms: Option<u64>,
 ) -> ClaudeTranscriptDrain {
     let path = Path::new(transcript_path);
     let Ok(raw) = fs::read_to_string(path) else {
@@ -99,6 +110,12 @@ pub(super) fn drain_claude_transcript_file(
         if !cursor.seen_keys.insert(key) {
             continue;
         }
+        if minimum_timestamp_ms.is_some_and(|minimum_timestamp_ms| {
+            claude_transcript_timestamp_ms(&value)
+                .is_some_and(|timestamp_ms| timestamp_ms < minimum_timestamp_ms)
+        }) {
+            continue;
+        }
         if drain.session_id.is_none() {
             drain.session_id = claude_string_field(&value, &["sessionId", "session_id"]);
         }
@@ -107,7 +124,9 @@ pub(super) fn drain_claude_transcript_file(
         }
         drain.chunks.extend(claude_transcript_chunks(&value));
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
-            drain.assistant_message_ids.push(message_id);
+            if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
+                drain.assistant_message_ids.push(message_id);
+            }
         }
     }
     cursor.files.insert(
@@ -117,6 +136,14 @@ pub(super) fn drain_claude_transcript_file(
         },
     );
     drain
+}
+
+fn claude_transcript_timestamp_ms(value: &Value) -> Option<u64> {
+    value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|timestamp| chrono::DateTime::parse_from_rfc3339(timestamp).ok())
+        .map(|timestamp| timestamp.timestamp_millis().max(0) as u64)
 }
 
 fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> String {

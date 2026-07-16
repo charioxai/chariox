@@ -292,6 +292,146 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 }
 
 #[test]
+fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-claude-headless-stop",
+            "worktree-claude-headless-stop",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-headless-stop",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-headless-stop-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    let transcript_file = root.join("session.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&transcript_file, "").expect("transcript file should be created");
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "Stop",
+            "transcript_path": transcript_file.display().to_string(),
+        })
+        .to_string(),
+    )
+    .expect("Stop event should be written");
+    let context_file = context_file.display().to_string();
+
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-claude-headless-stop",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-stop".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "headless prompt",
+            Vec::new(),
+        )
+        .expect("native prompt should be recorded")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
+
+    let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("Stop event should be processed");
+
+    assert!(outcome.needs_deferred_headless_drain);
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_some());
+    assert!(claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)));
+
+    fs::write(
+        &transcript_file,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-late",
+            "message": {
+                "id": "message-late",
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "late final response" }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("late transcript output should be written");
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .finish_deferred_headless_stop(session.id(), run.id(), &run)
+        .expect("deferred transcript drain should finish");
+
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("settled prompt state should load")
+        .is_none());
+    let output = app
+        .terminal()
+        .output_records()
+        .into_iter()
+        .flat_map(|record| record.bytes)
+        .collect::<Vec<_>>();
+    assert!(String::from_utf8_lossy(&output).contains("late final response"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_prompt_history_uses_latest_terminal_input_attachment() {
     let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -365,6 +505,278 @@ fn submit_wait_state_defers_enter_until_delay_elapses() {
 }
 
 #[test]
+fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-headless-ack-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-ack".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let prompt_id = "prompt-ack";
+    write_claude_native_marker(&context_file, &format!("injected:{prompt_id}"));
+    write_claude_headless_submit_retry(&context_file, prompt_id, 0, unix_epoch_ms());
+    let dispatch = KernelPromptDispatch {
+        session_id: "session-1".to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: "agent-1".to_string(),
+        prompt_id: prompt_id.to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: "attachment-1".to_string(),
+        prompt: "Explain the lifecycle briefly.".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Arroba,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+
+    let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .expect("injected prompt should remain pending");
+    assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
+
+    write_claude_native_marker(&context_file, &format!("accepted:{prompt_id}"));
+    let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .expect("acknowledged prompt should complete dispatch");
+    assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_headless_steering_dispatch_completes_after_pty_injection() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-headless-steering-injection-test-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).expect("temporary directory should exist");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should exist");
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-7",
+    )
+    .with_agent_id("agent-1");
+    let run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-steering-injection".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.to_string_lossy().into_owned(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let dispatch = KernelPromptDispatch {
+        session_id: "session-1".to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: "agent-1".to_string(),
+        prompt_id: "pending-steering-1".to_string(),
+        target_active_prompt_id: Some("prompt-1".to_string()),
+        source_attachment_id: "attachment-1".to_string(),
+        prompt: "Add one sentence before finishing.".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Arroba,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: true,
+    };
+
+    write_claude_native_marker(
+        &context_file.to_string_lossy(),
+        "injected:pending-steering-1",
+    );
+    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .expect("steering injection should be accepted");
+
+    assert_eq!(attempt, ClaudeNativeDispatchAttempt::Completed);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_headless_user_prompt_submit_acknowledges_active_submit_wait_marker() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-submit-wait-ack",
+            "worktree-submit-wait-ack",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-submit-wait-ack",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("session should attach");
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-headless-submit-wait-ack-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Run the web tests and summarize them.",
+        })
+        .to_string(),
+    )
+    .expect("UserPromptSubmit event should be written");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-submit-wait-ack",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-headless-submit-wait-ack".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let active_prompt = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "Run the web tests and summarize them.",
+            Vec::new(),
+        )
+        .expect("active prompt should start")
+    {
+        crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
+    write_claude_native_marker(
+        &context_file,
+        &format!("submit-wait:{}:{}", active_prompt.id(), unix_epoch_ms()),
+    );
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("active UserPromptSubmit should be acknowledged");
+
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{}", active_prompt.id()).as_str())
+    );
+    let projected = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should remain available");
+    assert_eq!(
+        projected
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.id()),
+        Some(active_prompt.id())
+    );
+    assert!(projected
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(|queue| queue.is_empty()));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn claude_native_dispatch_marker_extracts_steering_identity() {
+    assert_eq!(
+        claude_native_dispatch_prompt_id("injected:steering-prompt-1"),
+        Some("steering-prompt-1")
+    );
+    assert_eq!(
+        claude_native_dispatch_prompt_id("submit-wait:steering-prompt-1:1234"),
+        Some("steering-prompt-1")
+    );
+    assert_eq!(claude_native_dispatch_prompt_id("startup-wait:1234"), None);
+}
+
+#[test]
 fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
@@ -430,6 +842,65 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
 }
 
 #[test]
+fn claude_transcript_drain_skips_content_before_active_prompt() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-active-prompt-cutoff-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        [
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "old-assistant",
+                "timestamp": "1970-01-01T00:00:01Z",
+                "message": {
+                    "id": "old-message",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "old response" }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "current-assistant",
+                "timestamp": "1970-01-01T00:00:03Z",
+                "message": {
+                    "id": "current-message",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "current response" }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file_since(
+        &transcript.display().to_string(),
+        &mut cursor,
+        Some(2_000),
+    );
+
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.chunks[0].text, "current response");
+    assert_eq!(drain.assistant_message_ids, vec!["current-message"]);
+    let second = drain_claude_transcript_file_since(
+        &transcript.display().to_string(),
+        &mut cursor,
+        Some(2_000),
+    );
+    assert!(second.chunks.is_empty());
+    assert!(second.assistant_message_ids.is_empty());
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
@@ -463,6 +934,54 @@ fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
     assert_eq!(drain.chunks.len(), 1);
     assert_eq!(drain.chunks[0].text, "once");
     assert_eq!(drain.assistant_message_ids, vec!["assistant-1"]);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_completion_is_unique_per_assistant_message_id() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-message-completion-dedupe-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        [
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-entry-1",
+                "message": {
+                    "id": "msg_shared",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "first projection" }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-entry-2",
+                "message": {
+                    "id": "msg_shared",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "second projection" }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.chunks.len(), 2);
+    assert_eq!(drain.assistant_message_ids, vec!["msg_shared"]);
+
+    let second = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+    assert!(second.assistant_message_ids.is_empty());
 
     let _ = fs::remove_dir_all(dir);
 }

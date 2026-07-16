@@ -828,6 +828,43 @@ fn session_snapshot_projection_marks_dispatching_prompt_as_active_work() {
 }
 
 #[test]
+fn session_snapshot_projection_starts_accepted_turn_clock_before_provider_dispatch() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let attachment_id = attach_cli(&mut app, session.id(), "cli-accepted-clock");
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-accepted",
+        &attachment_id,
+        agent.id(),
+        "accepted prompt",
+        crate::session::PromptStatus::Running,
+    );
+    let accepted_at_ms = prompt.created_at_ms();
+    app.prompt_owner_activate_prompt(session.id(), prompt)
+        .expect("prompt should activate before provider dispatch");
+
+    let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+        .expect("projection should build");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("agent activity should be projected");
+
+    assert_eq!(activity.status, AgentRuntimeStatus::Working);
+    assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::Running);
+    assert_eq!(
+        activity
+            .active_turn
+            .as_ref()
+            .and_then(|turn| turn.started_at_ms),
+        Some(accepted_at_ms),
+        "accepted prompt clock must be available before the provider run creates its active turn"
+    );
+}
+
+#[test]
 fn session_snapshot_projection_disables_queued_prompt_steering_for_external_active_turns() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

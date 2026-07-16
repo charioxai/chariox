@@ -206,6 +206,25 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn update_relay_leased_agent_profile(
+        &self,
+        leased_agent_id: &str,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let leased_agent_id = leased_agent_id.to_string();
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).update_leased_agent_profile(
+                &leased_agent_id,
+                provider,
+                model,
+                effort,
+            )
+        })
+        .await
+    }
+
     pub(crate) async fn update_relay_leased_agent_meta_mode(
         &self,
         leased_agent_id: &str,
@@ -559,6 +578,12 @@ impl KernelRuntimeState {
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,
     ) -> Result<(), DaemonError> {
+        let provider_auth_observation = provider_run.as_ref().and_then(|run| {
+            remote_provider_auth_observation(
+                run,
+                !output_chunks.is_empty() || !completions.is_empty(),
+            )
+        });
         let session_id = session_id.to_string();
         let agent_id = agent_id.to_string();
         let provider_run_id = provider_run_id.to_string();
@@ -582,6 +607,102 @@ impl KernelRuntimeState {
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
+        if let Some((provider, state)) = provider_auth_observation {
+            self.apply_remote_slice_provider_auth_observation(&agent_id, &provider, state)?;
+        }
         Ok(())
+    }
+
+    fn apply_remote_slice_provider_auth_observation(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        state: crate::slice_provider_auth::SliceProviderAuthState,
+    ) -> Result<(), DaemonError> {
+        let source = if state == crate::slice_provider_auth::SliceProviderAuthState::Authenticated {
+            "provider_runtime_authenticated"
+        } else {
+            "provider_auth_failure"
+        };
+        for slice in self
+            .list_slices()
+            .into_iter()
+            .filter(|slice| slice.agent_ids.iter().any(|id| id == agent_id))
+        {
+            let mut provider_auth = slice.provider_auth.clone();
+            let mut matched = false;
+            for summary in &mut provider_auth {
+                if crate::provider::canonical_provider_family(&summary.provider) == Some(provider) {
+                    summary.state = state.clone();
+                    summary.source = source.to_string();
+                    matched = true;
+                }
+            }
+            if !matched {
+                provider_auth.push(crate::slice_provider_auth::SliceProviderAuthSummary {
+                    provider: provider.to_string(),
+                    state: state.clone(),
+                    auth_type: None,
+                    account_id: None,
+                    email: None,
+                    organization_id: None,
+                    organization_name: None,
+                    subscription_type: None,
+                    alias: None,
+                    source: source.to_string(),
+                });
+            }
+            self.set_slice_provider_auth(&slice.id, provider_auth)?;
+        }
+        Ok(())
+    }
+}
+
+fn remote_provider_auth_observation(
+    run: &crate::provider::RuntimeProviderRun,
+    saw_provider_activity: bool,
+) -> Option<(String, crate::slice_provider_auth::SliceProviderAuthState)> {
+    let provider = crate::provider::canonical_provider_family(run.provider())?.to_string();
+    if run
+        .terminal_diagnostic()
+        .is_some_and(provider_diagnostic_is_auth_failure)
+    {
+        return Some((
+            provider,
+            crate::slice_provider_auth::SliceProviderAuthState::NotConfigured,
+        ));
+    }
+    saw_provider_activity.then_some((
+        provider,
+        crate::slice_provider_auth::SliceProviderAuthState::Authenticated,
+    ))
+}
+
+fn provider_diagnostic_is_auth_failure(diagnostic: &str) -> bool {
+    let normalized = diagnostic.to_ascii_lowercase();
+    [
+        "401 unauthorized",
+        "access token could not be refreshed",
+        "authentication token has been invalidated",
+        "refresh token was revoked",
+        "please log out and sign in again",
+        "please try signing in again",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+#[cfg(test)]
+mod provider_auth_observation_tests {
+    use super::provider_diagnostic_is_auth_failure;
+
+    #[test]
+    fn classifies_revoked_provider_credentials_without_matching_unrelated_failures() {
+        assert!(provider_diagnostic_is_auth_failure(
+            "Provider prompt dispatch failed: Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again."
+        ));
+        assert!(!provider_diagnostic_is_auth_failure(
+            "Provider prompt dispatch failed: Unsupported parameter reasoning.summary"
+        ));
     }
 }

@@ -18,7 +18,9 @@ pub(super) struct ClaudeNativeTuiFiles {
     pub(super) settings_file: PathBuf,
 }
 
-pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError> {
+pub(super) fn prepare_claude_native_tui_files(
+    request: &LaunchProviderRequest,
+) -> Result<ClaudeNativeTuiFiles, DaemonError> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -59,11 +61,16 @@ pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, 
             message: error.to_string(),
         }
     })?;
-    let hook_command = format!(
-        "node {}",
-        serde_json::to_string(&hook_handler_file.display().to_string()).unwrap()
+    let hook_command = claude_native_hook_command(
+        &hook_handler_file,
+        &events_file,
+        &context_file,
+        &context_response_dir,
+        &permission_response_dir,
     );
     let settings = serde_json::json!({
+        "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
+            == AgentPermissionLevel::Yolo,
         "hooks": {
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -87,6 +94,27 @@ pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, 
         permission_response_dir,
         settings_file,
     })
+}
+
+fn claude_native_hook_command(
+    hook_handler_file: &Path,
+    events_file: &Path,
+    context_file: &Path,
+    context_response_dir: &Path,
+    permission_response_dir: &Path,
+) -> String {
+    let quoted = |path: &Path| {
+        serde_json::to_string(&path.display().to_string())
+            .expect("serializing a filesystem path should not fail")
+    };
+    format!(
+        "ARROBA_CLAUDE_NATIVE_EVENTS={} ARROBA_CLAUDE_NATIVE_CONTEXT={} ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES={} ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES={} node {}",
+        quoted(events_file),
+        quoted(context_file),
+        quoted(context_response_dir),
+        quoted(permission_response_dir),
+        quoted(hook_handler_file),
+    )
 }
 
 fn claude_native_hook_handler() -> &'static str {
@@ -275,11 +303,14 @@ pub(super) fn claude_native_tui_args(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
 
-    use crate::provider::{LaunchProviderRequest, ProviderResumeState};
+    use crate::provider::{AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState};
 
-    use super::{claude_native_hook_handler, claude_native_tui_args};
+    use super::{
+        claude_native_hook_handler, claude_native_tui_args, prepare_claude_native_tui_files,
+    };
 
     #[test]
     fn hook_does_not_block_bypass_or_arroba_runtime_pre_tool_use() {
@@ -310,5 +341,46 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--resume", "claude-session-1"]));
+    }
+
+    #[test]
+    fn native_settings_accept_dangerous_mode_only_for_yolo_agents() {
+        let yolo = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        )
+        .with_permission_level(AgentPermissionLevel::Yolo);
+        let required = LaunchProviderRequest::new(
+            "session-2",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        )
+        .with_permission_level(AgentPermissionLevel::Required);
+
+        let yolo_files = prepare_claude_native_tui_files(&yolo).unwrap();
+        let required_files = prepare_claude_native_tui_files(&required).unwrap();
+        let yolo_settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(yolo_files.settings_file).unwrap()).unwrap();
+        let required_settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(required_files.settings_file).unwrap())
+                .unwrap();
+
+        assert_eq!(yolo_settings["skipDangerousModePermissionPrompt"], true);
+        assert_eq!(
+            required_settings["skipDangerousModePermissionPrompt"],
+            false
+        );
+        let yolo_hook = yolo_settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_EVENTS="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES="));
     }
 }

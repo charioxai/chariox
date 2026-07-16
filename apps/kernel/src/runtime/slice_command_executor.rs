@@ -147,11 +147,36 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             );
             return Err(error);
         }
+        let verified_provider_auth =
+            crate::slice::inspect_local_docker_slice_provider_auth(&slice, &provider)?;
+        if provider != "all" && verified_provider_auth.is_empty() {
+            let message = format!(
+                "{provider} credentials were not found in slice `{}` after import",
+                slice.name
+            );
+            runtime_state.record_slice_audit_event(
+                &slice,
+                "auth.import",
+                "failed",
+                Some(&provider),
+                Some(&message),
+            )?;
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.auth.import",
+                message,
+            });
+        }
         let imported_provider_auth = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
             .map(|summaries| scoped_provider_auth_summaries(&provider, summaries))
             .unwrap_or_default();
+        let imported_provider_auth = crate::slice_provider_auth::merge_provider_auth_summaries(
+            imported_provider_auth
+                .into_iter()
+                .chain(verified_provider_auth)
+                .collect(),
+        );
         let provider_auth =
             merge_scoped_provider_auth(slice.provider_auth, &provider, imported_provider_auth);
         let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;

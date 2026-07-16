@@ -14,7 +14,7 @@ impl KernelRuntimeOwnedState {
         provider: Option<String>,
         model: Option<String>,
         effort: Option<Option<String>>,
-    ) -> Result<(crate::agent::AgentInstance, Vec<String>), DaemonError> {
+    ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
         let provider = provider
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
@@ -67,39 +67,106 @@ impl KernelRuntimeOwnedState {
         let provider_or_model_changed =
             target_provider != agent.provider() || target_model.as_deref() != agent.model();
         if !provider_or_model_changed && target_effort == agent.effort() {
-            return Ok((agent, Vec::new()));
+            return Ok(owned::OwnedAgentProfileUpdate {
+                agent,
+                terminated_run_ids: Vec::new(),
+                remote_update: None,
+            });
         }
+        let remote_update =
+            agent
+                .remote_execution()
+                .map(|binding| owned::OwnedRemoteAgentProfileUpdate {
+                    worker_kernel_id: binding.worker_kernel_id.clone(),
+                    leased_agent_id: binding.leased_agent_id.clone(),
+                    relay_url: binding.relay_url.clone(),
+                    relay_token: binding.relay_token.clone(),
+                    provider: target_provider.clone(),
+                    model: target_model.clone(),
+                    effort: target_effort.map(str::to_string),
+                });
         let mut terminated_run_ids = Vec::new();
-        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
-            match run.state() {
-                crate::provider::ProviderRunState::Starting
-                | crate::provider::ProviderRunState::Running
-                | crate::provider::ProviderRunState::Parked => {
-                    if provider_or_model_changed {
-                        self.prepare_agent_profile_context_handoff(
-                            &run,
-                            &target_provider,
-                            target_model.as_deref(),
-                        );
+        if remote_update.is_none() {
+            if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+                match run.state() {
+                    crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+                    | crate::provider::ProviderRunState::Parked => {
+                        if provider_or_model_changed {
+                            self.prepare_agent_profile_context_handoff(
+                                &run,
+                                &target_provider,
+                                target_model.as_deref(),
+                            );
+                        }
+                        let outcome = self
+                            .provider_store
+                            .terminate_run_provider_only(session_id, run.id())?;
+                        self.clear_active_provider_run_session_pointer(
+                            session_id,
+                            outcome.run().id(),
+                        )?;
+                        let ended = outcome.into_run();
+                        terminated_run_ids.push(ended.id().to_string());
+                        self.provider_run_projection.update(ended);
                     }
-                    let outcome = self
-                        .provider_store
-                        .terminate_run_provider_only(session_id, run.id())?;
-                    self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
-                    let ended = outcome.into_run();
-                    terminated_run_ids.push(ended.id().to_string());
-                    self.provider_run_projection.update(ended);
-                }
-                crate::provider::ProviderRunState::Ended => {
-                    self.provider_store.clear_runtime(run.id());
+                    crate::provider::ProviderRunState::Ended => {
+                        self.provider_store.clear_runtime(run.id());
+                    }
                 }
             }
         }
-        let agent = self
-            .agent_store
-            .update_agent_profile(agent_id, provider, model, effort)?;
+        let agent = if remote_update.is_some() {
+            agent
+        } else {
+            let agent = self
+                .agent_store
+                .update_agent_profile(agent_id, provider, model, effort)?;
+            let _ = self.session_snapshot(session_id)?;
+            agent
+        };
+        Ok(owned::OwnedAgentProfileUpdate {
+            agent,
+            terminated_run_ids,
+            remote_update,
+        })
+    }
+
+    pub(super) fn commit_remote_agent_profile_update(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let session = self.session_store.get_session(session_id)?;
+        if self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "commit remote agent profile",
+                message: format!(
+                    "agent `{agent_id}` has an active turn; update the profile after it finishes"
+                ),
+            });
+        }
+        self.agent_store
+            .update_agent_profile(agent_id, Some(provider), model, Some(effort))?;
+        self.agent_store
+            .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
+        let agent = self.agent_store.get_agent(agent_id)?;
         let _ = self.session_snapshot(session_id)?;
-        Ok((agent, terminated_run_ids))
+        Ok(agent)
     }
 
     pub(super) fn alias_agent(

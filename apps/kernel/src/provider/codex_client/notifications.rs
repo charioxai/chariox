@@ -72,6 +72,7 @@ pub enum CodexNotification {
         turn_id: String,
         status: String,
         error_message: Option<String>,
+        items: Vec<Value>,
     },
     Error {
         message: String,
@@ -340,6 +341,11 @@ fn parse_turn_completed_notification(params: &Value) -> Option<CodexNotification
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        items: turn
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
     })
 }
 

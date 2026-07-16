@@ -532,6 +532,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: Option<&str>,
         workflow_run_id: Option<&str>,
         workflow_node_run_id: Option<&str>,
+        timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
@@ -542,6 +543,9 @@ impl KernelRuntimeOwnedState {
             attachments,
         )
         .with_prompt_origin(prompt_origin);
+        if let Some(timestamp_ms) = timestamp_ms {
+            entry.timestamp_ms = timestamp_ms;
+        }
         if let Some(prompt_id) = prompt_id {
             entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
         }
@@ -570,8 +574,8 @@ impl KernelRuntimeOwnedState {
         source_attachment_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<u64, DaemonError> {
-        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
-        let prompt_text = workflow_prompt_history_text(prompt);
+        let prompt_sent_at_ms = prompt.created_at_ms();
+        let prompt_text = crate::prompt_transcript::workflow_prompt_history_text(prompt);
         self.append_user_prompt_history(
             session_id,
             source_attachment_id,
@@ -582,6 +586,7 @@ impl KernelRuntimeOwnedState {
             Some(prompt.id()),
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
+            Some(prompt_sent_at_ms),
         )?;
         self.agent_store
             .note_prompt_sent_at(prompt.target_agent_id(), prompt_sent_at_ms)?;
@@ -604,24 +609,39 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let provider_run = self
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
-            .or_else(|| self.provider_run_projection.get(provider_run_id))
-            .or_else(|| {
-                self.provider_run_projection
-                    .get_for_agent(session_id, agent_id)
-            });
-        if let Some(provider_run) = provider_run.as_ref() {
-            if provider_run.session_id() != session_id {
-                return Err(DaemonError::ProviderRunNotInSession {
-                    session_id: session_id.to_string(),
-                    provider_run_id: provider_run.id().to_string(),
-                });
-            }
-        }
         let agent = self.agent_store.get_agent(agent_id)?;
+        let (history_provider_run_id, provider_run) =
+            if let Some(remote_execution) = agent.remote_execution() {
+                let projected_provider_run_id = crate::provider::projected_leased_provider_run_id(
+                    &remote_execution.leased_agent_id,
+                    provider_run_id,
+                );
+                let provider_run = self
+                    .provider_run_projection
+                    .get(&projected_provider_run_id)
+                    .or_else(|| {
+                        self.provider_run_projection
+                            .get_for_agent(session_id, agent_id)
+                    })
+                    .filter(|run| run.session_id() == session_id);
+                (projected_provider_run_id, provider_run)
+            } else {
+                let provider_run = self
+                    .provider_store
+                    .get_run(provider_run_id)
+                    .ok()
+                    .or_else(|| self.provider_run_projection.get(provider_run_id));
+                if provider_run
+                    .as_ref()
+                    .is_some_and(|run| run.session_id() != session_id)
+                {
+                    return Err(DaemonError::ProviderRunNotInSession {
+                        session_id: session_id.to_string(),
+                        provider_run_id: provider_run_id.to_string(),
+                    });
+                }
+                (provider_run_id.to_string(), provider_run)
+            };
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(
             "merge_key".to_string(),
@@ -643,7 +663,7 @@ impl KernelRuntimeOwnedState {
                 .unwrap_or(serde_json::Value::Null),
             );
         }
-        let active_turn = self.active_turns.get(provider_run_id);
+        let active_turn = self.active_turns.get(&history_provider_run_id);
         let context = crate::history::HistoryEventTurnContext {
             session_id: Some(session_id.to_string()),
             agent_id: Some(agent_id.to_string()),
@@ -663,7 +683,7 @@ impl KernelRuntimeOwnedState {
                 .map(|turn| turn.trace_id.clone())
                 .or_else(|| Some(active_prompt_id.to_string())),
             prompt_id: Some(active_prompt_id.to_string()),
-            provider_run_id: Some(provider_run_id.to_string()),
+            provider_run_id: Some(history_provider_run_id),
             provider_session_id: provider_run
                 .as_ref()
                 .and_then(|run| run.provider_session_id())
@@ -883,19 +903,6 @@ impl KernelRuntimeOwnedState {
             self.metaagent_trace_subscriptions
                 .record_target_activity(session_id, agent_id);
         }
-    }
-}
-
-fn workflow_prompt_history_text(prompt: &crate::session::PromptQueueItem) -> String {
-    if prompt.workflow_node_run_id().is_none() || prompt.hidden_system_context().trim().is_empty() {
-        return prompt.prompt().to_string();
-    }
-    match (
-        prompt.prompt().trim(),
-        prompt.hidden_system_context().trim(),
-    ) {
-        ("", hidden) => hidden.to_string(),
-        (visible, hidden) => format!("{visible}\n\n{hidden}"),
     }
 }
 

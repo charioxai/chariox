@@ -16,6 +16,7 @@ pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
     match event.kind {
         HistoryEventKind::ProviderOutput => true,
         HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
+        HistoryEventKind::Notice => true,
         HistoryEventKind::UserPrompt => is_steering_prompt_event(event),
         _ => false,
     }
@@ -46,7 +47,9 @@ fn event_projects_as_outline_blob(event: &HistoryEvent) -> bool {
         return true;
     }
     match event.kind {
-        HistoryEventKind::ProviderOutput | HistoryEventKind::ProviderStatus => false,
+        HistoryEventKind::ProviderOutput
+        | HistoryEventKind::ProviderStatus
+        | HistoryEventKind::Notice => false,
         _ => true,
     }
 }

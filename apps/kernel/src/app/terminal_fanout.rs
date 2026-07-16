@@ -57,6 +57,7 @@ impl DaemonApp {
         attachments: &[PromptAttachment],
         prompt_origin: crate::session::PromptOrigin,
         prompt_id: &str,
+        prompt_created_at_ms: u64,
         _workflow_run_id: Option<&str>,
         _workflow_node_run_id: Option<&str>,
     ) -> Result<(), crate::error::DaemonError> {
@@ -70,6 +71,7 @@ impl DaemonApp {
             attachments,
         )
         .with_prompt_origin(prompt_origin);
+        entry.timestamp_ms = prompt_created_at_ms;
         entry.merge_key = Some(format!("prompt:{prompt_id}"));
         self.spawn_history_append(session, entry);
         Ok(())
@@ -611,6 +613,7 @@ mod tests {
             &[],
             crate::session::PromptOrigin::Arroba,
             "prompt-history-read-only",
+            crate::session::unix_epoch_ms(),
             None,
             None,
         )

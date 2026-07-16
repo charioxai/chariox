@@ -13,7 +13,9 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::transport::relay_client::RelayClientState;
 
 use super::display_endpoint::revoke_display_tunnels_for_slice;
-use super::provider_auth::{merge_scoped_provider_auth, scoped_provider_auth_summaries};
+use super::provider_auth::{
+    merge_detected_provider_auth, merge_scoped_provider_auth, scoped_provider_auth_summaries,
+};
 use crate::runtime::cloud_api_client::issue_cloud_runtime_token;
 use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection;
 use crate::runtime::cloud_relay_control::{
@@ -25,6 +27,35 @@ pub(super) async fn execute_list_slices_request(
     runtime_state: &KernelRuntimeState,
     _request: ListSlicesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let candidates = runtime_state
+        .list_slices()
+        .into_iter()
+        .filter(|slice| {
+            slice.backend == crate::slice::SliceBackendKind::LocalDocker
+                && slice.status == crate::slice::SliceStatus::Running
+        })
+        .collect::<Vec<_>>();
+    let detected = tokio::task::spawn_blocking(move || {
+        candidates
+            .into_iter()
+            .filter_map(|slice| {
+                crate::slice::inspect_local_docker_slice_provider_auth(&slice, "all")
+                    .ok()
+                    .map(|provider_auth| (slice, provider_auth))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.auth.inspect",
+        message: format!("slice provider auth inspection task failed: {error}"),
+    })?;
+    for (slice, provider_auth) in detected {
+        let merged = merge_detected_provider_auth(slice.provider_auth.clone(), provider_auth);
+        if merged != slice.provider_auth {
+            runtime_state.set_slice_provider_auth(&slice.id, merged)?;
+        }
+    }
     let slices = runtime_state.list_slices();
     Ok(LocalDaemonResponse::SlicesListed { slices })
 }
@@ -436,6 +467,14 @@ async fn import_all_provider_auth_for_started_slice(
         .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
         .map(|summaries| scoped_provider_auth_summaries("all", summaries))
         .unwrap_or_default();
+    let verified_provider_auth =
+        crate::slice::inspect_local_docker_slice_provider_auth(&slice, "all")?;
+    let imported_provider_auth = crate::slice_provider_auth::merge_provider_auth_summaries(
+        imported_provider_auth
+            .into_iter()
+            .chain(verified_provider_auth)
+            .collect(),
+    );
     let slice = runtime_state.set_slice_provider_auth(
         &slice.id,
         merge_scoped_provider_auth(slice.provider_auth, "all", imported_provider_auth),

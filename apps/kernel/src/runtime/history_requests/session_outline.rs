@@ -160,14 +160,12 @@ fn load_scoped_agent_outline(
         agent_import,
     )?;
     prompts.retain(|prompt| !external_observed_tool_call_prompt(prompt));
-    if agent_import.is_none() {
-        suppress_arroba_owned_external_prompt_echoes(
-            &mut prompts,
-            operational_history,
-            session_id,
-            agent_id,
-        )?;
-    }
+    suppress_arroba_owned_external_prompt_echoes(
+        &mut prompts,
+        operational_history,
+        session_id,
+        agent_id,
+    )?;
     let has_more = prompts.len() > latest_prompt_count;
     if has_more {
         let remove_count = prompts.len().saturating_sub(latest_prompt_count);
@@ -192,16 +190,27 @@ fn load_scoped_agent_outline(
             .map(|event| event.sequence.saturating_sub(1))
             .or_else(|| before_sequence.map(|sequence| sequence.saturating_sub(1)))
             .unwrap_or(i64::MAX as u64);
-        let events = operational_history.load_session_events_for_agent_sequence_range(
+        let mut events = operational_history.load_session_events_for_agent_sequence_range(
             session_id,
             agent_id,
             prompt.sequence,
             sequence_end,
         )?;
-        let events = scoped_history_events(events, agent_import);
-        let events = if agent_import.is_none()
-            && outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba
+        if !events
+            .iter()
+            .any(|event| persisted_prompt_settlement_at_ms(event).is_some())
         {
+            if let Some(prompt_id) = prompt.prompt_id.as_deref().or(prompt.turn_id.as_deref()) {
+                if let Some(settlement) = operational_history
+                    .load_prompt_settlement_event(session_id, agent_id, prompt_id)?
+                {
+                    events.push(settlement);
+                    events.sort_by_key(|event| event.sequence);
+                }
+            }
+        }
+        let events = scoped_history_events(events, agent_import);
+        let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba {
             suppress_external_observed_events_from_arroba_turn(events)
         } else {
             events
@@ -227,12 +236,9 @@ fn load_scoped_agent_outline(
 
 fn outline_prompt_candidate_limit(
     latest_prompt_count: usize,
-    agent_import: Option<&ExternalProviderImportMetadata>,
+    _agent_import: Option<&ExternalProviderImportMetadata>,
 ) -> usize {
     let minimum = latest_prompt_count.saturating_add(1);
-    if agent_import.is_some() {
-        return minimum;
-    }
     minimum.saturating_mul(8).clamp(32, 128)
 }
 
@@ -257,16 +263,25 @@ fn suppress_arroba_owned_external_prompt_echoes(
     session_id: &str,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let arroba_owned_prompt_texts = operational_history
-        .load_arroba_owned_prompt_texts(session_id, agent_id)?
-        .into_iter()
-        .filter_map(|text| normalized_observed_prompt_text(&text))
+    let arroba_owned_prompts =
+        operational_history.load_arroba_owned_prompt_texts(session_id, agent_id)?;
+    let arroba_owned_prompt_texts = arroba_owned_prompts
+        .iter()
+        .filter_map(|text| normalized_observed_prompt_text(text))
+        .collect::<BTreeSet<_>>();
+    let arroba_owned_workflow_delivery_tokens = arroba_owned_prompts
+        .iter()
+        .filter_map(|text| workflow_delivery_token(text))
         .collect::<BTreeSet<_>>();
     if arroba_owned_prompt_texts.is_empty() {
         return Ok(());
     }
     prompts.retain(|prompt| {
-        !external_prompt_matches_arroba_owned_text(prompt, &arroba_owned_prompt_texts)
+        !external_prompt_matches_arroba_owned_text(
+            prompt,
+            &arroba_owned_prompt_texts,
+            &arroba_owned_workflow_delivery_tokens,
+        )
     });
     Ok(())
 }
@@ -274,6 +289,7 @@ fn suppress_arroba_owned_external_prompt_echoes(
 fn external_prompt_matches_arroba_owned_text(
     prompt: &HistoryEvent,
     arroba_owned_prompt_texts: &BTreeSet<String>,
+    arroba_owned_workflow_delivery_tokens: &BTreeSet<String>,
 ) -> bool {
     if prompt.kind != HistoryEventKind::UserPrompt {
         return false;
@@ -288,6 +304,20 @@ fn external_prompt_matches_arroba_owned_text(
         return false;
     };
     arroba_owned_prompt_texts.contains(&text)
+        || workflow_delivery_token(&entry.text)
+            .is_some_and(|token| arroba_owned_workflow_delivery_tokens.contains(&token))
+}
+
+fn workflow_delivery_token(text: &str) -> Option<String> {
+    const PREFIX: &str = "workflow-ack:";
+    let start = text.find(PREFIX)?;
+    let token = text[start..]
+        .chars()
+        .take_while(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ':')
+        })
+        .collect::<String>();
+    (token.len() > PREFIX.len()).then_some(token)
 }
 
 fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
@@ -695,6 +725,12 @@ fn outline_turn_completed_at_ms(
     if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
         return Some(settled_at_ms);
     }
+    if prompt_origin == PromptOrigin::Arroba
+        && !has_newer_prompt
+        && !is_promptless_synthetic_prompt(prompt)
+    {
+        return None;
+    }
     if prompt_origin == PromptOrigin::External
         && !has_newer_prompt
         && !is_promptless_synthetic_prompt(prompt)
@@ -735,6 +771,9 @@ fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64
     events
         .iter()
         .filter_map(|event| {
+            if let Some(settled_at_ms) = persisted_prompt_settlement_at_ms(event) {
+                return Some(settled_at_ms);
+            }
             let entry = event.to_session_history_entry()?;
             let observation = entry.external_observation.as_ref()?;
             observation
@@ -742,6 +781,13 @@ fn outline_turn_settlement_observed_at_ms(events: &[HistoryEvent]) -> Option<u64
                 .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
         })
         .max()
+}
+
+fn persisted_prompt_settlement_at_ms(event: &HistoryEvent) -> Option<u64> {
+    event
+        .metadata
+        .get(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+        .and_then(serde_json::Value::as_u64)
 }
 
 fn is_promptless_synthetic_prompt(prompt: &HistoryEvent) -> bool {

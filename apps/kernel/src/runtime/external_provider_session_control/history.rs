@@ -84,7 +84,6 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     let mut last_changed_entry = None;
     let candidate_turns =
         latest_observed_external_turns_by_merge_key(&read.turns, &provider, &provider_session_id);
-    let sync_live_external_prompt_state = !read.target.observed_cursor.is_empty();
     let mut import_state = ObservedExternalTurnImportState::new(
         read.target.observed_cursor.clone(),
         &candidate_turns,
@@ -140,17 +139,6 @@ pub(super) fn append_observed_external_turns_for_attached_target(
                 },
             );
             last_changed_entry = Some(entry.clone());
-            if sync_live_external_prompt_state {
-                sync_live_external_prompt_state_for_observed_turn(
-                    app,
-                    &read.target,
-                    &provider,
-                    &provider_session_id,
-                    &observed,
-                    turn,
-                    &entry,
-                );
-            }
             appended += 1;
             if !ExternalProviderObservationPolicy::for_provider(&provider)
                 .turn_is_passive_telemetry(turn)
@@ -179,129 +167,6 @@ pub(super) fn append_observed_external_turns_for_attached_target(
         emit_observed_external_history_signal(app, &read.target, provider_run_id.as_deref(), entry);
     }
     Ok(outcome)
-}
-
-fn sync_live_external_prompt_state_for_observed_turn(
-    app: &mut DaemonApp,
-    target: &AttachedExternalObserverTarget,
-    provider: &str,
-    provider_session_id: &str,
-    observed: &ObservedExternalTurnImportDecision,
-    turn: &ObservedExternalProviderTurn,
-    entry: &SessionHistoryEntry,
-) {
-    if turn.role == ObservedExternalProviderTurnRole::User {
-        let prompt = PromptQueueItem::external_observed_running(
-            provider,
-            provider_session_id,
-            observed.provider_turn_id.clone(),
-            &target.agent_id,
-            turn.text.clone(),
-        );
-        if let Err(error) = app.prompt_owner_sync_external_active_prompt(
-            &target.session_id,
-            &target.agent_id,
-            Some(prompt),
-        ) {
-            crate::logging::warn_with_fields(
-                "daemon.external_provider_sessions",
-                "failed to sync external active prompt",
-                serde_json::json!({
-                    "session_id": target.session_id,
-                    "agent_id": target.agent_id,
-                    "provider": provider,
-                    "provider_session_id": provider_session_id,
-                    "provider_turn_id": observed.provider_turn_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
-        return;
-    }
-    let settles_active_prompt = entry
-        .external_observation
-        .as_ref()
-        .is_some_and(|observation| observation.settles_active_prompt);
-    if !settles_active_prompt {
-        return;
-    }
-    match app.prompt_owner_sync_external_active_prompt(&target.session_id, &target.agent_id, None) {
-        Ok(true) => advance_queued_prompt_after_external_prompt_settled(
-            app,
-            target,
-            provider,
-            provider_session_id,
-            observed,
-        ),
-        Ok(false) => {}
-        Err(error) => {
-            crate::logging::warn_with_fields(
-                "daemon.external_provider_sessions",
-                "failed to clear external active prompt",
-                serde_json::json!({
-                    "session_id": target.session_id,
-                    "agent_id": target.agent_id,
-                    "provider": provider,
-                    "provider_session_id": provider_session_id,
-                    "provider_turn_id": observed.provider_turn_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
-    }
-}
-
-fn advance_queued_prompt_after_external_prompt_settled(
-    app: &mut DaemonApp,
-    target: &AttachedExternalObserverTarget,
-    provider: &str,
-    provider_session_id: &str,
-    observed: &ObservedExternalTurnImportDecision,
-) {
-    let remote_execution = match app.agents().get_agent(&target.agent_id) {
-        Ok(agent) => agent.remote_execution().cloned(),
-        Err(error) => {
-            crate::logging::warn_with_fields(
-                "daemon.external_provider_sessions",
-                "failed to inspect agent after external active prompt settled",
-                serde_json::json!({
-                    "session_id": target.session_id,
-                    "agent_id": target.agent_id,
-                    "provider": provider,
-                    "provider_session_id": provider_session_id,
-                    "provider_turn_id": observed.provider_turn_id,
-                    "error": error.to_string(),
-                }),
-            );
-            return;
-        }
-    };
-    let result = if let Some(remote_execution) = remote_execution {
-        app.advance_next_queued_prompt_remote(
-            &target.session_id,
-            &target.agent_id,
-            &remote_execution.worker_kernel_id,
-            &remote_execution.leased_agent_id,
-            remote_execution.relay_url.as_deref(),
-            remote_execution.relay_token.as_deref(),
-        )
-    } else {
-        app.advance_next_queued_prompt(&target.session_id, &target.agent_id)
-    };
-    if let Err(error) = result {
-        crate::logging::warn_with_fields(
-            "daemon.external_provider_sessions",
-            "failed to advance queued prompt after external active prompt settled",
-            serde_json::json!({
-                "session_id": target.session_id,
-                "agent_id": target.agent_id,
-                "provider": provider,
-                "provider_session_id": provider_session_id,
-                "provider_turn_id": observed.provider_turn_id,
-                "error": error.to_string(),
-            }),
-        );
-    }
 }
 
 struct ObservedExternalTurnImportState {

@@ -145,6 +145,23 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_update_leased_agent_profile(
+        &self,
+        leased_agent_id: &str,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
+        relay_peer_runtime::update_relay_leased_agent_profile(
+            &self.runtime_state,
+            leased_agent_id,
+            provider,
+            model,
+            effort,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_update_leased_agent_meta_mode(
         &self,
         leased_agent_id: &str,

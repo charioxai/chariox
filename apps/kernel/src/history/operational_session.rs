@@ -200,6 +200,48 @@ impl OperationalHistoryStore {
         read_history_events_from_rows(session_id, &mut rows)
     }
 
+    pub(crate) fn load_prompt_settlement_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.delay_read_if_configured();
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event_json
+                 FROM history_events
+                 WHERE session_id = ?1
+                   AND agent_id = ?2
+                   AND prompt_id = ?3
+                   AND kind = 'provider_status'
+                   AND event_json LIKE ?4
+                 ORDER BY sequence DESC
+                 LIMIT 1",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare prompt settlement history load",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![
+                session_id,
+                agent_id,
+                prompt_id,
+                format!("%\"{}\"%", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
+            ])
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load prompt settlement history event",
+                message: error.to_string(),
+            })?;
+        Ok(read_history_events_from_rows(session_id, &mut rows)?
+            .into_iter()
+            .next())
+    }
+
     pub fn load_session_events(
         &self,
         session_id: &str,

@@ -232,6 +232,20 @@ fn normalized_observed_prompt_text_ignores_generated_attachment_markup() {
 }
 
 #[test]
+fn observed_prompt_text_ignores_arroba_generated_runtime_context() {
+    let observed = "run the check <runtime-instructions>generated</runtime-instructions> \
+        <native-permission-instructions>generated</native-permission-instructions>";
+    assert_eq!(
+        clean_provider_prompt(observed.to_string()),
+        Some("run the check".to_string())
+    );
+    assert_eq!(
+        normalized_observed_prompt_text(observed),
+        Some("run the check".to_string())
+    );
+}
+
+#[test]
 fn clean_provider_prompt_strips_system_wrappers_and_compacts_request_text() {
     assert_eq!(
         clean_provider_prompt(

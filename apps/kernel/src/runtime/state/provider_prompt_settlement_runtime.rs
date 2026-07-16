@@ -1,5 +1,8 @@
 use super::*;
 
+const STRUCTURED_PROMPT_SETTLE_QUIET_FOR: std::time::Duration =
+    std::time::Duration::from_millis(50);
+
 impl KernelRuntimeState {
     pub(super) async fn settle_owned_provider_prompt(
         &self,
@@ -87,8 +90,38 @@ impl KernelRuntimeState {
             });
         }
 
+        if prompt_completed {
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
+        if !force && (prompt_completed || settlement_pending) {
+            let quiet_after_response = owned.prompt_output_quiet_after_response(
+                provider_run_id,
+                STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+            );
+            if !settlement_pending || saw_settlement_blocking_activity || !quiet_after_response {
+                owned.note_prompt_settlement_requested(provider_run_id);
+                let _ = owned.session_snapshot(session_id);
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "provider completion is draining final output",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "agent_id": agent_id,
+                        "prompt_id": active_prompt.id(),
+                        "settlement_pending": settlement_pending,
+                        "saw_settlement_blocking_activity": saw_settlement_blocking_activity,
+                        "quiet_after_response": quiet_after_response,
+                    }),
+                );
+                return Ok(crate::app::ProviderRunExitSessionSummary {
+                    had_active_prompt: true,
+                    started_next_prompt: false,
+                });
+            }
+        }
         let is_workflow_prompt = active_prompt.workflow_run_id().is_some();
         if is_workflow_prompt && !force && !prompt_completed && !settlement_pending {
             if completion_recorded {

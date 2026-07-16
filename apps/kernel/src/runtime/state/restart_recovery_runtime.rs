@@ -20,14 +20,22 @@ enum UncertainLocalRecoveryOutcome {
     TranscriptPending,
 }
 
+type DurableRestartRecoveryTarget = (String, String, String);
+
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) {
+        // Recovery belongs only to work that survived this kernel restart.
+        // Keep that identity set fixed across the retry window so prompts
+        // accepted after startup can never be mistaken for orphaned work.
+        let recovery_targets = self.durable_restart_recovery_targets();
         let state = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
             let summary = loop {
-                let summary = state.recover_durable_runtime_after_restart().await;
+                let summary = state
+                    .recover_durable_runtime_after_restart_targets(&recovery_targets)
+                    .await;
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
                 {
@@ -55,12 +63,51 @@ impl KernelRuntimeState {
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
+        let recovery_targets = self.durable_restart_recovery_targets();
+        self.recover_durable_runtime_after_restart_targets(&recovery_targets)
+            .await
+    }
+
+    fn durable_restart_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .filter_map(|(agent_id, prompt_state)| {
+                        prompt_state.active_prompt().map(|prompt| {
+                            (
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    async fn recover_durable_runtime_after_restart_targets(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
         for session in self.owned.session_store.list_all_sessions() {
             for (agent_id, prompt_state) in session.prompt_states() {
                 let Some(prompt) = prompt_state.active_prompt().cloned() else {
                     continue;
                 };
+                if !recovery_targets.contains(&(
+                    session.id().to_string(),
+                    agent_id.to_string(),
+                    prompt.id().to_string(),
+                )) {
+                    continue;
+                }
                 let delivery_phase = prompt.durable_delivery_phase();
                 let agent = match self.owned.agent_store.get_agent(agent_id) {
                     Ok(agent) => agent,
@@ -544,6 +591,33 @@ mod tests {
         assert_eq!(
             prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_retry_ignores_prompt_outside_startup_snapshot() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
+
+        let summary = runtime
+            .recover_durable_runtime_after_restart_targets(&BTreeSet::new())
+            .await;
+
+        assert_eq!(summary, DurableRestartRecoverySummary::default());
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("post-startup prompt should remain active");
+        assert_eq!(prompt.id(), prompt_id);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
         );
     }
 

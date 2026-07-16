@@ -902,15 +902,15 @@ impl KernelRuntimeState {
         model: Option<String>,
         effort: Option<Option<String>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let (agent, terminated_run_ids) = self.owned.update_agent_profile(
+        let update = self.owned.update_agent_profile(
             session_id,
             agent_id,
             caller_user_id,
-            provider,
-            model,
-            effort,
+            provider.clone(),
+            model.clone(),
+            effort.clone(),
         )?;
-        for provider_run_id in terminated_run_ids {
+        for provider_run_id in update.terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
                     crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
@@ -919,6 +919,60 @@ impl KernelRuntimeState {
                 .unwrap_or((false, None));
             self.owned
                 .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
+        }
+        let mut agent = update.agent;
+        if let Some(remote_update) = update.remote_update {
+            let mut config = self.config_snapshot().await;
+            if let (Some(relay_url), Some(relay_token)) = (
+                remote_update.relay_url.clone(),
+                remote_update.relay_token.clone(),
+            ) {
+                config.apply_remote_relay_override(relay_url, relay_token);
+            }
+            let target = ClientTarget {
+                daemon_id: Some(remote_update.worker_kernel_id.clone()),
+                daemon_alias: None,
+            };
+            let request = RelayPeerRequest::UpdateLeasedAgentProfile {
+                leased_agent_id: remote_update.leased_agent_id,
+                provider: remote_update.provider.clone(),
+                model: remote_update.model.clone(),
+                effort: remote_update.effort.clone(),
+            };
+            let response = match self.connected_relay_state_for_config(&config).await {
+                Some(relay_state) => {
+                    crate::transport::relay_client::send_peer_request_via_connected_relay(
+                        &config,
+                        &relay_state,
+                        target,
+                        request,
+                    )
+                    .await
+                }
+                None => {
+                    crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                        &config, target, request,
+                    )
+                    .await
+                }
+            };
+            match response {
+                Ok(RelayPeerResponse::LeasedAgentProfileUpdated { .. }) => {}
+                Ok(other) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "update remote leased agent profile",
+                        message: format!("unexpected remote profile response: {other:?}"),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+            agent = self.owned.commit_remote_agent_profile_update(
+                session_id,
+                agent_id,
+                remote_update.provider,
+                remote_update.model,
+                remote_update.effort,
+            )?;
         }
         Ok(agent)
     }

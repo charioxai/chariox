@@ -128,7 +128,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
                 worker_machine_id: "machine-1".to_string(),
                 execution_lease_id: "lease-1".to_string(),
                 leased_agent_id: "leased-agent-1".to_string(),
-                active_worker_provider_run_id: None,
+                active_worker_provider_run_id: Some("worker-run-old".to_string()),
                 relay_url: None,
                 relay_token: None,
             },
@@ -244,6 +244,105 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
     assert_eq!(
         updated.permission_level_override(),
         Some(crate::provider::AgentPermissionLevel::Required)
+    );
+
+    let profile_update = tokio::spawn({
+        let runtime = runtime.clone();
+        let session_id = session_id.clone();
+        let agent_id = agent_id.clone();
+        async move {
+            runtime
+                .update_agent_profile(
+                    &session_id,
+                    &agent_id,
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    Some("codex".to_string()),
+                    Some("gpt-5.4".to_string()),
+                    Some(Some("high".to_string())),
+                )
+                .await
+        }
+    });
+    let envelope = tokio::time::timeout(std::time::Duration::from_millis(500), priority_rx.recv())
+        .await
+        .expect("profile update should use the connected relay")
+        .expect("connected relay profile request should be queued");
+    let arroba_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        target: _,
+        encrypted_request,
+    } = envelope
+    else {
+        panic!("expected a daemon peer request");
+    };
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &target_config.relay_private_key,
+        &encrypted_request,
+    )
+    .expect("worker should decrypt profile request");
+    assert!(matches!(
+        serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(
+            &decrypted.plaintext
+        )
+        .expect("profile request should decode"),
+        crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentProfile {
+            leased_agent_id,
+            provider,
+            model,
+            effort,
+        } if leased_agent_id == "leased-agent-1"
+            && provider == "codex"
+            && model.as_deref() == Some("gpt-5.4")
+            && effort.as_deref() == Some("high")
+    ));
+    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedAgentProfileUpdated {
+        leased_agent: crate::execution_lease::LeasedAgent {
+            id: "leased-agent-1".to_string(),
+            lease_id: "lease-1".to_string(),
+            home_agent_id: agent_id.clone(),
+            provider: "codex".to_string(),
+            model: Some("gpt-5.4".to_string()),
+            effort: Some("high".to_string()),
+            execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
+            permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+            backing_session_id: "worker-session-1".to_string(),
+            backing_agent_id: "worker-agent-1".to_string(),
+            backing_attachment_id: "worker-attachment-1".to_string(),
+            projected_prompt_ids: Vec::new(),
+            projected_completion_keys: Vec::new(),
+            projected_output_history_keys: Vec::new(),
+            active_home_prompt_id: None,
+            active_home_prompt_started_at_ms: None,
+            applied_home_steer_ids: Vec::new(),
+            replayable_completion: None,
+            created_at_ms: 1,
+        },
+    };
+    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &target_config.relay_private_key,
+        &home_public_key,
+        &serde_json::to_vec(&response).expect("profile response should encode"),
+    )
+    .expect("worker should encrypt profile response");
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        "worker-1".to_string(),
+        encrypted_response,
+    )
+    .await;
+    let updated = profile_update
+        .await
+        .expect("profile update task should join")
+        .expect("profile update should complete through the connected relay");
+    assert_eq!(updated.provider(), "codex");
+    assert_eq!(updated.model(), Some("gpt-5.4"));
+    assert_eq!(updated.effort(), Some("high"));
+    assert_eq!(
+        updated
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+        None
     );
 }
 

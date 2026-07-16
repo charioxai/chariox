@@ -155,6 +155,7 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        self.record_cancelled_prompt_settlement(session_id, agent_id, &cancelled);
         self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
         Ok(cancelled)
     }
@@ -225,8 +226,30 @@ impl DaemonApp {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        self.record_cancelled_prompt_settlement(session_id, agent_id, &prompt);
         self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
         Ok(prompt)
+    }
+
+    fn record_cancelled_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &PromptQueueItem,
+    ) {
+        let provider_run_id = self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string());
+        self.operational_history_store().record_prompt_settlement(
+            self.history_archive_enabled(),
+            session_id,
+            agent_id,
+            prompt.id(),
+            provider_run_id.as_deref(),
+            crate::session::unix_epoch_ms(),
+            "cancelled",
+        );
     }
 
     pub(crate) fn prompt_owner_peek_next_queued_prompt(
@@ -309,7 +332,23 @@ impl DaemonApp {
         )
         .with_hidden_system_context(hidden_system_context)
         .with_workflow_context(workflow_run_id, workflow_node_run_id);
-        self.prompt_owner_submit_prepared_prompt(session_id, prompt, false)
+        let outcome = self.prompt_owner_submit_prepared_prompt(session_id, prompt, false)?;
+        if let PromptSubmissionOutcome::Started { prompt } = &outcome {
+            let history_text = crate::prompt_transcript::workflow_prompt_history_text(prompt);
+            self.spawn_user_prompt_history_append_with_prompt_id(
+                session_id,
+                prompt.source_attachment_id(),
+                prompt.target_agent_id(),
+                &history_text,
+                prompt.attachments(),
+                prompt.prompt_origin(),
+                prompt.id(),
+                prompt.created_at_ms(),
+                prompt.workflow_run_id(),
+                prompt.workflow_node_run_id(),
+            )?;
+        }
+        Ok(outcome)
     }
 
     pub(crate) fn prompt_owner_remove_session(&mut self, session_id: &str) {
@@ -501,6 +540,36 @@ mod tests {
             .find(|projected_agent| projected_agent.id() == agent.id())
             .expect("projected session should include agent");
         assert!(projected_agent.last_prompt_sent_at_ms().is_some());
+    }
+
+    #[test]
+    fn started_workflow_prompt_is_persisted_as_its_own_history_turn() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let rendered_prompt = "<workflow-handoff-payloads>\n[{\"message\":\"20\"}]\n</workflow-handoff-payloads>\n\n<node-level-prompt>\nsubtract 9\n</node-level-prompt>";
+
+        app.prompt_owner_submit_workflow_prompt(
+            session.id(),
+            "workflow-run:run-1",
+            agent.id(),
+            "run-1",
+            "node-run-2",
+            rendered_prompt,
+        )
+        .expect("workflow prompt should submit");
+
+        let entries = app
+            .load_session_history_entries(&session, Some(agent.id()))
+            .expect("workflow prompt history should load");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].source_attachment_id.as_deref(),
+            Some("workflow-run:run-1")
+        );
+        assert_eq!(entries[0].text.trim(), rendered_prompt);
     }
 }
 
