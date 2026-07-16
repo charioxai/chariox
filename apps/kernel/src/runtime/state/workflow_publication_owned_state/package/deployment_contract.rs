@@ -154,7 +154,9 @@ fn provider_requirements(
         (std::collections::BTreeSet<String>, Vec<String>, Vec<String>),
     >::new();
     for agent in &snapshot.agents {
-        let entry = by_provider.entry(agent.provider().to_string()).or_default();
+        let entry = by_provider
+            .entry(deployment_provider_family(agent.provider()))
+            .or_default();
         if let Some(model) = agent.model() {
             entry.0.insert(model.to_string());
         }
@@ -182,6 +184,12 @@ fn provider_requirements(
             })
         })
         .collect()
+}
+
+fn deployment_provider_family(provider: &str) -> String {
+    crate::provider::canonical_provider_family(provider)
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::provider::adapter_key_for_provider(provider).to_string())
 }
 
 fn provider_credential_slot(
@@ -530,4 +538,18 @@ fn stable_slot_component(value: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deployment_provider_family;
+
+    #[test]
+    fn deployment_provider_identity_collapses_runtime_aliases() {
+        assert_eq!(deployment_provider_family("claude-headless"), "claude");
+        assert_eq!(deployment_provider_family("claude-p"), "claude");
+        assert_eq!(deployment_provider_family("default"), "opencode");
+        assert_eq!(deployment_provider_family("codex"), "codex");
+        assert_eq!(deployment_provider_family("dev-stub"), "dev-stub");
+    }
 }
