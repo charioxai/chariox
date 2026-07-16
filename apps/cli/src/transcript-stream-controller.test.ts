@@ -39,6 +39,29 @@ test("transcript stream controller merges assistant chunks in place", () => {
   assert.equal(harness.persisted.length, 1)
 })
 
+test("transcript stream controller ignores late output already present in hydrated history", () => {
+  const historyEntry = entry(1, "assistant", "complete response", {
+    turnId: 2,
+    mergeKey: "reply-1",
+    historyEntryIndex: 4,
+  })
+  const harness = streamHarness({
+    entries: [historyEntry],
+    entryCounter: 1,
+    currentTurnId: 2,
+  })
+
+  harness.controller.appendProviderChunk("assistant", "complete response", "reply-1")
+
+  assert.deepEqual(harness.entries, [historyEntry])
+  assert.equal(harness.cancelled, 0)
+  assert.deepEqual(harness.working, [])
+  assert.equal(harness.persisted.length, 0)
+  assert.equal(harness.reconciled.length, 0)
+  assert.equal(harness.updatedEntries.length, 0)
+  assert.equal(harness.scheduledCompletions, 0)
+})
+
 test("transcript stream controller carries prompt identity through new and merged chunks", () => {
   const harness = streamHarness({
     entryCounter: 1,

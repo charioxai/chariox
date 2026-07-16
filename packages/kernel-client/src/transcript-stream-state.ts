@@ -38,6 +38,7 @@ export type TranscriptStreamEntry = {
   readonly promptId?: string | null
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
+  readonly historyEntryIndex?: number
 } & ExternalProviderObservedMutableTranscriptMetadataFields
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
@@ -153,7 +154,7 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
   const currentTurnId = options.currentTurnId !== undefined
     ? options.currentTurnId
     : computeCurrentTranscriptTurnId(nextEntries)
-  const mergedEntry = mergeProviderChunk(nextEntries, {
+  const mergeResult = mergeProviderChunk(nextEntries, {
     role: options.role,
     normalized,
     normalizedSource,
@@ -164,11 +165,15 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
     mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles ?? ["assistant", "reasoning"],
   })
 
-  if (mergedEntry) {
+  if (mergeResult?.kind === "noop") {
+    return { kind: "noop", entries: nextEntries as TEntry[] }
+  }
+
+  if (mergeResult) {
     return {
       kind: "merged",
       entries: nextEntries as TEntry[],
-      updatedEntryId: mergedEntry.id,
+      updatedEntryId: mergeResult.entry.id,
     }
   }
 
@@ -252,7 +257,7 @@ function mergeProviderChunk(
     providerRunId: string | null | undefined
     mergeAdjacentUnkeyedRoles: readonly string[]
   },
-): MutableTranscriptStreamEntry | null {
+): { readonly kind: "noop" | "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
   const {
     role,
     normalized,
@@ -274,9 +279,12 @@ function mergeProviderChunk(
       ) {
         continue
       }
-      applyMergedChunk(candidate, role, normalized, normalizedSource)
+      const kind = applyMergedChunk(candidate, role, normalized, normalizedSource)
+      if (kind === "noop") {
+        return { kind, entry: candidate }
+      }
       applyStreamMetadata(candidate, metadata, { preserveExisting: true })
-      return candidate
+      return { kind, entry: candidate }
     }
   }
 
@@ -289,7 +297,7 @@ function mergeProviderChunk(
   ) {
     last.text += normalized
     applyStreamMetadata(last, metadata, { preserveExisting: true })
-    return last
+    return { kind: "merged", entry: last }
   }
 
   return null
@@ -323,19 +331,32 @@ function applyMergedChunk(
   role: string,
   normalized: string,
   normalizedSource: string | undefined,
-): void {
+): "noop" | "merged" {
   if (role === "assistant" || role === "reasoning") {
+    if (candidate.historyEntryIndex !== undefined) {
+      if (candidate.text.includes(normalized)) {
+        return "noop"
+      }
+      if (normalized.startsWith(candidate.text)) {
+        candidate.text = normalized
+        if (normalizedSource !== undefined) {
+          candidate.sourceText = normalizedSource
+        }
+        return "merged"
+      }
+    }
     candidate.text += normalized
     if (normalizedSource !== undefined) {
       candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
     }
-    return
+    return "merged"
   }
 
   candidate.text = normalized
   if (normalizedSource !== undefined) {
     candidate.sourceText = normalizedSource
   }
+  return "merged"
 }
 
 function createTranscriptEntry(
