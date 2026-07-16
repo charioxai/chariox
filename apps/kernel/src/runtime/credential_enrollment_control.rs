@@ -110,12 +110,26 @@ impl CredentialEnrollmentControl {
         now_ms: u64,
     ) -> Result<u64, DaemonError> {
         let mut entries = self.lock_entries();
-        prune_expired_entries(&mut entries, now_ms);
-        if entries.contains_key(&binding.enrollment_id) {
-            return Err(enrollment_error(
-                "credential enrollment is already armed or consumed",
-            ));
+        let expected_service_subject =
+            deployment_credential_enrollment_service_subject(&binding.enrollment_id);
+        if let Some(entry) = entries.get(&binding.enrollment_id) {
+            return match entry {
+                CredentialEnrollmentEntry::Armed(arm)
+                    if arm.expires_at_ms > now_ms
+                        && arm.binding == binding
+                        && arm.owner_user_id == owner_user_id
+                        && arm.realm_id == realm_id
+                        && arm.expected_service_subject == expected_service_subject =>
+                {
+                    Ok(arm.expires_at_ms)
+                }
+                CredentialEnrollmentEntry::Armed(_)
+                | CredentialEnrollmentEntry::Consumed { .. } => Err(enrollment_error(
+                    "credential enrollment is already armed or consumed",
+                )),
+            };
         }
+        prune_expired_entries(&mut entries, now_ms);
         if entries.len() >= self.max_entries {
             return Err(enrollment_error(
                 "credential enrollment arm capacity is full",
@@ -123,8 +137,6 @@ impl CredentialEnrollmentControl {
         }
         let expires_at_ms = now_ms.saturating_add(self.arm_ttl_ms);
         let enrollment_id = binding.enrollment_id.clone();
-        let expected_service_subject =
-            deployment_credential_enrollment_service_subject(&enrollment_id);
         entries.insert(
             enrollment_id,
             CredentialEnrollmentEntry::Armed(CredentialEnrollmentArm {
@@ -470,6 +482,127 @@ mod tests {
             Some("realm-1"),
             now_ms,
         )
+    }
+
+    #[test]
+    fn identical_pending_rearm_preserves_expiry_and_route_identity() {
+        let control = CredentialEnrollmentControl::with_limits(100, 4);
+        let route = binding("enrollment-retry");
+        let original_expiry = control
+            .arm(
+                route.clone(),
+                "user-1".to_string(),
+                "realm-1".to_string(),
+                10,
+            )
+            .expect("initial arm should register");
+        assert_eq!(original_expiry, 110);
+
+        let retry_expiry = control
+            .arm(
+                route.clone(),
+                "user-1".to_string(),
+                "realm-1".to_string(),
+                90,
+            )
+            .expect("an identical pending retry should be idempotent");
+        assert_eq!(retry_expiry, original_expiry);
+
+        let mut wrong_profile = route.clone();
+        wrong_profile.profile_id = "profile-2".to_string();
+        let mut wrong_version = route.clone();
+        wrong_version.target_version = 8;
+        let mut wrong_session = route.clone();
+        wrong_session.session_id = "session-2".to_string();
+        let mut wrong_agent = route.clone();
+        wrong_agent.agent_id = "agent-2".to_string();
+        for changed_route in [wrong_profile, wrong_version, wrong_session, wrong_agent] {
+            assert!(control
+                .arm(
+                    changed_route,
+                    "user-1".to_string(),
+                    "realm-1".to_string(),
+                    95,
+                )
+                .is_err());
+        }
+        assert!(control
+            .arm(
+                route.clone(),
+                "user-2".to_string(),
+                "realm-1".to_string(),
+                95,
+            )
+            .is_err());
+        assert!(control
+            .arm(
+                route.clone(),
+                "user-1".to_string(),
+                "realm-2".to_string(),
+                95,
+            )
+            .is_err());
+
+        assert_eq!(
+            control
+                .arm(
+                    route.clone(),
+                    "user-1".to_string(),
+                    "realm-1".to_string(),
+                    99,
+                )
+                .expect("identity mismatches must leave the original route pending"),
+            original_expiry
+        );
+
+        assert!(consume(&control, &route, original_expiry).is_err());
+
+        let consumed_route = binding("enrollment-consumed-retry");
+        control
+            .arm(
+                consumed_route.clone(),
+                "user-1".to_string(),
+                "realm-1".to_string(),
+                200,
+            )
+            .expect("second route should arm");
+        consume(&control, &consumed_route, 210).expect("second route should consume once");
+        assert!(control
+            .arm(
+                consumed_route,
+                "user-1".to_string(),
+                "realm-1".to_string(),
+                210,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn rearm_rejects_an_expired_route_instead_of_renewing_it() {
+        let control = CredentialEnrollmentControl::with_limits(100, 4);
+        let route = binding("enrollment-expired-retry");
+        assert_eq!(
+            control
+                .arm(
+                    route.clone(),
+                    "user-1".to_string(),
+                    "realm-1".to_string(),
+                    10,
+                )
+                .expect("initial arm should register"),
+            110
+        );
+
+        for now_ms in [110, 111] {
+            assert!(control
+                .arm(
+                    route.clone(),
+                    "user-1".to_string(),
+                    "realm-1".to_string(),
+                    now_ms,
+                )
+                .is_err());
+        }
     }
 
     #[test]

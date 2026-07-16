@@ -72,8 +72,8 @@ impl EnrollmentTestEnv {
         }
     }
 
-    async fn arm(&self, enrollment_id: &str) {
-        let request = LocalDaemonRequest::ArmDeploymentCredentialEnrollment(
+    fn arm_request(&self, enrollment_id: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::ArmDeploymentCredentialEnrollment(
             ArmDeploymentCredentialEnrollmentRequest {
                 session_id: self.session_id.clone(),
                 attachment_id: self.attachment_ids[0].clone(),
@@ -82,7 +82,11 @@ impl EnrollmentTestEnv {
                 profile_id: PROFILE_ID.to_string(),
                 target_version: TARGET_VERSION,
             },
-        );
+        )
+    }
+
+    async fn arm(&self, enrollment_id: &str) {
+        let request = self.arm_request(enrollment_id);
         let command = client_command(
             &format!("arm-{enrollment_id}"),
             "credential-client-a",
@@ -155,6 +159,15 @@ impl EnrollmentTestEnv {
                 panic!("subscription unavailable: {message}")
             }
         }
+    }
+}
+
+fn armed_expiry(response: LocalDaemonResponse) -> u64 {
+    match response {
+        LocalDaemonResponse::DeploymentCredentialEnrollmentArmed { expires_at_ms, .. } => {
+            expires_at_ms
+        }
+        response => panic!("expected credential enrollment arm response, got {response:?}"),
     }
 }
 
@@ -637,6 +650,105 @@ async fn credential_enrollment_arm_requires_attached_focused_target() {
     .is_err());
 
     env.arm(enrollment_id).await;
+}
+
+#[tokio::test]
+async fn credential_enrollment_rearm_retries_only_the_exact_pending_route() {
+    let env = EnrollmentTestEnv::new();
+    let enrollment_id = "enrollment-arm-retry";
+    let original_request = env.arm_request(enrollment_id);
+    let original_expiry = armed_expiry(
+        dispatch_boxed(
+            &env.local_router,
+            client_command(
+                "arm-retry-interrupted",
+                "credential-client-a",
+                &original_request,
+            ),
+            original_request.clone(),
+        )
+        .await
+        .expect("initial arm should succeed before its response is lost"),
+    );
+
+    let retry_expiry = armed_expiry(
+        dispatch_boxed(
+            &env.local_router,
+            client_command(
+                "arm-retry-resumed",
+                "credential-client-a",
+                &original_request,
+            ),
+            original_request.clone(),
+        )
+        .await
+        .expect("the exact retry should recover the pending arm"),
+    );
+    assert_eq!(retry_expiry, original_expiry);
+
+    let mut mismatched_request = original_request.clone();
+    let LocalDaemonRequest::ArmDeploymentCredentialEnrollment(request) = &mut mismatched_request
+    else {
+        unreachable!("arm fixture must contain an enrollment request");
+    };
+    request.profile_id = "different-profile".to_string();
+    assert!(dispatch_boxed(
+        &env.local_router,
+        client_command(
+            "arm-retry-route-mismatch",
+            "credential-client-a",
+            &mismatched_request,
+        ),
+        mismatched_request,
+    )
+    .await
+    .is_err());
+
+    assert_eq!(
+        armed_expiry(
+            dispatch_boxed(
+                &env.local_router,
+                client_command(
+                    "arm-retry-original-route",
+                    "credential-client-a",
+                    &original_request,
+                ),
+                original_request.clone(),
+            )
+            .await
+            .expect("a mismatch must not replace the original pending route"),
+        ),
+        original_expiry
+    );
+
+    let helper_request = env.interaction_request(enrollment_id, 30);
+    let helper_command = service_command("arm-retry-helper", enrollment_id, &helper_request);
+    let helper_router = Arc::clone(&env.relay_router);
+    let helper_task =
+        tokio::spawn(async move { helper_router.dispatch(helper_command, helper_request).await });
+    let interaction = env.wait_for_interaction().await;
+    resolve_cancel(&env, interaction.id(), "arm-retry-cancel").await;
+    assert!(matches!(
+        helper_task.await.expect("helper task should join"),
+        Ok(
+            LocalDaemonResponse::CredentialEnrollmentInteractionResolved {
+                status: CredentialEnrollmentInteractionStatus::Canceled,
+                callback: None,
+            }
+        )
+    ));
+
+    assert!(dispatch_boxed(
+        &env.local_router,
+        client_command(
+            "arm-retry-after-cancel",
+            "credential-client-a",
+            &original_request,
+        ),
+        original_request,
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
