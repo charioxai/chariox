@@ -40,6 +40,9 @@ pub(in crate::provider) fn drain_opencode_events(
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
         match state.event_subscription.receiver.try_recv() {
             Ok(OpenCodeEvent::MessageUpdated { info }) => {
+                if info.session_id != state.session_id {
+                    continue;
+                }
                 if resolved_model.is_none() {
                     resolved_model = info.resolved_model();
                     if resolved_model.is_some() {
@@ -49,7 +52,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 if resolved_variant.is_none() {
                     resolved_variant = info.resolved_variant();
                 }
-                if info.role == "assistant" && info.session_id == state.session_id {
+                if info.role == "assistant" {
                     let total_tokens = info.total_tokens();
                     if total_tokens > 0 {
                         resolved_usage_tokens_total = Some(total_tokens);
@@ -58,8 +61,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_roles
                     .insert(info.id.clone(), info.role.clone());
-                if info.session_id == state.session_id
-                    && info.role == "assistant"
+                if info.role == "assistant"
                     && info.time.completed.is_some()
                     && !info.is_tool_call_only_completion()
                     && state

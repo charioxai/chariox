@@ -771,6 +771,47 @@ mod tests {
     }
 
     #[test]
+    fn foreign_session_message_does_not_override_run_selection() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+
+        for (session_id, model_id, variant) in [
+            ("title-session", "big-pickle", "low"),
+            ("session-1", "gpt-5.2", "high"),
+        ] {
+            tx.send(
+                crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                    info: serde_json::from_value(json!({
+                        "id": format!("message-{session_id}"),
+                        "sessionID": session_id,
+                        "role": "assistant",
+                        "providerID": "opencode",
+                        "modelID": model_id,
+                        "variant": variant
+                    }))
+                    .expect("message info should deserialize"),
+                },
+            )
+            .expect("message update should send");
+        }
+
+        let result =
+            drain_opencode_events(&test_run(), &mut state, None).expect("drain should succeed");
+        assert_eq!(result.resolved_model.as_deref(), Some("opencode/gpt-5.2"));
+        assert_eq!(result.resolved_variant.as_deref(), Some("high"));
+        assert_eq!(result.resolved_model_source, Some("message.updated"));
+        assert!(!state.message_roles.contains_key("message-title-session"));
+        assert_eq!(
+            state.message_roles.get("message-session-1").map(String::as_str),
+            Some("assistant")
+        );
+    }
+
+    #[test]
     fn tool_call_only_message_completion_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
