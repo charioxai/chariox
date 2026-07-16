@@ -1,6 +1,127 @@
 use super::*;
 
 #[test]
+fn publication_package_omits_runtime_agent_state_and_remains_stable() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "stable-runtime-state");
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("stable-runtime-state".to_string()),
+                kind: Some("ingress".to_string()),
+                route: Some("/prompt/*".to_string()),
+                methods: vec!["GET".to_string()],
+                transport: Some(serde_json::json!({ "kind": "human_http" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: Some("async".to_string()),
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.agents()
+            .bind_remote_execution(
+                &graph.agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-1".to_string()),
+                    relay_url: Some("wss://relay.example.test".to_string()),
+                    relay_token: Some("relay-secret-must-not-ship".to_string()),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        app.agents()
+            .set_agent_state(&graph.agent_id, crate::agent::AgentState::Working)
+            .expect("agent should enter working state");
+        app.agents()
+            .set_agent_processing(&graph.agent_id, true)
+            .expect("agent should enter processing state");
+        app.agents()
+            .note_prompt_sent_at(&graph.agent_id, 42)
+            .expect("agent prompt activity should be recorded");
+    });
+
+    let export = || match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest,
+            package_archive_base64,
+            package_files,
+            ..
+        } => (package_digest, package_archive_base64, package_files),
+        _ => panic!("unexpected local response"),
+    };
+    let first = export();
+
+    harness.with_app_mut(|app| {
+        app.agents()
+            .set_remote_execution_active_worker_provider_run_id(&graph.agent_id, None)
+            .expect("worker provider run should settle");
+        app.agents()
+            .set_agent_state(&graph.agent_id, crate::agent::AgentState::Idle)
+            .expect("agent should return to idle");
+        app.agents()
+            .set_agent_processing(&graph.agent_id, false)
+            .expect("agent processing should settle");
+        app.agents()
+            .note_prompt_sent_at(&graph.agent_id, 84)
+            .expect("later prompt activity should be recorded");
+    });
+    let second = export();
+
+    assert_eq!(
+        second.0, first.0,
+        "runtime-only agent changes altered the package digest"
+    );
+    assert_eq!(
+        second.1, first.1,
+        "runtime-only agent changes altered the package archive"
+    );
+    let snapshot = package_json_file(&second.2, "workflow.snapshot.json");
+    let exported_agent = &snapshot["agents"][0];
+    assert!(exported_agent.get("remote_execution").is_none());
+    assert!(exported_agent.get("provider_resume_state").is_none());
+    assert!(exported_agent.get("external_provider_import").is_none());
+    assert!(exported_agent
+        .get("remote_extension_manifest_sync")
+        .is_none());
+    assert_eq!(exported_agent["state"], serde_json::json!("Idle"));
+    assert_eq!(exported_agent["is_processing"], serde_json::json!(false));
+    assert!(exported_agent.get("last_prompt_sent_at_ms").is_none());
+    assert_eq!(
+        exported_agent["last_activity_at_ms"],
+        exported_agent["created_at_ms"]
+    );
+    assert!(!serde_json::to_string(&snapshot)
+        .expect("snapshot should serialize")
+        .contains("relay-secret-must-not-ship"));
+}
+
+#[test]
 fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

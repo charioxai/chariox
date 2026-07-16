@@ -51,11 +51,12 @@ pub(super) fn workflow_publication_package_files(
         .iter()
         .map(|node| node.agent_id().to_string())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut agents = session
+    let agents = session
         .agents()
         .iter()
         .filter(|agent| node_agent_ids.contains(agent.id()))
         .cloned()
+        .map(|agent| agent.canonicalized_for_publication_package(PUBLICATION_WORKSPACE_ROOT))
         .collect::<Vec<_>>();
     let missing_agent_ids = node_agent_ids
         .iter()
@@ -70,10 +71,6 @@ pub(super) fn workflow_publication_package_files(
                 missing_agent_ids.join(", ")
             ),
         });
-    }
-    for agent in &mut agents {
-        agent.set_workspace_id(Some(PUBLICATION_WORKSPACE_ROOT.to_string()));
-        agent.set_worktree_id(Some(PUBLICATION_WORKSPACE_ROOT.to_string()));
     }
     let snapshot = crate::local::WorkflowPublicationSnapshot {
         schema_version: 1,

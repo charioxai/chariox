@@ -617,6 +617,14 @@ impl AgentInstance {
         self.worktree_id = worktree_id;
     }
 
+    pub fn canonicalized_for_publication_package(mut self, workspace_id: &str) -> Self {
+        self.workspace_id = Some(workspace_id.to_string());
+        self.worktree_id = Some(workspace_id.to_string());
+        self.clear_publication_runtime_state();
+        self.last_activity_at_ms = self.created_at_ms;
+        self
+    }
+
     pub fn materialized_for_publication_runtime(
         mut self,
         id: impl Into<String>,
@@ -626,16 +634,20 @@ impl AgentInstance {
         self.id = id.into();
         self.agent_ref = agent_ref.into();
         self.session_id = session_id.into();
+        self.clear_publication_runtime_state();
+        self.created_at_ms = crate::session::unix_epoch_ms();
+        self.last_activity_at_ms = self.created_at_ms;
+        self
+    }
+
+    fn clear_publication_runtime_state(&mut self) {
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();
         self.external_provider_import = None;
         self.remote_extension_manifest_sync = None;
         self.state = AgentState::Idle;
         self.is_processing = false;
-        self.created_at_ms = crate::session::unix_epoch_ms();
-        self.last_activity_at_ms = self.created_at_ms;
         self.last_prompt_sent_at_ms = None;
-        self
     }
 
     pub fn set_provider_resume_state(&mut self, resume_state: ProviderResumeState) {

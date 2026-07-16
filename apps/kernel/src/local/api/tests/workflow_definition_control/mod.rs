@@ -74,6 +74,7 @@ fn workflow_code_test_sha256_hex(bytes: &[u8]) -> String {
 
 struct PublicationTestGraph {
     session_id: String,
+    agent_id: String,
     workflow_id: String,
     endpoint_id: String,
 }
@@ -152,6 +153,7 @@ fn create_publication_test_graph(
     };
     PublicationTestGraph {
         session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
         workflow_id: workflow.id().to_string(),
         endpoint_id: endpoint.id().to_string(),
     }
