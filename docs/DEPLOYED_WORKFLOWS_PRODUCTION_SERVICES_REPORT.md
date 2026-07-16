@@ -2,11 +2,11 @@
 
 **Status:** Final external-services registration audit for the deployed-workflows plan
 
-**Audit date:** 2026-07-15
+**Audit date:** 2026-07-16
 
-**OSS snapshot:** `c47d411ac764a55d96f209139e3409a19634e315` plus the current worktree changes
+**OSS implementation snapshot:** `4d503ba984c6782c4cc6c73a2acd74b0fd80cd2f`
 
-**Cloud snapshot:** `d5e3365504d7518ea549bece50a13d6e24525cf1` plus the current worktree changes
+**Cloud implementation snapshot:** `6ca6fffe05cf48177df947864d06e123949ae39e`
 
 This report answers one narrow question: which external service registrations or
 production resources are actually required before the first external production
@@ -17,9 +17,10 @@ and [threat model](DEPLOYED_WORKFLOWS_THREAT_MODEL.md) still list implementation
 integration, recovery, privacy, and final-matrix evidence that cannot be replaced by
 buying a service.
 
-The audit read the current dirty worktrees because that is the requested implementation
-snapshot. In accordance with the threat model, uncommitted callback and egress work is
-not treated as landed production evidence.
+The audit uses committed implementation snapshots with a green final local web/TUI
+matrix. Callback and egress integration are landed. The open production gates are live
+provider, real DNS/TLS, guarded Hetzner, integration-secret, and operational evidence;
+buying an external service cannot substitute for any of them.
 
 ## Decision Language
 
@@ -665,8 +666,9 @@ supports scoped HMAC verification, draining, and revocation sync in
 operates Docker, host files, networks, credential profiles, and ports through
 [`apps/worker/src/cli.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/cli.ts)
 and `publication-runner.ts`. Relay allocation is abstracted; compute scheduling/IaaS is
-not. Current dirty egress orchestration is part of the audit snapshot but remains a launch
-gate, not production evidence.
+not. The egress orchestration is committed and passes the final local matrix, but remains
+a production launch gate until its fail-closed behavior passes on designated Hetzner
+capacity.
 
 **Decision criteria:** Measure sustained connections, packets/bytes, invocation rate,
 container CPU/memory/storage, image pull/start latency, build and restart time, bandwidth,
@@ -731,10 +733,10 @@ unrestricted-network fallback.
   `ARROBA_PUBLICATION_AUDIT_BRIDGE_ADVERTISED_BASE_URL`,
   `ARROBA_PUBLICATION_ROUTES_PATH`,
   `ARROBA_PUBLICATION_CONTROL_PLANE_STALE_MS`, and the usage-spool variables listed above.
-- Current egress work consumes `ARROBA_PUBLICATION_EGRESS_IMAGE`,
+- Hosted egress consumes `ARROBA_PUBLICATION_EGRESS_IMAGE`,
   `ARROBA_PUBLICATION_EGRESS_UPLINK_NETWORK`, and
-  `ARROBA_PUBLICATION_EGRESS_HOST_FIREWALL_HELPER`; because this worktree is dirty, these
-  are implementation surfaces, not accepted production configuration.
+  `ARROBA_PUBLICATION_EGRESS_HOST_FIREWALL_HELPER`; production must set, protect, and
+  validate these as part of the runner configuration.
 - Public TLS termination and host provisioning are outside the repository today.
 
 ## Configuration Drift Found During Audit
@@ -775,19 +777,28 @@ designated-Hetzner acceptance matrix:
 | Secrets/KMS | Temporary private files, local/PaaS env injection, encrypted operator-controlled volumes, and provider-native runtime profiles |
 | Relay/compute | Local `ws://` relay/Docker or the existing Caddy-fronted Hetzner WSS relay and Docker host |
 
+The final local run used its own relay, kernel, Cloud API/server, publication ingress,
+probed ports, and temporary roots. It passed six transport cases, two Agent App cases,
+ten disruption cases, inspected web/TUI evidence, bounded load, and two-surface lifecycle
+operations with zero owned processes and all run-owned ports/roots released afterward.
+The latest managed-slice Hetzner preflight correctly stopped before mutation: available
+disk was 3,286,196,224 bytes against a 3,489,660,928-byte effective requirement. Cleanup
+was green and preserved unrelated containers, images, processes, ports, and roots. This is
+a capacity gate for that acceptance case, not a reason to register another vendor.
+
 These substitutes prove code and protocol behavior. They do not waive the external
 production requirements for backup/restore, real DNS/TLS, production identity, monitored
 operations, secret custody, capacity, residency, and incident ownership.
 
 ## External Production Gate Separate From Registration
 
-The final registration set cannot be used to claim launch readiness. The current threat
-model still requires, at minimum, the final committed callback and egress paths, live
-protocol-241 proof-of-possession exercise, hosted denial of legacy unrestricted egress,
-real custom-host DNS/TLS validation, designated Hetzner hosted-container and collaborator
-matrices, integration-secret enrollment through a runtime/external-vault boundary, package
-and runtime regression reruns, and backup/retention/deletion/privacy/incident/recovery
-evidence.
+The final registration set cannot be used to claim launch readiness. The callback and
+egress paths and final local matrix are committed and green. The current threat model
+still requires live protocol-241 provider and proof-of-possession exercise, hosted denial
+of legacy unrestricted egress, real custom-host DNS/TLS validation, designated Hetzner
+hosted-container, remote-machine, managed-slice and collaborator matrices,
+integration-secret enrollment through a runtime/external-vault boundary, and
+backup/retention/deletion/privacy/incident/recovery evidence.
 
 A production resource should not be purchased to mask one of those gates. Conversely,
 when a required capability can be supplied by an existing account or self-hosted resource,

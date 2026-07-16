@@ -1,11 +1,22 @@
 # Deployed Workflows Threat Model
 
-Status: normative baseline for managed Agent App activation
+Status: normative baseline for managed Agent App activation, updated 2026-07-16
 
 This threat model applies to Arroba-managed workflow and Agent App deployments.
 It complements `DEPLOYED_WORKFLOWS_AGENT_APP_PLATFORM_PLAN.html` and the runtime
 boundaries in `ARCHITECTURE.md`. A later design may add controls, but it must not
 weaken these invariants without an explicit security review and migration plan.
+
+Implementation status is intentionally narrower than the normative model. The
+committed OSS and Cloud branches implement the v3 package contract, runtime
+compatibility admission, provider CLI pinning, process isolation/supervision,
+resource ceilings, caller claims, protocol-241 callback authority and worker,
+relay service-key proof of possession, Cloud callback claim binding, web/TUI
+callback arming, and fail-closed hosted egress policy/orchestration. The final
+local two-surface matrix passes on OSS `4d503ba98` and Cloud `6ca6fffe` with
+stable provenance, resource evidence, and clean teardown. That local result is
+not production activation evidence; the live-provider, DNS/TLS, and guarded
+Hetzner residual gates below remain open until exercised end to end.
 
 ## Scope
 
@@ -15,6 +26,7 @@ In scope:
 - OSS CLI/TUI Cloud deployment commands
 - publication package upload, storage, download, and materialization
 - hosted runners, publication containers, and local-runtime ingress registration
+- per-revision hosted networks, egress policy compilation, CONNECT gateways, and cleanup
 - public HTTP, SSE, WebSocket, and MCP ingress
 - account handoff, audience access, credential binding, domains, logs, and usage
 - relay/bootstrap traffic used to reach the home kernel
@@ -35,8 +47,9 @@ Out of scope for Phase 0 approval:
    deployment. Ambiguity fails closed.
 3. Cloud, relay, ingress, logs, and browser clients do not receive provider
    credential payloads.
-4. A package is immutable after release verification. Configuration, credential
-   bindings, and audience policy cannot broaden its declared capabilities.
+4. A managed hosted release is an immutable package v3 plus a digest-bound
+   deployment contract. Configuration, credential bindings, provider bundles,
+   audience policy, and egress policy cannot broaden its declared ceilings.
 5. Runtime callers cannot forge Arroba identity, runner, session, or internal
    transport headers.
 6. One caller cannot read another caller's state, prompts, output, attachments,
@@ -45,6 +58,11 @@ Out of scope for Phase 0 approval:
    authorization, audit, rollback, expiry, and concurrency controls exist.
 8. Runtime and control-plane failures fail closed without silently switching
    account, deployment, credential, release, or audience identity.
+9. Hosted package, kernel, gateway, action, and provider processes remain inside
+   explicit CPU, memory, PID, file, storage, timeout, and lifecycle supervision.
+10. A hosted revision has no direct public egress path. It can reach only an exact
+    declared TLS/443 destination through its dedicated policy gateway, with no
+    legacy or availability fallback.
 
 ## Actors And Trust
 
@@ -73,6 +91,8 @@ those boundaries.
 
 - account, organization, deployment project, environment, and billing ownership
 - immutable package bytes, digest, provenance, release signature, and active pointer
+- deployment contract, provider bundle references, egress policy digest, revision
+  networks, gateway identity, and pinned upstream addresses
 - provider-native credentials and external integration credentials
 - deployment configuration and credential-binding versions
 - audience identities, allowlists, API keys, sessions, and invocation claims
@@ -111,10 +131,24 @@ those boundaries.
   and capability verification complete.
 - Extraction must prevent path traversal, symlink escapes, device files, archive
   bombs, and writes outside the deployment package directory.
+- Package v3 is the native managed-hosting format. Its deployment contract binds
+  package/source identity, the SHA-256 digest of all other package files,
+  compatibility floors, routes, credential slots, capabilities, resources,
+  network ceilings, provider bundle references, and presentation metadata.
+- Cloud admission must verify the v3 archive and contract before release
+  creation, preserve one immutable release pointer, and allow a job only on a
+  runner whose immutable image reports a compatible local daemon protocol.
+- Package v1/v2 and the old `egress_policy: deployment_tightens` marker are
+  explicit legacy adapters. They may remain usable locally, but hosted start,
+  restart, promotion, and recovery must classify them as `legacy_unrestricted`
+  and reject them before a runner can claim the job.
 - Package identity and capability declarations are immutable release data.
 - Cloud stores package bytes or object references, not provider credentials.
 - Reupload cannot silently activate a release; readiness and activation remain
   explicit lifecycle operations.
+- Digest verification is implemented. The present empty contract signature list
+  is not a production provenance signature; signing and key policy remain an
+  activation decision if the release trust model requires them.
 
 ### Public Ingress To Runtime
 
@@ -168,6 +202,18 @@ those boundaries.
   response cache and callback values are not persisted or reprojected.
 - The direct callback channel bridges the official Claude CLI. Arroba does not
   implement provider OAuth authorization, token exchange, or PKCE.
+- Web and TUI arm the same home-kernel request path. Cloud stores an immutable
+  route bound to account, enrollment, profile, target version, realm, kernel,
+  session, focused agent, and arming user. The helper bootstrap additionally
+  requires the exact live runner/job/claim attempt and ephemeral public-key
+  thumbprint, and mints only the enrollment-specific `Service` subject and exact
+  kernel target. A stale heartbeat, expired lease/enrollment, runner swap,
+  route mutation, wrong user, or replay fails closed.
+- Before decrypting or dispatching a relay request from a `Service` identity that
+  carries `public_key_thumbprint`, the kernel must compare the claim with the
+  SHA-256 digest of the encrypted envelope's `sender_public_key`. A mismatch
+  fails closed; relay identities without that service thumbprint contract keep
+  their existing behavior.
 - Provider-native verification is an explicit runner attestation after the
   official provider harness reports ready. Copying a pre-existing file is not
   provider-native verification.
@@ -179,6 +225,37 @@ those boundaries.
 - Every credential-bearing deployment and replacement job is pinned to the one
   runner that owns all of its materialized profiles. Mixed, missing, and live
   cross-runner bindings are rejected before desired state changes.
+
+### Hosted Egress Boundary
+
+- The immutable v3 contract is the maximum egress ceiling. An environment may
+  select fewer destination and provider-slot IDs, never add or alter one. The
+  compiled policy is canonical, digest-bound, deny-by-default, and contains only
+  exact lowercase DNS names on TLS port 443.
+- Each hosted revision uses its own Docker `--internal` network. The publication
+  container attaches only to that network and has no direct route to a public or
+  shared egress network.
+- One dedicated unprivileged CONNECT gateway is dual-homed on the revision's
+  internal network and a separate egress-capable network. It exposes no ordinary
+  HTTP proxying and accepts only policy-listed CONNECT authorities on port 443.
+- Before connecting, the gateway resolves all A and AAAA answers and rejects the
+  entire answer set if any address is loopback, private, link-local, metadata,
+  reserved, mapped, multicast, documentation, or otherwise non-public unicast.
+  It connects directly to one validated numeric address from that answer set;
+  later DNS changes cannot redirect the open tunnel.
+- The first tunneled bytes must be a bounded TLS ClientHello whose canonical SNI
+  equals the CONNECT host exactly. Missing, duplicate, malformed, mixed-case, IP,
+  wildcard, alternate-port, unknown-host, or mismatched-SNI requests fail closed.
+- The gateway and publication network are revision-scoped supervised resources.
+  Gateway startup/health failure, DNS failure, policy mismatch, unsupported
+  provider bundle, or teardown race blocks activation or invocation. There is no
+  direct, legacy-unrestricted, or availability fallback.
+- OSS contract validation and the standalone gateway are committed. Cloud policy
+  compilation, hosted legacy rejection, runner wiring for revision-scoped
+  internal networks, dual-homed gateways, host enforcement, recovery, cleanup,
+  and the aligned API-to-worker lifecycle snapshot are also committed. The local
+  final-revision matrix passes; the topology remains an activation gate until the
+  same fail-closed behavior passes on the designated Hetzner host.
 
 ### Hosted Runtime Process Boundary
 
@@ -194,9 +271,21 @@ those boundaries.
   delivery uses a deployment- and revision-scoped capability to a runner-owned
   bridge, which verifies that the runtime is active, candidate, or draining
   before forwarding bounded entries.
+- The publication image installs exact versioned official provider packages and
+  verifies each CLI version at image build. The current pins are Codex 0.144.0,
+  OpenCode 1.4.1, and Claude Code 2.1.207. Runners launch the resolved immutable
+  image ID, and the v3 contract carries stable provider bundle references.
+- The runner validates limits before Docker. Current defaults are 2 GiB memory
+  with swap disabled, 2 CPUs, 256 PIDs, and 4,096 open files, plus bounded
+  concurrency, queue, body, duration, usage, ephemeral storage, and tmpfs.
+  Unknown, fractional, or out-of-range values fail before launch.
+- `tini` owns PID 1. The standalone entrypoint supervises kernel, publication
+  gateway, and optional action server. Unexpected exit of any required child
+  terminates and waits for siblings, then exits nonzero for runner reconciliation.
 - Read-only root filesystems, no-new-privileges, bounded tmpfs mounts, provider
-  cache separation, and explicit process cleanup remain defense in depth; none
-  substitutes for the identity and transport boundaries above.
+  cache separation, rolling candidate/drain cleanup, and explicit process cleanup
+  remain defense in depth; none substitutes for the identity, transport, or
+  network boundaries above.
 
 ### Relay Boundary
 
@@ -214,13 +303,17 @@ those boundaries.
 | Cross-account object reference | Account-scoped service/repository lookup and denial regression tests |
 | Duplicate slug hijack | Stable deployment ID or verified host; ambiguous legacy slug fails closed |
 | Runner credential theft | Hashed opaque key, account scope, rotation/revocation, no logging |
-| Package substitution | Digest/signature verification and immutable release pointer |
+| Package substitution | V3 archive/contract digest verification, immutable release pointer, and production authenticity policy |
+| Legacy package activates hosted | Managed admission rejects v1/v2 and `legacy_unrestricted` before job claim |
+| Provider CLI or bundle substitution | Exact package versions verified at image build, immutable image ID launch, and contract-bound bundle refs |
 | Malicious archive | Bounded structured extraction and traversal/bomb fixtures |
 | Credential exfiltration | Provider-native stores, opaque bindings, redaction, egress policy |
 | Enrollment replay or runner swap | One-time account/profile/version/runner binding, expiry, atomic claim/consume, source manifest |
 | Worker crash or duplicate completion | Expiring same-runner lease, monotonic claim attempt, heartbeat, stale-attempt rejection |
 | Setup URL/code disclosure | Encrypted helper-to-kernel relay lane, exact signed service binding, strict URL validation, no Cloud projection |
 | OAuth callback or integration secret retained by Cloud | One-time direct runtime/relay input channel; no ordinary control-plane fields or logs |
+| Callback claimed by another user/helper | Exact arming user, realm, service subject, job/attempt, runner, target, tuple, TTL, and ephemeral key binding |
+| Thumbprint-bound service token replayed with another helper key | Kernel compares `SHA-256(sender_public_key)` with the service identity's `public_key_thumbprint` before decrypt/dispatch |
 | Package action reads provider credentials | Separate UID/home, permission-restricted mounts, sanitized environment, denial probe |
 | Package action controls kernel over loopback | In-container random kernel auth, authenticated handshake, token removed before provider launch |
 | Runtime steals platform runner authority | Runner key absent from container; revision-scoped runner audit bridge capability only |
@@ -234,9 +327,11 @@ those boundaries.
 | DNS/domain takeover | Proof before bind, global host uniqueness, revoke route before release |
 | Log or trace leakage | Metadata-only default, redaction, scoped access, retention and deletion |
 | Resource exhaustion | Body, timeout, queue, concurrency, replica, storage, egress, and budget limits |
+| SSRF, DNS rebinding, or egress bypass | Internal revision network, dedicated dual-homed gateway, whole-answer validation, IP pinning, exact SNI, no fallback |
+| Partial runtime after child failure | PID 1 supervision terminates siblings and exits nonzero for runner reconciliation |
 | Stale runtime after control failure | Desired/observed reconciliation, heartbeat freshness, explicit degraded state |
 
-## Phase 0 Enforced Baseline
+## Committed Implementation Baseline
 
 - Deployment control routes authenticate Cloud sessions.
 - Browser mutations require CSRF; bearer clients require valid bearer sessions.
@@ -249,33 +344,57 @@ those boundaries.
   network access.
 - Hosted runners reject unsafe packages before Docker and remove legacy unsafe
   containers during reconciliation.
+- OSS exports immutable package v3 contracts. Cloud verifies the archive/contract,
+  persists immutable release compatibility, probes the runtime image protocol,
+  launches by immutable image ID, and does not offer incompatible jobs to a runner.
+- The publication image pins and verifies all three provider CLIs. Hosted runner
+  limits, read-only/isolation controls, scoped audit capability, and standalone
+  child supervision are committed with focused tests.
+- Public ingress strips forged internal headers, injects signed caller claims,
+  and the runtime verifies caller affinity across HTTP, SSE, WebSocket, and MCP.
+- Protocol 241, the bounded one-time kernel arm, the shared secret interaction,
+  Cloud callback route/claim binding, callback worker, and both web and TUI
+  arming are committed.
+- OSS `b6c58cec2` enforces service-key proof of possession before
+  decrypt/dispatch, with focused match, mismatch, and ordinary-client-unaffected
+  tests. Those focused tests do not establish live callback E2E completion.
+- The v3 egress ceiling and dedicated CONNECT gateway implementation are committed
+  in OSS, including whole-answer address validation, IP pinning, and SNI equality.
 
-These controls contain the known Phase 0 issues. They do not make unauthenticated
-public deployment URLs suitable for customer data. Audience policy and signed
-runtime claims remain a later activation gate.
+These are implementation facts, not a production-hosting sign-off. The final
+local web/TUI matrix verifies callback, gateway, legacy-hosted denial, transport,
+identity, disruption, bounded-load, resource, visual, and cleanup behavior. Live
+provider credentials, real DNS/TLS, and the hosted/remote/slice/collaborator
+matrix remain open; the Hetzner managed-slice preflight stopped before mutation
+because available disk was 203,464,704 bytes below its effective requirement.
 
 ## Residual Risks And Activation Gates
 
-The following block a production customer-hosting claim until implemented and
-validated end to end:
+The following still block a production customer-hosting claim:
 
-- typed release contract, archive verification, digest/signature verification,
-  immutable promotion, rollback, and provenance
-- deployment projects/environments and desired/observed reconciliation semantics
-- audience authentication and route-role enforcement for every transport
-- one-time handoff claims and destination-owned credential replacement
-- provider-native setup for Codex, Claude, and OpenCode; one-time enrollment;
-  secure provider-response input; direct runtime/relay setup transport; opaque
-  bindings; runner affinity; readiness; rotation; revocation; and cleanup
+- refresh live Claude credentials and pass web- and TUI-initiated connect,
+  cancel, timeout, replay, expiry, rotation, revocation, proof-of-possession, and
+  cleanup through the committed protocol-241 callback path
+- repeat the committed v3 egress snapshot, unsupported-bundle and
+  `legacy_unrestricted` denials, revision-scoped internal network, dual-homed
+  gateway, host enforcement, no-direct-route invariant, and
+  start/restart/promotion/recovery/teardown behavior on Hetzner
+- validate immutable package admission, caller claims, resource ceilings, child
+  supervision, promotion/rollback, audience denial, custom domains, and all
+  transports in the guarded hosted matrix; these cases already pass locally on
+  the final committed OSS/Cloud revisions
+- complete one live two-surface managed-slice transaction on Hetzner after the
+  host has at least 3,489,660,928 bytes of available disk and passes the memory
+  guard; do not stop or prune unrelated workloads to manufacture headroom
+- pass designated Hetzner hosted-container, pinned remote-machine, and second-
+  account collaborator cases from both web and TUI with inspected screenshots,
+  TUI state evidence, stable source provenance, resource samples, and cleanup
 - integration-secret enrollment through a direct runtime or external-vault
   adapter boundary without secret bytes entering Cloud
-- package-action credential and kernel-isolation attacks against the production
-  image, plus proof that the runner key is absent from container inspect/process
-  state and runtime logs continue through the scoped bridge
-- custom-domain verification, global uniqueness, TLS lifecycle, and safe callbacks
-- per-caller isolation, quotas, abuse controls, budgets, and privacy policy
-- auditable lifecycle, access, credential, domain, and policy mutations
-- backup, retention, deletion, incident response, and recovery drills
+- decide whether production release authenticity requires a signing authority and,
+  if so, implement key custody, verification, rotation, revocation, and provenance
+- complete backup, retention, deletion, incident response, privacy, and recovery
+  evidence, plus a final report naming only truly required external registrations
 
 ## Verification Matrix
 
@@ -287,19 +406,32 @@ for each affected surface.
 | Cloud API | unauthenticated, CSRF, role, cross-account, stale session, and replay probes |
 | Ingress | canonical route, duplicate slug, encoded path, headers, body, SSE, WebSocket, MCP |
 | Package | malformed, traversal, symlink, bomb, digest mismatch, unsupported contract/capability |
-| Runner | start, restart, reconcile, stale backend, crash, unsafe package, cleanup |
+| Package admission | v1/v2 hosted denial, v3 identity/digest mismatch, protocol floor, immutable image ID, unsupported provider bundle |
+| Runner | start, restart, reconcile, stale backend, crash, unsafe package, resource ceilings, supervision, cleanup |
 | Credential runner | wrong account/runner/version/attempt, lease expiry/reclaim, heartbeat, stale completion, enrollment expiry/replay, source traversal, rotation overlap, revoke-before-stop, restart-safe GC |
+| Claude callback | wrong arming user/realm/subject/target/tuple/key, stale target, cancel, timeout, replay, callback redaction, web/TUI first reply |
+| Hosted egress | legacy denial, empty/exact/tightened policy, mixed DNS answer, private/mapped IP, IP pin, SNI mismatch, port, direct route, gateway loss, no fallback |
 | Runtime isolation | action UID cannot read sentinel credential, inspect protected process env, authenticate to kernel, or obtain runner key |
 | Web terminal | create, configure, deploy, recover, inspect, stop, rollback, access denial |
 | TUI/CLI | same lifecycle and denial semantics, including reupload and reconnect |
 | Collaboration | owner, admin, member, invited customer, end user, and revoked actor |
-| Remote | local runtime, slice, hosted runner, and Hetzner machine with resource samples |
+| Remote | hosted container, pinned remote machine, live shared managed slice, and collaborator on Hetzner with both surfaces and resource samples |
 
-Use isolated local relay, kernel, server, and Cloud ports for local drills. Use the
-designated Hetzner machine for remote, slice, and collaboration drills. Compare
-technical failures with existing drills before inventing a parallel path. Capture
-browser screenshots where possible, monitor local/slice/Hetzner CPU, memory, disk,
-processes, containers, and ports, and remove all temporary artifacts afterward.
+Use this worktree's own relay, kernel, server/Cloud API, publication ingress,
+unused probed ports, process groups, and state roots for local drills. Use the
+designated Hetzner machine for hosted, remote-machine, managed-slice, and
+collaboration drills. Drive every acceptance journey from both web and TUI and
+inspect desktop/mobile screenshots and TUI state artifacts. Compare technical
+failures with existing publication, resilience, provider, remote-agent, and slice
+drills before inventing a parallel path.
+
+Capture source revisions and before/during/after CPU, memory, disk, open files,
+processes, containers, networks, volumes, and ports locally, on slices, and on
+Hetzner. Enforce the fixed 1.25 GiB memory/3 GiB disk preflight and 1 GiB/2.25 GiB
+runtime floors rather than relying on a stale host reading. Managed-slice
+preparation currently needs an effective 3.25 GiB disk floor including transient
+staging headroom. Remove only run-owned resources, execute cleanup and orphan
+verification twice, and prove the baseline returns before accepting a case.
 
 ## Review Rules
 
@@ -309,3 +441,8 @@ processes, containers, and ports, and remove all temporary artifacts afterward.
 - Security denials must be consistent in web and TUI surfaces and must not leak
   cross-account object existence.
 - Commit and push every meaningful green increment so test evidence maps to code.
+- Dirty worktree behavior and artifacts without stable OSS/Cloud provenance cannot
+  satisfy an activation gate.
+- External vendors remain non-blocking when a local, temporary, or existing path
+  can validate the boundary. List and request only truly required registrations
+  in the final acceptance report.

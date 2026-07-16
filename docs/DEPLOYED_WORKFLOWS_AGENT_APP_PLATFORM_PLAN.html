@@ -792,13 +792,13 @@
     <div id="scroll-progress" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-14</p>
+      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-16</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: Phases 0-6 implemented; local audience and live Codex/OpenCode web/TUI parity green; Phase 7 hosted/Claude/disruption coverage open</span>
+        <span>Status: core product, callback, egress and local two-surface paths are implemented; live-provider and guarded Hetzner Phase 7 acceptance remain open</span>
       </div>
     </header>
 
@@ -879,8 +879,8 @@
 
         <section id="baseline">
           <p class="eyebrow">02 / Current baseline</p>
-          <h2>Most runtime primitives exist. The product boundary does not.</h2>
-          <p>This audit covers the current `main` of both repositories. The strongest existing asset is the immutable publication package and hidden publication runtime. Cloud already has hosted/local deployment records, package storage, runner jobs, ingress, health, logs, queue and replica projection. The missing layer is a secure, customer-owned product around those primitives.</p>
+          <h2>The product path exists; production acceptance is now the boundary.</h2>
+          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at OSS <code>4d503ba98</code> and Cloud <code>6ca6fffe</code> on 2026-07-16. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. The final local drill records stable fingerprints for these committed revisions; focused tests alone still do not count as launch acceptance.</p>
 
           <div class="table-wrap">
             <table>
@@ -895,45 +895,51 @@
               <tbody>
                 <tr>
                   <td>Publication package</td>
-                  <td><span class="status have">Have</span> Immutable snapshot, bindings, assets, requirements, digest.</td>
-                  <td>Versioned deployment contract with typed config, credential slots, roles, limits, and provenance.</td>
+                  <td><span class="status have">Landed</span> Package v3 exports a digest-bound deployment contract with provenance, protocol floor, routes, credential slots, resource hints, network ceilings and provider bundle references.</td>
+                  <td>Keep legacy v1/v2 adapters for local compatibility, but admit managed hosting only through verified immutable v3 artifacts and compatible runtimes.</td>
                   <td><code>arroba</code></td>
                 </tr>
                 <tr>
                   <td>Runtime</td>
-                  <td><span class="status have">Have</span> Local runtime and hosted Docker runner paths.</td>
-                  <td>Environment activation, reconciliation, release promotion, rollback, caller isolation, and budgets.</td>
+                  <td><span class="status have">Landed</span> Local and hosted paths, desired/observed reconciliation, immutable image-ID launch, rolling promotion/rollback, caller claims, limits, audit bridge, child supervision and cleanup.</td>
+                  <td>Rerun hosted disruption and resource acceptance on the final revisions when the designated Hetzner host satisfies the guarded managed-slice headroom floor.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Deployment record</td>
-                  <td><span class="status gap">Gap</span> One operational record mixes source, route, runner, package, and credentials profile metadata.</td>
-                  <td>Project, release, environment, claim, access, credential, domain, audit, and usage entities.</td>
+                  <td><span class="status have">Landed</span> Projects, releases, environments, promotions, claims, access, credentials, domains, audit and usage are distinct records with account-scoped services.</td>
+                  <td>Validate migration and recovery behavior against the final schema and both terminal surfaces.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Web UI</td>
-                  <td><span class="status gap">Gap</span> Compact workflow sidebar with raw runtime fields and lifecycle actions.</td>
-                  <td>Global deployment portfolio plus customer setup, access, credentials, releases, domains, and operations.</td>
+                  <td><span class="status have">Landed</span> Global Deployed portfolio and detail operations cover release, runtime, access, credentials, domains, observability and handoff with matching TUI commands.</td>
+                  <td>Run the final desktop/mobile, keyboard, error, collaborator and remote matrices with inspected screenshots.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Credentials</td>
-                  <td><span class="status gap">Gap</span> Free-text runner profile name and read-only profile mount.</td>
-                  <td>Destination-owned provider-native connection, readiness, binding, rotation, revocation, and audit.</td>
+                  <td><span class="status have">Landed</span> Destination-owned profiles, one-time enrollments, runner affinity, bind/test/rotate/revoke/purge and direct protocol-241 Claude callback arming from TUI and web.</td>
+                  <td>Refresh the Claude credential, then complete live web/TUI enrollment, expiry, replay, rotation, revocation and cleanup acceptance against the committed callback path.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Audience identity</td>
-                  <td><span class="status gap">Gap</span> Public unmanaged ingress; declared roles are not enforced.</td>
-                  <td>Interactive and machine authentication, allowlists, route roles, signed caller identity, and session isolation.</td>
+                  <td><span class="status have">Landed</span> Public/restricted policy, invitations, account/domain grants, signed machine credentials, forged-header stripping, runtime verification and caller affinity.</td>
+                  <td>Local HTTP, SSE, WebSocket and MCP denial and isolation pass on the final source revisions; repeat them in the guarded Hetzner matrix.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Domains</td>
-                  <td><span class="status gap">Gap</span> Path-based URL under one ingress base.</td>
-                  <td>Unambiguous default hostname, verified custom hostnames, TLS state, and canonical routing.</td>
+                  <td><span class="status have">Landed</span> Stable default routes, verified custom hosts, activation proof, TLS/canonical state and removal behavior.</td>
+                  <td>Validate one real temporary hostname end to end and preserve transport/auth behavior through DNS drift and removal.</td>
                   <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Hosted egress</td>
+                  <td><span class="status have">Landed</span> The v3 network ceiling, dedicated CONNECT gateway, policy compilation, hosted admission, revision-scoped internal network, dual-homed gateway, host enforcement, recovery and convergent cleanup are committed.</td>
+                  <td>Validate exact TLS/443 policy, no direct route or fallback, gateway disruption, and hosted rejection of <code>legacy_unrestricted</code> on the designated Hetzner host.</td>
+                  <td>Both</td>
                 </tr>
               </tbody>
             </table>
@@ -941,13 +947,15 @@
 
           <h3>Code landmarks</h3>
           <ul>
-            <li>Package generation: <code>arroba/apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code>.</li>
-            <li>Runtime contract: <code>arroba/docs/PROTOCOL.md</code> and <code>arroba/docs/AGENT_APPS_CONCEPT.md</code>.</li>
+            <li>Package v3 generation and contract: <code>arroba/apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code> and <code>arroba/packages/kernel-client/src/workflow-publication-deployment-contract.ts</code>.</li>
+            <li>Runtime and credential callback contract: <code>arroba/docs/PROTOCOL.md</code> and <code>arroba/apps/kernel/src/runtime/credential_enrollment_control.rs</code>.</li>
+            <li>Relay service-key proof of possession: <code>arroba/apps/kernel/src/transport/relay_client/daemon_requests.rs</code> (committed at <code>b6c58cec2</code>).</li>
+            <li>Publication images: <code>arroba/docker/publication/Dockerfile</code>, <code>arroba/docker/publication/entrypoint.sh</code> and <code>arroba/docker/publication-egress/</code>.</li>
             <li>Cloud model: <code>arroba-cloud/packages/db/prisma/models.prisma</code>.</li>
-            <li>Control routes: <code>arroba-cloud/apps/api/src/routes/publication-deployments.ts</code>.</li>
-            <li>Ingress lookup: <code>arroba-cloud/apps/api/src/publication/deployments-repository.ts</code>.</li>
+            <li>Contract and activation admission: <code>arroba-cloud/apps/api/src/publication/deployment-runtime-compatibility.ts</code> and <code>arroba-cloud/apps/api/src/publication/publication-egress-policy.ts</code>.</li>
+            <li>Credential callback claim binding: <code>arroba-cloud/apps/api/src/publication/deployment-credential-callback-channel-repository.ts</code>.</li>
             <li>Runner: <code>arroba-cloud/apps/worker/src/publication-runner.ts</code>.</li>
-            <li>Current web mount: <code>arroba-cloud/apps/web/src/react/workflows/WorkflowActionButtonsMount.tsx</code>.</li>
+            <li>Current web mount: <code>arroba-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
           </ul>
         </section>
 
@@ -1016,7 +1024,8 @@ Arroba Cloud control plane ---- deployment commands ----> runner
   | no long runtime stream proxy                       v
   +--------------------------------------------- public ingress
 
-Runtime traffic: caller -> ingress -> gateway -> kernel -> provider CLI</pre>
+Runtime traffic: caller -> ingress -> publication gateway -> kernel -> provider CLI
+Provider egress: per-revision internal network -> dedicated CONNECT gateway -> public TLS</pre>
 
           <div class="callout danger">
             <strong>Non-negotiable</strong>
@@ -1107,8 +1116,8 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
 
         <section id="contract">
           <p class="eyebrow">05 / Release contract</p>
-          <h2>Make the package self-describing enough to drive setup.</h2>
-          <p>Add a versioned deployment contract to the publication package. Prefer extending the existing requirements format when compatibility remains clear; otherwise add <code>deployment-contract.json</code> and retain old package readers behind an explicit package-version adapter.</p>
+          <h2>Package v3 is the immutable managed-hosting admission unit.</h2>
+          <p>OSS now exports <code>deployment-contract.json</code> in every package v3 archive. The contract identifies the source, content digest and digest scope; declares routes, provider and credential requirements, resources, capabilities, presentation, network ceilings and runtime compatibility; and is validated in both repositories. Package v1/v2 readers remain explicit legacy adapters for local compatibility and must not be treated as equivalent managed-hosting releases.</p>
 
           <h3>Required contract sections</h3>
           <ul>
@@ -1130,6 +1139,14 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Any serialized OSS protocol shape change follows the repository protocol rule: bump the shared version, update snapshot/hash tests, update dependent minimum versions, and add a focused drill.</li>
           </ul>
 
+          <h3>Implemented admission path</h3>
+          <ul>
+            <li>Archive extraction is bounded and structured; Cloud verifies archive size, file safety, package digest, contract schema, contract/package identity and immutable release metadata before promotion.</li>
+            <li>The v3 compatibility block carries the minimum local daemon protocol. Runners advertise the probed protocol of an immutable Docker image ID, and incompatible jobs are not claimable or recoverable on that image.</li>
+            <li>The publication image pins and build-verifies Codex CLI <code>0.144.0</code>, OpenCode <code>1.4.1</code> and Claude Code <code>2.1.207</code>. The contract maps provider slots to stable official bundle IDs so an environment can tighten, never substitute or broaden, the declared provider ceiling.</li>
+            <li>Hosted activation requires package v3, an enforced network policy snapshot and supported provider bundle references. The Cloud egress-policy compiler, lifecycle admission, aligned API-to-worker policy snapshot, runner orchestration, recovery and cleanup are committed and pass the final local matrix; designated-Hetzner fail-closed acceptance remains open.</li>
+          </ul>
+
           <div class="callout info">
             <strong>Design constraint</strong>
             The package must describe what a customer needs to provide without containing what the builder provided. A credential slot says "GitHub installation with repository read scope"; it never contains a GitHub token or builder account reference.
@@ -1138,8 +1155,8 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
 
         <section id="security">
           <p class="eyebrow">06 / Security foundation</p>
-          <h2>Repair the current control and ingress boundaries before adding exposure.</h2>
-          <p>This is Phase 0 and blocks public product activation, not the rest of local development. Existing routes appear to accept caller-provided account and creator identifiers. Public route lookup is globally ambiguous because slugs are account-scoped in the database but resolved without account or host context.</p>
+          <h2>Keep the landed containment controls below every client.</h2>
+          <p>Phase 0 control-plane containment is implemented: authenticated identity and membership are service-derived, browser mutations are CSRF checked, cross-account object access is denied, canonical routing is deployment-scoped, ambiguous legacy slugs fail closed and managed persistent patches are rejected. Later work added signed caller claims, credential and process isolation, immutable runtime compatibility, resource ceilings and an audit bridge. These controls remain implementation baselines, not proof that the final hosted product matrix has passed.</p>
           <p>The normative actor, asset, trust-boundary, abuse-case, residual-risk and verification baseline is maintained in <a href="DEPLOYED_WORKFLOWS_THREAT_MODEL.md">Deployed Workflows Threat Model</a>.</p>
 
           <h3>Control-plane requirements</h3>
@@ -1162,6 +1179,15 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Keep identity structured. Do not automatically splice identity claims into model-visible prompt text.</li>
             <li>Apply per-deployment and per-caller request, concurrency, queue, body-size, duration and spending limits.</li>
             <li>Validate CORS, CSRF, cookie scope, WebSocket Origin, forwarded headers, redirect and content-security policy behavior.</li>
+          </ul>
+
+          <h3>Hosted egress requirements</h3>
+          <ul class="checklist">
+            <li>Create one Docker network per deployment revision with <code>--internal</code>; attach the publication container only to that network.</li>
+            <li>Run one dedicated unprivileged CONNECT gateway per revision, dual-homed on the internal revision network and a separate egress-capable network. Do not place the publication container on the egress network.</li>
+            <li>Compile a digest-bound policy only from the immutable v3 ceiling and environment tightening. Permit exact canonical lowercase DNS names on TLS port 443 only.</li>
+            <li>Reject the request unless every A and AAAA answer is public unicast, pin the chosen validated address for the upstream connection, and require TLS ClientHello SNI to equal the CONNECT host exactly.</li>
+            <li>Provide no direct route and no fallback when the gateway, DNS, policy or provider bundle is missing or unhealthy. Hosted start, restart, recovery and promotion must reject <code>legacy_unrestricted</code>.</li>
           </ul>
 
           <div class="callout danger">
@@ -1210,7 +1236,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
         <section id="credentials">
           <p class="eyebrow">08 / Credentials</p>
           <h2>Connect accounts in the runtime plane and expose only readiness to Cloud.</h2>
-          <p>Replace the current free-text credential profile field with a destination-owned credential catalog and a provider-specific "Connect" flow. Reuse official provider CLIs, provider-local servers, and documented hooks only.</p>
+          <p>The destination-owned credential catalog and provider-specific connect flow are implemented across Cloud, web and TUI. Provider execution still uses official provider CLIs, provider-local servers and documented hooks only; Cloud stores status, account labels and opaque runtime references, never provider credential bytes.</p>
 
           <h3>Provider connection flow</h3>
           <ol>
@@ -1223,6 +1249,20 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Cloud stores only metadata and an opaque runtime reference, then creates the environment binding.</li>
             <li>Replace/rotate uses a new profile version and rolling restart; revoke removes binding first, then securely purges runtime material after confirmation.</li>
           </ol>
+
+          <h3>Direct Claude callback path</h3>
+          <ol>
+            <li>An attached web or TUI client creates the same enrollment and sends protocol-241 <code>ArmDeploymentCredentialEnrollment</code> to the home kernel for the exact enrollment, profile, target version, session, focused agent and attachment.</li>
+            <li>Cloud persists an immutable callback route bound to the destination account, live job claim, runner, realm, kernel, session, focused agent and arming user. Bootstrap mints a short-lived relay token for service subject <code>deployment-credential-enrollment:&lt;enrollment_id&gt;</code>, the exact kernel target and the helper's ephemeral public-key thumbprint.</li>
+            <li>For a relay <code>Service</code> identity carrying <code>public_key_thumbprint</code>, the kernel must compare that claim with <code>SHA-256(sender_public_key)</code> before decryption or dispatch. A different helper key fails closed without changing ordinary client behavior.</li>
+            <li>The hosted helper sends the Claude authorization URL in an end-to-end encrypted relay request directly to the kernel. Cloud and the relay do not receive the URL or callback value.</li>
+            <li>The kernel atomically consumes the one-time in-memory arm and creates one secret <code>RuntimeInteraction</code> visible to every attached Arroba web/TUI client. First valid reply wins; cancel and timeout yield no callback.</li>
+            <li>The callback exists only in the encrypted helper response and is written to the waiting official Claude CLI. It is excluded from session state, command caches, ordinary API fields, logs and reprojection.</li>
+          </ol>
+          <div class="callout info">
+            <strong>Current checkpoint</strong>
+            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. The final local matrix passes the callback path with durable test credentials. Keep the live-provider gate open until refreshed Claude credentials pass real web- and TUI-initiated connect, rotate, cancel, timeout, replay, expiry and revocation drills.
+          </div>
 
           <h3>Credential classes that must stay distinct</h3>
           <ul>
@@ -1416,6 +1456,26 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Emergency controls: deny new invocations, stop environment, revoke one audience key, unbind one credential, or disable one route without deleting history.</li>
           </ul>
 
+          <h3>Hosted ceilings, supervision, and cleanup</h3>
+          <ul>
+            <li>The runner validates every limit before Docker. Current defaults are 2 GiB memory with swap disabled, 2 CPUs, 256 PIDs and 4,096 open files; accepted configurable ranges remain bounded and malformed or unknown fields fail before launch.</li>
+            <li>Hosted containers use a read-only root, no-new-privileges, a reduced capability set, bounded tmpfs mounts and separate kernel, provider, gateway and action identities/homes. The platform runner key never enters the runtime container.</li>
+            <li><code>tini</code> owns PID 1. The standalone entrypoint supervises kernel, publication gateway and optional action server; an unexpected child exit terminates siblings, waits for them and exits nonzero so the runner can reconcile instead of serving a partial runtime.</li>
+            <li>Promotion keeps the prior healthy revision through candidate readiness and a bounded drain, then removes superseded containers and capabilities. Stop, delete, failed start, runner restart and credential rotation/revocation must converge without an orphaned container, profile or route.</li>
+          </ul>
+
+          <h3>Fail-closed egress topology</h3>
+          <pre aria-label="Hosted egress topology">public egress network
+        |
+        | validated TLS/443 only
+        v
+dual-homed CONNECT gateway
+        ^
+        | per-revision internal Docker network
+        |
+publication container (no direct public route)</pre>
+          <p>The OSS policy parser and gateway enforce exact lowercase DNS names, whole-answer public-IP validation, address pinning and CONNECT/SNI equality. Cloud must compile and persist a tightening-only policy from the immutable release, create the per-revision networks and gateway, inject proxy settings without a bypassing <code>NO_PROXY</code>, health-check the gateway, and tear down both networks and the gateway with the revision. Any missing or legacy policy, unsupported provider bundle, resolution failure, gateway failure or attempted direct path blocks activation or invocation; there is no unrestricted fallback.</p>
+
           <h3>State and data</h3>
           <p>For the first release, support stateless apps and external customer databases/connectors. Define deployment-scoped ephemeral files explicitly. Plan a later managed KV/blob capability with per-caller isolation, quotas, backup, retention, export and deletion. Persistent workflow patches are configuration mutations, not application storage.</p>
 
@@ -1491,8 +1551,8 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="decision">
-            <strong>Current service-registration recommendation / 2026-07-14</strong>
-            No new vendor account is required to finish implementation or the local and hosted acceptance drills. Before the first real external beta, select a production secret boundary for customer provider credentials and confirm that the existing identity plan supports the required organizations and audience volume. Add transactional email only when invitations must be delivered rather than shared as expiring claim links. Move packages to an EU S3-compatible object store when measured package volume or database growth requires it. Keep direct Caddy custom-host routing until domain count, WAF needs, certificate operations, or static-asset latency justify a managed custom-hostname/CDN product. At each trigger, record current plan/cost, region, security impact, required credentials, migration steps, and degraded behavior before asking the user to register.
+            <strong>Current service-registration position / 2026-07-16</strong>
+            No new vendor registration is required for implementation, isolated local validation or the designated Hetzner drills. Use local files/MinIO, test identities, copyable expiring claims, existing Auth0/Caddy/Postgres abstractions and provider-native profiles while validating the boundaries. Do not turn a possible object store, mail provider, custom-hostname platform, billing system or observability vendor into a blocking dependency. At final acceptance, produce one evidence-based registration report listing only services that are truly required for the first external deployment, with plan/cost, region, security impact, credentials, migration and degraded behavior. Until that report is accepted, candidate services in the table remain options, not prerequisites.
           </div>
         </section>
 
@@ -1514,17 +1574,13 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
                 <h4>Exit</h4>
                 <p>Cross-account mutation/read probes fail; unauthenticated control mutation fails; duplicate slugs cannot alter routing; existing local and hosted deployment smoke tests still pass.</p>
                 <div class="callout info">
-                  <strong>Progress record / 2026-07-14</strong>
+                  <strong>Containment record / updated 2026-07-16</strong>
                   <ul>
-                    <li>Cloud control routes now derive account identity from authenticated sessions, enforce account roles and CSRF policy, reject cross-account access, and keep package operations account-scoped. Global ingress routing now uses deployment identity plus slug instead of an ambiguous account-scoped slug.</li>
-                    <li>Managed deployment paths reject persistent patches in both OSS and Cloud. The Phase 0 actor, asset, trust-boundary, abuse-case, and containment model is recorded in <code>docs/DEPLOYED_WORKFLOWS_THREAT_MODEL.md</code>.</li>
-                    <li>Pushed Cloud checkpoints: <code>2c2d87b0</code>, <code>384d7756</code>, <code>fb89c4e1</code>, and <code>f700ed45</code>. Pushed OSS checkpoints: <code>dcd652039</code>, <code>02c12bc43</code>, <code>3832e47a4</code>, <code>92b959749</code>, and TUI disconnect fix <code>2fe90236d</code>.</li>
-                    <li>A dedicated local stack on ports 57174-57177 created deployment <code>fd284cd7-6bbc-4d0b-a53b-9d77f1515d11</code>. The canonical browser form completed with output <code>{"value":1842}</code>; the web Deployed tab and a real TUI/CLI projected the same deployment, source session, workflow, endpoint, ready/healthy state, URL, and cleanup transition.</li>
-                    <li>Visual evidence is retained under <code>.artifacts/deployed-workflows-platform/phase0-local-e2e/</code>, including <code>web-deployed-tab-ready.png</code>, <code>canonical-browser-form-completed.png</code>, and <code>web-deployed-tab-after-cleanup.png</code>.</li>
-                    <li>Cloud API coverage passed 127 tests; OSS server coverage passed 71 tests; the complete CLI set passed 1,348 tests with bounded concurrency. The TUI kernel restart drill retained the same session and agent through disconnect/reconnect after the teardown race was fixed.</li>
-                    <li>The deployment drill peaked near 266 MB RSS, the local Cloud process near 146 MB RSS, and the TUI build-plus-restart drill near 491 MB RSS. Dedicated ports, processes, sockets, state roots, and <code>/tmp</code> artifacts were removed and verified absent; unrelated user processes and containers were left untouched.</li>
+                    <li>Session-derived control authorization, CSRF, account scoping, canonical deployment routing and managed persistent-patch rejection are committed in both repositories.</li>
+                    <li>Later hardening now verifies caller identity across HTTP, SSE, WebSocket and MCP; isolates package actions, credentials, kernel transport and the runner audit capability; and supervises hosted runtime children.</li>
+                    <li>The original dedicated-stack screenshots and cleanup evidence remain useful historical containment evidence, but they predate the current v3 admission, protocol-241 callback and egress revisions and are not the final launch result.</li>
                   </ul>
-                  <p><strong>Current gate:</strong> local containment and browser/TUI parity are green. Hosted attempts reached real web-initiated and TUI-initiated lifecycle operations and exposed an intermittent kernel SQLite <code>database or disk is full</code> failure. The root cause was provider bootstrap caches sharing a small HOME filesystem with kernel durable state. Cloud commit <code>987ca5ca</code> isolates <code>/home/arroba/.arroba</code> from provider caches and allocates mounts with the runtime image's UID/GID 1001; focused recovery tests, all 47 worker tests, the full Cloud workspace suite, lint, and direct exhaustion reproduction pass. Repeat the complete hosted two-surface matrix after the Hetzner host has at least the drill's 2.25 GiB free-disk floor.</p>
+                  <p><strong>Current gate:</strong> retain these controls while completing the final-revision local and Hetzner matrices. Capacity is sampled at run time; no earlier free-disk reading is current evidence. The committed harness uses fixed local and remote preflight floors of 1.25 GiB available memory and 3 GiB available disk, then runtime abort floors of 1 GiB and 2.25 GiB. Managed-slice preparation currently requires an effective 3.25 GiB of available disk, including transient staging headroom.</p>
                 </div>
               </div>
             </details>
@@ -1640,25 +1696,24 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="callout info">
-            <strong>Implementation and validation checkpoint / 2026-07-14</strong>
+            <strong>Implementation and validation checkpoint / 2026-07-16</strong>
             <ul>
-              <li>Phases 1-6 now have working vertical paths across both repositories: versioned immutable release packages; project, release, environment and promotion records; the global Deployed web surface; matching TUI lifecycle commands; claimable customer ownership and revocable builder access; destination-owned credential connect, bind, test, rotate, revoke and purge; default and custom domains; HTTP SSE, WebSocket and MCP transports; limits, usage, emergency controls, retention, telemetry, rolling activation and runner recovery.</li>
-              <li>The complete local acceptance matrix ran on a dedicated relay, kernel, Cloud server, publication ingress and provider stubs using ports 59111-64111. Each of SSE, WebSocket and MCP was initiated once from the web terminal and once from the TUI terminal while the other client remained attached. The matrix also exercised release convergence, bidirectional start/stop, handoff in both directions, second-account claims, builder revocation, credential recovery, domain verification/canonical/removal, admission controls, exports, deletion and mobile layouts.</li>
-              <li>The original green local artifact <code>.artifacts/deployed-workflows-platform/local-six-case-modal-refresh-final/</code> contains 60 browser screenshots, 150 TUI state captures and 10 geometry/visibility checkpoints. The expanded audience artifact <code>.artifacts/deployed-workflows-platform/local-audience-two-surface-8/</code> contains 71 browser screenshots and 190 TUI captures. It drives public/restricted policy, email invitation acceptance from either client, account and email-domain grants, web- and TUI-created machine keys, forged/missing/revoked denial, and public restoration through both clients. Each of web- and TUI-initiated SSE, WebSocket and MCP invocation passed authenticated use, opposite-client observation, revocation, denial and anonymous restoration. Neither run reports unexpected browser console or page errors.</li>
-              <li>The live external-provider web matrix at <code>.artifacts/deployed-workflows-platform/live-provider-web-matrix-1/</code> passed for Codex, OpenCode and Claude with 36 inspected screenshots, imported provider history after reload, visible queued prompts and no failure diagnostics. This proves browser observation and import against the provider-native harnesses; it does not replace credential rotation or deployed-ingress acceptance.</li>
-              <li>The isolated two-client artifacts <code>live-two-client-opencode-1/</code> and <code>live-two-client-codex-1/</code> each pass 42 bidirectional web/TUI checks. They cover queued and steered prompts, clearing from either surface, mode/permission/provider/model/variant propagation, synthetic permissions, real provider-backed user requests initiated and resolved from both surfaces, browser socket replay, TUI restart catch-up, workflow node/edge/config/queue/run/publication/delete operations and remount convergence. All observations stayed inside their budgets, browser errors were empty, final queues drained, screenshots were inspected, and teardown left no process, listener or temporary root.</li>
-              <li>The matching Claude two-client run correctly remains red: the provider emitted <code>Login expired - Please run /login</code> before creating the first real popup, and <code>claude auth status</code> now reports <code>loggedIn: false</code>. Artifact <code>live-two-client-claude-1/</code> preserves the failed manifest, pre-provider screenshots and a clean teardown audit. Rerun the identical matrix after credentials are refreshed; do not classify this external authentication failure as terminal-sync acceptance.</li>
-              <li>Cleanup evidence records no remaining drill PID, descendant, listener or temporary root, and all dedicated ports are reusable. Local and Hetzner diagnostics removed only run-owned containers, files and build artifacts; unrelated active slices and publications were left intact.</li>
-              <li>The implementation checkpoints are OSS <code>9ca7cd4db</code>, OSS evidence update <code>936d81250</code>, and Cloud <code>ca937903</code>. Cloud's complete workspace test suite, production build and repository-wide lint/type checks pass at the checkpoint; the expanded drill helper and web audience suites are green. Focused OSS package, kernel, server and full CLI suites are green.</li>
+              <li>Working vertical paths cover immutable releases, project/environment promotion and rollback, the Deployed web surface and TUI commands, customer handoff and revocable builder access, audience policy, credential lifecycle, domains, HTTP/SSE/WebSocket/MCP, Agent App invocation identity, usage/limits, operations detail, audit and reconciliation.</li>
+              <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Live Claude acceptance remains gated on refreshed credentials, not missing callback code.</li>
+              <li>The OSS v3 network ceiling and dedicated CONNECT gateway are committed at <code>d45177951</code> and <code>b3acbf488</code>. Cloud <code>bac401e2</code>, <code>cff0062</code> and <code>7833a66e</code> landed policy compilation, hosted legacy rejection, revision-scoped internal and dual-homed network orchestration, host enforcement, recovery and convergent cleanup.</li>
+              <li>The final local two-surface artifact <code>local-idle-browser-kernel-86004-1784180201325</code> is green with stable OSS <code>4d503ba984c6782c4cc6c73a2acd74b0fd80cd2f</code> and Cloud <code>6ca6fffe05cf48177df947864d06e123949ae39e</code> provenance. It covers six web/TUI transport cases, two Agent App cases and ten disruption cases across nine components.</li>
+              <li>The same local run exercised same-caller serialization, different-caller concurrency, forged-header denial, cross-surface key lifecycle, bounded load in both directions, handoff, audience, credentials, domains and telemetry. Evidence includes 100 screenshots, 299 TUI snapshots, 18 visual checkpoints and 24 resource checkpoints.</li>
+              <li>The run used its own relay, kernel, Cloud API/server, publication ingress and dynamically probed ports. Peak sampled load was 56 processes and 1,993,424 KiB RSS; cleanup left zero owned processes, freed all 32 core/transient ports, removed temporary and credential roots, and preserved unrelated local containers.</li>
+              <li>Managed-slice relocation, image protocol labels and canonical package digests are committed at OSS <code>8d5d68d28</code>, <code>d25eefcf4</code> and <code>9fd24c57a</code>. A guarded Hetzner preflight then stopped before mutation because 3,286,196,224 bytes were available against the 3,489,660,928-byte effective managed-slice requirement, a 203,464,704-byte shortfall. Its cleanup audit is green and preserved all unrelated workloads.</li>
             </ul>
-            <p><strong>Open acceptance work:</strong> rerun the entire hosted web/TUI matrix, including remote machine/slice and collaborator cases, once unrelated active Hetzner volumes release enough disk; the latest 2026-07-14 reading found 716,558,336 bytes free against the 2.25 GiB runtime guard, with no stale run-owned root or process available to remove. Inspect the resulting screenshots and cleanup manifest. Refresh Claude credentials and rerun its two-client case. Complete live Codex, Claude and OpenCode credential expiry/rotation/revocation, signed JWT and webhook authentication, the full restart/partition combinations, and bounded load cases from both clients. Do not weaken the capacity guard, materialize Docker layers while the host is near full, or remove unrelated active workloads to force the drill through.</p>
+            <p><strong>Open acceptance work:</strong> rerun the guarded Hetzner hosted-container, pinned remote-machine, live shared managed-slice and second-account collaborator matrix once the host has at least 3,489,660,928 bytes of available disk and the memory floor passes. Refresh Claude credentials and complete live Codex/Claude/OpenCode connect, expiry, rotation and revocation cases; validate one real temporary DNS/TLS hostname; and repeat hosted egress, restart/partition, rollback, signed machine auth and bounded-load checks from both web and TUI with inspected screenshots. Record before/during/after resources and perform ownership-scoped cleanup twice, preserving unrelated workloads. When technical issues appear, compare the existing publication, resilience, provider, remote-agent and slice drills for guidance before changing architecture. Keep temporary/local substitutes nonblocking and ask for external registrations only in the final evidence-based acceptance report. Commit and push every meaningful green increment.</p>
           </div>
         </section>
 
         <section id="validation">
           <p class="eyebrow">15 / Validation program</p>
           <h2>Test the product as two people, not only as one API client.</h2>
-          <p>Run a dedicated local Arroba stack for these drills: start this worktree's own relay, kernel, and server on dynamically verified unused ports. Do not reuse the user's active daemons, staging processes, or their state directories. Use the existing Hetzner machine for hosted runtime, remote machine/slice, and collaborator drills. Before remote work, review existing publication, resilience, and provider drills for exact credential transfer, process ownership, port, and cleanup guidance.</p>
+          <p>Run a dedicated local Arroba stack for these drills: start this worktree's own relay, kernel, server/Cloud API and publication ingress on dynamically probed unused ports with unique state roots. Do not reuse the user's active daemons, staging processes or state directories. Use the designated Hetzner machine for hosted runtime, remote-machine worker, managed-slice and collaborator drills. Pin and record both repository revisions and stable worktree fingerprints. Before remote work, review existing publication, resilience, provider, remote-agent and slice drills for exact credential transfer, process ownership, port, evidence and cleanup guidance.</p>
 
           <div class="callout danger">
             <strong>End-to-end requirement</strong>
@@ -1667,7 +1722,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
 
           <div class="callout info">
             <strong>Isolated drill infrastructure</strong>
-            Each drill must create a run manifest containing allocated ports, PIDs/process groups, state directories, package/profile paths, containers, volumes, temporary accounts, and remote artifacts. Install teardown traps where practical, monitor resource headroom while the drill runs, and execute idempotent cleanup after each case and again at suite completion. Verify that ports are closed, processes and containers are gone, temporary state is removed, and local/Hetzner resource use returns to the pre-drill baseline.
+            Each drill must create a run manifest containing source revisions/fingerprints, allocated ports, PIDs/process groups, state directories, package/profile paths, networks, gateways, containers, volumes, temporary accounts and remote artifacts. Install teardown traps where practical, monitor resource headroom while the drill runs, and execute ownership-scoped cleanup after each case and at suite completion. Run cleanup and orphan verification twice. Verify that ports are closed, processes, networks, gateways and containers are gone, temporary state is removed, and local/Hetzner resource use returns to the captured pre-drill baseline.
           </div>
 
           <h3>Required matrix</h3>
@@ -1685,6 +1740,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
                 <tr><td>Runtime</td><td>Local runtime, hosted Hetzner container, remote machine/slice where applicable.</td></tr>
                 <tr><td>Provider</td><td>Codex, Claude, OpenCode, plus deterministic test adapter for failure injection.</td></tr>
                 <tr><td>Transport</td><td>Human HTTP, API SSE JSON, WebSocket JSON, MCP and schedule-only.</td></tr>
+                <tr><td>Egress</td><td>Empty policy, one/multiple exact hosts, mixed public/private DNS answers, alternate ports, SNI mismatch, gateway loss, direct-route probe and legacy unrestricted denial.</td></tr>
                 <tr><td>Access</td><td>Public, invited email, email domain, organization, API key/JWT, webhook signature and denied/expired/revoked credentials.</td></tr>
                 <tr><td>Lifecycle</td><td>Create, invite, claim, configure, preview, activate, propose update, promote, rollback, stop, restart, transfer, revoke, export and delete.</td></tr>
                 <tr><td>Disruption</td><td>Browser reconnect, relay restart, ingress restart, Cloud API restart, runner restart, kernel/container drop, provider crash, network partition and credential expiry.</td></tr>
@@ -1703,6 +1759,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li><strong>Audience isolation:</strong> exercise allowed, denied, expired, removed and forged identities across every transport; verify route roles and caller state cannot cross.</li>
             <li><strong>Custom domain:</strong> bind temporary hostname, validate DNS/TLS, authenticate, stream all transports, switch canonical host, simulate DNS drift and remove binding.</li>
             <li><strong>Outage recovery:</strong> restart relay, ingress, Cloud API, runner, kernel/container and provider individually and in combinations; validate desired state reconciliation and clear in-flight outcomes.</li>
+            <li><strong>Egress containment:</strong> prove the publication revision has no direct public route, permitted TLS/443 reaches only the pinned validated address through its dual-homed gateway, every DNS/SNI/policy bypass is denied, gateway failure has no fallback and <code>legacy_unrestricted</code> cannot activate hosted.</li>
             <li><strong>Resource and cleanup:</strong> record idle/active/peak CPU, RSS, disk, open files, processes, containers, and network on local machine, slices, and Hetzner; then remove every dedicated relay/kernel/server, temporary artifact, container, state/profile directory, and port allocation and prove the baseline returns.</li>
           </ol>
 
@@ -1721,9 +1778,10 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Capture before/during/after process tree, CPU, RSS, disk, volume size, container count, open file descriptors, listening ports, and free host memory/disk.</li>
             <li>Measure per idle deployment and per active invocation, then concurrency at 1, 5, 10 and the host-safe ceiling discovered during the drill.</li>
             <li>Set drill abort thresholds from current local, slice, and Hetzner headroom before load; stop and clean up immediately if memory, disk, CPU, process, or container pressure could affect unrelated workloads.</li>
+            <li>Do not replace live capacity measurements with an old free-disk claim. Preserve the fixed harness floors: preflight needs at least 1.25 GiB available memory and 3 GiB available disk locally and remotely; runtime aborts below 1 GiB or 2.25 GiB; managed-slice preparation currently needs an effective 3.25 GiB including transient staging headroom.</li>
             <li>Launch local relay, kernel, and server with unique state roots and process groups so teardown cannot target the user's active processes.</li>
             <li>After each drill remove dedicated relay/kernel/server processes, containers, images no longer needed, profiles, package archives, temporary accounts/domains, volumes, logs, sockets, ports, and background processes.</li>
-            <li>Run a final orphan scan and compare measurements with the captured baseline before declaring the suite clean.</li>
+            <li>Repeat ownership-scoped cleanup and the orphan scan a second time, then compare measurements with the captured baseline before declaring the suite clean.</li>
           </ul>
         </section>
 
@@ -1760,17 +1818,22 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           <p class="eyebrow">17 / Launch gate</p>
           <h2>Do not call it managed hosting until these statements are true.</h2>
           <ul class="checklist">
+            <li>Every managed hosted release is an immutable verified package v3 contract admitted only to a compatible immutable runtime image; legacy packages cannot activate hosted.</li>
+            <li>The production runtime image pins and verifies supported official provider CLI bundles, and activation rejects undeclared, unsupported or substituted bundle references.</li>
             <li>A customer can claim and operate a deployment without source-workflow or builder-account dependency.</li>
             <li>Every control mutation is authenticated, authorized, account-scoped, CSRF-safe where relevant, and audited.</li>
             <li>Every public route has an explicit audience policy; package roles are enforced across HTTP, SSE, WebSocket and MCP.</li>
             <li>Provider and integration credential bytes are absent from packages, ordinary Cloud records, URLs, logs, traces, screenshots and support bundles.</li>
             <li>Codex, Claude and OpenCode connect, expire, rotate and revoke with clear customer-visible status.</li>
+            <li>Claude callback setup uses one protocol-241 kernel interaction shared by web and TUI, with exact Cloud claim binding and no callback value in Cloud, relay plaintext, persistence, logs or screenshots.</li>
+            <li>Hosted egress uses a per-revision internal network and dedicated dual-homed CONNECT gateway; exact lowercase DNS/443, whole-answer validation, IP pinning and SNI equality pass while every direct or fallback path fails.</li>
             <li>Default hostname and at least one real custom hostname pass DNS, TLS, auth, streaming, canonical and removal drills.</li>
             <li>Immutable release promotion and rollback work without silently rolling back customer data or credentials.</li>
             <li>Caller state is isolated; cross-account, cross-deployment and cross-caller security tests pass.</li>
             <li>Budgets, rate limits, concurrency limits and emergency stop prevent unbounded provider or host spend.</li>
             <li>Runner, ingress, kernel and Cloud restarts reconcile automatically; interrupted calls fail explicitly and new calls recover.</li>
-            <li>Every required journey and disruption has end-to-end evidence from both web terminal and TUI terminal; usage, health, errors, release, access, interactions, and credential readiness remain consistent.</li>
+            <li>Every required journey and disruption has final-revision end-to-end evidence from both web terminal and TUI terminal; usage, health, errors, release, access, interactions and credential readiness remain consistent.</li>
+            <li>Designated Hetzner hosted-container, remote-machine, one live shared managed-slice and second-account collaborator matrices pass with screenshots and TUI state evidence.</li>
             <li>Resource measurements establish safe host capacity and every drill leaves no dedicated relay/kernel/server, listener, process, container, profile, package, volume, or remote artifact on local, slice, or Hetzner resources.</li>
             <li>Privacy, retention, export and deletion behavior are documented for logs, prompts, files, identities and deployment metadata.</li>
             <li>The final external-service report is accepted and any truly production-critical service is configured.</li>
@@ -1805,7 +1868,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </div>
 
           <div class="footer">
-            <strong>Current implementation point:</strong> the immutable release model and the first complete Deployed product slice are implemented in both repositories. Local audience and machine-key parity is green across web- and TUI-initiated SSE, WebSocket and MCP calls, and live Codex/OpenCode two-client state synchronization is green. Finish Phase 7 by refreshing and rerunning Claude, obtaining a clean hosted web/TUI run on the current runtime, covering remote/collaborator, credential lifecycle, signed machine-auth, disruption and bounded-load cases, auditing screenshots and cleanup, and accepting the service-registration recommendations. Keep the launch gate closed until that evidence is green.
+            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession and fail-closed egress orchestration are committed. The final-revision local web/TUI matrix is green with inspected visual and cleanup evidence. Refresh live provider credentials, free the guarded Hetzner managed-slice headroom without disturbing unrelated workloads, run the hosted/remote/slice/collaborator and real DNS/TLS matrices, commit and push each meaningful green milestone, then issue the final acceptance report. Keep the production launch gate closed until that evidence is green.
           </div>
         </section>
       </article>
