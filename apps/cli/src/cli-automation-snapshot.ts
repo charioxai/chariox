@@ -112,6 +112,15 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           primaryProvider: agent.primary_provider ?? null,
           primaryModel: agent.primary_model ?? null,
           primaryEffort: agent.primary_effort ?? null,
+          worktreeId: agent.worktree_id ?? null,
+          remoteExecution: agent.remote_execution ? {
+            workerMachineId: agent.remote_execution.worker_machine_id,
+            workerKernelId: agent.remote_execution.worker_kernel_id,
+            executionLeaseId: agent.remote_execution.execution_lease_id,
+            leasedAgentId: agent.remote_execution.leased_agent_id,
+            activeWorkerProviderRunId:
+              agent.remote_execution.active_worker_provider_run_id ?? null,
+          } : null,
           visibleInFreeform: agent.visible_in_freeform ?? true,
           state: agentRuntimeDisplayStates[agent.id],
           isProcessing: agentRuntimeDisplayStates[agent.id] === "Working",
