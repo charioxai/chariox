@@ -496,3 +496,36 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
         prompt,
     ));
 }
+
+#[test]
+fn claude_headless_bypass_confirmation_detects_clipped_rendered_choice() {
+    let rendered = "WARNING:Claude CoderunninginBypassPermissionsmode \
+        Byproceeding,youacceptallresponsibilityforactionstaken \
+        >1.No,exit 2. Yes, I accep Entertoconfirm-Esc to cancel";
+
+    assert!(claude_headless_bypass_confirmation_visible(rendered));
+    assert!(!claude_headless_bypass_confirmation_visible(
+        "Bypass permissions on - for shortcuts",
+    ));
+}
+
+#[test]
+fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-bypass-selection-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+
+    assert!(!claude_headless_bypass_selection_pending(&context_file));
+    write_claude_headless_bypass_selection_marker(&context_file);
+    assert!(claude_headless_bypass_selection_pending(&context_file));
+    write_claude_headless_startup_wait_marker(&context_file);
+    assert!(!claude_headless_bypass_selection_pending(&context_file));
+
+    let _ = fs::remove_dir_all(root);
+}

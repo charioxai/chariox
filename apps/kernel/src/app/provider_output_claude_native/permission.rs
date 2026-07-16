@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
@@ -64,6 +65,14 @@ pub(super) fn write_claude_headless_submit_retry(
 
 pub(super) fn write_claude_headless_startup_wait_marker(context_file: &str) {
     write_claude_native_marker(context_file, &format!("startup-wait:{}", unix_epoch_ms()));
+}
+
+pub(super) fn claude_headless_bypass_selection_pending(context_file: &str) -> bool {
+    claude_native_marker(context_file).as_deref() == Some(CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER)
+}
+
+pub(super) fn write_claude_headless_bypass_selection_marker(context_file: &str) {
+    write_claude_native_marker(context_file, CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER);
 }
 
 pub(super) fn append_claude_headless_debug(context_file: &str, label: &str, value: &str) {
@@ -356,9 +365,15 @@ pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
     let compact = normalized_lower.replace(' ', "");
-    (normalized_lower.contains("bypass permissions mode")
-        || compact.contains("bypasspermissionsmode"))
-        && (normalized_lower.contains("yes, i accept") || compact.contains("yes,iaccept"))
+    let mode_visible = normalized_lower.contains("bypass permissions mode")
+        || compact.contains("bypasspermissionsmode");
+    let complete_acceptance =
+        normalized_lower.contains("yes, i accept") || compact.contains("yes,iaccept");
+    let clipped_choice = (normalized_lower.contains("1. no, exit")
+        || compact.contains("1.no,exit"))
+        && (normalized_lower.contains("2. yes") || compact.contains("2.yes"))
+        && (normalized_lower.contains("enter to confirm") || compact.contains("entertoconfirm"));
+    mode_visible && (complete_acceptance || clipped_choice)
 }
 
 pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {

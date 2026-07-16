@@ -29,15 +29,16 @@ use attachments::{
 };
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
-    claude_headless_composer_visible, claude_headless_prompt_waiting_in_composer,
-    claude_headless_workspace_trust_visible, claude_native_marker, claude_permission_recent_file,
-    claude_rendered_permission_visible, clear_claude_hook_permission_tombstone,
-    clear_claude_permission_recent, extract_native_hidden_instructions,
-    format_claude_permission_message, normalize_claude_visible_prompt_for_headless,
-    read_claude_headless_submit_retry, redact_native_hidden_instructions,
-    should_bridge_claude_permission, take_claude_permission_inputs,
-    take_matching_claude_hook_permission_tombstone, timestamp_millis,
-    update_claude_permission_recent, write_claude_headless_startup_wait_marker,
+    claude_headless_bypass_selection_pending, claude_headless_composer_visible,
+    claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_visible,
+    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
+    clear_claude_hook_permission_tombstone, clear_claude_permission_recent,
+    extract_native_hidden_instructions, format_claude_permission_message,
+    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
+    redact_native_hidden_instructions, should_bridge_claude_permission,
+    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
+    timestamp_millis, update_claude_permission_recent,
+    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
     write_claude_headless_submit_retry, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_response,
@@ -439,6 +440,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         if provider_run.provider() == "claude-headless" {
             let recent = update_claude_permission_recent(context_file, rendered);
+            if claude_headless_bypass_selection_pending(context_file) {
+                append_claude_headless_debug(
+                    context_file,
+                    "auto_confirm_enter",
+                    "bypass_permissions",
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_headless_startup_wait_marker(context_file);
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
             if claude_headless_workspace_trust_visible(&recent) {
                 append_claude_headless_debug(context_file, "auto_confirm", "workspace_trust");
                 self.app
@@ -450,8 +463,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if claude_headless_bypass_confirmation_visible(&recent) {
                 append_claude_headless_debug(context_file, "auto_confirm", "bypass_permissions");
                 self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B")?;
+                write_claude_headless_bypass_selection_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
@@ -780,6 +793,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         let prompt_typed_for_headless = provider_run.provider() == "claude-headless"
             && marker.as_deref() == Some(&format!("typed:{}", prompt.id));
+        if provider_run.provider() == "claude-headless"
+            && claude_headless_bypass_selection_pending(context_file)
+        {
+            append_claude_headless_debug(context_file, "bypass_selection_wait", prompt.id);
+            return Ok(());
+        }
         if let Some(started_at_ms) = marker
             .as_deref()
             .and_then(|value| value.strip_prefix("startup-wait:"))
@@ -822,8 +841,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     "bypass_permissions",
                 );
                 self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B")?;
+                write_claude_headless_bypass_selection_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }

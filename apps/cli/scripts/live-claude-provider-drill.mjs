@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { claudeProviderOutputContainsMarker } from './lib/live-claude-provider-drill-history.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -223,6 +224,7 @@ async function terminateChild(child, signal = 'SIGTERM') {
 async function waitForHistory(client, requests, sessionId, attachmentId, expected, timeoutMs, pollMs) {
   const deadline = Date.now() + timeoutMs
   let lastText = ''
+  let lastProviderText = ''
   let lastState = null
   while (Date.now() < deadline) {
     await client.send(requests.pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => {})
@@ -230,15 +232,17 @@ async function waitForHistory(client, requests, sessionId, attachmentId, expecte
     lastState = stateResponse.SessionState?.session ?? stateResponse.SessionStateLoaded?.session ?? null
     const entries = await readSessionHistoryEntries(client, requests, sessionId, lastState)
     lastText = entries.map((entry) => entry.text ?? '').join('\n')
-    const compactText = lastText.replace(/\s+/g, '')
-    const compactExpected = expected.replace(/\s+/g, '')
+    lastProviderText = entries
+      .filter((entry) => entry?.kind === 'provider_output' && typeof entry.text === 'string')
+      .map((entry) => entry.text)
+      .join('\n')
     const completed = !lastState?.active_prompt
-    if ((lastText.includes(expected) || compactText.includes(compactExpected)) && completed) {
+    if (claudeProviderOutputContainsMarker(entries, expected) && completed) {
       return { entries, text: lastText }
     }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for Claude output marker ${expected}\nlastState=${JSON.stringify(lastState)}\n${lastText.slice(-4000)}`)
+  throw new Error(`timed out waiting for Claude provider output marker ${expected}\nlastState=${JSON.stringify(lastState)}\nproviderOutput=${lastProviderText.slice(-4000)}\nhistory=${lastText.slice(-4000)}`)
 }
 
 async function readSessionHistoryEntries(client, requests, sessionId, session) {
