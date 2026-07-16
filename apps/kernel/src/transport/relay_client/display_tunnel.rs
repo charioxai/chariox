@@ -7,6 +7,8 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::Message;
 
 const DISPLAY_PROXY_CHUNK_BYTES: usize = 8 * 1024;
@@ -209,7 +211,35 @@ async fn proxy_display_websocket(
     mut client_rx: mpsc::Receiver<RelayDisplayTunnelClientEvent>,
 ) -> Result<(), RelayError> {
     let url = local_display_websocket_url(target, &request.path)?;
-    let (local_socket, _) = tokio_tungstenite::connect_async(url.as_str())
+    let mut local_request = url.as_str().into_client_request().map_err(|error| {
+        relay_error(
+            "display_websocket_request_invalid",
+            &error.to_string(),
+            false,
+        )
+    })?;
+    for header in request
+        .headers
+        .iter()
+        .filter(|header| forward_request_header(&header.name))
+    {
+        let name = HeaderName::from_bytes(header.name.as_bytes()).map_err(|error| {
+            relay_error(
+                "display_websocket_header_invalid",
+                &error.to_string(),
+                false,
+            )
+        })?;
+        let value = HeaderValue::from_str(&header.value).map_err(|error| {
+            relay_error(
+                "display_websocket_header_invalid",
+                &error.to_string(),
+                false,
+            )
+        })?;
+        local_request.headers_mut().append(name, value);
+    }
+    let (local_socket, _) = tokio_tungstenite::connect_async(local_request)
         .await
         .map_err(|error| {
             relay_error("display_websocket_connect_failed", &error.to_string(), true)
@@ -439,6 +469,7 @@ fn forward_request_header(name: &str) -> bool {
             | "upgrade"
             | "sec-websocket-key"
             | "sec-websocket-version"
+            | "sec-websocket-extensions"
     )
 }
 
@@ -536,9 +567,28 @@ mod tests {
                 .accept()
                 .await
                 .expect("local websocket should accept");
-            let mut socket = tokio_tungstenite::accept_async(stream)
-                .await
-                .expect("local websocket handshake should complete");
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-arroba-caller-claims")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("signed-caller-claims")
+                    );
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("x-arroba-invocation-id")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("invocation-1")
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("local websocket handshake should complete");
             match socket.next().await {
                 Some(Ok(Message::Binary(data))) => assert_eq!(data.as_ref(), b"from-browser"),
                 other => panic!("unexpected local websocket input: {other:?}"),
@@ -573,6 +623,14 @@ mod tests {
                 RelayDisplayTunnelHeader {
                     name: "upgrade".to_string(),
                     value: "websocket".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "x-arroba-caller-claims".to_string(),
+                    value: "signed-caller-claims".to_string(),
+                },
+                RelayDisplayTunnelHeader {
+                    name: "x-arroba-invocation-id".to_string(),
+                    value: "invocation-1".to_string(),
                 },
             ],
             body_base64: None,
