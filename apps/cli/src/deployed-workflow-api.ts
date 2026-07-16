@@ -37,6 +37,10 @@ import type {
   UpsertDeploymentAudienceGrantResult,
 } from "./deployed-workflow-types.js"
 
+export type DeploymentCloudRequestIdentity = {
+  readonly requestId: string
+}
+
 export async function listDeploymentProjects(
   profile: RelayCloudProfile,
 ): Promise<DeploymentProjectsResult> {
@@ -86,9 +90,9 @@ export async function createDeploymentRelease(
   profile: RelayCloudProfile,
   projectId: string,
   packagePath: string,
-): Promise<PublicationReleaseResult> {
+): Promise<PublicationReleaseResult & DeploymentCloudRequestIdentity> {
   const prepared = await preparePublicationReleasePackage(packagePath)
-  return postJson(
+  return postJsonWithRequestIdentity(
     profile,
     `/deployment-projects/${encodeURIComponent(projectId)}/releases`,
     {
@@ -108,8 +112,8 @@ export async function promoteDeploymentRelease(
     readonly configuration?: Record<string, unknown>
     readonly limits?: DeploymentRuntimeLimits
   },
-): Promise<ReleasePromotionResult> {
-  return postJson(
+): Promise<ReleasePromotionResult & DeploymentCloudRequestIdentity> {
+  return postJsonWithRequestIdentity(
     profile,
     `/deployment-projects/${encodeURIComponent(input.projectId)}`
       + `/environments/${encodeURIComponent(input.environmentId)}/promotions`,
@@ -131,8 +135,8 @@ export async function rollbackDeploymentEnvironment(
     readonly promotionId: string
     readonly idempotencyKey: string
   },
-): Promise<ReleasePromotionResult> {
-  return postJson(
+): Promise<ReleasePromotionResult & DeploymentCloudRequestIdentity> {
+  return postJsonWithRequestIdentity(
     profile,
     `/deployment-projects/${encodeURIComponent(input.projectId)}`
       + `/environments/${encodeURIComponent(input.environmentId)}/rollbacks`,
@@ -626,8 +630,8 @@ export async function bindDeploymentEnvironmentCredential(
     readonly slotId: string
     readonly profileId: string
   },
-): Promise<DeploymentEnvironmentCredentialsResult> {
-  return postJson(
+): Promise<DeploymentEnvironmentCredentialsResult & DeploymentCloudRequestIdentity> {
+  return postJsonWithRequestIdentity(
     profile,
     `/deployment-projects/${encodeURIComponent(input.projectId)}`
       + `/environments/${encodeURIComponent(input.environmentId)}/credential-bindings`,
@@ -784,12 +788,31 @@ async function postJson<TResponse>(
   pathname: string,
   body: Record<string, unknown>,
 ): Promise<TResponse> {
+  return (await postJsonResponse<TResponse>(profile, pathname, body)).body
+}
+
+async function postJsonWithRequestIdentity<TResponse>(
+  profile: RelayCloudProfile,
+  pathname: string,
+  body: Record<string, unknown>,
+): Promise<TResponse & DeploymentCloudRequestIdentity> {
+  const result = await postJsonResponse<TResponse>(profile, pathname, body)
+  const requestId = result.response.headers.get("x-request-id")?.trim()
+  if (!requestId) throw new Error("deployed workflow mutation omitted its request identity")
+  return { ...result.body, requestId }
+}
+
+async function postJsonResponse<TResponse>(
+  profile: RelayCloudProfile,
+  pathname: string,
+  body: Record<string, unknown>,
+): Promise<{ readonly response: Response; readonly body: TResponse }> {
   const response = await fetch(`${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
     method: "POST",
     headers: cloudHeaders(profile),
     body: JSON.stringify(body),
   })
-  return readJson<TResponse>(response)
+  return { response, body: await readJson<TResponse>(response) }
 }
 
 async function readJson<TResponse>(response: Response): Promise<TResponse> {

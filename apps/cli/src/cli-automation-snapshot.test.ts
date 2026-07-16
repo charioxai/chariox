@@ -100,6 +100,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
   } as unknown as RuntimeSession
 
   const snapshot = buildCliAutomationSnapshot({
+    attachmentId: () => "attachment-1",
     workspaceScreenMode: () => "workflow",
     workflowScreenActive: () => true,
     daemonDisconnected: () => false,
@@ -138,6 +139,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
   })
 
   assert.equal(snapshot.screen, "workflow")
+  assert.equal(snapshot.attachmentId, "attachment-1")
   assert.equal((snapshot.session as { id: string }).id, "session-1")
   assert.deepEqual((snapshot.session as { agents: unknown[] }).agents[0], {
     id: "agent-1",

@@ -84,8 +84,8 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       defaultRegion: "fsn1",
     })
     await adoptLegacyDeploymentProject(profile, "legacy-1")
-    await createDeploymentRelease(profile, "project-1", packageRoot)
-    await promoteDeploymentRelease(profile, {
+    const createdRelease = await createDeploymentRelease(profile, "project-1", packageRoot)
+    const promoted = await promoteDeploymentRelease(profile, {
       projectId: "project-1",
       environmentId: "environment-1",
       releaseId: "release-1",
@@ -93,7 +93,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       configuration: { feature: true },
       limits: { concurrency: 2 },
     })
-    await rollbackDeploymentEnvironment(profile, {
+    const rolledBack = await rollbackDeploymentEnvironment(profile, {
       projectId: "project-1",
       environmentId: "environment-1",
       promotionId: "promotion-1",
@@ -108,6 +108,9 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       })
     }
 
+    assert.equal(createdRelease.requestId, "request-1")
+    assert.equal(promoted.requestId, "request-1")
+    assert.equal(rolledBack.requestId, "request-1")
     assert.equal(calls.length, 10)
     assert.ok(calls.every((call) => call.authorization === "Bearer session-token"))
     assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
@@ -764,6 +767,6 @@ function promotionResult(id: string, body: Record<string, unknown> | null) {
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-request-id": "request-1" },
   })
 }

@@ -168,7 +168,10 @@ export async function executeDeployedWorkflowCommand(
     const projectId = requiredArg(argv[1], "usage: deployments release <project-id> <package-dir|publication.json>")
     const packagePath = requiredArg(argv[2], "usage: deployments release <project-id> <package-dir|publication.json>")
     const result = await createDeploymentRelease(profile, projectId, packagePath)
-    return { notice: formatRelease(result.release), footer: `release #${result.release.sequence} verified` }
+    return {
+      notice: `${formatRelease(result.release)}\nrequest_id=${result.requestId}`,
+      footer: `release #${result.release.sequence} verified`,
+    }
   }
   if (action === "promote") {
     const projectId = requiredArg(argv[1], promoteUsage)
@@ -475,7 +478,7 @@ export async function executeDeployedWorkflowCommand(
         profileId,
       })
       return {
-        notice: formatDeploymentEnvironmentCredentials(result.credentials),
+        notice: `${formatDeploymentEnvironmentCredentials(result.credentials)}\nrequest_id=${result.requestId}`,
         footer: `credential bound to ${slotId}`,
       }
     }
@@ -753,6 +756,7 @@ export function formatDeploymentEnvironmentCredentials(credentials: DeploymentEn
       `  uses ${state.slot.uses.join(",") || "none"}`,
       `  profile ${state.binding?.profileId ?? "none"}`,
       ...(state.binding ? [
+        `  binding_id ${state.binding.id}`,
         `  binding ${state.binding.status} version=${state.binding.version}`,
         `  label ${state.binding.profile.label}`,
       ] : []),
@@ -1208,7 +1212,7 @@ function formatRelease(release: PublicationReleaseSummary): string {
 }
 
 function formatPromotionOutput(
-  result: ReleasePromotionResult,
+  result: ReleasePromotionResult & { readonly requestId: string },
   action: "promotion" | "rollback",
 ): DeployedWorkflowCommandOutput {
   return {
@@ -1219,6 +1223,7 @@ function formatPromotionOutput(
       `release desired=${result.environment.desiredReleaseId ?? "none"} observed=${result.environment.observedReleaseId ?? "none"}`,
       `revision ${result.environment.observedRevision}/${result.environment.desiredRevision}`,
       `url ${result.environment.publicUrl ?? "pending"}`,
+      `request_id=${result.requestId}`,
     ].join("\n"),
     footer: `${action} requested for ${result.environment.slug}`,
   }

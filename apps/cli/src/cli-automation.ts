@@ -46,6 +46,7 @@ export type CliAutomationResponse = {
 
 export type CliAutomationSnapshot = {
   [key: string]: unknown
+  attachmentId?: unknown
   screen?: unknown
   daemonDisconnected?: unknown
   statusLine?: unknown

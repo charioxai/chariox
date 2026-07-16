@@ -1221,5 +1221,8 @@ function promotionResult() {
 }
 
 function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } })
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "content-type": "application/json", "x-request-id": "request-1" },
+  })
 }

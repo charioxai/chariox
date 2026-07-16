@@ -94,6 +94,7 @@ export type CliAutomationProcessCompositionDeps = {
 
 export function createCliAutomationProcessComposition(deps: CliAutomationProcessCompositionDeps) {
   const automationSnapshotController = createCliAutomationSnapshotController({
+    attachmentId: () => deps.attachmentState()?.id ?? null,
     workspaceScreenMode: deps.workspaceScreenMode,
     workflowScreenActive: deps.workflowScreenActive,
     daemonDisconnected: deps.daemonDisconnected,

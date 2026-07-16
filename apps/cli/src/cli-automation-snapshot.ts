@@ -32,6 +32,7 @@ import {
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 
 export type CliAutomationSnapshotDeps = {
+  attachmentId?: () => string | null
   workspaceScreenMode: () => WorkspaceScreenMode
   workflowScreenActive: () => boolean
   daemonDisconnected: () => boolean
@@ -78,6 +79,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
   const shellEntries = deps.workspaceShellEntries()
   const agentRuntimeDisplayStates = sessionAgentRuntimeDisplayStateByAgent(session)
   return {
+    attachmentId: deps.attachmentId?.() ?? null,
     screen: deps.workspaceScreenMode(),
     workflowScreenActive: deps.workflowScreenActive(),
     daemonDisconnected: deps.daemonDisconnected(),
