@@ -187,9 +187,16 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
-        poll_result: crate::provider::ProviderPromptSignalBatch,
+        mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let session = owned.session_store.get_session(session_id)?;
+        reject_workflow_publication_opencode_model_substitution(
+            session.is_hidden() && !session.workflow_publications().is_empty(),
+            &provider_run,
+            &mut poll_result,
+        );
         if !poll_result.chunks.is_empty()
             || !poll_result.completions.is_empty()
             || !poll_result.notices.is_empty()
@@ -378,6 +385,45 @@ impl KernelRuntimeState {
         }
         Ok(records)
     }
+}
+
+pub(super) fn reject_workflow_publication_opencode_model_substitution(
+    is_publication_runtime: bool,
+    provider_run: &crate::provider::RuntimeProviderRun,
+    poll_result: &mut crate::provider::ProviderPromptSignalBatch,
+) -> Option<String> {
+    if !is_publication_runtime
+        || provider_run.adapter_key() != "opencode"
+        || provider_run.model() == "default"
+    {
+        return None;
+    }
+    let resolved_model = poll_result.resolved_model.as_deref()?;
+    if resolved_model == provider_run.model() {
+        return None;
+    }
+
+    let failure = format!(
+        "deployed workflow provider model substitution is disabled: requested `{}`, OpenCode resolved `{resolved_model}`",
+        provider_run.model(),
+    );
+    crate::logging::warn_with_fields(
+        "daemon.provider.opencode",
+        "rejected deployed workflow provider model substitution",
+        serde_json::json!({
+            "provider_run_id": provider_run.id(),
+            "requested_model": provider_run.model(),
+            "resolved_model": resolved_model,
+            "resolved_model_source": poll_result.resolved_model_source,
+        }),
+    );
+    poll_result.resolved_model = None;
+    poll_result.resolved_model_source = None;
+    poll_result.prompt_completed = true;
+    if poll_result.terminal_failure.is_none() {
+        poll_result.terminal_failure = Some(failure.clone());
+    }
+    Some(failure)
 }
 
 fn provider_prompt_dispatch_failure_notice(message: &str) -> String {
