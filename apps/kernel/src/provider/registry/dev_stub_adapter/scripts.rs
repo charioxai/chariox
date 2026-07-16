@@ -610,6 +610,7 @@ const finalPayload = {payload_json};
 const intermediateOutput = {intermediate_json};
 const outputDelayMs = {output_delay_ms};
 const emittedDeliveryTokens = new Set();
+const emittedSourceProofs = new Set();
 let emittedWithoutToken = false;
 let promptBuffer = "";
 let fallbackTimer = null;
@@ -688,6 +689,13 @@ async function emitForDeliveryToken(deliveryToken) {{
 }}
 
 async function emitOnce() {{
+  const sourceProofMatches = [...promptBuffer.matchAll(/arroba-source-proof:([A-Za-z0-9_-]{{16,}})/g)];
+  const sourceProof = sourceProofMatches.length ? sourceProofMatches[sourceProofMatches.length - 1][1] : undefined;
+  if (sourceProof && !emittedSourceProofs.has(sourceProof)) {{
+    emittedSourceProofs.add(sourceProof);
+    process.stdout.write(sourceProof + "\n");
+    return;
+  }}
   const tokenMatches = [...promptBuffer.matchAll(/workflow-ack:[A-Za-z0-9_-]+/g)];
   const deliveryToken = tokenMatches.length ? tokenMatches[tokenMatches.length - 1][0] : undefined;
   if (!deliveryToken) {{
@@ -1016,6 +1024,9 @@ mod tests {
         let script = dev_stub_workflow_intermediate_script("intermediate", 1841, 1842);
 
         assert!(script.contains("const outputDelayMs = 750;"));
+        assert!(script.contains("arroba-source-proof:"));
+        assert!(script.contains("emittedSourceProofs"));
+        assert!(script.contains("process.stdout.write(sourceProof + \"\\n\")"));
     }
 
     #[test]
