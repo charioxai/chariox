@@ -6,6 +6,7 @@ import { gzipSync } from "node:zlib"
 import { pack } from "tar-stream"
 
 import type { WorkflowPublicationDeploymentContract } from "@arroba/kernel-client/workflow-publication-deployment-contract"
+import { workflowPublicationPackageDigest } from "@arroba/kernel-client/workflow-publication-package-digest"
 import { readPublicationPackageMetadata } from "./publication-deployment-api.js"
 
 const maxArchiveBytes = 64 * 1024 * 1024
@@ -44,7 +45,9 @@ export async function preparePublicationReleasePackage(
     throw new Error("Persistent patches are not available for managed Cloud deployments.")
   }
   const files = await packageFiles(metadata.packageRoot)
-  const packageId = packageFilesDigest(files.filter((file) => file.path !== "deployment-contract.json"))
+  const packageId = workflowPublicationPackageDigest(
+    files.filter((file) => file.path !== "deployment-contract.json"),
+  )
   if (
     metadata.deploymentContract.package_id !== packageId
     || metadata.deploymentContract.artifact.content_digest !== packageId
@@ -57,7 +60,7 @@ export async function preparePublicationReleasePackage(
   }
   return {
     packageId,
-    packageDigest: packageFilesDigest(files),
+    packageDigest: workflowPublicationPackageDigest(files),
     packageVersion: 3,
     contractVersion: 1,
     contract: metadata.deploymentContract,
@@ -149,16 +152,6 @@ async function collectChunks(stream: NodeJS.ReadableStream): Promise<Buffer[]> {
     chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value))
   }
   return chunks
-}
-
-function packageFilesDigest(files: readonly PackageFile[]): string {
-  const hash = createHash("sha256")
-  for (const file of [...files].sort(comparePackagePaths)) {
-    hash.update(file.path)
-    hash.update(file.content.toString("base64"))
-    hash.update(Buffer.from([file.executable ? 1 : 0]))
-  }
-  return `sha256:${hash.digest("hex")}`
 }
 
 function comparePackagePaths(left: PackageFile, right: PackageFile): number {

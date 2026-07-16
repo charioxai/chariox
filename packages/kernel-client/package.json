@@ -24,6 +24,7 @@
     "./prompt-surface-state": "./dist/prompt-surface-state.js",
     "./prompt-submission": "./dist/prompt-submission.js",
     "./workflow-publication-deployment-contract": "./dist/workflow-publication-deployment-contract.js",
+    "./workflow-publication-package-digest": "./dist/workflow-publication-package-digest.js",
     "./provider-namespace-command": "./dist/provider-namespace-command.js",
     "./provider-namespace-submit-policy": "./dist/provider-namespace-submit-policy.js",
     "./provider-status": "./dist/provider-status.js",

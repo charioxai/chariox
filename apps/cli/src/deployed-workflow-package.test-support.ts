@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+
+import { workflowPublicationPackageDigest } from "@arroba/kernel-client/workflow-publication-package-digest"
 
 export async function deployedWorkflowPackageFixture(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "arroba-deployed-release-package-"))
@@ -18,7 +19,7 @@ export async function deployedWorkflowPackageFixture(): Promise<string> {
   }, null, 2) + "\n")
   const launcher = Buffer.from("#!/bin/sh\nexit 0\n")
   const index = Buffer.from("<!doctype html><title>Demo</title>\n")
-  const packageId = packageDigest([
+  const packageId = workflowPublicationPackageDigest([
     { path: "publication.json", content: publication, executable: false },
     { path: "public/index.html", content: index, executable: false },
     { path: "run.sh", content: launcher, executable: true },
@@ -63,14 +64,4 @@ export function deploymentContractFixture(packageId: string) {
     presentation: { kind: "agent_app", display_name: "Demo app" },
     signatures: [],
   }
-}
-
-function packageDigest(files: readonly { path: string; content: Buffer; executable: boolean }[]): string {
-  const hash = createHash("sha256")
-  for (const file of [...files].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)))) {
-    hash.update(file.path)
-    hash.update(file.content.toString("base64"))
-    hash.update(Buffer.from([file.executable ? 1 : 0]))
-  }
-  return `sha256:${hash.digest("hex")}`
 }
