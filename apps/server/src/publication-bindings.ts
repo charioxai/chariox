@@ -143,15 +143,24 @@ function availableProviderProfile(catalog: ProviderCatalogIndex, profile: Public
   if (profile.model === "default" || profile.model === `${profile.provider}/default`) {
     return { ...profile, model: null }
   }
-  if (!profile.model || models.size === 0 || models.has(profile.model)) return profile
+  if (!profile.model) return profile
+  const canonicalProfile = canonicalProviderModelProfile(profile)
+  if (models.size === 0 || models.has(profile.model)) return canonicalProfile
   const providerPrefixedModel = `${profile.provider}/`
   if (profile.model.startsWith(providerPrefixedModel)) {
     const unprefixedModel = profile.model.slice(providerPrefixedModel.length)
     if (models.has(unprefixedModel)) {
-      return { ...profile, model: unprefixedModel }
+      return profile.provider === "opencode"
+        ? canonicalProfile
+        : { ...profile, model: unprefixedModel }
     }
   }
   return null
+}
+
+function canonicalProviderModelProfile(profile: PublicationProviderModelProfile): PublicationProviderModelProfile {
+  if (profile.provider !== "opencode" || !profile.model || profile.model.includes("/")) return profile
+  return { ...profile, model: `opencode/${profile.model}` }
 }
 
 function applyAgentProfile(agent: NonNullable<WorkflowPublicationSnapshot["agents"]>[number], profile: PublicationProviderModelProfile) {

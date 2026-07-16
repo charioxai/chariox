@@ -79,10 +79,42 @@ mod tests {
     fn parses_provider_model_ids() {
         assert_eq!(
             parse_model(Some("anthropic/claude-sonnet-4")),
-            Some(("anthropic", "claude-sonnet-4"))
+            Ok(Some(("anthropic", "claude-sonnet-4")))
         );
-        assert_eq!(parse_model(Some("default")), None);
-        assert_eq!(parse_model(None), None);
+        assert_eq!(parse_model(Some("default")), Ok(None));
+        assert_eq!(parse_model(None), Ok(None));
+        assert_eq!(parse_model(Some("gpt-5.2")), Err("gpt-5.2"));
+        assert_eq!(parse_model(Some("opencode/")), Err("opencode/"));
+    }
+
+    #[test]
+    fn submit_prompt_rejects_bare_explicit_model_before_http_dispatch() {
+        let client = OpenCodeClient::new("provider-run-1", "http://127.0.0.1:9")
+            .expect("client should initialize");
+        let error = client
+            .submit_prompt(
+                "session-1",
+                "message-1",
+                "hello",
+                &[],
+                None,
+                Some("gpt-5.2"),
+                None,
+                AgentExecutionMode::Build,
+                false,
+                false,
+            )
+            .expect_err("bare OpenCode model must fail before dispatch");
+
+        match error {
+            crate::error::DaemonError::ProviderProtocol {
+                operation, message, ..
+            } => {
+                assert_eq!(operation, "opencode_prompt_model");
+                assert!(message.contains("must be provider-qualified"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     #[test]

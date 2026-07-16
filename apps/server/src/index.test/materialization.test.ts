@@ -168,7 +168,7 @@ test("gateway materializes exported publication packages through the kernel", as
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.worktree_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "opencode")
-    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "gpt-5")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "opencode/gpt-5")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "medium")
     assert.equal(config.source_session_id, "session-1")
     assert.equal(config.session_id, "runtime-session-1")
