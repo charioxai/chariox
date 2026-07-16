@@ -332,8 +332,9 @@ async fn subscription_snapshot_includes_runtime_interaction_projection() {
     }
 }
 
-#[tokio::test]
-async fn dispatched_native_provider_interaction_updates_subscription_projection() {
+fn native_interaction_subscription_app(
+    client_id: &str,
+) -> (Arc<Mutex<DaemonApp>>, String, String, String) {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -341,14 +342,45 @@ async fn dispatched_native_provider_interaction_updates_subscription_projection(
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
-            "native-interaction-subscription",
+            client_id,
             ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-    let session_id = session.id().to_string();
-    let agent_id = agent.id().to_string();
-    let attachment_id = attachment.id().to_string();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    (
+        Arc::new(Mutex::new(app)),
+        session.id().to_string(),
+        agent.id().to_string(),
+        attachment.id().to_string(),
+    )
+}
+
+fn native_interaction_subscription_routers(
+    client_id: &str,
+) -> (
+    Box<CommandRouter>,
+    Box<CommandRouter>,
+    String,
+    String,
+    String,
+) {
+    let (app, session_id, agent_id, attachment_id) = native_interaction_subscription_app(client_id);
+    (
+        Box::new(CommandRouter::with_interactive_capacity(
+            Arc::clone(&app),
+            1,
+        )),
+        Box::new(CommandRouter::with_interactive_capacity(app, 1)),
+        session_id,
+        agent_id,
+        attachment_id,
+    )
+}
+
+#[tokio::test]
+async fn dispatched_native_provider_interaction_updates_subscription_projection() {
+    let (app, session_id, agent_id, attachment_id) =
+        native_interaction_subscription_app("native-interaction-subscription");
+    let router = CommandRouter::with_interactive_capacity(app, 1);
 
     let initial = router
         .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
@@ -447,23 +479,8 @@ async fn dispatched_native_provider_interaction_updates_subscription_projection(
 
 #[tokio::test]
 async fn native_provider_interaction_wakes_subscription_projection_across_routers() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new("workspace", "worktree"))
-        .expect("session should be created");
-    let attachment = crate::app::KernelSessionService::new(&mut app)
-        .attach(crate::attachment::AttachRequest::new(
-            session.id(),
-            "cross-router-native-interaction-subscription",
-            ClientCapabilityLevel::FullTerminal,
-        ))
-        .expect("attachment should attach");
-    let session_id = session.id().to_string();
-    let agent_id = agent.id().to_string();
-    let attachment_id = attachment.id().to_string();
-    let app = Arc::new(Mutex::new(app));
-    let relay_router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    let local_router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let (relay_router, local_router, session_id, agent_id, attachment_id) =
+        native_interaction_subscription_routers("cross-router-native-interaction-subscription");
 
     let initial = relay_router
         .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
