@@ -185,6 +185,16 @@ test("transcriptHasTrailingUserPrompt dedupes prompt echoes by prompt id before 
   ], "hello"), false)
 })
 
+test("transcriptHasTrailingUserPrompt dedupes replayed prompt identity across interleaved entries", () => {
+  const entries = [
+    entry(1, "user", "hello", { promptId: "prompt-1" }),
+    entry(2, "notice", "dispatch failed"),
+  ]
+
+  assert.equal(transcriptHasTrailingUserPrompt(entries, "changed display text", "prompt-1"), true)
+  assert.equal(transcriptHasTrailingUserPrompt(entries, "hello", "prompt-2"), false)
+})
+
 test("transcriptHasTrailingUserPrompt treats serialized empty prompt ids as identity", () => {
   const entries = [
     entry(1, "user", "hello", { promptId: "" }),

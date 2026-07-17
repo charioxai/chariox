@@ -190,6 +190,80 @@ mod tests {
         )
     }
 
+    async fn runtime_with_admitted_prompt() -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        String,
+        crate::app::KernelPromptDispatch,
+    ) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-prompt-dispatch",
+                "worktree-prompt-dispatch",
+            ))
+            .expect("session should create");
+        let source = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-prompt-source",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("source attachment should attach");
+        let observer = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-prompt-observer",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("observer attachment should attach");
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider launch should succeed");
+        app.update_provider_run_projection(provider_run.clone());
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let source_id = source.id().to_string();
+        let observer_id = observer.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending-prompt-dispatch",
+                    &source_id,
+                    &agent_id,
+                    "active prompt",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("prompt should be admitted");
+        let dispatch = submission.dispatch.expect("prompt should require dispatch");
+        (
+            runtime,
+            session_id,
+            agent_id,
+            observer_id,
+            provider_run.id().to_string(),
+            dispatch,
+        )
+    }
+
     fn dispatch(
         session_id: &str,
         agent_id: &str,
@@ -377,6 +451,115 @@ mod tests {
             "steering prompt should be recorded as provider input: {input_records:?}"
         );
     }
+
+    #[tokio::test]
+    async fn local_prompt_is_echoed_once_across_admission_and_dispatch() {
+        let (runtime, session_id, _, observer_id, _, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let prompt_id = dispatch.prompt_id.clone();
+
+        runtime
+            .enqueue_prompt_dispatch(&dispatch)
+            .await
+            .expect("prompt should reach the provider");
+
+        let prompt_echoes = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id)
+            .into_iter()
+            .filter(|record| {
+                record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                    && record.prompt_id.as_deref() == Some(prompt_id.as_str())
+            })
+            .count();
+        assert_eq!(
+            prompt_echoes, 1,
+            "one admitted prompt must have one prompt echo"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_local_dispatch_emits_completion_and_settles_agent() {
+        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "test prompt dispatch",
+                    message: "rejected".to_string(),
+                },
+            )
+            .await
+            .expect_err("dispatch failure should be returned");
+
+        let session = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("settled session should project");
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .is_none());
+        let agent = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .expect("agent should remain in session");
+        assert!(
+            !agent.is_processing(),
+            "failed dispatch must leave the agent idle"
+        );
+
+        let completions = runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id);
+        assert_eq!(
+            completions.len(),
+            1,
+            "failed dispatch must emit one completion"
+        );
+        assert_eq!(completions[0].provider_run_id, provider_run_id);
+        assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn stale_dispatch_failure_does_not_settle_the_current_prompt() {
+        let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+
+        let settlement = runtime
+            .owned
+            .settle_failed_local_prompt_without_advance(
+                &session_id,
+                &agent_id,
+                "stale-prompt-id",
+                &provider_run_id,
+                "late dispatch failure",
+            )
+            .expect("stale failure should be ignored");
+        assert!(settlement.is_none());
+
+        let session = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("current session should project");
+        let active_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("current prompt must remain active");
+        assert_eq!(active_prompt.id(), dispatch.prompt_id);
+        assert!(runtime
+            .owned
+            .terminal_stream
+            .drain_completion_records(&session_id, &observer_id)
+            .is_empty());
+    }
 }
 
 impl KernelRuntimeState {
@@ -435,16 +618,6 @@ impl KernelRuntimeState {
         }
         let internal_recovery =
             is_internal_recovery_prompt_attachment(&dispatch.source_attachment_id);
-        if !internal_recovery {
-            owned.echo_prompt_to_other_attachments(
-                &dispatch.session_id,
-                &dispatch.provider_run_id,
-                &dispatch.prompt_id,
-                &dispatch.source_attachment_id,
-                &dispatch.prompt,
-                &dispatch.attachments,
-            );
-        }
         let provider_run = owned
             .ensure_provider_run_in_session(&dispatch.session_id, &dispatch.provider_run_id)?;
         if provider_run.state() != crate::provider::ProviderRunState::Running {
@@ -722,7 +895,10 @@ impl KernelRuntimeState {
                 &owned.session_store.get_session(&dispatch.session_id)?,
                 &dispatch.agent_id,
             );
-            if let Some(failed_prompt) = failed_prompt.as_ref() {
+            if let Some(failed_prompt) = failed_prompt
+                .as_ref()
+                .filter(|prompt| prompt.id() == dispatch.prompt_id)
+            {
                 let _ = self.inject_metaagent_turn_failure_event(
                     &dispatch.session_id,
                     &dispatch.agent_id,
@@ -731,9 +907,34 @@ impl KernelRuntimeState {
                     &error.to_string(),
                 );
             }
-            let _ = owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
-            let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
-            let _ = owned.session_snapshot(&dispatch.session_id);
+            let released_claim = match owned.settle_failed_local_prompt_without_advance(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &dispatch.prompt_id,
+                &dispatch.provider_run_id,
+                &error.to_string(),
+            ) {
+                Ok(Some(completion)) => completion.released_claim,
+                Ok(None) => false,
+                Err(settlement_error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_delivery",
+                        "failed to settle prompt after dispatch failure",
+                        serde_json::json!({
+                            "session_id": dispatch.session_id,
+                            "agent_id": dispatch.agent_id,
+                            "prompt_id": dispatch.prompt_id,
+                            "provider_run_id": dispatch.provider_run_id,
+                            "error": settlement_error.to_string(),
+                        }),
+                    );
+                    let _ =
+                        owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
+                    let released_claim = owned.clear_prompt_activity(&dispatch.provider_run_id);
+                    let _ = owned.session_snapshot(&dispatch.session_id);
+                    released_claim
+                }
+            };
             let recipients = owned
                 .attachment_store
                 .list_session_attachment_ids(&dispatch.session_id);

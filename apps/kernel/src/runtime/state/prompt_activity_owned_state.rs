@@ -81,24 +81,35 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
-                    if let Ok(session) = self.session_store.get_session(&finished.session_id) {
-                        if let Some(prompt) = self
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, &finished.agent_id)
-                        {
-                            if prompt.workflow_run_id().is_some() {
-                                let _ = self.workflow_fail_provider_prompt(
-                                    &finished.session_id,
-                                    &prompt,
-                                    Some(&finished.provider_run_id),
-                                    &diagnostic,
-                                );
-                            }
+                    match self.settle_failed_local_prompt_without_advance(
+                        &finished.session_id,
+                        &finished.agent_id,
+                        &finished.prompt_id,
+                        &finished.provider_run_id,
+                        &diagnostic,
+                    ) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {}
+                        Err(settlement_error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.prompt_delivery",
+                                "failed to settle structured prompt dispatch failure",
+                                serde_json::json!({
+                                    "session_id": finished.session_id,
+                                    "agent_id": finished.agent_id,
+                                    "prompt_id": finished.prompt_id,
+                                    "provider_run_id": finished.provider_run_id,
+                                    "error": settlement_error.to_string(),
+                                }),
+                            );
+                            let _ = self.cancel_active_prompt_only(
+                                &finished.session_id,
+                                &finished.agent_id,
+                            );
+                            let _ = self.clear_prompt_activity(&finished.provider_run_id);
+                            let _ = self.session_snapshot(&finished.session_id);
                         }
                     }
-                    let _ =
-                        self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
-                    let _ = self.session_snapshot(&finished.session_id);
                     let recipients = self
                         .attachment_store
                         .list_session_attachment_ids(&finished.session_id);
