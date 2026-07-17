@@ -111,6 +111,34 @@ test("agent pane refresh backfills history while agent only has queued prompts",
   })
 })
 
+test("agent history refresh recovers a completed response without loading unrelated agents", async () => {
+  const harness = createHarness({
+    split: false,
+    currentEntries: {
+      a: [{ id: 1, role: "user", turnId: 1, text: "queued remotely" }],
+      b: [{ id: 1, role: "assistant", turnId: 1, text: "keep me" }],
+    },
+    historyPages: {
+      "a:null": {
+        entries: [
+          { id: 1, role: "user", turnId: 1, text: "queued remotely" },
+          { id: 2, role: "assistant", turnId: 1, text: "durable response" },
+        ],
+        nextCursor: null,
+      },
+    },
+  })
+
+  await harness.controller.refreshAgentHistories(session("a"), ["a"])
+
+  assert.deepEqual(harness.loads, ["a:null"])
+  assert.deepEqual(harness.replaced, {
+    agentId: "a",
+    text: ["queued remotely", "durable response"],
+  })
+  assert.deepEqual(harness.paneEntries.b?.map((entry) => entry.text), ["keep me"])
+})
+
 function createHarness(options: {
   split: boolean
   currentFocusedAgentId?: string | null
@@ -121,6 +149,7 @@ function createHarness(options: {
   loads: string[]
   controller: ReturnType<typeof createAgentPaneRefreshController>
   previews: Record<string, string>
+  paneEntries: Record<string, TranscriptEntry[]>
   replaced: { agentId: string | null; text: string[] } | null
   rebuiltAuxiliaryAgentIds: string[]
 } {
@@ -128,6 +157,7 @@ function createHarness(options: {
   const loads: string[] = []
   const rebuiltAuxiliaryAgentIds: string[] = []
   let previews: Record<string, string> = {}
+  let paneEntries: Record<string, TranscriptEntry[]> = {}
   let replaced: { agentId: string | null; text: string[] } | null = null
   const controller = createAgentPaneRefreshController({
     getCurrentAgents: () => [agent("a"), agent("b")],
@@ -160,8 +190,9 @@ function createHarness(options: {
       calls.push("setAgentPanePreviews")
       previews = nextPreviews
     },
-    setAgentPaneEntries: () => {
+    setAgentPaneEntries: (nextEntries) => {
       calls.push("setAgentPaneEntries")
+      paneEntries = nextEntries
     },
     setNextHistoryCursor: (cursor) => {
       calls.push(`setNextHistoryCursor:${cursor ? "cursor" : "null"}`)
@@ -178,6 +209,7 @@ function createHarness(options: {
       calls.push(`rebuildAuxiliaryAgentPane:${agentId}`)
       rebuiltAuxiliaryAgentIds.push(agentId)
     },
+    isCurrentSession: () => true,
   })
 
   return {
@@ -186,6 +218,9 @@ function createHarness(options: {
     controller,
     get previews() {
       return previews
+    },
+    get paneEntries() {
+      return paneEntries
     },
     get replaced() {
       return replaced

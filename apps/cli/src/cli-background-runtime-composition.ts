@@ -103,6 +103,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   logProviderRunDebug: AnyFn
   setProviderRunState: AnyFn
   refreshAgentPanes: AnyFn
+  refreshAgentHistories: AnyFn
   attachmentState: AnyFn
   catchUpAttachedSession: AnyFn
   getSessionState: AnyFn
@@ -223,6 +224,29 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     updateSessionChrome: deps.updateSessionChrome,
   })
   const recordDaemonActivity = daemonActivityController.record
+
+  const refreshAssistantMessageHistory = (agentId: string) => {
+    if (!deps.isAttached()) {
+      return
+    }
+    const session = deps.sessionState()
+    void deps.refreshAgentHistories(session, [agentId]).then(() => {
+      if (!deps.isAttached() || deps.sessionState().id !== session.id) {
+        return
+      }
+      deps.syncVisibleTranscriptPreview()
+      deps.appLogger?.debug?.("refreshed completed assistant history", {
+        session_id: session.id,
+        agent_id: agentId,
+      })
+    }).catch((error: unknown) => {
+      deps.appLogger?.warn?.("failed to refresh completed assistant history", {
+        session_id: session.id,
+        agent_id: agentId,
+        error: deps.formatError(error),
+      })
+    })
+  }
 
   const kernelEventController = createKernelEventController({
     recordDaemonActivity,
@@ -482,6 +506,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
+    refreshAssistantMessageHistory,
     applyKernelSessionSnapshot,
     applyAgentActivityChanged,
     applyProviderRunChanged,

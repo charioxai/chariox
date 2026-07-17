@@ -147,6 +147,7 @@ export function createCliAppProcessRuntimeComposition(
     logProviderRunDebug: deps.logProviderRunDebug,
     setProviderRunState: deps.setProviderRunState,
     refreshAgentPanes: deps.refreshAgentPanes,
+    refreshAgentHistories: deps.refreshAgentHistories,
     attachmentState: deps.attachmentState,
     catchUpAttachedSession: deps.catchUpAttachedSession,
     getSessionState: deps.getSessionState,

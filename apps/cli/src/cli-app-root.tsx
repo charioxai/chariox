@@ -676,6 +676,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setAgentPanePreview, setAgentTranscriptEntries, currentAgentPaneEntries, hasTrailingUserPrompt,
     toggleAuxiliaryPaneTurn, toggleAuxiliaryPaneBlob, syncVisibleTranscriptPreview, appendAgentPanePreview,
     appendTranscriptEntryToAgentPane, appendProviderChunkToAgentPane, appendToolUpdateToAgentPane, refreshAgentPanes,
+    refreshAgentHistories,
     shouldRefreshAgentPanesForSessionChange,
   } = createCliAgentPaneComposition({
     client, renderer, isAttached, visibleTranscriptAgentId,
@@ -901,7 +902,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     applyProviderActivity, syncVisibleActivityLabel, appendEntry, appendProviderChunk,
     appendToolUpdate, appendProviderError, syncVisibleTranscriptPreview, appendAgentPanePreview,
     markAssistantMessageCompleted, providerRunState, shouldRefreshAgentPanesForSessionChange, applySessionState,
-    logProviderRunDebug, setProviderRunState, refreshAgentPanes,
+    logProviderRunDebug, setProviderRunState, refreshAgentPanes, refreshAgentHistories,
     catchUpAttachedSession: (sessionId: string, attachmentId: string, session: RuntimeSession) =>
       catchUpAttachedSession(client, sessionId, attachmentId, session, appLogger),
     getSessionState: (sessionId: string) => getSessionState(client, sessionId),

@@ -39,11 +39,20 @@ type AgentPaneRefreshControllerDeps = {
   replaceTranscriptEntries: (entries: TranscriptEntry[], agentId: string | null) => void
   applyResponseLayout: () => void
   rebuildAuxiliaryAgentPane: (agentId: string) => void
+  isCurrentSession: (sessionId: string) => boolean
 }
 
 export function createAgentPaneRefreshController(
   deps: AgentPaneRefreshControllerDeps,
 ) {
+  const visibleAgentIdForSession = (session: RuntimeSession) =>
+    selectResponsePaneAgents(
+      session.agents,
+      session.focused_agent_id,
+      deps.splitAgentResponseMode(),
+      deps.maxAgentsPerScreen(),
+    ).visibleTranscriptAgentId
+
   const shouldRefreshForSessionChange = (nextSession: RuntimeSession) => {
     return shouldRefreshAgentPanesForSessionChange({
       previousAgents: deps.getCurrentAgents(),
@@ -54,26 +63,23 @@ export function createAgentPaneRefreshController(
     })
   }
 
-  const refresh = async (session: RuntimeSession) => {
+  const loadPaneState = async (
+    session: RuntimeSession,
+    agents: readonly AgentInstance[],
+  ) => {
     const nextPaneState = await refreshAgentPaneState<
       AgentInstance,
       TranscriptEntry,
       TranscriptEntry,
       SessionHistoryOutlineCursor
     >({
-      session,
+      session: { ...session, agents: [...agents] },
       hasTurnWorkForAgent: (agent) => sessionAgentHasTurnWork(session, agent.id),
       collapsedTurnIdsByAgent: deps.getCollapsedTurnIdsByAgent(),
       currentPaneEntriesByAgent: Object.fromEntries(
         session.agents.map((agent) => [agent.id, deps.currentAgentPaneEntries(agent.id)]),
       ),
-      resolveVisibleAgentId: (agents, focusedAgentId) =>
-        selectResponsePaneAgents(
-          agents,
-          focusedAgentId,
-          deps.splitAgentResponseMode(),
-          deps.maxAgentsPerScreen(),
-        ).visibleTranscriptAgentId,
+      resolveVisibleAgentId: () => visibleAgentIdForSession(session),
       loadHistoryPage: (agentId, cursor) => deps.loadHistoryPage(session.id, agentId, cursor),
       hydrateEntries: (entries) => entries.map((entry) => ({ ...entry })),
       collapseHistoricalTurns: (entries) => entries,
@@ -82,6 +88,12 @@ export function createAgentPaneRefreshController(
       formatPreview: formatTranscriptPreview,
       preserveCollapsedTurnIds: true,
     })
+
+    return nextPaneState
+  }
+
+  const refresh = async (session: RuntimeSession) => {
+    const nextPaneState = await loadPaneState(session, session.agents)
 
     deps.pruneAuxiliaryAgentPanes(session)
     deps.setCollapsedTurnIdsByAgent(nextPaneState.collapsedTurnIdsByAgent)
@@ -113,8 +125,79 @@ export function createAgentPaneRefreshController(
     }
   }
 
+  const refreshAgentHistories = async (
+    session: RuntimeSession,
+    agentIds: readonly string[],
+  ) => {
+    const requestedAgentIds = new Set(agentIds)
+    const requestedAgents = session.agents.filter((agent) => requestedAgentIds.has(agent.id))
+    if (requestedAgents.length === 0) {
+      return
+    }
+
+    const nextPaneState = await loadPaneState(session, requestedAgents)
+    if (!deps.isCurrentSession(session.id)) {
+      return
+    }
+
+    const currentPaneEntries = Object.fromEntries(
+      session.agents.map((agent) => [agent.id, deps.currentAgentPaneEntries(agent.id)]),
+    )
+    const currentCollapsedTurnIds = deps.getCollapsedTurnIdsByAgent()
+    const mergedCollapsedTurnIds = Object.fromEntries(
+      session.agents.flatMap((agent) => {
+        const turnIds = requestedAgentIds.has(agent.id)
+          ? nextPaneState.collapsedTurnIdsByAgent[agent.id]
+          : currentCollapsedTurnIds[agent.id]
+        return turnIds && turnIds.length > 0 ? [[agent.id, [...turnIds]]] : []
+      }),
+    )
+    const mergedPaneEntries = {
+      ...currentPaneEntries,
+      ...nextPaneState.paneEntries,
+    }
+    const mergedPreviews = Object.fromEntries(
+      session.agents.map((agent) => [agent.id, formatTranscriptPreview(mergedPaneEntries[agent.id] ?? [])]),
+    )
+
+    deps.pruneAuxiliaryAgentPanes(session)
+    deps.setCollapsedTurnIdsByAgent(mergedCollapsedTurnIds)
+    deps.setAgentPanePreviews(mergedPreviews)
+    deps.setAgentPaneEntries(mergedPaneEntries)
+
+    const visibleAgentId = visibleAgentIdForSession(session)
+    if (visibleAgentId && requestedAgentIds.has(visibleAgentId)) {
+      deps.setNextHistoryCursor(
+        nextPaneState.visibleCursor
+          ? { agentId: visibleAgentId, cursor: nextPaneState.visibleCursor }
+          : null,
+      )
+      deps.replaceTranscriptEntries(
+        mergedPaneEntries[visibleAgentId]?.map((entry) => ({ ...entry })) ?? [],
+        visibleAgentId,
+      )
+    }
+
+    deps.applyResponseLayout()
+    if (!deps.splitAgentResponseMode()) {
+      return
+    }
+    const auxiliaryAgentIds = new Set(splitPaneAuxiliaryAgentIds(
+      session.agents,
+      session.focused_agent_id,
+      true,
+      deps.maxAgentsPerScreen(),
+    ))
+    for (const agent of requestedAgents) {
+      if (auxiliaryAgentIds.has(agent.id)) {
+        deps.rebuildAuxiliaryAgentPane(agent.id)
+      }
+    }
+  }
+
   return {
     refresh,
+    refreshAgentHistories,
     shouldRefreshForSessionChange,
   }
 }

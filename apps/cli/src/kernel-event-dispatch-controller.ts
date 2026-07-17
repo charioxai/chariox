@@ -33,6 +33,7 @@ type KernelEventDispatchControllerDeps = {
   queueTerminalOutputRecords: (records: TerminalOutputRecord[]) => void
   applyRuntimeNotices: (notices: RuntimeNoticeRecord[]) => void
   applyAssistantMessageCompleted: (event: AssistantMessageCompletedEvent) => void
+  refreshAssistantMessageHistory: (agentId: string) => void
   applyKernelSessionSnapshot: (
     session: RuntimeSession,
     providerRun: RuntimeProviderRun | null,
@@ -110,6 +111,9 @@ export function createKernelEventDispatchController(
         return
       case "assistant_message_completed":
         deps.applyAssistantMessageCompleted(event)
+        if (typeof event.agent_id === "string") {
+          deps.refreshAssistantMessageHistory(event.agent_id)
+        }
         return
       case "session_snapshot":
         await applySessionSnapshot(event)
