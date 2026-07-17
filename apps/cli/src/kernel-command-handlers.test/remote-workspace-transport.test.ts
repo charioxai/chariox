@@ -107,6 +107,61 @@ test("kernel health formatter reports remote extension sync issues", () => {
   assert.match(rendered, /agent=agent-missing \(agent-missing\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-2 state=missing worktree=\/repo grants=mcp:github/)
 })
 
+test("kernel health formatter separates Worker extension failures from Home", () => {
+  const unhealthy = health({
+    remote_extension_sync: {
+      remote_agents: 1,
+      home_proxy_agents: 0,
+      home_proxy_grants: 0,
+      manifest_missing_agents: 0,
+      synced_agents: 0,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+      worker_extension_agents: 1,
+      worker_extension_grants: 2,
+      worker_manifest_missing_agents: 0,
+      worker_synced_agents: 0,
+      worker_syncing_agents: 0,
+      worker_pending_agents: 0,
+      worker_failed_agents: 1,
+      worker_stale_agents: 0,
+      worker_pending_revoke_agents: 1,
+      issues: [{
+        session_id: "session-1",
+        agent_id: "agent-worker",
+        agent_ref: "agent-worker",
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "worker-machine",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+        active_worker_provider_run_id: "worker-run-1",
+        state: "failed",
+        manifest_hash: "worker-hash",
+        last_error: "worker offline",
+        pending_revoke: true,
+        source: "worker",
+        home_proxy_grants: [],
+        worker_grants: ["script:deploy", "connector:status-api"],
+        worktree_id: "/repo",
+      }],
+    },
+  })
+  const rendered = formatKernelHealth(unhealthy)
+
+  assert.equal(kernelHealthIssueCount(unhealthy), 1)
+  assert.match(rendered, /worker extensions: agents=1 grants=2 synced=0 syncing=0 pending=0 failed=1 stale=0 missing=0 pending_revoke=1/)
+  assert.match(rendered, /worker extension runtime: worker owns definitions, credentials, validation, and execution; credentials stay on worker/)
+  assert.match(rendered, /worker extension sync issues: failed=1 stale=0 missing=0 pending_revoke=1/)
+  assert.match(rendered, /state=failed pending_revoke=yes hash=worker-hash worktree=\/repo source=worker grants=script:deploy,connector:status-api: worker offline/)
+  assert.match(rendered, /next: keep the Worker revoke in place;/)
+  assert.doesNotMatch(rendered, /remote extension sync issues:/)
+  assert.doesNotMatch(rendered, /keep the home revoke in place/)
+  assert.match(rendered, /manifests=home\(settled\) worker\(attention syncing=0 pending=0 failed=1 stale=0 missing=0 pending_revoke=1\)/)
+})
+
 test("kernel health formatter gives worker-connectivity guidance for aggregate missing manifests", () => {
   const unhealthy = health({
     remote_extension_sync: {
@@ -381,4 +436,3 @@ test("kernel health formatter reports session and agent projection invariants", 
   assert.match(rendered, /agent_record_not_in_session_projection session=session-1 agent=agent-2: canonical agent record is not present in its projected session agent list/)
   assert.match(rendered, /next: refresh the session; restart the kernel if the invariant mismatch persists/)
 })
-

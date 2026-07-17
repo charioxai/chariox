@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ExtensionSource,
   RuntimeAttachment,
   RuntimeSession,
   SessionConfigState,
@@ -197,14 +198,14 @@ export type WorkflowCommandHandlerDeps = {
     nodeId: string,
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
-  grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
-  revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
-  revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentMcp?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentMcp?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentSkill?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentSkill?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentScript?: (agentRef: string, name: string, environment: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentScript?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentConnector?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
   setWorkflowRunOutputSchema?: (
     workflowRef: string,
     runOutputSchemaRef: string | null,

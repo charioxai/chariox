@@ -35,6 +35,7 @@ mod provider_runtime;
 mod provider_tracking;
 mod relay_runtime;
 mod remote_agent_binding;
+mod remote_binding_cleanup;
 mod remote_kernel_selection;
 mod remote_lease;
 mod remote_workspace_live_sync_fanout;
@@ -155,6 +156,7 @@ pub struct DaemonApp {
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
+    remote_binding_cleanups: remote_binding_cleanup::RemoteBindingCleanupQueue,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
     slices: crate::slice::SliceStore,
@@ -254,6 +256,7 @@ impl DaemonApp {
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             leased_workflow_turns: BTreeMap::new(),
+            remote_binding_cleanups: remote_binding_cleanup::RemoteBindingCleanupQueue::default(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
                 crate::git_observer::CompletedGitTurnSnapshotStore::default(),
@@ -458,6 +461,13 @@ impl DaemonApp {
 
     pub fn agents(&self) -> &AgentServiceStore {
         &self.agents
+    }
+
+    pub(crate) fn is_leased_backing_agent(&self, session_id: &str, agent_id: &str) -> bool {
+        self.leased_agents.values().any(|leased_agent| {
+            leased_agent.backing_session_id == session_id
+                && leased_agent.backing_agent_id == agent_id
+        })
     }
 
     pub fn agents_mut(&self) -> std::sync::MutexGuard<'_, AgentService> {

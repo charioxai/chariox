@@ -505,8 +505,85 @@ test("executeShellCommand grants, revokes, and lists agent extensions", async ()
   assert.match(grantsResult.message ?? "", /playwright/)
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "mcp", name: "playwright" } },
-    { RevokeAgentExtension: { agent_ref: "agent-1", kind: "skill", name: "qa" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "home", kind: "mcp", name: "playwright" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", source: "home", kind: "skill", name: "qa" } },
+    { ListAgents: { session_id: "session-1" } },
+  ])
+})
+
+test("executeShellCommand catalogs and assigns worker-source extensions explicitly", async () => {
+  const agent = makeAgent({
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ source: "worker", kind: "mcp", name: "browser" }],
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("GrantAgentExtension" in request) return { AgentExtensionGranted: { agent } }
+        if ("RevokeAgentExtension" in request) return { AgentExtensionRevoked: { agent } }
+        if ("ListAgentExtensionCatalog" in request) {
+          return {
+            AgentExtensionCatalogListed: {
+              catalog: {
+                agent_id: "agent-id-1",
+                home_kernel_id: "home-1",
+                worker_kernel_id: "worker-1",
+                worker_available: true,
+                entries: [{
+                  source: "worker",
+                  resolved_kernel_id: "worker-1",
+                  kind: "mcp",
+                  name: "browser",
+                  description: "Worker browser",
+                  environments: [],
+                  credentials: [],
+                  credential_required: false,
+                  max_safety: [],
+                }],
+              },
+            },
+          }
+        }
+        return { AgentsListed: { agents: [agent] } }
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    agentId: "agent-1",
+  })
+
+  const grant = await executeShellCommand(parseShellCommand("extension grant mcp agent-1 browser --from worker"), context, { client: fake.client })
+  const revoke = await executeShellCommand(parseShellCommand("extension revoke mcp agent-1 browser --from worker"), context, { client: fake.client })
+  const catalog = await executeShellCommand(parseShellCommand("extension catalog agent-1 --from all"), context, { client: fake.client })
+  const grants = await executeShellCommand(parseShellCommand("extension grants mcp --from worker"), context, { client: fake.client })
+  const shorthandGrant = await executeShellCommand(parseShellCommand("mcp grant agent-1 browser --from worker"), context, { client: fake.client })
+  const shorthandRevoke = await executeShellCommand(parseShellCommand("mcp revoke agent-1 browser --from worker"), context, { client: fake.client })
+  const shorthandGrants = await executeShellCommand(parseShellCommand("mcp grants agent-1 --from worker"), context, { client: fake.client })
+
+  assert.match(grant.message ?? "", /from worker \(worker-local on worker-1\)/)
+  assert.match(revoke.message ?? "", /from worker \(worker-local on worker-1\)/)
+  assert.match(catalog.message ?? "", /worker:mcp:browser \[source=worker, kernel=worker-1\]/)
+  assert.match(grants.message ?? "", /source=worker, runtime=worker-local, kernel=worker-1/)
+  assert.match(shorthandGrant.message ?? "", /from worker \(worker-local on worker-1\)/)
+  assert.match(shorthandRevoke.message ?? "", /from worker \(worker-local on worker-1\)/)
+  assert.match(shorthandGrants.message ?? "", /source=worker, runtime=worker-local, kernel=worker-1/)
+  assert.deepEqual(requests, [
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "worker", kind: "mcp", name: "browser" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", source: "worker", kind: "mcp", name: "browser" } },
+    { ListAgentExtensionCatalog: { agent_ref: "agent-1", source: "all" } },
+    { ListAgents: { session_id: "session-1" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "worker", kind: "mcp", name: "browser" } },
+    { RevokeAgentExtension: { agent_ref: "agent-1", source: "worker", kind: "mcp", name: "browser" } },
     { ListAgents: { session_id: "session-1" } },
   ])
 })
@@ -543,7 +620,7 @@ test("executeShellCommand confirms active home-proxy grants before exposing home
   assert.deepEqual(requests, [
     { ListAgents: { session_id: "session-1" } },
     { ListAgents: { session_id: "session-1" } },
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "home", kind: "script", name: "lookup", environment: "py" } },
   ])
 })
 
@@ -571,7 +648,7 @@ test("executeShellCommand grants passive remote skills without home-proxy confir
 
   assert.equal(result.ok, true)
   assert.deepEqual(requests, [
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "skill", name: "qa" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "home", kind: "skill", name: "qa" } },
   ])
 })
 
@@ -654,23 +731,23 @@ test("executeShellCommand shows remote extension sync diagnostics", async () => 
 
   assert.equal(grantsResult.ok, true)
   assert.match(grantsResult.message ?? "", /home-proxy/)
-  assert.match(grantsResult.message ?? "", /remote extension sync: failed, pending revoke, relay offline/)
+  assert.match(grantsResult.message ?? "", /home extension sync: failed, pending revoke, relay offline/)
   assert.match(grantsResult.message ?? "", /runtime: home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(grantsResult.message ?? "", /authority boundary: home validates every call; credentials never leave home/)
   assert.match(grantsResult.message ?? "", /placement: remote \(worker=machine-1, kernel=worker-1, lease=lease-1, leased_agent=leased-agent-1\)/)
-  assert.match(grantsResult.message ?? "", /next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
+  assert.match(grantsResult.message ?? "", /home extension next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
   assert.equal(statusResult.ok, true)
   assert.match(statusResult.message ?? "", /runtime: home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(statusResult.message ?? "", /authority boundary: home validates every call; credentials never leave home/)
   assert.match(statusResult.message ?? "", /worker kernel: worker-1/)
   assert.match(statusResult.message ?? "", /placement: remote \(worker=machine-1, kernel=worker-1, lease=lease-1, leased_agent=leased-agent-1\)/)
   assert.match(statusResult.message ?? "", /execution lease: lease-1/)
-  assert.match(statusResult.message ?? "", /next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
+  assert.match(statusResult.message ?? "", /home extension next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
   assert.equal(retryResult.ok, true)
   assert.match(retryResult.message ?? "", /runtime: home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(retryResult.message ?? "", /authority boundary: home validates every call; credentials never leave home/)
-  assert.match(retryResult.message ?? "", /manifest hash: hash-1/)
-  assert.match(retryResult.message ?? "", /next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
+  assert.match(retryResult.message ?? "", /home manifest hash: hash-1/)
+  assert.match(retryResult.message ?? "", /home extension next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
   assert.equal(auditResult.ok, true)
   assert.match(auditResult.message ?? "", /home_extension\.invoke\.denied lookup denied/)
   assert.match(auditResult.message ?? "", /actor: home=alice caller=bob agent=A1 lease=lease-1 leased=leased-agent-1 worker=worker-1 machine=machine-1 run=run-1/)
@@ -707,10 +784,10 @@ test("executeShellCommand treats remote skill snapshots as passive for sync diag
   const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
 
   assert.equal(grantsResult.ok, true)
-  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skills snapshot\)/)
-  assert.doesNotMatch(grantsResult.message ?? "", /remote extension sync:/)
+  assert.match(grantsResult.message ?? "", /agent-1 skill grants:\n- qa \(skills snapshot, source=home, runtime=skill-snapshot, kernel=home\)/)
+  assert.doesNotMatch(grantsResult.message ?? "", /home extension sync:/)
   assert.equal(statusResult.ok, true)
-  assert.match(statusResult.message ?? "", /agent-1 has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected\./)
+  assert.match(statusResult.message ?? "", /agent-1 has no Home-proxy or Worker-local tools requiring synchronization\./)
   assert.doesNotMatch(statusResult.message ?? "", /manifest pending/)
 })
 
@@ -733,9 +810,9 @@ test("executeShellCommand makes pending remote extension sync retryable", async 
   const statusResult = await executeShellCommand(parseShellCommand("extension sync-status agent-1"), context, { client: fake.client })
 
   assert.equal(statusResult.ok, true)
-  assert.match(statusResult.message ?? "", /agent-1 remote extension sync: pending/)
-  assert.match(statusResult.message ?? "", /manifest hash: pending-hash/)
-  assert.match(statusResult.message ?? "", /next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-1; run \/machine kernels machine-1 if it does not settle; use \/extension sync-retry agent-1 after worker connectivity is healthy/)
+  assert.match(statusResult.message ?? "", /agent-1 home extension sync: pending/)
+  assert.match(statusResult.message ?? "", /home manifest hash: pending-hash/)
+  assert.match(statusResult.message ?? "", /home extension next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-1; run \/machine kernels machine-1 if it does not settle; use \/extension sync-retry agent-1 after worker connectivity is healthy/)
 })
 
 test("executeShellCommand manages script environments and script extensions", async () => {
@@ -783,7 +860,7 @@ test("executeShellCommand manages script environments and script extensions", as
     { ValidateScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
     { RegisterScript: { workspace_id: "/repo", source_path: "/repo/lookup.py", environment: "py", name: "lookup" } },
     { ListAgents: { session_id: "session-1" } },
-    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", kind: "script", name: "lookup", environment: "py" } },
+    { GrantAgentExtension: { workspace_id: "/repo", agent_ref: "agent-1", source: "home", kind: "script", name: "lookup", environment: "py" } },
     { ListScripts: { workspace_id: "/repo" } },
     { ListEnvironments: { workspace_id: "/repo" } },
   ])

@@ -36,6 +36,89 @@ fn remote_extension_manifest_pending_revoke_preserves_retry_state_only_without_i
     ));
 }
 
+#[test]
+fn worker_sync_restart_rejects_persisted_synced_status_for_stale_manifest() {
+    let mut agent = worker_sync_test_agent();
+    agent.grant_extension(
+        crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, "worker-a")
+            .from_source(crate::extension::ExtensionSource::Worker),
+    );
+    agent.set_worker_extension_grant_sync(Some(
+        crate::extension::RemoteExtensionManifestSyncStatus::synced("stale-hash".to_string()),
+    ));
+    let restored: crate::agent::AgentInstance =
+        serde_json::from_value(serde_json::to_value(&agent).expect("agent should serialize"))
+            .expect("agent should restore");
+    let current_hash = crate::extension::extension_grant_manifest_hash(
+        &restored.extension_grants_from(crate::extension::ExtensionSource::Worker),
+    )
+    .expect("manifest should hash");
+
+    assert!(!worker_extension_grants_are_synced(
+        &restored,
+        &current_hash
+    ));
+}
+
+#[test]
+fn worker_sync_add_rejects_synced_status_for_pre_add_manifest() {
+    let mut agent = worker_sync_test_agent();
+    let empty_hash =
+        crate::extension::extension_grant_manifest_hash(&[]).expect("empty manifest should hash");
+    agent.grant_extension(
+        crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Skill, "worker-a")
+            .from_source(crate::extension::ExtensionSource::Worker),
+    );
+    agent.set_worker_extension_grant_sync(Some(
+        crate::extension::RemoteExtensionManifestSyncStatus::synced(empty_hash),
+    ));
+    let current_hash = crate::extension::extension_grant_manifest_hash(
+        &agent.extension_grants_from(crate::extension::ExtensionSource::Worker),
+    )
+    .expect("manifest should hash");
+
+    assert!(!worker_extension_grants_are_synced(&agent, &current_hash));
+}
+
+#[test]
+fn worker_sync_revoke_rejects_synced_status_for_pre_revoke_manifest() {
+    let mut agent = worker_sync_test_agent();
+    agent.grant_extension(
+        crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, "worker-a")
+            .from_source(crate::extension::ExtensionSource::Worker),
+    );
+    let granted_hash = crate::extension::extension_grant_manifest_hash(
+        &agent.extension_grants_from(crate::extension::ExtensionSource::Worker),
+    )
+    .expect("manifest should hash");
+    agent.revoke_extension(
+        crate::extension::ExtensionSource::Worker,
+        crate::extension::ExtensionKind::Mcp,
+        "worker-a",
+    );
+    agent.set_worker_extension_grant_sync(Some(
+        crate::extension::RemoteExtensionManifestSyncStatus::synced(granted_hash),
+    ));
+    let current_hash =
+        crate::extension::extension_grant_manifest_hash(&[]).expect("empty manifest should hash");
+
+    assert!(!worker_extension_grants_are_synced(&agent, &current_hash));
+}
+
+fn worker_sync_test_agent() -> crate::agent::AgentInstance {
+    crate::agent::AgentInstance::new(
+        "agent-worker-sync",
+        "agent-worker-sync",
+        "session-worker-sync",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    )
+}
+
 #[tokio::test]
 async fn agent_config_update_ignores_legacy_processing_without_active_prompt() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
@@ -344,6 +427,190 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
         None
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn home_manifest_sync_replaces_stale_definition_response_before_marking_synced() {
+    let _guard = crate::env_lock::lock();
+    let isolation_root = std::env::temp_dir().join(format!(
+        "arroba-home-manifest-cas-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&isolation_root);
+    std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+
+    let registry =
+        crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
+            "workspace-1",
+        )]);
+    let definition_a = crate::mcp::ArrobaMcpServerConfig::stdio(
+        "definition-cas",
+        "node",
+        vec!["definition-a.js".to_string()],
+    );
+    registry
+        .install(&definition_a)
+        .expect("definition A should install");
+
+    let mut config = crate::config::DaemonConfig::for_tests();
+    let relay_url = "ws://127.0.0.1:1".to_string();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("relay-token".to_string());
+    let home_public_key = config.relay_public_key.clone();
+    let target_config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, _session_id, agent_id) = agent_config_runtime_with_config(config).await;
+    let agent = {
+        let app = app.lock().await;
+        let bound = app.agents_mut().bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-definition-cas".to_string(),
+                worker_machine_id: "machine-definition-cas".to_string(),
+                execution_lease_id: "lease-definition-cas".to_string(),
+                leased_agent_id: "leased-agent-definition-cas".to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+            },
+        );
+        bound.expect("agent should bind")
+    };
+    let agent = {
+        let app = app.lock().await;
+        let granted = app.agents_mut().grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::new(
+                crate::extension::ExtensionKind::Mcp,
+                "definition-cas",
+            ),
+        );
+        granted.expect("home MCP should grant")
+    };
+
+    let relay_state = app.lock().await.relay_client_state();
+    let (outgoing_tx, mut priority_rx, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(4);
+    {
+        let mut relay_state = relay_state.write().await;
+        relay_state.test_set_connected_sender(outgoing_tx, relay_url);
+        relay_state.remember_peer_public_key(
+            "worker-definition-cas",
+            target_config.relay_public_key.clone(),
+        );
+    }
+
+    let sync = tokio::spawn({
+        let runtime = runtime.clone();
+        let agent = agent.clone();
+        async move {
+            runtime
+                .sync_remote_extension_manifest_for_agent(&agent, None, Some(false))
+                .await
+        }
+    });
+    let first = receive_home_manifest_request(&mut priority_rx, &target_config).await;
+
+    let definition_b = crate::mcp::ArrobaMcpServerConfig::stdio(
+        "definition-cas",
+        "node",
+        vec!["definition-b.js".to_string()],
+    );
+    registry
+        .update(&definition_b)
+        .expect("definition B should replace A");
+    resolve_home_manifest_response(&relay_state, &target_config, &home_public_key, first.0).await;
+
+    let second = receive_home_manifest_request(&mut priority_rx, &target_config).await;
+    let first_manifest_hash = first.1.manifest_hash();
+    let second_manifest_hash = second.1.manifest_hash();
+    assert_ne!(
+        first_manifest_hash, second_manifest_hash,
+        "the registry definition must participate in the synchronized manifest hash"
+    );
+    resolve_home_manifest_response(&relay_state, &target_config, &home_public_key, second.0).await;
+    sync.await
+        .expect("sync task should join")
+        .expect("replacement sync should succeed");
+
+    let current = app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should remain available");
+    assert_eq!(
+        current
+            .remote_extension_manifest_sync()
+            .and_then(|status| status.manifest_hash.as_deref()),
+        Some(second_manifest_hash.as_str()),
+    );
+
+    std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+    let _ = std::fs::remove_dir_all(isolation_root);
+}
+
+async fn receive_home_manifest_request(
+    priority_rx: &mut tokio::sync::mpsc::Receiver<arroba_relay::protocol::RelayEnvelope>,
+    target_config: &crate::config::DaemonConfig,
+) -> (String, crate::extension::RemoteExtensionManifest) {
+    let envelope = tokio::time::timeout(std::time::Duration::from_millis(500), priority_rx.recv())
+        .await
+        .expect("home manifest request should use the connected relay")
+        .expect("connected relay request should be queued");
+    let arroba_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+        request_id,
+        encrypted_request,
+        ..
+    } = envelope
+    else {
+        panic!("expected a daemon peer request");
+    };
+    let decrypted = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+        &target_config.relay_private_key,
+        &encrypted_request,
+    )
+    .expect("worker should decrypt manifest request");
+    let request = serde_json::from_slice::<crate::transport::relay_peer::RelayPeerRequest>(
+        &decrypted.plaintext,
+    )
+    .expect("manifest request should decode");
+    let crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+        leased_agent_id,
+        remote_extension_manifest,
+    } = request
+    else {
+        panic!("expected a home extension manifest request");
+    };
+    assert_eq!(leased_agent_id, "leased-agent-definition-cas");
+    (request_id, remote_extension_manifest)
+}
+
+async fn resolve_home_manifest_response(
+    relay_state: &std::sync::Arc<
+        tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>,
+    >,
+    target_config: &crate::config::DaemonConfig,
+    home_public_key: &str,
+    request_id: String,
+) {
+    let response =
+        crate::transport::relay_peer::RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated {
+            leased_agent_id: "leased-agent-definition-cas".to_string(),
+        };
+    let encrypted_response = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &target_config.relay_private_key,
+        home_public_key,
+        &serde_json::to_vec(&response).expect("manifest response should encode"),
+    )
+    .expect("worker should encrypt manifest response");
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        relay_state,
+        request_id,
+        "worker-definition-cas".to_string(),
+        encrypted_response,
+    )
+    .await;
 }
 
 #[tokio::test]

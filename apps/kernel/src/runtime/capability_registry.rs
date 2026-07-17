@@ -643,7 +643,7 @@ pub(crate) fn ensure_environment_exists(
     Ok(())
 }
 
-pub(super) fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
+pub(crate) fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathBuf>, DaemonError> {
     let workspace = registry_workspace_root(workspace_id)?;
     let mut roots = Vec::new();
     #[cfg(not(test))]
@@ -733,7 +733,7 @@ fn script_validation_context(
     Ok((script_registry, env, source_path))
 }
 
-pub(super) fn skill_registry_roots(
+pub(crate) fn skill_registry_roots(
     workspace_id: Option<&str>,
 ) -> Result<Vec<PathBuf>, DaemonError> {
     let workspace = registry_workspace_root(workspace_id)?;

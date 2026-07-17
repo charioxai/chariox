@@ -465,6 +465,24 @@ pub struct RemoteExtensionSyncHealthSnapshot {
     pub failed_agents: usize,
     pub stale_agents: usize,
     pub pending_revoke_agents: usize,
+    #[serde(default)]
+    pub worker_extension_agents: usize,
+    #[serde(default)]
+    pub worker_extension_grants: usize,
+    #[serde(default)]
+    pub worker_manifest_missing_agents: usize,
+    #[serde(default)]
+    pub worker_synced_agents: usize,
+    #[serde(default)]
+    pub worker_syncing_agents: usize,
+    #[serde(default)]
+    pub worker_pending_agents: usize,
+    #[serde(default)]
+    pub worker_failed_agents: usize,
+    #[serde(default)]
+    pub worker_stale_agents: usize,
+    #[serde(default)]
+    pub worker_pending_revoke_agents: usize,
     pub issues: Vec<RemoteExtensionSyncIssue>,
 }
 
@@ -482,7 +500,11 @@ pub struct RemoteExtensionSyncIssue {
     pub manifest_hash: Option<String>,
     pub last_error: Option<String>,
     pub pending_revoke: bool,
+    #[serde(default)]
+    pub source: crate::extension::ExtensionSource,
     pub home_proxy_grants: Vec<String>,
+    #[serde(default)]
+    pub worker_grants: Vec<String>,
     pub worktree_id: Option<String>,
 }
 
@@ -624,7 +646,10 @@ impl RemoteExtensionSyncHealthSnapshot {
             let home_proxy_grants = agent
                 .extension_grants()
                 .iter()
-                .filter(|grant| grant.kind != ExtensionKind::Skill)
+                .filter(|grant| {
+                    grant.source == crate::extension::ExtensionSource::Home
+                        && grant.kind != ExtensionKind::Skill
+                })
                 .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
                 .collect::<Vec<_>>();
             let home_proxy_grant_count = home_proxy_grants.len();
@@ -632,13 +657,77 @@ impl RemoteExtensionSyncHealthSnapshot {
             let pending_revoke = status
                 .and_then(|status| status.pending_revoke)
                 .unwrap_or(false);
-            if home_proxy_grant_count == 0 && !pending_revoke {
+            if home_proxy_grant_count > 0 || pending_revoke {
+                snapshot.home_proxy_agents += 1;
+                snapshot.home_proxy_grants += home_proxy_grant_count;
+                match status {
+                    None => {
+                        snapshot.manifest_missing_agents += 1;
+                        snapshot.issues.push(remote_extension_sync_issue(
+                            agent,
+                            remote_execution,
+                            "missing",
+                            None,
+                            None,
+                            false,
+                            crate::extension::ExtensionSource::Home,
+                            home_proxy_grants,
+                        ));
+                    }
+                    Some(status) => {
+                        match status.state {
+                            RemoteExtensionManifestSyncState::Synced => snapshot.synced_agents += 1,
+                            RemoteExtensionManifestSyncState::Syncing => {
+                                snapshot.syncing_agents += 1
+                            }
+                            RemoteExtensionManifestSyncState::Pending => {
+                                snapshot.pending_agents += 1
+                            }
+                            RemoteExtensionManifestSyncState::Failed => snapshot.failed_agents += 1,
+                            RemoteExtensionManifestSyncState::Stale => snapshot.stale_agents += 1,
+                        }
+                        if pending_revoke {
+                            snapshot.pending_revoke_agents += 1;
+                        }
+                        if matches!(
+                            status.state,
+                            RemoteExtensionManifestSyncState::Failed
+                                | RemoteExtensionManifestSyncState::Stale
+                        ) || pending_revoke
+                        {
+                            snapshot.issues.push(remote_extension_sync_issue(
+                                agent,
+                                remote_execution,
+                                remote_extension_sync_state_key(status.state),
+                                status.manifest_hash.clone(),
+                                status.last_error.clone(),
+                                pending_revoke,
+                                crate::extension::ExtensionSource::Home,
+                                home_proxy_grants,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let worker_grants = agent
+                .extension_grants()
+                .iter()
+                .filter(|grant| grant.source == crate::extension::ExtensionSource::Worker)
+                .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
+                .collect::<Vec<_>>();
+            let worker_grant_count = worker_grants.len();
+            let worker_status = agent.worker_extension_grant_sync();
+            let worker_pending_revoke = worker_status
+                .and_then(|status| status.pending_revoke)
+                .unwrap_or(false);
+            if worker_grant_count == 0 && !worker_pending_revoke {
                 continue;
             }
-            snapshot.home_proxy_agents += 1;
-            snapshot.home_proxy_grants += home_proxy_grant_count;
-            let Some(status) = status else {
-                snapshot.manifest_missing_agents += 1;
+            snapshot.worker_extension_agents += 1;
+            snapshot.worker_extension_grants += worker_grant_count;
+            let Some(worker_status) = worker_status else {
+                snapshot.worker_manifest_missing_agents += 1;
                 snapshot.issues.push(remote_extension_sync_issue(
                     agent,
                     remote_execution,
@@ -646,33 +735,35 @@ impl RemoteExtensionSyncHealthSnapshot {
                     None,
                     None,
                     false,
-                    home_proxy_grants,
+                    crate::extension::ExtensionSource::Worker,
+                    worker_grants,
                 ));
                 continue;
             };
-            match status.state {
-                RemoteExtensionManifestSyncState::Synced => snapshot.synced_agents += 1,
-                RemoteExtensionManifestSyncState::Syncing => snapshot.syncing_agents += 1,
-                RemoteExtensionManifestSyncState::Pending => snapshot.pending_agents += 1,
-                RemoteExtensionManifestSyncState::Failed => snapshot.failed_agents += 1,
-                RemoteExtensionManifestSyncState::Stale => snapshot.stale_agents += 1,
+            match worker_status.state {
+                RemoteExtensionManifestSyncState::Synced => snapshot.worker_synced_agents += 1,
+                RemoteExtensionManifestSyncState::Syncing => snapshot.worker_syncing_agents += 1,
+                RemoteExtensionManifestSyncState::Pending => snapshot.worker_pending_agents += 1,
+                RemoteExtensionManifestSyncState::Failed => snapshot.worker_failed_agents += 1,
+                RemoteExtensionManifestSyncState::Stale => snapshot.worker_stale_agents += 1,
             }
-            if pending_revoke {
-                snapshot.pending_revoke_agents += 1;
+            if worker_pending_revoke {
+                snapshot.worker_pending_revoke_agents += 1;
             }
             if matches!(
-                status.state,
+                worker_status.state,
                 RemoteExtensionManifestSyncState::Failed | RemoteExtensionManifestSyncState::Stale
-            ) || pending_revoke
+            ) || worker_pending_revoke
             {
                 snapshot.issues.push(remote_extension_sync_issue(
                     agent,
                     remote_execution,
-                    remote_extension_sync_state_key(status.state),
-                    status.manifest_hash.clone(),
-                    status.last_error.clone(),
-                    pending_revoke,
-                    home_proxy_grants,
+                    remote_extension_sync_state_key(worker_status.state),
+                    worker_status.manifest_hash.clone(),
+                    worker_status.last_error.clone(),
+                    worker_pending_revoke,
+                    crate::extension::ExtensionSource::Worker,
+                    worker_grants,
                 ));
             }
         }
@@ -687,7 +778,8 @@ fn remote_extension_sync_issue(
     manifest_hash: Option<String>,
     last_error: Option<String>,
     pending_revoke: bool,
-    home_proxy_grants: Vec<String>,
+    source: crate::extension::ExtensionSource,
+    extension_grants: Vec<String>,
 ) -> RemoteExtensionSyncIssue {
     RemoteExtensionSyncIssue {
         session_id: agent.session_id().to_string(),
@@ -702,7 +794,17 @@ fn remote_extension_sync_issue(
         manifest_hash,
         last_error,
         pending_revoke,
-        home_proxy_grants,
+        source,
+        home_proxy_grants: if source == crate::extension::ExtensionSource::Home {
+            extension_grants.clone()
+        } else {
+            Vec::new()
+        },
+        worker_grants: if source == crate::extension::ExtensionSource::Worker {
+            extension_grants
+        } else {
+            Vec::new()
+        },
         worktree_id: agent.worktree_id().map(ToString::to_string),
     }
 }

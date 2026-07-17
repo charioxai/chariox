@@ -361,8 +361,8 @@ fn extension_requirements_json(
     grants
         .iter()
         .filter(|grant| grant.kind == kind)
-        .filter(|grant| seen.insert(grant.name.clone()))
-        .map(|grant| serde_json::json!({ "name": grant.name }))
+        .filter(|grant| seen.insert((grant.source, grant.name.clone())))
+        .map(|grant| serde_json::json!({ "source": grant.source, "name": grant.name }))
         .collect()
 }
 
@@ -374,12 +374,64 @@ fn credential_requirements_json(
         .iter()
         .filter_map(|grant| {
             let credential = grant.credential.as_deref()?.trim();
-            if credential.is_empty() || !seen.insert(credential.to_string()) {
+            if credential.is_empty() || !seen.insert((grant.source, credential.to_string())) {
                 return None;
             }
-            Some(serde_json::json!({ "name": credential, "used_by": grant.name }))
+            Some(serde_json::json!({
+                "source": grant.source,
+                "name": credential,
+                "used_by": grant.name,
+            }))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publication_requirements_preserve_extension_and_credential_sources() {
+        let home =
+            crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, "shared");
+        let worker =
+            crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, "shared")
+                .from_source(crate::extension::ExtensionSource::Worker);
+        assert_eq!(
+            extension_requirements_json(&[&home, &worker], crate::extension::ExtensionKind::Mcp,),
+            vec![
+                serde_json::json!({"source":"home", "name":"shared"}),
+                serde_json::json!({"source":"worker", "name":"shared"}),
+            ]
+        );
+
+        let home_credential = crate::extension::ExtensionGrant::connector(
+            "home-connector",
+            Some("shared-secret".to_string()),
+            "read",
+        );
+        let worker_credential = crate::extension::ExtensionGrant::connector(
+            "worker-connector",
+            Some("shared-secret".to_string()),
+            "read",
+        )
+        .from_source(crate::extension::ExtensionSource::Worker);
+        assert_eq!(
+            credential_requirements_json(&[&home_credential, &worker_credential]),
+            vec![
+                serde_json::json!({
+                    "source":"home",
+                    "name":"shared-secret",
+                    "used_by":"home-connector",
+                }),
+                serde_json::json!({
+                    "source":"worker",
+                    "name":"shared-secret",
+                    "used_by":"worker-connector",
+                }),
+            ]
+        );
+    }
 }
 
 fn workflow_publication_bindings_json(

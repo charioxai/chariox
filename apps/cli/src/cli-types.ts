@@ -54,6 +54,9 @@ import type {
   RuntimeProviderRun as KernelRuntimeProviderRun,
   ExtensionGrant as KernelExtensionGrant,
   ExtensionKind as KernelExtensionKind,
+  ExtensionSource as KernelExtensionSource,
+  ExtensionCatalogSource as KernelExtensionCatalogSource,
+  AgentExtensionCatalog as KernelAgentExtensionCatalog,
   SessionAgentDefaults as KernelSessionAgentDefaults,
   SessionCollaborationAgentCounts as KernelSessionCollaborationAgentCounts,
   SessionConfigState as KernelSessionConfigState,
@@ -162,6 +165,12 @@ export type ArrobaCredentialConfig = KernelArrobaCredentialConfig
 export type ExtensionKind = KernelExtensionKind
 
 export type ExtensionGrant = KernelExtensionGrant
+
+export type ExtensionSource = KernelExtensionSource
+
+export type ExtensionCatalogSource = KernelExtensionCatalogSource
+
+export type AgentExtensionCatalog = KernelAgentExtensionCatalog
 
 export type SkillImportSkip = KernelSkillImportSkip
 

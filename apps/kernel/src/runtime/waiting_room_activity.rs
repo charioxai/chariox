@@ -104,6 +104,11 @@ pub(crate) fn waiting_room_session_activity_summary(
         .iter()
         .filter(|agent| agent.remote_execution().is_some())
         .filter_map(home_proxy_extension_activity);
+    let worker_extension_agents = session
+        .agents()
+        .iter()
+        .filter(|agent| agent.remote_execution().is_some())
+        .filter_map(worker_extension_activity);
     WaitingRoomSessionActivitySummary {
         agent_count: session.agents().len(),
         working_agent_count,
@@ -122,6 +127,14 @@ pub(crate) fn waiting_room_session_activity_summary(
             .filter(|activity| activity.sync_issue)
             .count(),
         remote_extension_pending_revoke_count: home_proxy_extension_agents
+            .filter(|activity| activity.pending_revoke)
+            .count(),
+        worker_extension_agent_count: worker_extension_agents.clone().count(),
+        worker_extension_sync_issue_count: worker_extension_agents
+            .clone()
+            .filter(|activity| activity.sync_issue)
+            .count(),
+        worker_extension_pending_revoke_count: worker_extension_agents
             .filter(|activity| activity.pending_revoke)
             .count(),
         unread_idle_agent_count: session
@@ -149,10 +162,10 @@ struct HomeProxyExtensionActivity {
 }
 
 fn home_proxy_extension_activity(agent: &AgentInstance) -> Option<HomeProxyExtensionActivity> {
-    let active_home_proxy_grant = agent
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.kind != ExtensionKind::Skill);
+    let active_home_proxy_grant = agent.extension_grants().iter().any(|grant| {
+        grant.source == crate::extension::ExtensionSource::Home
+            && grant.kind != ExtensionKind::Skill
+    });
     let pending_revoke = agent
         .remote_extension_manifest_sync()
         .and_then(|status| status.pending_revoke)
@@ -161,6 +174,35 @@ fn home_proxy_extension_activity(agent: &AgentInstance) -> Option<HomeProxyExten
         return None;
     }
     let sync_issue = match agent.remote_extension_manifest_sync() {
+        None => true,
+        Some(status) => {
+            pending_revoke
+                || matches!(
+                    status.state,
+                    RemoteExtensionManifestSyncState::Failed
+                        | RemoteExtensionManifestSyncState::Stale
+                )
+        }
+    };
+    Some(HomeProxyExtensionActivity {
+        sync_issue,
+        pending_revoke,
+    })
+}
+
+fn worker_extension_activity(agent: &AgentInstance) -> Option<HomeProxyExtensionActivity> {
+    let active_worker_grant = agent
+        .extension_grants()
+        .iter()
+        .any(|grant| grant.source == crate::extension::ExtensionSource::Worker);
+    let pending_revoke = agent
+        .worker_extension_grant_sync()
+        .and_then(|status| status.pending_revoke)
+        .unwrap_or(false);
+    if !active_worker_grant && !pending_revoke {
+        return None;
+    }
+    let sync_issue = match agent.worker_extension_grant_sync() {
         None => true,
         Some(status) => {
             pending_revoke
@@ -223,6 +265,7 @@ mod tests {
     ) -> AgentInstance {
         let mut agent = remote_agent(id, AgentState::Idle, false, Some("worker-run"));
         agent.grant_extension(ExtensionGrant {
+            source: crate::extension::ExtensionSource::Home,
             kind: grant_kind,
             name: format!("{id}-extension"),
             environment: None,
@@ -558,6 +601,30 @@ mod tests {
         assert_eq!(summary.home_proxy_agent_count, 4);
         assert_eq!(summary.remote_extension_sync_issue_count, 3);
         assert_eq!(summary.remote_extension_pending_revoke_count, 1);
+    }
+
+    #[test]
+    fn session_activity_reports_worker_extension_sync_separately() {
+        let mut worker_only =
+            remote_agent("worker-only", AgentState::Idle, false, Some("worker-run"));
+        worker_only.grant_extension(
+            ExtensionGrant::new(ExtensionKind::Script, "worker-script")
+                .from_source(crate::extension::ExtensionSource::Worker),
+        );
+        worker_only.set_worker_extension_grant_sync(Some(
+            RemoteExtensionManifestSyncStatus::pending("worker-hash".to_string(), false)
+                .failed("worker sync failed"),
+        ));
+        let session = session_with_agents(vec![worker_only]);
+
+        let summary =
+            waiting_room_session_activity_summary(&session, crate::session::DEFAULT_LOCAL_USER_ID);
+
+        assert_eq!(summary.home_proxy_agent_count, 0);
+        assert_eq!(summary.remote_extension_sync_issue_count, 0);
+        assert_eq!(summary.worker_extension_agent_count, 1);
+        assert_eq!(summary.worker_extension_sync_issue_count, 1);
+        assert_eq!(summary.worker_extension_pending_revoke_count, 0);
     }
 
     #[test]

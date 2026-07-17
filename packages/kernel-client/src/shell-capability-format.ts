@@ -1,4 +1,5 @@
 import type {
+  AgentExtensionCatalog,
   AgentInstance,
   RemoteExtensionManifestSyncStatus,
   ArrobaEnvironmentConfig,
@@ -6,16 +7,19 @@ import type {
   ArrobaScriptMetadata,
   ArrobaSkillMetadata,
   ExtensionKind,
+  ExtensionCatalogSource,
   McpImportOutcome,
   ProviderCapabilityImportReport,
   SkillImportOutcome,
 } from "./kernel-types.js"
+import { extensionGrantSource } from "./extension-grant-source.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
+  shouldShowWorkerExtensionGrantSync,
 } from "./extension-grant-placement.js"
 import {
   homeExtensionAuditAgentRef,
@@ -39,6 +43,7 @@ export type RemoteExtensionSyncStatusLineOptions = {
   readonly includeNext?: boolean
   readonly agentRef?: string
   readonly workerMachineId?: string | null
+  readonly source?: "home" | "worker"
 }
 
 export function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
@@ -123,18 +128,30 @@ export function formatScriptList(scripts: ArrobaScriptMetadata[]): string {
   return scripts.map((script) => `${script.name} [${script.runtime}] - ${script.description}`).join("\n")
 }
 
-export function formatAgentExtensionGrants(agent: AgentInstance, kind: ExtensionKind): string {
-  const grants = (agent.extension_grants ?? []).filter((grant) => grant.kind === kind)
+export function formatAgentExtensionGrants(
+  agent: AgentInstance,
+  kind: ExtensionKind,
+  source: ExtensionCatalogSource = "all",
+): string {
+  const grants = (agent.extension_grants ?? []).filter((grant) => grant.kind === kind
+    && (source === "all" || extensionGrantSource(grant) === source))
   const label = kind === "mcp" ? "MCP" : kind
   const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
   if (grants.length === 0) {
-    return `${agentLabel} has no ${label} grants.`
+    return `${agentLabel} has no ${label} grants${source === "all" ? "" : ` from ${source}`}.`
   }
-  const placement = formatExtensionGrantPlacement([{ kind }], Boolean(agent.remote_execution))
   const sync = formatGrantRemoteExtensionSyncBlock(agent)
-  return `${agentLabel} ${label} grants:\n${grants.map((grant) => {
+  return `${agentLabel} ${label} grants${source === "all" ? "" : ` from ${source}`}:\n${grants.map((grant) => {
+    const grantSource = extensionGrantSource(grant)
+    const runtime = formatSingleGrantRuntime(grantSource, kind, Boolean(agent.remote_execution))
+    const kernel = grantSource === "worker"
+      ? agent.remote_execution?.worker_kernel_id ?? "worker"
+      : "home"
     const parts = [
-      placement,
+      formatExtensionGrantPlacement([grant], Boolean(agent.remote_execution)),
+      `source=${grantSource}`,
+      `runtime=${runtime}`,
+      `kernel=${kernel}`,
       grant.environment ? `env=${grant.environment}` : null,
       grant.credential ? `credential=${grant.credential}` : null,
       grant.max_safety ? `allow=${grant.max_safety}` : null,
@@ -144,38 +161,86 @@ export function formatAgentExtensionGrants(agent: AgentInstance, kind: Extension
   }).join("\n")}${sync}`
 }
 
+export function formatAgentExtensionCatalog(catalog: AgentExtensionCatalog): string {
+  const lines = [
+    `extension catalog for ${catalog.agent_id}`,
+    `home kernel: ${catalog.home_kernel_id}`,
+    `worker kernel: ${catalog.worker_kernel_id ?? "none"} (${catalog.worker_available ? "available" : "unavailable"})`,
+  ]
+  if (catalog.worker_error) lines.push(`worker error: ${catalog.worker_error}`)
+  if (catalog.entries.length === 0) {
+    lines.push("no extensions available")
+    return lines.join("\n")
+  }
+  for (const entry of catalog.entries) {
+    const options = [
+      entry.environments.length > 0 ? `env=${entry.environments.join("|")}` : null,
+      entry.credentials.length > 0 ? `credentials=${entry.credentials.join("|")}` : null,
+      entry.credential_required ? "credential=required" : null,
+      entry.max_safety.length > 0 ? `allow=${entry.max_safety.join("|")}` : null,
+      entry.definition_hash ? `hash=${entry.definition_hash.slice(0, 12)}` : null,
+    ].filter(Boolean)
+    lines.push(`- ${entry.source}:${entry.kind}:${entry.name} [source=${entry.source}, kernel=${entry.resolved_kernel_id}${options.length > 0 ? `, ${options.join(", ")}` : ""}]${entry.description ? ` - ${entry.description}` : ""}`)
+  }
+  return lines.join("\n")
+}
+
+function formatSingleGrantRuntime(
+  source: "home" | "worker",
+  kind: ExtensionKind,
+  remote: boolean,
+): string {
+  if (source === "worker") return "worker-local"
+  if (!remote) return "home-local"
+  return kind === "skill" ? "skill-snapshot" : "home-proxy"
+}
+
 function formatGrantRemoteExtensionSyncBlock(agent: AgentInstance): string {
   if (!agent.remote_execution) return ""
   const status = agent.remote_extension_manifest_sync
-  if (!shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)) {
+  const workerStatus = agent.worker_extension_grant_sync
+  const showHome = shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)
+  const showWorker = shouldShowWorkerExtensionGrantSync(agent.extension_grants, workerStatus)
+  if (!showHome && !showWorker) {
     return ""
   }
   const lines = [
-    `remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    showHome
+      ? `home extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`
+      : null,
+    showWorker
+      ? `worker extension sync: ${formatRemoteExtensionSyncStatusLine(workerStatus)}`
+      : null,
     `runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, true)}`,
     `authority boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, true)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
-  ]
-  const nextAction = remoteExtensionSyncNextAction(
-    status,
-    agent.agent_ref,
-    agent.remote_execution.worker_machine_id,
-  )
-  if (nextAction) lines.push(`next: ${nextAction}`)
+  ].filter((line): line is string => Boolean(line))
+  const homeNext = showHome
+    ? remoteExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution.worker_machine_id)
+    : null
+  const workerNext = showWorker
+    ? workerExtensionSyncNextAction(workerStatus, agent.agent_ref, agent.remote_execution.worker_machine_id)
+    : null
+  if (homeNext) lines.push(`home extension next: ${homeNext}`)
+  if (workerNext) lines.push(`worker extension next: ${workerNext}`)
   return `\n\n${lines.join("\n")}`
 }
 
 export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
   const agentLabel = `${agent.agent_ref}${agent.alias ? ` (${agent.alias})` : ""}`
   if (!agent.remote_execution) {
-    return `${agentLabel} is worker-local; no home-proxy manifest is projected.`
+    return `${agentLabel} is ${formatExtensionGrantPlacement(agent.extension_grants, false)}; no cross-kernel extension manifest is projected.`
   }
   const status = agent.remote_extension_manifest_sync
-  if (!status && !hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-    return `${agentLabel} has no active home-proxy tools; skill grants are passive snapshots and no home-proxy manifest is projected.`
+  const workerStatus = agent.worker_extension_grant_sync
+  const showHome = shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)
+  const showWorker = shouldShowWorkerExtensionGrantSync(agent.extension_grants, workerStatus)
+  if (!showHome && !showWorker) {
+    return `${agentLabel} has no Home-proxy or Worker-local tools requiring synchronization.`
   }
   const rows = [
-    `${agentLabel} remote extension sync: ${formatRemoteExtensionSyncStatusLine(status)}`,
+    showHome ? `${agentLabel} home extension sync: ${formatRemoteExtensionSyncStatusLine(status)}` : null,
+    showWorker ? `${agentLabel} worker extension sync: ${formatRemoteExtensionSyncStatusLine(workerStatus)}` : null,
     `runtime: ${formatExtensionGrantRuntimeDetail(agent.extension_grants, true)}`,
     `authority boundary: ${formatExtensionAuthorityBoundaryDetail(agent.extension_grants, true)}`,
     `placement: ${formatRemoteExtensionPlacement(agent.remote_execution)}`,
@@ -185,25 +250,39 @@ export function formatRemoteExtensionSyncStatus(agent: AgentInstance): string {
     `execution lease: ${agent.remote_execution.execution_lease_id}`,
     `leased agent: ${agent.remote_execution.leased_agent_id}`,
     `active worker run: ${agent.remote_execution.active_worker_provider_run_id ?? "none"}`,
-  ]
-  if (status?.manifest_hash) rows.push(`manifest hash: ${status.manifest_hash}`)
-  if (status?.last_synced_at_ms) rows.push(`last synced: ${new Date(status.last_synced_at_ms).toISOString()}`)
-  if (status?.last_attempted_at_ms) rows.push(`last attempted: ${new Date(status.last_attempted_at_ms).toISOString()}`)
-  if (status?.last_error) rows.push(`last error: ${status.last_error}`)
-  if (status?.pending_revoke) rows.push("revoke state: pending worker acknowledgement")
-  const nextAction = remoteExtensionSyncNextAction(
-    status,
-    agent.agent_ref,
-    agent.remote_execution.worker_machine_id,
-  )
-  if (nextAction) rows.push(`next: ${nextAction}`)
+  ].filter((row): row is string => Boolean(row))
+  appendExtensionSyncMetadata(rows, "home", showHome ? status : null)
+  appendExtensionSyncMetadata(rows, "worker", showWorker ? workerStatus : null)
+  const homeNext = showHome
+    ? remoteExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution.worker_machine_id)
+    : null
+  const workerNext = showWorker
+    ? workerExtensionSyncNextAction(workerStatus, agent.agent_ref, agent.remote_execution.worker_machine_id)
+    : null
+  if (homeNext) rows.push(`home extension next: ${homeNext}`)
+  if (workerNext) rows.push(`worker extension next: ${workerNext}`)
   return rows.join("\n")
+}
+
+function appendExtensionSyncMetadata(
+  rows: string[],
+  source: "home" | "worker",
+  status: RemoteExtensionManifestSyncStatus | null | undefined,
+): void {
+  if (status?.manifest_hash) rows.push(`${source} manifest hash: ${status.manifest_hash}`)
+  if (status?.last_synced_at_ms) rows.push(`${source} last synced: ${new Date(status.last_synced_at_ms).toISOString()}`)
+  if (status?.last_attempted_at_ms) rows.push(`${source} last attempted: ${new Date(status.last_attempted_at_ms).toISOString()}`)
+  if (status?.last_error) rows.push(`${source} last error: ${status.last_error}`)
+  if (status?.pending_revoke) rows.push(`${source} revoke state: pending worker acknowledgement`)
 }
 
 function formatRemoteExtensionGrantCount(agent: AgentInstance): string {
   const count = agent.extension_grants?.length ?? 0
   const label = `${count} grant${count === 1 ? "" : "s"}`
-  return count === 0 && agent.remote_extension_manifest_sync?.pending_revoke
+  return count === 0 && (
+    agent.remote_extension_manifest_sync?.pending_revoke
+    || agent.worker_extension_grant_sync?.pending_revoke
+  )
     ? `${label} (final revoke pending)`
     : label
 }
@@ -368,6 +447,29 @@ export function remoteExtensionSyncNextAction(
   return null
 }
 
+export function workerExtensionSyncNextAction(
+  status: RemoteExtensionSyncNextActionStatus,
+  agentRef: string,
+  workerMachineId?: string | null,
+): string | null {
+  if (status?.pending_revoke) {
+    return workerMachineId
+      ? `keep the Worker revoke in place; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if the Worker revoke stays pending; use /extension sync-retry ${agentRef} after the worker reconnects`
+      : `keep the Worker revoke in place; run /extension sync-status ${agentRef}; run /kernel remote-runtime to identify worker connectivity if the Worker revoke stays pending; use /extension sync-retry ${agentRef} after the worker reconnects`
+  }
+  if (!status || status.state === "pending" || status.state === "syncing") {
+    return workerMachineId
+      ? `Worker-local grants are not settled on the worker; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId} if they do not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `Worker-local grants are not settled on the worker; run /extension sync-status ${agentRef}; run /kernel remote-runtime if they do not settle; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+  }
+  if (status.state === "failed" || status.state === "stale" || status.state === "missing") {
+    return workerMachineId
+      ? `Worker-local grants remain blocked on the worker; run /extension sync-status ${agentRef}; run /machine kernels ${workerMachineId}; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+      : `Worker-local grants remain blocked on the worker; run /extension sync-status ${agentRef}; run /kernel remote-runtime to identify worker connectivity; use /extension sync-retry ${agentRef} after worker connectivity is healthy`
+  }
+  return null
+}
+
 function remoteExtensionSyncStatusNext(
   status: RemoteExtensionSyncNextActionStatus,
   options: RemoteExtensionSyncStatusLineOptions,
@@ -378,7 +480,10 @@ function remoteExtensionSyncStatusNext(
   if (status && status.state === "synced" && !status.pending_revoke && !status.last_error) {
     return null
   }
-  return remoteExtensionSyncNextAction(status, options.agentRef, options.workerMachineId)
+  const nextAction = options.source === "worker"
+    ? workerExtensionSyncNextAction
+    : remoteExtensionSyncNextAction
+  return nextAction(status, options.agentRef, options.workerMachineId)
     ?? `run /extension sync-status ${options.agentRef}`
 }
 

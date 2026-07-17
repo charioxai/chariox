@@ -128,9 +128,12 @@ The embedded workflow-pane shell uses the same script runner. Manual TUI drills 
 
 `live-embedded-shell-automation-drill.mjs` launches the real CLI under a PTY but drives it through `--automation-socket` instead of raw keystrokes. The automation API returns structured snapshots for the current screen, selected workflow, workflow graph counts, workflow runs, shell context, and shell transcript, so embedded-shell drills can assert CLI state without parsing ANSI terminal output. Keep the automation socket path short; Unix socket path limits are strict on macOS.
 
+`live-worker-extension-source-tui-drill.mjs` launches isolated home and worker kernels, places an agent on the worker, and types source-qualified extension commands through the real TUI PTY stdin. The automation socket is used only to synchronize on rendered footer state. The drill replays the captured ANSI bytes into exact 120x36 and 80x24 terminal frames, preserves those full text frames, rasterizes an exact transcript-viewport crop to PNG, verifies the visible home/worker source and runtime labels, and checks the persisted source-qualified grants through IPC. Successful runs retain their raw PTY logs, text frames, PNG screenshots, and `result.json` under `.artifacts/live-worker-extension-source-tui-drill/` by default.
+
 ```bash
 pnpm --filter @arroba/cli run shell:drill
 pnpm --filter @arroba/cli run embedded-shell:drill
+pnpm --filter @arroba/cli run tui-worker-extension-source:drill
 ```
 
 ## Workflow-Code Artifact Drill

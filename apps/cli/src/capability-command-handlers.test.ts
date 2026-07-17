@@ -21,7 +21,7 @@ test("extension slash command confirms active home-proxy grants before exposing 
   assert.match(harness.notices[0] ?? "", /rerun: \/extension grant script agent-1 lookup --env py --confirm-home-proxy/)
   assert.deepEqual(harness.footers, [
     "error:confirmation required for home-proxy grant",
-    "info:granted script lookup to agent-1",
+    "info:granted script lookup to agent-1 from home (home-proxy on home)",
   ])
 })
 
@@ -33,7 +33,28 @@ test("extension slash command grants passive remote skills without home-proxy co
 
   assert.deepEqual(harness.grants, ["skill:agent-1:qa"])
   assert.deepEqual(harness.notices, [])
-  assert.deepEqual(harness.footers, ["info:granted skill qa to agent-1"])
+  assert.deepEqual(harness.footers, ["info:granted skill qa to agent-1 from home (skill-snapshot from home)"])
+})
+
+test("extension slash command catalogs and grants worker-local extensions without home confirmation", async () => {
+  const remote = agent({
+    remote: true,
+    extension_grants: [{ source: "worker", kind: "mcp", name: "browser" }],
+  })
+  const harness = capabilityHarness(remote)
+
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension catalog agent-1 --from all") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grant mcp agent-1 browser --from worker") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+  await handleExtensionSlashCommand(harness.deps, parseSlashCommand("/extension grants mcp agent-1 --from worker") as Extract<ReturnType<typeof parseSlashCommand>, { kind: "extension" }>)
+
+  assert.deepEqual(harness.grants, ["mcp:agent-1:browser:worker"])
+  assert.match(harness.notices[0] ?? "", /worker:mcp:browser \[source=worker, kernel=worker-1\]/)
+  assert.match(harness.notices[1] ?? "", /source=worker, runtime=worker-local, kernel=worker-1/)
+  assert.deepEqual(harness.footers, [
+    "info:showing all extension catalog for agent-1",
+    "info:granted MCP browser to agent-1 from worker (worker-local on worker-1)",
+    "info:showing worker mcp grants for agent-1",
+  ])
 })
 
 test("extension slash command renders remote sync status, retry, and audit counts", async () => {
@@ -75,12 +96,12 @@ test("extension slash command renders remote sync status, retry, and audit count
 
   assert.equal(harness.syncRetries, 1)
   assert.deepEqual(harness.auditRequests, [{ agentRef: "agent-1", limit: 1 }])
-  assert.match(harness.notices[0] ?? "", /agent-1 remote extension sync: failed, pending revoke, worker offline/)
-  assert.match(harness.notices[0] ?? "", /manifest hash: abcdef1234567890/)
+  assert.match(harness.notices[0] ?? "", /agent-1 home extension sync: failed, pending revoke, worker offline/)
+  assert.match(harness.notices[0] ?? "", /home manifest hash: abcdef1234567890/)
   assert.match(harness.notices[0] ?? "", /revoke state: pending worker acknowledgement/)
   assert.match(harness.notices[0] ?? "", /next: keep the home revoke in place; run \/extension sync-status agent-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-1 after the worker reconnects/)
-  assert.match(harness.notices[1] ?? "", /agent-1 remote extension sync: synced/)
-  assert.match(harness.notices[1] ?? "", /manifest hash: fedcba9876543210/)
+  assert.match(harness.notices[1] ?? "", /agent-1 home extension sync: synced/)
+  assert.match(harness.notices[1] ?? "", /home manifest hash: fedcba9876543210/)
   assert.match(harness.notices[2] ?? "", /home_extension\.invoke\.denied lookup denied/)
   assert.match(harness.notices[2] ?? "", /boundary: home grants, validates, and executes; worker receives projected tools only; credentials stay home/)
   assert.match(harness.notices[2] ?? "", /tool: script:lookup as=lookup safety=read/)
@@ -129,8 +150,8 @@ function capabilityHarness(agent: AgentInstance, options: {
     resolveSessionAgent: (reference) => reference === agent.agent_ref || reference === agent.id
       ? { agent, error: null }
       : { agent: null, error: `agent '${reference}' not found` },
-    grantAgentMcp: async (agentRef, name) => {
-      grants.push(`mcp:${agentRef}:${name}`)
+    grantAgentMcp: async (agentRef, name, source = "home") => {
+      grants.push(`mcp:${agentRef}:${name}${source === "home" ? "" : `:${source}`}`)
       return agent
     },
     grantAgentSkill: async (agentRef, name) => {
@@ -141,6 +162,22 @@ function capabilityHarness(agent: AgentInstance, options: {
       grants.push(`script:${agentRef}:${name}:${environment}`)
       return agent
     },
+    listAgentExtensionCatalog: async () => ({
+      agent_id: agent.id,
+      home_kernel_id: "home-1",
+      worker_kernel_id: agent.remote_execution?.worker_kernel_id ?? null,
+      worker_available: Boolean(agent.remote_execution),
+      entries: [{
+        source: "worker",
+        resolved_kernel_id: agent.remote_execution?.worker_kernel_id ?? "worker-1",
+        kind: "mcp",
+        name: "browser",
+        environments: [],
+        credentials: [],
+        credential_required: false,
+        max_safety: [],
+      }],
+    }),
     syncRemoteExtensionManifest: async () => {
       syncRetries += 1
       return options.retriedAgent ?? agent

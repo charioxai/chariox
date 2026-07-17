@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -41,7 +41,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -170,7 +170,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -362,7 +362,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -409,7 +409,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -475,7 +475,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -564,7 +564,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -694,7 +694,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -779,7 +779,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
@@ -873,5 +873,108 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "2409b4d10bab0b296bd880e060b8931116f30f2452e5c9205e7701f9ccbe0108"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_source_aware_extension_grant_and_catalog_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 240);
+
+    let grant = LocalDaemonRequest::GrantAgentExtension(crate::local::GrantAgentExtensionRequest {
+        workspace_id: Some("/home/workspace".to_string()),
+        agent_ref: "agent-1".to_string(),
+        source: crate::extension::ExtensionSource::Worker,
+        kind: crate::local::ExtensionKind::Script,
+        name: "lookup".to_string(),
+        environment: Some("python".to_string()),
+        credential: None,
+        max_safety: None,
+    });
+    let revoke =
+        LocalDaemonRequest::RevokeAgentExtension(crate::local::RevokeAgentExtensionRequest {
+            agent_ref: "agent-1".to_string(),
+            source: crate::extension::ExtensionSource::Worker,
+            kind: crate::local::ExtensionKind::Script,
+            name: "lookup".to_string(),
+        });
+    let catalog = LocalDaemonRequest::ListAgentExtensionCatalog(
+        crate::local::ListAgentExtensionCatalogRequest {
+            agent_ref: "agent-1".to_string(),
+            source: crate::extension::ExtensionCatalogSource::All,
+        },
+    );
+    let response = LocalDaemonResponse::AgentExtensionCatalogListed {
+        catalog: crate::extension::AgentExtensionCatalog {
+            agent_id: "agent-1".to_string(),
+            home_kernel_id: "home-1".to_string(),
+            worker_kernel_id: Some("worker-1".to_string()),
+            worker_available: true,
+            worker_error: None,
+            entries: vec![crate::extension::ExtensionCatalogEntry {
+                source: crate::extension::ExtensionSource::Worker,
+                resolved_kernel_id: "worker-1".to_string(),
+                kind: crate::extension::ExtensionKind::Script,
+                name: "lookup".to_string(),
+                description: Some("Worker lookup".to_string()),
+                definition_hash: Some("hash-1".to_string()),
+                environments: vec!["python".to_string()],
+                credentials: Vec::new(),
+                credential_required: false,
+                max_safety: Vec::new(),
+            }],
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value((grant, revoke, catalog, response))
+            .expect("source-aware extension shapes should encode"),
+        serde_json::json!([
+            {
+                "GrantAgentExtension": {
+                    "workspace_id": "/home/workspace",
+                    "agent_ref": "agent-1",
+                    "source": "worker",
+                    "kind": "script",
+                    "name": "lookup",
+                    "environment": "python"
+                }
+            },
+            {
+                "RevokeAgentExtension": {
+                    "agent_ref": "agent-1",
+                    "source": "worker",
+                    "kind": "script",
+                    "name": "lookup"
+                }
+            },
+            {
+                "ListAgentExtensionCatalog": {
+                    "agent_ref": "agent-1",
+                    "source": "all"
+                }
+            },
+            {
+                "AgentExtensionCatalogListed": {
+                    "catalog": {
+                        "agent_id": "agent-1",
+                        "home_kernel_id": "home-1",
+                        "worker_kernel_id": "worker-1",
+                        "worker_available": true,
+                        "entries": [{
+                            "source": "worker",
+                            "resolved_kernel_id": "worker-1",
+                            "kind": "script",
+                            "name": "lookup",
+                            "description": "Worker lookup",
+                            "definition_hash": "hash-1",
+                            "environments": ["python"],
+                            "credentials": [],
+                            "credential_required": false,
+                            "max_safety": []
+                        }]
+                    }
+                }
+            }
+        ])
     );
 }

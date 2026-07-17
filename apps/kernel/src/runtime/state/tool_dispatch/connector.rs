@@ -23,7 +23,7 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         agent
-            .connector_grants()
+            .execution_connector_grants()
             .into_iter()
             .filter_map(|grant| {
                 registry
@@ -66,7 +66,7 @@ impl KernelRuntimeState {
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let registry = connector_registry()?;
-        for grant in agent.connector_grants() {
+        for grant in agent.execution_connector_grants() {
             let Some(connector) = registry.get(&grant.name)? else {
                 continue;
             };

@@ -692,6 +692,7 @@ pub(super) fn meta_extension_request(
                 GrantAgentExtensionRequest {
                     workspace_id: Some(session.workspace_id().to_string()),
                     agent_ref: agent.agent_ref().to_string(),
+                    source: crate::extension::ExtensionSource::Home,
                     kind,
                     name: args[2].clone(),
                     environment: None,
@@ -710,6 +711,7 @@ pub(super) fn meta_extension_request(
             Ok(LocalDaemonRequest::RevokeAgentExtension(
                 RevokeAgentExtensionRequest {
                     agent_ref: agent.agent_ref().to_string(),
+                    source: crate::extension::ExtensionSource::Home,
                     kind,
                     name: args[2].clone(),
                 },

@@ -278,7 +278,7 @@
   {
     "id": "extension",
     "label": "/extension",
-    "description": "Inspect worker-local, home-proxy, and skill snapshot extension state",
+    "description": "Inspect and assign home-kernel and worker-kernel extensions",
     "value": "/extension ",
     "children": [
       {
@@ -298,21 +298,33 @@
         ]
       },
       {
+        "id": "extension-catalog",
+        "label": "catalog",
+        "description": "List extensions available from the home kernel, assigned worker kernel, or both; use --from home|worker|all",
+        "value": "/extension catalog ",
+        "searchAliases": [
+          "home extension catalog",
+          "worker extension catalog",
+          "worker extensions",
+          "extension source"
+        ]
+      },
+      {
         "id": "extension-grant",
         "label": "grant",
-        "description": "Grant an extension to an agent",
+        "description": "Grant an extension to an agent; use --from home|worker",
         "value": "/extension grant "
       },
       {
         "id": "extension-revoke",
         "label": "revoke",
-        "description": "Revoke an extension from an agent",
+        "description": "Revoke an extension from an agent; use --from home|worker",
         "value": "/extension revoke "
       },
       {
         "id": "extension-grants",
         "label": "grants",
-        "description": "Show extension grants by extension kind",
+        "description": "Show extension grants by kind and source; use --from home|worker|all",
         "value": "/extension grants ",
         "children": [
           {
@@ -344,7 +356,7 @@
       {
         "id": "extension-sync-status",
         "label": "sync-status",
-        "description": "Show home-authoritative manifest sync, worker projection, and recovery for an agent",
+        "description": "Show home-proxy and worker-local grant sync, placement, and recovery for an agent",
         "value": "/extension sync-status ",
         "searchAliases": [
           "home proxy manifest",

@@ -83,6 +83,56 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
 }
 
 #[test]
+fn destroying_execution_lease_cascades_full_leased_agent_cleanup() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-cascade",
+            "agent-home-cascade",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let worktree = std::env::temp_dir().join(format!(
+        "arroba-leased-agent-cascade-{}",
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "opencode",
+            Some("kimi2.5".to_string()),
+            None,
+            None,
+            None,
+            None,
+            Some(worktree.display().to_string()),
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let removed = RemoteLeaseRuntime::new(&mut app)
+        .destroy_execution_lease(&lease.id)
+        .expect("execution lease should cascade cleanup");
+
+    assert_eq!(removed.id, lease.id);
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+    assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+    assert!(app
+        .agents()
+        .get_agent(&leased_agent.backing_agent_id)
+        .is_err());
+    assert!(app
+        .sessions()
+        .get_session(&leased_agent.backing_session_id)
+        .is_err());
+}
+
+#[test]
 fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

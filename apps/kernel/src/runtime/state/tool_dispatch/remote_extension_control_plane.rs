@@ -239,6 +239,7 @@ impl KernelRuntimeState {
         match tool_name {
             crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
                 self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
+                    .await
             }
             crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
                 self.handle_request_extension_runtime_tool(

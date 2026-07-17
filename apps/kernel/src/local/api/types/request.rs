@@ -203,6 +203,7 @@ pub enum LocalDaemonRequest {
     MoveAgentToLocal(MoveAgentToLocalRequest),
     SyncRemoteExtensionManifest(SyncRemoteExtensionManifestRequest),
     ListHomeExtensionAudit(ListHomeExtensionAuditRequest),
+    ListAgentExtensionCatalog(ListAgentExtensionCatalogRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest),

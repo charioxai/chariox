@@ -160,11 +160,19 @@ impl<'a> KernelSessionService<'a> {
     }
 
     fn validate_workflow_code_extension_requirement(
-        &self,
+        &mut self,
         workspace_id: &str,
         node_handle: &str,
+        target_agent: Option<&crate::agent::AgentInstance>,
         grant: &ExtensionGrant,
     ) -> Result<(), DaemonError> {
+        if grant.source == crate::extension::ExtensionSource::Worker {
+            return self.validate_workflow_code_worker_extension_requirement(
+                node_handle,
+                target_agent,
+                grant,
+            );
+        }
         let result = match &grant.kind {
             ExtensionKind::Mcp => crate::runtime::capability_registry::ensure_mcp_exists(
                 Some(workspace_id),
@@ -212,6 +220,82 @@ impl<'a> KernelSessionService<'a> {
         })
     }
 
+    fn validate_workflow_code_worker_extension_requirement(
+        &mut self,
+        node_handle: &str,
+        target_agent: Option<&crate::agent::AgentInstance>,
+        grant: &ExtensionGrant,
+    ) -> Result<(), DaemonError> {
+        let agent = target_agent.ok_or_else(|| DaemonError::LocalTransport {
+            operation: "workflow_code.apply",
+            message: format!(
+                "node `{node_handle}` requests worker extension `{}:{}`, but newly created workflow agents have no worker placement",
+                grant.kind.as_str(),
+                grant.name
+            ),
+        })?;
+        let remote = agent.remote_execution().ok_or_else(|| DaemonError::LocalTransport {
+            operation: "workflow_code.apply",
+            message: format!(
+                "node `{node_handle}` requests worker extension `{}:{}`, but agent `{}` is not assigned to a worker",
+                grant.kind.as_str(),
+                grant.name,
+                agent.agent_ref()
+            ),
+        })?;
+        let relay_config = self.app.relay_config_for_remote_execution(remote);
+        let response = self.app.block_on_relay_future(
+            crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                &relay_config,
+                arroba_relay::protocol::ClientTarget {
+                    daemon_id: Some(remote.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                crate::transport::relay_peer::RelayPeerRequest::ListLeasedAgentExtensionCatalog {
+                    leased_agent_id: remote.leased_agent_id.clone(),
+                },
+            ),
+        )?;
+        let crate::transport::relay_peer::RelayPeerResponse::LeasedAgentExtensionCatalogListed {
+            leased_agent_id,
+            worker_kernel_id,
+            entries,
+        } = response
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message: "worker returned an unexpected extension catalog response".to_string(),
+            });
+        };
+        if leased_agent_id != remote.leased_agent_id
+            || worker_kernel_id != remote.worker_kernel_id
+            || entries.iter().any(|entry| {
+                entry.source != crate::extension::ExtensionSource::Worker
+                    || entry.resolved_kernel_id != remote.worker_kernel_id
+            })
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message:
+                    "worker extension catalog response provenance did not match the active lease"
+                        .to_string(),
+            });
+        }
+        let entry = entries
+            .iter()
+            .find(|entry| entry.kind == grant.kind && entry.name == grant.name)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "workflow_code.apply",
+                message: format!(
+                    "node `{node_handle}` worker extension requirement `{}:{}` is unavailable on `{}`",
+                    grant.kind.as_str(),
+                    grant.name,
+                    remote.worker_kernel_id
+                ),
+            })?;
+        validate_workflow_code_worker_catalog_grant(node_handle, grant, entry)
+    }
+
     fn spawn_workflow_code_generated_agent(
         &mut self,
         request: CreateAgentRequest,
@@ -252,6 +336,37 @@ impl<'a> KernelSessionService<'a> {
         agent_id: &str,
         grants: &[ExtensionGrant],
     ) -> Result<(), DaemonError> {
+        let existing = self.app.agents.get_agent(agent_id)?;
+        let mut requested = BTreeMap::new();
+        for grant in grants {
+            let identity = (grant.kind.clone(), grant.name.clone());
+            if let Some(previous_source) = requested.insert(identity, grant.source) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow_code.apply",
+                    message: format!(
+                        "extension `{}:{}` appears more than once in the workflow node extension list (sources: {:?}, {:?})",
+                        grant.kind.as_str(),
+                        grant.name,
+                        previous_source,
+                        grant.source,
+                    ),
+                });
+            }
+            if existing.extension_grants().iter().any(|current| {
+                current.source != grant.source
+                    && current.kind == grant.kind
+                    && current.name == grant.name
+            }) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow_code.apply",
+                    message: format!(
+                        "extension `{}:{}` is already granted from another source and would collide",
+                        grant.kind.as_str(),
+                        grant.name
+                    ),
+                });
+            }
+        }
         for grant in grants {
             let agent = self.app.agents.grant_extension(agent_id, grant.clone())?;
             self.app.durable_state_store().append_event(
@@ -263,6 +378,13 @@ impl<'a> KernelSessionService<'a> {
                     "source": "workflow_code",
                 }),
             )?;
+        }
+        let agent = self.app.agents.get_agent(agent_id)?;
+        if !agent
+            .extension_grants_from(crate::extension::ExtensionSource::Worker)
+            .is_empty()
+        {
+            self.app.reconcile_remote_worker_extension_grants(&agent)?;
         }
         Ok(())
     }
@@ -463,7 +585,7 @@ impl<'a> KernelSessionService<'a> {
     }
 
     fn append_workflow_code_target_validation(
-        &self,
+        &mut self,
         session_id: &str,
         definition: &WorkflowCodeDefinition,
         validation: &mut WorkflowCodeValidationReport,
@@ -617,9 +739,16 @@ impl<'a> KernelSessionService<'a> {
                 }
             }
             for grant in &node.extensions {
+                let target_agent = match &node.agent {
+                    WorkflowCodeAgentBinding::Existing(existing) => {
+                        self.app.agents.get_agent(&existing.agent_ref).ok()
+                    }
+                    WorkflowCodeAgentBinding::Create(_) => None,
+                };
                 if let Err(error) = self.validate_workflow_code_extension_requirement(
                     session.workspace_id(),
                     &node.handle,
+                    target_agent.as_ref(),
                     grant,
                 ) {
                     push_workflow_code_target_validation_error(
@@ -959,5 +1088,261 @@ impl<'a> KernelSessionService<'a> {
         }
 
         self.app.pty.resize(provider_run_id, cols, rows)
+    }
+}
+
+fn validate_workflow_code_worker_catalog_grant(
+    node_handle: &str,
+    grant: &ExtensionGrant,
+    entry: &crate::extension::ExtensionCatalogEntry,
+) -> Result<(), DaemonError> {
+    if let Some(environment) = grant.environment.as_deref() {
+        if !entry
+            .environments
+            .iter()
+            .any(|candidate| candidate == environment)
+        {
+            return Err(workflow_worker_catalog_grant_error(
+                node_handle,
+                grant,
+                format!("environment `{environment}` is unavailable on the worker"),
+            ));
+        }
+    }
+    if let Some(credential) = grant.credential.as_deref() {
+        if !entry
+            .credentials
+            .iter()
+            .any(|candidate| candidate == credential)
+        {
+            return Err(workflow_worker_catalog_grant_error(
+                node_handle,
+                grant,
+                format!("credential `{credential}` is unavailable on the worker"),
+            ));
+        }
+    }
+
+    match grant.kind {
+        ExtensionKind::Script => {
+            if grant.environment.is_none() {
+                return Err(workflow_worker_catalog_grant_error(
+                    node_handle,
+                    grant,
+                    "script grants require an explicit worker environment",
+                ));
+            }
+            if grant.max_safety.is_some() {
+                return Err(workflow_worker_catalog_grant_error(
+                    node_handle,
+                    grant,
+                    "max_safety is only supported for connector grants",
+                ));
+            }
+        }
+        ExtensionKind::Connector => {
+            if entry.credential_required && grant.credential.is_none() {
+                return Err(workflow_worker_catalog_grant_error(
+                    node_handle,
+                    grant,
+                    "connector requires an explicit worker credential",
+                ));
+            }
+            let max_safety = crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())
+                .map_err(|error| {
+                    workflow_worker_catalog_grant_error(
+                        node_handle,
+                        grant,
+                        format!("invalid max_safety: {error}"),
+                    )
+                })?;
+            if !entry
+                .max_safety
+                .iter()
+                .any(|candidate| candidate == max_safety.as_str())
+            {
+                return Err(workflow_worker_catalog_grant_error(
+                    node_handle,
+                    grant,
+                    format!(
+                        "max_safety `{}` is unsupported on the worker",
+                        max_safety.as_str()
+                    ),
+                ));
+            }
+        }
+        ExtensionKind::Mcp | ExtensionKind::Skill => {
+            if grant.max_safety.is_some() {
+                return Err(workflow_worker_catalog_grant_error(
+                    node_handle,
+                    grant,
+                    "max_safety is only supported for connector grants",
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn workflow_worker_catalog_grant_error(
+    node_handle: &str,
+    grant: &ExtensionGrant,
+    message: impl std::fmt::Display,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "workflow_code.apply",
+        message: format!(
+            "node `{node_handle}` worker extension requirement `{}:{}` cannot be satisfied: {message}",
+            grant.kind.as_str(),
+            grant.name
+        ),
+    }
+}
+
+#[cfg(test)]
+mod extension_grant_tests {
+    use super::*;
+
+    fn worker_catalog_entry(kind: ExtensionKind) -> crate::extension::ExtensionCatalogEntry {
+        crate::extension::ExtensionCatalogEntry {
+            source: crate::extension::ExtensionSource::Worker,
+            resolved_kernel_id: "worker-kernel".to_string(),
+            kind,
+            name: "worker-extension".to_string(),
+            description: None,
+            definition_hash: None,
+            environments: vec!["python".to_string()],
+            credentials: vec!["worker-token".to_string()],
+            credential_required: false,
+            max_safety: vec!["read".to_string(), "write".to_string()],
+        }
+    }
+
+    #[test]
+    fn worker_script_workflow_preflight_requires_supported_environment() {
+        let entry = worker_catalog_entry(ExtensionKind::Script);
+        let missing_environment = ExtensionGrant::new(ExtensionKind::Script, "worker-extension")
+            .from_source(crate::extension::ExtensionSource::Worker);
+
+        let error =
+            validate_workflow_code_worker_catalog_grant("planner", &missing_environment, &entry)
+                .expect_err("worker scripts must name an environment");
+        assert!(error.to_string().contains("explicit worker environment"));
+
+        let unsupported_environment = ExtensionGrant::script("worker-extension", "ruby")
+            .from_source(crate::extension::ExtensionSource::Worker);
+        let error = validate_workflow_code_worker_catalog_grant(
+            "planner",
+            &unsupported_environment,
+            &entry,
+        )
+        .expect_err("worker scripts must use a catalog environment");
+        assert!(error
+            .to_string()
+            .contains("environment `ruby` is unavailable"));
+
+        let supported_environment = ExtensionGrant::script("worker-extension", "python")
+            .from_source(crate::extension::ExtensionSource::Worker);
+        validate_workflow_code_worker_catalog_grant("planner", &supported_environment, &entry)
+            .expect("catalog environment should pass worker preflight");
+    }
+
+    #[test]
+    fn worker_connector_workflow_preflight_requires_local_credential_and_supported_safety() {
+        let mut entry = worker_catalog_entry(ExtensionKind::Connector);
+        entry.credential_required = true;
+        let missing_credential = ExtensionGrant::connector("worker-extension", None, "read")
+            .from_source(crate::extension::ExtensionSource::Worker);
+        let error =
+            validate_workflow_code_worker_catalog_grant("planner", &missing_credential, &entry)
+                .expect_err("required worker credential must be explicit");
+        assert!(error
+            .to_string()
+            .contains("requires an explicit worker credential"));
+
+        let unsupported_credential =
+            ExtensionGrant::connector("worker-extension", Some("home-token".to_string()), "read")
+                .from_source(crate::extension::ExtensionSource::Worker);
+        let error =
+            validate_workflow_code_worker_catalog_grant("planner", &unsupported_credential, &entry)
+                .expect_err("credential must exist in the worker catalog");
+        assert!(error
+            .to_string()
+            .contains("credential `home-token` is unavailable"));
+
+        let invalid_safety =
+            ExtensionGrant::connector("worker-extension", Some("worker-token".to_string()), "root")
+                .from_source(crate::extension::ExtensionSource::Worker);
+        let error = validate_workflow_code_worker_catalog_grant("planner", &invalid_safety, &entry)
+            .expect_err("invalid connector safety must fail preflight");
+        assert!(error.to_string().contains("invalid max_safety"));
+
+        let unsupported_safety = ExtensionGrant::connector(
+            "worker-extension",
+            Some("worker-token".to_string()),
+            "destructive",
+        )
+        .from_source(crate::extension::ExtensionSource::Worker);
+        let error =
+            validate_workflow_code_worker_catalog_grant("planner", &unsupported_safety, &entry)
+                .expect_err("catalog must advertise the requested connector safety");
+        assert!(error
+            .to_string()
+            .contains("max_safety `destructive` is unsupported"));
+
+        let supported = ExtensionGrant::connector(
+            "worker-extension",
+            Some("worker-token".to_string()),
+            "write",
+        )
+        .from_source(crate::extension::ExtensionSource::Worker);
+        validate_workflow_code_worker_catalog_grant("planner", &supported, &entry)
+            .expect("catalog credential and safety should pass worker preflight");
+    }
+
+    #[test]
+    fn workflow_node_extension_collision_preflight_is_atomic() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        app.agents_mut()
+            .grant_extension(
+                agent.id(),
+                ExtensionGrant::script("colliding-script", "home-python"),
+            )
+            .expect("home grant should seed collision");
+        let grants = vec![
+            ExtensionGrant::new(ExtensionKind::Skill, "safe-worker-skill")
+                .from_source(crate::extension::ExtensionSource::Worker),
+            ExtensionGrant::script("colliding-script", "worker-python")
+                .from_source(crate::extension::ExtensionSource::Worker),
+        ];
+
+        let error = KernelSessionService::new(&mut app)
+            .grant_workflow_code_node_extensions(agent.id(), &grants)
+            .expect_err("cross-source collision should reject the full batch");
+
+        assert!(error.to_string().contains("another source"));
+        let unchanged = app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should remain present");
+        assert!(!unchanged.has_extension_grant_from(
+            crate::extension::ExtensionSource::Worker,
+            ExtensionKind::Skill,
+            "safe-worker-skill",
+        ));
+        assert!(unchanged.has_extension_grant_from(
+            crate::extension::ExtensionSource::Home,
+            ExtensionKind::Script,
+            "colliding-script",
+        ));
+        assert_eq!(unchanged.session_id(), session.id());
     }
 }

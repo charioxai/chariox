@@ -1,4 +1,5 @@
 import type {
+  AgentExtensionCatalog,
   AgentInstance,
   ArrobaConnectorAdapterDefinition,
   ArrobaConnectorDefinition,
@@ -7,6 +8,8 @@ import type {
   ArrobaMcpServerConfig,
   ArrobaScriptMetadata,
   ArrobaSkillMetadata,
+  ExtensionCatalogSource,
+  ExtensionSource,
   McpImportOutcome,
   SkillImportOutcome,
 } from "./cli-types.js"
@@ -25,6 +28,7 @@ import {
   installMcpServerRequest,
   listHomeExtensionAuditRequest,
   installSkillRequest,
+  listAgentExtensionCatalogRequest,
   listEnvironmentsRequest,
   listConnectorsRequest,
   listConnectorAdaptersRequest,
@@ -116,9 +120,10 @@ export async function grantAgentMcp(
   workspaceTarget: string,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    grantAgentExtensionRequest(workspaceTarget, agentRef, "mcp", name),
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "mcp", name, null, { source }),
   )
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
 }
@@ -127,8 +132,9 @@ export async function revokeAgentMcp(
   client: LocalIpcClient,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "mcp", name))
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "mcp", name, source))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 
@@ -191,9 +197,10 @@ export async function grantAgentSkill(
   workspaceTarget: string,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    grantAgentExtensionRequest(workspaceTarget, agentRef, "skill", name),
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "skill", name, null, { source }),
   )
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
 }
@@ -202,8 +209,9 @@ export async function revokeAgentSkill(
   client: LocalIpcClient,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "skill", name))
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "skill", name, source))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 
@@ -302,9 +310,10 @@ export async function grantAgentScript(
   agentRef: string,
   name: string,
   environment: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
   const response = await client.send<Record<string, unknown>>(
-    grantAgentExtensionRequest(workspaceTarget, agentRef, "script", name, environment),
+    grantAgentExtensionRequest(workspaceTarget, agentRef, "script", name, environment, { source }),
   )
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
 }
@@ -313,8 +322,9 @@ export async function revokeAgentScript(
   client: LocalIpcClient,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "script", name))
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "script", name, source))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 
@@ -397,8 +407,9 @@ export async function grantAgentConnector(
   name: string,
   credential?: string | null,
   maxSafety?: string | null,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
-  const options: { credential?: string | null; maxSafety?: string | null } = {}
+  const options: { credential?: string | null; maxSafety?: string | null; source: ExtensionSource } = { source }
   if (credential !== undefined) options.credential = credential
   if (maxSafety !== undefined) options.maxSafety = maxSafety
   const response = await client.send<Record<string, unknown>>(
@@ -411,9 +422,19 @@ export async function revokeAgentConnector(
   client: LocalIpcClient,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<AgentInstance> {
-  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "connector", name))
+  const response = await client.send<Record<string, unknown>>(revokeAgentExtensionRequest(agentRef, "connector", name, source))
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
+}
+
+export async function listAgentExtensionCatalog(
+  client: LocalIpcClient,
+  agentRef: string,
+  source: ExtensionCatalogSource = "all",
+): Promise<AgentExtensionCatalog> {
+  const response = await client.send<Record<string, unknown>>(listAgentExtensionCatalogRequest(agentRef, source))
+  return expectVariant<{ catalog: AgentExtensionCatalog }>(response, "AgentExtensionCatalogListed").catalog
 }
 
 export async function syncRemoteExtensionManifest(

@@ -93,6 +93,10 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
+        let reconciled = self
+            .reconcile_worker_extension_grants_for_agent(agent)
+            .await?;
+        let agent = &reconciled;
         if self.remote_agent_has_native_provider_run(agent) {
             if self.remote_agent_is_home_managed_slice(agent) {
                 self.ensure_remote_skill_packages_for_agent(agent).await?;

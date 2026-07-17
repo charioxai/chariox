@@ -39,6 +39,18 @@ impl KernelRuntimeState {
     pub(crate) async fn pump_transport_runtime(&self) {
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
+        if let Err(error) = self
+            .with_app_side_effect(move |app| app.retry_due_remote_binding_cleanup(now_ms))
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "remote_agent_binding.cleanup",
+                "background remote binding cleanup retry failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+        }
         if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
             crate::logging::warn_with_fields(
                 "daemon.provider_process_gc",

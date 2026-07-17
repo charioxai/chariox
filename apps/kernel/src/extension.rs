@@ -13,6 +13,66 @@ pub enum ExtensionKind {
     Connector,
 }
 
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionSource {
+    #[default]
+    Home,
+    Worker,
+}
+
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionCatalogSource {
+    Home,
+    Worker,
+    #[default]
+    All,
+}
+
+impl ExtensionCatalogSource {
+    pub fn includes(self, source: ExtensionSource) -> bool {
+        matches!(self, Self::All)
+            || matches!(
+                (self, source),
+                (Self::Home, ExtensionSource::Home) | (Self::Worker, ExtensionSource::Worker)
+            )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionCatalogEntry {
+    pub source: ExtensionSource,
+    pub resolved_kernel_id: String,
+    pub kind: ExtensionKind,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_hash: Option<String>,
+    #[serde(default)]
+    pub environments: Vec<String>,
+    #[serde(default)]
+    pub credentials: Vec<String>,
+    #[serde(default)]
+    pub credential_required: bool,
+    #[serde(default)]
+    pub max_safety: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentExtensionCatalog {
+    pub agent_id: String,
+    pub home_kernel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_kernel_id: Option<String>,
+    pub worker_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_error: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<ExtensionCatalogEntry>,
+}
+
 impl ExtensionKind {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -241,7 +301,7 @@ impl RemoteExtensionManifestSyncStatus {
 
     pub fn syncing(mut self) -> Self {
         self.state = RemoteExtensionManifestSyncState::Syncing;
-        self.last_attempted_at_ms = Some(crate::session::unix_epoch_ms());
+        self.last_attempted_at_ms = Some(next_remote_extension_sync_attempt_ms());
         self.last_error = None;
         self
     }
@@ -266,8 +326,25 @@ impl RemoteExtensionManifestSyncStatus {
     }
 }
 
+fn next_remote_extension_sync_attempt_ms() -> u64 {
+    static LAST_ATTEMPT_MS: AtomicU64 = AtomicU64::new(0);
+    let now = crate::session::unix_epoch_ms();
+    loop {
+        let previous = LAST_ATTEMPT_MS.load(Ordering::Relaxed);
+        let next = now.max(previous.saturating_add(1));
+        if LAST_ATTEMPT_MS
+            .compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            return next;
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ExtensionGrant {
+    #[serde(default)]
+    pub source: ExtensionSource,
     pub kind: ExtensionKind,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,11 +469,38 @@ mod tests {
         assert!(first.invocation_id.starts_with("run-1:tool:"));
         assert!(second.invocation_id.starts_with("run-1:tool:"));
     }
+
+    #[test]
+    fn legacy_extension_grant_defaults_to_home_source() {
+        let grant: ExtensionGrant = serde_json::from_value(serde_json::json!({
+            "kind": "skill",
+            "name": "review"
+        }))
+        .expect("legacy grant should deserialize");
+
+        assert_eq!(grant.source, ExtensionSource::Home);
+        assert_eq!(
+            serde_json::to_value(grant)
+                .expect("grant should serialize")
+                .pointer("/source"),
+            Some(&serde_json::json!("home"))
+        );
+    }
+
+    #[test]
+    fn grant_match_identity_includes_source() {
+        let worker = ExtensionGrant::new(ExtensionKind::Skill, "review")
+            .from_source(ExtensionSource::Worker);
+
+        assert!(worker.matches(ExtensionSource::Worker, &ExtensionKind::Skill, "review"));
+        assert!(!worker.matches(ExtensionSource::Home, &ExtensionKind::Skill, "review"));
+    }
 }
 
 impl ExtensionGrant {
     pub fn new(kind: ExtensionKind, name: impl Into<String>) -> Self {
         Self {
+            source: ExtensionSource::Home,
             kind,
             name: name.into(),
             environment: None,
@@ -407,6 +511,7 @@ impl ExtensionGrant {
 
     pub fn script(name: impl Into<String>, environment: impl Into<String>) -> Self {
         Self {
+            source: ExtensionSource::Home,
             kind: ExtensionKind::Script,
             name: name.into(),
             environment: Some(environment.into()),
@@ -421,6 +526,7 @@ impl ExtensionGrant {
         max_safety: impl Into<String>,
     ) -> Self {
         Self {
+            source: ExtensionSource::Home,
             kind: ExtensionKind::Connector,
             name: name.into(),
             environment: None,
@@ -429,7 +535,26 @@ impl ExtensionGrant {
         }
     }
 
-    pub fn matches(&self, kind: &ExtensionKind, name: &str) -> bool {
-        &self.kind == kind && self.name == name
+    pub fn from_source(mut self, source: ExtensionSource) -> Self {
+        self.source = source;
+        self
     }
+
+    pub fn matches(&self, source: ExtensionSource, kind: &ExtensionKind, name: &str) -> bool {
+        self.source == source && &self.kind == kind && self.name == name
+    }
+}
+
+pub(crate) fn extension_grant_manifest_hash(
+    grants: &[ExtensionGrant],
+) -> Result<String, crate::error::DaemonError> {
+    let mut grants = grants.to_vec();
+    grants.sort();
+    let bytes =
+        serde_json::to_vec(&grants).map_err(|error| crate::error::DaemonError::LocalTransport {
+            operation: "worker extension grant sync",
+            message: format!("failed to serialize worker extension grants: {error}"),
+        })?;
+    let digest = Sha256::digest(bytes);
+    Ok(hex_digest(&digest))
 }

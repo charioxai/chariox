@@ -196,6 +196,7 @@ impl<'a> KernelAgentService<'a> {
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
         let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
+        let agent = self.app.reconcile_remote_worker_extension_grants(&agent)?;
         let (required_mcps, required_skills, remote_extension_manifest) =
             self.app.remote_prompt_capabilities_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
@@ -460,6 +461,7 @@ impl<'a> KernelAgentService<'a> {
                 }
             }
             let agent = self.app.agents().get_agent(agent_id)?;
+            let agent = self.app.reconcile_remote_worker_extension_grants(&agent)?;
             let (required_mcps, required_skills, remote_extension_manifest) =
                 self.app.remote_prompt_capabilities_for_agent(&agent)?;
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();

@@ -371,6 +371,8 @@ impl From<ExtensionKind> for crate::extension::ExtensionKind {
 pub struct GrantAgentExtensionRequest {
     pub workspace_id: Option<String>,
     pub agent_ref: String,
+    #[serde(default)]
+    pub source: crate::extension::ExtensionSource,
     pub kind: ExtensionKind,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -384,8 +386,17 @@ pub struct GrantAgentExtensionRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevokeAgentExtensionRequest {
     pub agent_ref: String,
+    #[serde(default)]
+    pub source: crate::extension::ExtensionSource,
     pub kind: ExtensionKind,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListAgentExtensionCatalogRequest {
+    pub agent_ref: String,
+    #[serde(default)]
+    pub source: crate::extension::ExtensionCatalogSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

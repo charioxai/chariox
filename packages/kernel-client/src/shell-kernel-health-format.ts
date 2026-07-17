@@ -6,7 +6,10 @@ import {
   commandLaneHealthSummary,
   commandLaneInspectionTargets,
 } from "./shell-kernel-command-lanes.js"
-import { remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import {
+  remoteExtensionSyncNextAction,
+  workerExtensionSyncNextAction,
+} from "./shell-capability-format.js"
 
 export function kernelHealthIssueCount(health: DaemonHealthProjection): number {
   return duplicateProviderRunBindingCount(health)
@@ -65,6 +68,9 @@ function remoteRuntimeSettlingAttentionCount(health: DaemonHealthProjection): nu
     + health.remote_extension_sync.stale_agents
     + health.remote_extension_sync.pending_agents
     + health.remote_extension_sync.syncing_agents
+    + (health.remote_extension_sync.worker_stale_agents ?? 0)
+    + (health.remote_extension_sync.worker_pending_agents ?? 0)
+    + (health.remote_extension_sync.worker_syncing_agents ?? 0)
     + health.workspace_live_sync.external_changes.live_watcher_scan_errors
 }
 
@@ -74,7 +80,14 @@ function remoteRuntimeDegradedNextAction(health: DaemonHealthProjection): string
     return "wait for slice operations to settle; if they remain in progress, run /slice list, then /slice doctor for the affected slice"
   }
   const remoteExtensionSync = health.remote_extension_sync
-  if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0 || remoteExtensionSync.stale_agents > 0) {
+  if (
+    remoteExtensionSync.pending_agents > 0
+    || remoteExtensionSync.syncing_agents > 0
+    || remoteExtensionSync.stale_agents > 0
+    || (remoteExtensionSync.worker_pending_agents ?? 0) > 0
+    || (remoteExtensionSync.worker_syncing_agents ?? 0) > 0
+    || (remoteExtensionSync.worker_stale_agents ?? 0) > 0
+  ) {
     return "run /extension sync-status for affected agents; use /extension sync-retry after worker connectivity is healthy"
   }
   if (health.workspace_live_sync.external_changes.live_watcher_scan_errors > 0) {
@@ -197,9 +210,13 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
+    formatWorkerExtensionHealthSummary(remoteExtensionSync),
     `session projection: checked_sessions=${health.projection_invariants.checked_sessions} checked_agents=${health.projection_invariants.checked_agents} mismatches=${health.projection_invariants.mismatches.length}`,
     ...(remoteExtensionSync.home_proxy_agents > 0
       ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
+      : []),
+    ...((remoteExtensionSync.worker_extension_agents ?? 0) > 0
+      ? ["worker extension runtime: worker owns definitions, credentials, validation, and execution; credentials stay on worker"]
       : []),
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
@@ -251,8 +268,12 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `remote extensions: remote_agents=${remoteExtensionSync.remote_agents} home_proxy_agents=${remoteExtensionSync.home_proxy_agents} grants=${remoteExtensionSync.home_proxy_grants} synced=${remoteExtensionSync.synced_agents} syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`,
+    formatWorkerExtensionHealthSummary(remoteExtensionSync),
     ...(remoteExtensionSync.home_proxy_agents > 0
       ? ["remote extension runtime: home owns grants, credentials, and execution; workers receive projected manifests only"]
+      : []),
+    ...((remoteExtensionSync.worker_extension_agents ?? 0) > 0
+      ? ["worker extension runtime: worker owns definitions, credentials, validation, and execution; credentials stay on worker"]
       : []),
     formatRemoteRuntimeInvariantSummary(health),
     `workspace coordination: claims=${workspaceCoordination.active_worktree_claims.length} collisions=${workspaceCoordination.worktree_collisions.length} active_ops=${workspaceCoordination.active_operation_claims.length}`,
@@ -407,7 +428,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
 }
 
 function formatRemoteRuntimeAuthorityBoundary(): string {
-  return "remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools"
+  return "remote runtime authority: home kernel owns sessions, prompts, and live sync; Home extensions execute on home and Worker extensions execute on worker; credentials stay at their source"
 }
 
 function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjection): void {
@@ -507,32 +528,19 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     lines.push(`  next: ${remoteWorkerProviderRunRecoveryAction(firstAgent, firstIssue?.worker_machine_id)}`)
   }
 
-  if (remoteExtensionSyncIssueCount(health) > 0) {
-    lines.push(`remote extension sync issues: failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`)
-    const affectedAgents = new Set<string>()
-    for (const issue of remoteExtensionSync.issues) {
-      const workerRun = issue.active_worker_provider_run_id ? ` worker_run=${issue.active_worker_provider_run_id}` : ""
-      const pendingRevoke = issue.pending_revoke ? " pending_revoke=yes" : ""
-      const hash = issue.manifest_hash ? ` hash=${issue.manifest_hash}` : ""
-      const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
-      const grants = issue.home_proxy_grants.length > 0 ? ` grants=${issue.home_proxy_grants.join(",")}` : ""
-      const error = issue.last_error ? `: ${issue.last_error}` : ""
-      affectedAgents.add(issue.agent_ref || issue.agent_id)
-      lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state}${pendingRevoke}${hash}${worktree}${grants}${error}`)
-    }
-    const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
-    const firstIssue = remoteExtensionSync.issues[0]
-    const nextAction = firstAgent
-      ? remoteExtensionSyncNextAction(firstIssue
-        ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
-        : remoteExtensionSyncAggregateStatus(remoteExtensionSync), firstAgent, firstIssue?.worker_machine_id) ?? `run /extension sync-status ${firstAgent}`
-      : remoteExtensionAggregateNextAction(remoteExtensionSync)
-    lines.push(`  next: ${nextAction}`)
-  }
+  appendExtensionSyncLaneIssues(lines, remoteExtensionSync, "home")
+  appendExtensionSyncLaneIssues(lines, remoteExtensionSync, "worker")
 
   if (remoteExtensionSync.pending_agents > 0 || remoteExtensionSync.syncing_agents > 0) {
     lines.push(`remote extension sync settling: syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents}`)
     lines.push("  next: home keeps stale home-proxy calls blocked until worker manifests settle; run /kernel remote-runtime and then /extension sync-status for the affected agent before retrying sync")
+  }
+  if (
+    (remoteExtensionSync.worker_pending_agents ?? 0) > 0
+    || (remoteExtensionSync.worker_syncing_agents ?? 0) > 0
+  ) {
+    lines.push(`worker extension sync settling: syncing=${remoteExtensionSync.worker_syncing_agents ?? 0} pending=${remoteExtensionSync.worker_pending_agents ?? 0}`)
+    lines.push("  next: Worker-local grants remain blocked until the worker manifest settles; run /kernel remote-runtime and then /extension sync-status for the affected agent before retrying sync")
   }
 
   if (workspaceCoordination.worktree_collisions.length > 0) {
@@ -590,6 +598,95 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
   }
 }
 
+type ExtensionSyncHealthSource = "home" | "worker"
+
+function formatWorkerExtensionHealthSummary(
+  sync: DaemonHealthProjection["remote_extension_sync"],
+): string {
+  return `worker extensions: agents=${sync.worker_extension_agents ?? 0} grants=${sync.worker_extension_grants ?? 0} synced=${sync.worker_synced_agents ?? 0} syncing=${sync.worker_syncing_agents ?? 0} pending=${sync.worker_pending_agents ?? 0} failed=${sync.worker_failed_agents ?? 0} stale=${sync.worker_stale_agents ?? 0} missing=${sync.worker_manifest_missing_agents ?? 0} pending_revoke=${sync.worker_pending_revoke_agents ?? 0}`
+}
+
+function appendExtensionSyncLaneIssues(
+  lines: string[],
+  sync: DaemonHealthProjection["remote_extension_sync"],
+  source: ExtensionSyncHealthSource,
+): void {
+  const counts = extensionSyncLaneCounts(sync, source)
+  const issues = sync.issues.filter((issue) => (issue.source ?? "home") === source)
+  const issueCount = issues.length > 0
+    ? issues.length
+    : counts.failed + counts.stale + counts.missing + counts.pendingRevoke
+  if (issueCount === 0) {
+    return
+  }
+  const label = source === "home"
+    ? "remote extension sync issues"
+    : "worker extension sync issues"
+  lines.push(`${label}: failed=${counts.failed} stale=${counts.stale} missing=${counts.missing} pending_revoke=${counts.pendingRevoke}`)
+  const affectedAgents = new Set<string>()
+  for (const issue of issues) {
+    const workerRun = issue.active_worker_provider_run_id ? ` worker_run=${issue.active_worker_provider_run_id}` : ""
+    const pendingRevoke = issue.pending_revoke ? " pending_revoke=yes" : ""
+    const hash = issue.manifest_hash ? ` hash=${issue.manifest_hash}` : ""
+    const worktree = issue.worktree_id ? ` worktree=${issue.worktree_id}` : ""
+    const sourceLabel = source === "worker" ? " source=worker" : ""
+    const grantList = source === "worker" ? issue.worker_grants ?? [] : issue.home_proxy_grants
+    const grants = grantList.length > 0 ? ` grants=${grantList.join(",")}` : ""
+    const error = issue.last_error ? `: ${issue.last_error}` : ""
+    affectedAgents.add(issue.agent_ref || issue.agent_id)
+    lines.push(`  agent=${issue.agent_ref} (${issue.agent_id}) session=${issue.session_id} worker=${issue.worker_kernel_id}/${issue.worker_machine_id} lease=${issue.execution_lease_id} leased_agent=${issue.leased_agent_id}${workerRun} state=${issue.state}${pendingRevoke}${hash}${worktree}${sourceLabel}${grants}${error}`)
+  }
+  const firstAgent = [...affectedAgents].find((agent) => agent.length > 0)
+  const firstIssue = issues[0]
+  let nextAction: string
+  if (firstAgent) {
+    const status = firstIssue
+      ? { state: firstIssue.state, pending_revoke: firstIssue.pending_revoke }
+      : extensionSyncAggregateStatus(sync, source)
+    nextAction = source === "worker"
+      ? workerExtensionSyncNextAction(status, firstAgent, firstIssue?.worker_machine_id)
+        ?? `run /extension sync-status ${firstAgent}`
+      : remoteExtensionSyncNextAction(status, firstAgent, firstIssue?.worker_machine_id)
+        ?? `run /extension sync-status ${firstAgent}`
+  } else if (source === "home") {
+    nextAction = remoteExtensionAggregateNextAction(sync)
+  } else {
+    nextAction = "run /kernel remote-runtime to identify affected Worker extension agents, then use /extension sync-status and /extension sync-retry after worker connectivity is healthy"
+  }
+  lines.push(`  next: ${nextAction}`)
+}
+
+function extensionSyncLaneCounts(
+  sync: DaemonHealthProjection["remote_extension_sync"],
+  source: ExtensionSyncHealthSource,
+): {
+  readonly failed: number
+  readonly stale: number
+  readonly missing: number
+  readonly pendingRevoke: number
+  readonly pending: number
+  readonly syncing: number
+} {
+  if (source === "worker") {
+    return {
+      failed: sync.worker_failed_agents ?? 0,
+      stale: sync.worker_stale_agents ?? 0,
+      missing: sync.worker_manifest_missing_agents ?? 0,
+      pendingRevoke: sync.worker_pending_revoke_agents ?? 0,
+      pending: sync.worker_pending_agents ?? 0,
+      syncing: sync.worker_syncing_agents ?? 0,
+    }
+  }
+  return {
+    failed: sync.failed_agents,
+    stale: sync.stale_agents,
+    missing: sync.manifest_missing_agents,
+    pendingRevoke: sync.pending_revoke_agents,
+    pending: sync.pending_agents,
+    syncing: sync.syncing_agents,
+  }
+}
+
 function sliceStorageRecoveryAction(lastError?: string | null): string {
   const normalized = lastError?.toLowerCase() ?? ""
   if (
@@ -622,7 +719,7 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     && sliceLifecycle.provider_auth_unconfigured_slices === 0
     ? "ok"
     : `attention starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} in_progress=${sliceLifecycle.in_progress_operations} unhealthy=${sliceLifecycle.unhealthy_slices} failed_ops=${sliceLifecycle.failed_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`
-  const manifests = remoteExtensionSync.manifest_missing_agents === 0
+  const homeManifests = remoteExtensionSync.manifest_missing_agents === 0
     && remoteExtensionSync.failed_agents === 0
     && remoteExtensionSync.pending_revoke_agents === 0
     && remoteExtensionSync.stale_agents === 0
@@ -630,6 +727,21 @@ function formatRemoteRuntimeInvariantSummary(health: DaemonHealthProjection): st
     && remoteExtensionSync.syncing_agents === 0
     ? "settled"
     : `attention syncing=${remoteExtensionSync.syncing_agents} pending=${remoteExtensionSync.pending_agents} failed=${remoteExtensionSync.failed_agents} stale=${remoteExtensionSync.stale_agents} missing=${remoteExtensionSync.manifest_missing_agents} pending_revoke=${remoteExtensionSync.pending_revoke_agents}`
+  const workerCounts = extensionSyncLaneCounts(remoteExtensionSync, "worker")
+  const workerTracked = (remoteExtensionSync.worker_extension_agents ?? 0) > 0
+    || (remoteExtensionSync.worker_extension_grants ?? 0) > 0
+    || Object.values(workerCounts).some((count) => count > 0)
+  const workerManifests = workerCounts.missing === 0
+    && workerCounts.failed === 0
+    && workerCounts.pendingRevoke === 0
+    && workerCounts.stale === 0
+    && workerCounts.pending === 0
+    && workerCounts.syncing === 0
+    ? "settled"
+    : `attention syncing=${workerCounts.syncing} pending=${workerCounts.pending} failed=${workerCounts.failed} stale=${workerCounts.stale} missing=${workerCounts.missing} pending_revoke=${workerCounts.pendingRevoke}`
+  const manifests = workerTracked
+    ? `home(${homeManifests}) worker(${workerManifests})`
+    : homeManifests
   const liveSyncScope = liveSync.workspace_identity.identity_changed_provider_runs === 0
     && liveSync.workspace_identity.invalid_provider_runs === 0
     && liveSync.external_changes.externally_changed_artifacts === 0
@@ -856,32 +968,40 @@ function remoteExtensionSyncIssueCount(health: DaemonHealthProjection): number {
       + health.remote_extension_sync.stale_agents
       + health.remote_extension_sync.manifest_missing_agents
       + health.remote_extension_sync.pending_revoke_agents
+      + (health.remote_extension_sync.worker_failed_agents ?? 0)
+      + (health.remote_extension_sync.worker_stale_agents ?? 0)
+      + (health.remote_extension_sync.worker_manifest_missing_agents ?? 0)
+      + (health.remote_extension_sync.worker_pending_revoke_agents ?? 0)
     )
 }
 
-function remoteExtensionSyncAggregateStatus(remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"]): {
+function extensionSyncAggregateStatus(
+  remoteExtensionSync: DaemonHealthProjection["remote_extension_sync"],
+  source: ExtensionSyncHealthSource,
+): {
   readonly state: string
   readonly pending_revoke: boolean
 } | null {
-  if (remoteExtensionSync.pending_revoke_agents > 0) {
+  const counts = extensionSyncLaneCounts(remoteExtensionSync, source)
+  if (counts.pendingRevoke > 0) {
     return {
-      state: remoteExtensionSync.failed_agents > 0
+      state: counts.failed > 0
         ? "failed"
-        : remoteExtensionSync.stale_agents > 0
+        : counts.stale > 0
           ? "stale"
-          : remoteExtensionSync.manifest_missing_agents > 0
+          : counts.missing > 0
             ? "missing"
             : "pending",
       pending_revoke: true,
     }
   }
-  if (remoteExtensionSync.manifest_missing_agents > 0) {
+  if (counts.missing > 0) {
     return { state: "missing", pending_revoke: false }
   }
-  if (remoteExtensionSync.failed_agents > 0) {
+  if (counts.failed > 0) {
     return { state: "failed", pending_revoke: false }
   }
-  if (remoteExtensionSync.stale_agents > 0) {
+  if (counts.stale > 0) {
     return { state: "stale", pending_revoke: false }
   }
   return null
@@ -899,6 +1019,9 @@ function remoteExtensionSyncHardIssueCount(health: DaemonHealthProjection): numb
   return health.remote_extension_sync.failed_agents
     + health.remote_extension_sync.manifest_missing_agents
     + health.remote_extension_sync.pending_revoke_agents
+    + (health.remote_extension_sync.worker_failed_agents ?? 0)
+    + (health.remote_extension_sync.worker_manifest_missing_agents ?? 0)
+    + (health.remote_extension_sync.worker_pending_revoke_agents ?? 0)
 }
 
 function capabilityHealthIssueCount(health: DaemonHealthProjection): number {

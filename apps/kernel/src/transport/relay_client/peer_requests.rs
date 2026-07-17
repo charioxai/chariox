@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use arroba_relay::protocol::EncryptedRelayPayload;
 
+use crate::error::DaemonError;
 use crate::runtime::router::CommandRouter;
 use crate::transport::relay_crypto;
 use crate::transport::relay_peer::{
@@ -95,6 +96,11 @@ pub(super) async fn handle_daemon_peer_request(
             let destroyed = router.relay_destroy_execution_lease(&lease_id).await;
             match destroyed {
                 Ok(_) => RelayPeerResponse::ExecutionLeaseDestroyed { lease_id },
+                Err(DaemonError::ExecutionLeaseNotFound { .. }) => {
+                    // Destruction is idempotent at the Worker boundary. The Home may be retrying
+                    // after the authoritative response was lost.
+                    RelayPeerResponse::ExecutionLeaseDestroyed { lease_id }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -141,6 +147,9 @@ pub(super) async fn handle_daemon_peer_request(
             let destroyed = router.relay_destroy_leased_agent(&leased_agent_id).await;
             match destroyed {
                 Ok(_) => RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id },
+                Err(DaemonError::LeasedAgentNotFound { .. }) => {
+                    RelayPeerResponse::LeasedAgentDestroyed { leased_agent_id }
+                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,
@@ -220,6 +229,47 @@ pub(super) async fn handle_daemon_peer_request(
             match updated {
                 Ok(()) => {
                     RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { leased_agent_id }
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::ListLeasedAgentExtensionCatalog { leased_agent_id } => {
+            match router
+                .relay_list_leased_agent_extension_catalog(&leased_agent_id)
+                .await
+            {
+                Ok(entries) => RelayPeerResponse::LeasedAgentExtensionCatalogListed {
+                    leased_agent_id,
+                    worker_kernel_id: router.relay_daemon_id(),
+                    entries,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::UpdateLeasedAgentWorkerExtensionGrants {
+            leased_agent_id,
+            grants,
+        } => {
+            match router
+                .relay_update_leased_agent_worker_extension_grants(&leased_agent_id, grants)
+                .await
+            {
+                Ok((manifest_hash, grants)) => {
+                    RelayPeerResponse::LeasedAgentWorkerExtensionGrantsUpdated {
+                        leased_agent_id,
+                        manifest_hash,
+                        grants,
+                    }
                 }
                 Err(error) => {
                     return RelayRequestOutcome {

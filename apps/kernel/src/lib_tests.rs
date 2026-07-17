@@ -73,7 +73,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -152,7 +152,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -229,7 +229,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        11
+        12
     );
 
     let launch_request =
@@ -299,7 +299,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 fn relay_peer_provider_terminal_resize_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        11
+        12
     );
 
     let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
@@ -338,7 +338,7 @@ fn relay_peer_provider_terminal_resize_shape_is_versioned() {
 fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        11
+        12
     );
     let request = RelayPeerRequest::UpdateLeasedAgentProfile {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -362,7 +362,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        11
+        12
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
@@ -410,8 +410,92 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
 }
 
 #[test]
+fn relay_peer_worker_extension_catalog_and_grant_sync_shapes_are_versioned() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        12
+    );
+    let grant = crate::extension::ExtensionGrant::script("lookup", "python")
+        .from_source(crate::extension::ExtensionSource::Worker);
+    let list = RelayPeerRequest::ListLeasedAgentExtensionCatalog {
+        leased_agent_id: "leased-1".to_string(),
+    };
+    let update = RelayPeerRequest::UpdateLeasedAgentWorkerExtensionGrants {
+        leased_agent_id: "leased-1".to_string(),
+        grants: vec![grant.clone()],
+    };
+    let listed = RelayPeerResponse::LeasedAgentExtensionCatalogListed {
+        leased_agent_id: "leased-1".to_string(),
+        worker_kernel_id: "worker-1".to_string(),
+        entries: vec![crate::extension::ExtensionCatalogEntry {
+            source: crate::extension::ExtensionSource::Worker,
+            resolved_kernel_id: "worker-1".to_string(),
+            kind: crate::extension::ExtensionKind::Script,
+            name: "lookup".to_string(),
+            description: Some("Worker lookup".to_string()),
+            definition_hash: Some("hash-1".to_string()),
+            environments: vec!["python".to_string()],
+            credentials: Vec::new(),
+            credential_required: false,
+            max_safety: Vec::new(),
+        }],
+    };
+    let updated = RelayPeerResponse::LeasedAgentWorkerExtensionGrantsUpdated {
+        leased_agent_id: "leased-1".to_string(),
+        manifest_hash: "manifest-1".to_string(),
+        grants: vec![grant],
+    };
+
+    assert_eq!(
+        serde_json::to_value((list, update, listed, updated))
+            .expect("worker extension relay shapes should encode"),
+        serde_json::json!([
+            {"kind":"list_leased_agent_extension_catalog","leased_agent_id":"leased-1"},
+            {
+                "kind":"update_leased_agent_worker_extension_grants",
+                "leased_agent_id":"leased-1",
+                "grants":[{
+                    "source":"worker",
+                    "kind":"script",
+                    "name":"lookup",
+                    "environment":"python"
+                }]
+            },
+            {
+                "kind":"leased_agent_extension_catalog_listed",
+                "leased_agent_id":"leased-1",
+                "worker_kernel_id":"worker-1",
+                "entries":[{
+                    "source":"worker",
+                    "resolved_kernel_id":"worker-1",
+                    "kind":"script",
+                    "name":"lookup",
+                    "description":"Worker lookup",
+                    "definition_hash":"hash-1",
+                    "environments":["python"],
+                    "credentials":[],
+                    "credential_required":false,
+                    "max_safety":[]
+                }]
+            },
+            {
+                "kind":"leased_agent_worker_extension_grants_updated",
+                "leased_agent_id":"leased-1",
+                "manifest_hash":"manifest-1",
+                "grants":[{
+                    "source":"worker",
+                    "kind":"script",
+                    "name":"lookup",
+                    "environment":"python"
+                }]
+            }
+        ])
+    );
+}
+
+#[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 239);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 240);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),

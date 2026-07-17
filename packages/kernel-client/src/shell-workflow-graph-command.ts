@@ -4,6 +4,7 @@ import { isAbsolute, resolve as resolvePath } from "node:path"
 
 import type {
   RuntimeSession,
+  ExtensionSource,
   WorkflowDefinition,
   WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
@@ -206,7 +207,7 @@ export async function executeWorkflowNodeCommand(
     return {
       ok: true,
       message: grants.length
-        ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
+        ? grants.map((grant) => `${grant.source ?? "home"}:${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
         : `node ${resolved.node.id} agent ${resolved.agentRef} has no extensions`,
       data: { workflow: resolved.workflow, node: resolved.node, agent },
       contextUpdates: { workflowId: resolved.workflow.id, sessionId },
@@ -214,14 +215,18 @@ export async function executeWorkflowNodeCommand(
   }
   if (action === "extension") {
     const extensionAction = args[1]
-    const hasExplicitWorkflow = args.length >= 6
-    const workflowRef = (hasExplicitWorkflow ? args[2] : context.workflowId) ?? null
-    const nodeId = hasExplicitWorkflow ? args[3] : args[2]
-    const kind = hasExplicitWorkflow ? args[4] : args[3]
-    const name = hasExplicitWorkflow ? args[5] : args[4]
+    const optionIndex = args.findIndex((arg) => arg.startsWith("--"))
+    const positional = args.slice(0, optionIndex === -1 ? args.length : optionIndex)
+    const hasExplicitWorkflow = positional.length >= 6
+    const workflowRef = (hasExplicitWorkflow ? positional[2] : context.workflowId) ?? null
+    const nodeId = hasExplicitWorkflow ? positional[3] : positional[2]
+    const kind = hasExplicitWorkflow ? positional[4] : positional[3]
+    const name = hasExplicitWorkflow ? positional[5] : positional[4]
+    const source = readExtensionSource(args)
     if ((extensionAction !== "grant" && extensionAction !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
+      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
     }
+    if (!source) return { ok: false, message: "workflow extension source must be home or worker" }
     const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
     if (!resolved.ok) return resolved
     const response = extensionAction === "grant"
@@ -231,13 +236,13 @@ export async function executeWorkflowNodeCommand(
         kind,
         name,
         readOption(args, "--environment"),
-        { credential: readOption(args, "--credential"), maxSafety: readOption(args, "--allow") },
+        { credential: readOption(args, "--credential"), maxSafety: readOption(args, "--allow"), source },
       ))
-      : await deps.client.send(revokeAgentExtensionRequest(resolved.agentRef, kind, name))
+      : await deps.client.send(revokeAgentExtensionRequest(resolved.agentRef, kind, name, source))
     const payload = expectVariant<{ agent: unknown }>(response, extensionAction === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked")
     return {
       ok: true,
-      message: `${extensionAction === "grant" ? "granted" : "revoked"} ${kind} ${name} ${extensionAction === "grant" ? "to" : "from"} workflow node ${resolved.node.id}`,
+      message: `${extensionAction === "grant" ? "granted" : "revoked"} ${source}:${kind}:${name} ${extensionAction === "grant" ? "to" : "from"} workflow node ${resolved.node.id}`,
       data: payload,
       contextUpdates: { workflowId: resolved.workflow.id, sessionId },
     }
@@ -381,6 +386,12 @@ async function resolveWorkflowNodeAgent(
 function readOption(args: readonly string[], name: string): string | null {
   const index = args.indexOf(name)
   return index >= 0 ? args[index + 1] ?? null : null
+}
+
+function readExtensionSource(args: readonly string[]): ExtensionSource | null {
+  if (!args.includes("--from")) return "home"
+  const source = readOption(args, "--from")
+  return source === "home" || source === "worker" ? source : null
 }
 
 function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" {

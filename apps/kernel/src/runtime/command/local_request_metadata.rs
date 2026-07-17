@@ -246,6 +246,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("agent.extension.audit", Interactive)
                 .agent(&request.agent_ref)
         }
+        LocalDaemonRequest::ListAgentExtensionCatalog(request) => {
+            LocalRequestMetadata::new("agent.extension.catalog", Interactive)
+                .agent(&request.agent_ref)
+        }
         LocalDaemonRequest::EndSession(request) => {
             LocalRequestMetadata::new("session.end", Interactive).session(&request.session_id)
         }
@@ -571,6 +575,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
+        LocalDaemonRequest::ListAgentExtensionCatalog(_) => "agent.extension.catalog",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::CreateWorkflow(_) => "workflow.create",
         LocalDaemonRequest::ValidateWorkflowCode(_) => "workflow_code.validate",

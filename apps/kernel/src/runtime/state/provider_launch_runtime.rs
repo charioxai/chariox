@@ -134,6 +134,9 @@ impl KernelRuntimeState {
         let Some(remote_execution) = agent.remote_execution().cloned() else {
             return Ok(None);
         };
+        let agent = self
+            .reconcile_worker_extension_grants_for_agent(&agent)
+            .await?;
         let required_mcps = self.required_remote_mcps_for_native_provider_launch(&agent)?;
         let required_skills = self.required_remote_skills_for_native_provider_launch(&agent)?;
         let remote_extension_manifest = self

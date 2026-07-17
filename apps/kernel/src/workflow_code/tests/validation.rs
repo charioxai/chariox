@@ -511,6 +511,7 @@ fn validates_node_extension_grant_shape() {
         .extensions
         .push(ExtensionGrant::new(ExtensionKind::Script, "release-script"));
     definition.nodes[0].extensions.push(ExtensionGrant {
+        source: crate::extension::ExtensionSource::Home,
         kind: ExtensionKind::Connector,
         name: "deploy-api".to_string(),
         environment: None,

@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::ArrobaSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 11;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -267,6 +267,13 @@ pub enum RelayPeerRequest {
         leased_agent_id: String,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     },
+    ListLeasedAgentExtensionCatalog {
+        leased_agent_id: String,
+    },
+    UpdateLeasedAgentWorkerExtensionGrants {
+        leased_agent_id: String,
+        grants: Vec<crate::extension::ExtensionGrant>,
+    },
     LaunchLeasedNativeProviderRun {
         leased_agent_id: String,
         adapter_key: String,
@@ -462,6 +469,16 @@ pub enum RelayPeerResponse {
     },
     LeasedAgentRemoteExtensionManifestUpdated {
         leased_agent_id: String,
+    },
+    LeasedAgentExtensionCatalogListed {
+        leased_agent_id: String,
+        worker_kernel_id: String,
+        entries: Vec<crate::extension::ExtensionCatalogEntry>,
+    },
+    LeasedAgentWorkerExtensionGrantsUpdated {
+        leased_agent_id: String,
+        manifest_hash: String,
+        grants: Vec<crate::extension::ExtensionGrant>,
     },
     LeasedNativeProviderRunLaunched {
         provider_run: crate::provider::RuntimeProviderRun,

@@ -29,7 +29,7 @@ test("executeShellCommand lists agents for current session", async () => {
   assert.match(result.message ?? "", /2 agents/)
   assert.match(result.message ?? "", /agent-1 \[Idle; opencode/)
   assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle; opencode/)
-  assert.match(result.message ?? "", /worktree \/repo; local; 0 grants/)
+  assert.match(result.message ?? "", /worktree \/repo; home-local; 0 grants/)
   assert.deepEqual((result.data as { agents: AgentInstance[] }).agents, agents)
 })
 
@@ -114,7 +114,7 @@ test("executeShellCommand lists remote agents with slice placement and manifest 
   const result = await executeShellCommand(parseShellCommand("agent list"), context, { client: fake.client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox \(lease=lease-1, leased_agent=leased-agent-1, run=run-1\); auth opencode=backup \(api\)\/state=not_configured; refresh opencode; 1 grant \(active tools home-proxy\); manifest stale abcdef12 error worker lagging; see \/extension sync-status agent-remote\]/)
+  assert.match(result.message ?? "", /agent-remote \(worker\) \[Idle; opencode gpt-5\.2; worktree \/repo\/feature; slice devbox \(lease=lease-1, leased_agent=leased-agent-1, run=run-1\); auth opencode=backup \(api\)\/state=not_configured; refresh opencode; 1 grant \(active tools home-proxy\); home manifest stale abcdef12 error worker lagging; see \/extension sync-status agent-remote\]/)
   assert.deepEqual(requests, [
     { GetSessionState: { session_id: "session-1" } },
     { ListSlices: null },
@@ -240,15 +240,15 @@ test("executeShellCommand inspects local agent placement and policy", async () =
   assert.match(result.message ?? "", /agent-2 \(reviewer\) \[Idle\]/)
   assert.match(result.message ?? "", /home kernel: home-kernel@home-machine/)
   assert.match(result.message ?? "", /session owner: user-1/)
-  assert.match(result.message ?? "", /runtime authority: home owns session, prompts, grants, and live sync; workers execute leases and projected tools/)
+  assert.match(result.message ?? "", /runtime authority: home owns session, prompts, and live sync; each extension source owns its grants, definitions, credentials, and execution/)
   assert.match(result.message ?? "", /live sync: managed \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /live sync scope: \/repo \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(result.message ?? "", /provider: codex/)
   assert.match(result.message ?? "", /worktree: \/repo-feature/)
-  assert.match(result.message ?? "", /placement: worker-local/)
+  assert.match(result.message ?? "", /placement: home-local/)
   assert.match(result.message ?? "", /provider run: session=run-session/)
-  assert.match(result.message ?? "", /extensions: 1 grant \(worker-local; skill=1\)/)
-  assert.match(result.message ?? "", /remote extension sync: not applicable \(worker-local agent; no home-proxy manifest\)/)
+  assert.match(result.message ?? "", /extensions: 1 grant \(home-local; skill=1\)/)
+  assert.match(result.message ?? "", /extension sync: not applicable \(home-local agent; no cross-kernel manifest\)/)
 })
 
 test("executeShellCommand inspects remote skill-only agents without manifest pending", async () => {
@@ -281,7 +281,7 @@ test("executeShellCommand inspects remote skill-only agents without manifest pen
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /extensions: 1 grant \(skills snapshot; skill=1\)/)
-  assert.match(result.message ?? "", /remote extension sync: not applicable \(no active home-proxy tools\)/)
+  assert.match(result.message ?? "", /extension sync: not configured \(no active Home-proxy or Worker-local tools\)/)
   assert.doesNotMatch(result.message ?? "", /manifest pending/)
 })
 
@@ -408,8 +408,8 @@ test("executeShellCommand inspects remote agent lease and manifest state", async
   assert.match(result.message ?? "", /slice: devbox \(id=slice-1, status=running, owner=kernel-local@machine-local, authority=home-managed, display=headed, worktree=\/repo\/feature, agents=2\)/)
   assert.match(result.message ?? "", /slice provider accounts: codex=daily \(dev@example.com\)/)
   assert.match(result.message ?? "", /extensions: 2 grants \(active tools home-proxy; mcp=1, script=1\)/)
-  assert.match(result.message ?? "", /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(result.message ?? "", /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+  assert.match(result.message ?? "", /home extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(result.message ?? "", /home extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(result.message ?? "", /substitutes: \*0:opencode\/zen\/fast/)
   assert.match(result.message ?? "", /last substitution: Provider reported a substitutable resource limit: Insufficient balance/)
   assert.deepEqual(requests, [

@@ -30,7 +30,7 @@ impl KernelRuntimeState {
         };
         let registry = script_registry_for_workspace(session.workspace_id());
         agent
-            .script_grants()
+            .execution_script_grants()
             .into_iter()
             .filter_map(|grant| registry.get(&grant.name).ok().flatten())
             .map(|script| crate::transport::runtime_tools::RuntimeToolSpec {
@@ -52,7 +52,7 @@ impl KernelRuntimeState {
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let Some(grant) = agent
-            .script_grants()
+            .execution_script_grants()
             .into_iter()
             .find(|grant| grant.name == tool_name)
         else {

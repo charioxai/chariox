@@ -1,5 +1,6 @@
 import type {
   AgentInstance,
+  ExtensionSource,
   RuntimeSession,
   WorkflowDefinition,
   WorkflowNodeDefinition,
@@ -57,14 +58,14 @@ export type WorkflowNodeCommandDeps = WorkflowNodeInstructionsCommandDeps & {
     nodeId: string,
     maxTurns: number | null,
   ) => Promise<WorkflowNodePayload>
-  grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
-  revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
-  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
-  revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
+  grantAgentMcp?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentMcp?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentSkill?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentSkill?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentScript?: (agentRef: string, name: string, environment: string, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentScript?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
+  grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null, source?: ExtensionSource) => Promise<AgentInstance>
+  revokeAgentConnector?: (agentRef: string, name: string, source?: ExtensionSource) => Promise<AgentInstance>
   updateWorkflowNodeInstructions?: (
     workflowRef: string,
     nodeId: string,
@@ -335,7 +336,7 @@ async function handleWorkflowNodeExtensionsCommand(
   if (!node || !agent) return
   const grants = agent.extension_grants ?? []
   deps.appendNotice?.(grants.length
-    ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
+    ? grants.map((grant) => `${grant.source ?? "home"}:${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
     : `node ${node.id} agent ${agent.agent_ref} has no extensions`)
   deps.flashFooter(`showing ${grants.length} extension${grants.length === 1 ? "" : "s"} for node ${node.id}`, "info")
 }
@@ -346,22 +347,25 @@ async function handleWorkflowNodeExtensionCommand(
   args: readonly string[],
 ): Promise<void> {
   const action = args[2]
-  const hasExplicitWorkflow = args.length >= 7
-  const workflowRef = context.workflowRefOrSelected(hasExplicitWorkflow ? args[3] : null)
-  const nodeId = hasExplicitWorkflow ? args[4] : args[3]
-  const kind = (hasExplicitWorkflow ? args[5] : args[4]) as "mcp" | "skill" | "script" | "connector" | undefined
-  const name = hasExplicitWorkflow ? args[6] : args[5]
+  const positional = args.slice(0, args.findIndex((arg) => arg.startsWith("--")) === -1 ? args.length : args.findIndex((arg) => arg.startsWith("--")))
+  const hasExplicitWorkflow = positional.length >= 7
+  const workflowRef = context.workflowRefOrSelected(hasExplicitWorkflow ? positional[3] : null)
+  const nodeId = hasExplicitWorkflow ? positional[4] : positional[3]
+  const kind = (hasExplicitWorkflow ? positional[5] : positional[4]) as "mcp" | "skill" | "script" | "connector" | undefined
+  const name = hasExplicitWorkflow ? positional[6] : positional[5]
+  const source = readExtensionSource(args)
   if ((action !== "grant" && action !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
+    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
     return
   }
+  if (!source) return deps.flashFooter("workflow extension source must be home or worker", "error")
   const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
   if (!node || !agent) return
   const updated = action === "grant"
-    ? await grantNodeExtension(deps, agent.agent_ref, kind, name, args)
-    : await revokeNodeExtension(deps, agent.agent_ref, kind, name)
+    ? await grantNodeExtension(deps, agent.agent_ref, kind, name, source, args)
+    : await revokeNodeExtension(deps, agent.agent_ref, kind, name, source)
   applyUpdatedAgent(deps, updated)
-  deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} ${kind} ${name} ${action === "grant" ? "to" : "from"} workflow node ${node.id}`, "info")
+  deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} ${source}:${kind}:${name} ${action === "grant" ? "to" : "from"} workflow node ${node.id}`, "info")
 }
 
 async function resolveWorkflowNodeAgent(
@@ -389,17 +393,18 @@ async function grantNodeExtension(
   agentRef: string,
   kind: "mcp" | "skill" | "script" | "connector",
   name: string,
+  source: ExtensionSource,
   args: readonly string[],
 ): Promise<AgentInstance> {
-  if (kind === "mcp" && deps.grantAgentMcp) return deps.grantAgentMcp(agentRef, name)
-  if (kind === "skill" && deps.grantAgentSkill) return deps.grantAgentSkill(agentRef, name)
+  if (kind === "mcp" && deps.grantAgentMcp) return deps.grantAgentMcp(agentRef, name, source)
+  if (kind === "skill" && deps.grantAgentSkill) return deps.grantAgentSkill(agentRef, name, source)
   if (kind === "script" && deps.grantAgentScript) {
     const environment = readOption(args, "--environment")
     if (!environment) throw new Error("script grants require --environment <name>")
-    return deps.grantAgentScript(agentRef, name, environment)
+    return deps.grantAgentScript(agentRef, name, environment, source)
   }
   if (kind === "connector" && deps.grantAgentConnector) {
-    return deps.grantAgentConnector(agentRef, name, readOption(args, "--credential"), readOption(args, "--allow"))
+    return deps.grantAgentConnector(agentRef, name, readOption(args, "--credential"), readOption(args, "--allow"), source)
   }
   throw new Error(`${kind} extension grant command unavailable`)
 }
@@ -409,11 +414,12 @@ async function revokeNodeExtension(
   agentRef: string,
   kind: "mcp" | "skill" | "script" | "connector",
   name: string,
+  source: ExtensionSource,
 ): Promise<AgentInstance> {
-  if (kind === "mcp" && deps.revokeAgentMcp) return deps.revokeAgentMcp(agentRef, name)
-  if (kind === "skill" && deps.revokeAgentSkill) return deps.revokeAgentSkill(agentRef, name)
-  if (kind === "script" && deps.revokeAgentScript) return deps.revokeAgentScript(agentRef, name)
-  if (kind === "connector" && deps.revokeAgentConnector) return deps.revokeAgentConnector(agentRef, name)
+  if (kind === "mcp" && deps.revokeAgentMcp) return deps.revokeAgentMcp(agentRef, name, source)
+  if (kind === "skill" && deps.revokeAgentSkill) return deps.revokeAgentSkill(agentRef, name, source)
+  if (kind === "script" && deps.revokeAgentScript) return deps.revokeAgentScript(agentRef, name, source)
+  if (kind === "connector" && deps.revokeAgentConnector) return deps.revokeAgentConnector(agentRef, name, source)
   throw new Error(`${kind} extension revoke command unavailable`)
 }
 
@@ -428,6 +434,12 @@ function applyUpdatedAgent(deps: WorkflowNodeCommandDeps, updated: AgentInstance
 function readOption(args: readonly string[], name: string): string | null {
   const index = args.indexOf(name)
   return index >= 0 ? args[index + 1] ?? null : null
+}
+
+function readExtensionSource(args: readonly string[]): ExtensionSource | null {
+  if (!args.includes("--from")) return "home"
+  const source = readOption(args, "--from")
+  return source === "home" || source === "worker" ? source : null
 }
 
 function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" {

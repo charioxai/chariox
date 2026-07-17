@@ -188,6 +188,30 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_list_leased_agent_extension_catalog(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
+        relay_peer_runtime::list_relay_leased_agent_extension_catalog(
+            &self.runtime_state,
+            leased_agent_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_update_leased_agent_worker_extension_grants(
+        &self,
+        leased_agent_id: &str,
+        grants: Vec<crate::extension::ExtensionGrant>,
+    ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
+        relay_peer_runtime::update_relay_leased_agent_worker_extension_grants(
+            &self.runtime_state,
+            leased_agent_id,
+            grants,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn relay_launch_leased_native_provider_run(
         &self,

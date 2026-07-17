@@ -213,6 +213,48 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         );
     }
 
+    let rebound = {
+        let mut app = app_home.lock().await;
+        let rebound = app
+            .refresh_remote_agent_binding(remote_agent.id())
+            .expect("remote agent should migrate to a fresh Worker lease");
+        assert_eq!(
+            app.pending_remote_binding_cleanup_count_for_test(),
+            0,
+            "acknowledged retirement should leave no pending cleanup job"
+        );
+        rebound
+    };
+    let rebound_execution = rebound
+        .remote_execution()
+        .expect("rebound agent should remain remote");
+    assert_ne!(
+        rebound_execution.execution_lease_id,
+        remote_execution.execution_lease_id
+    );
+    assert_ne!(
+        rebound_execution.leased_agent_id,
+        remote_execution.leased_agent_id
+    );
+    {
+        let mut app = app_worker.lock().await;
+        let leases = RemoteLeaseRuntime::new(&mut app);
+        assert_eq!(leases.execution_lease_count(), 1);
+        assert_eq!(leases.leased_agent_count(), 1);
+        assert!(
+            leases
+                .leased_agent_snapshot_for_test(&remote_execution.leased_agent_id)
+                .is_none(),
+            "retired Worker A backing agent should be removed"
+        );
+        assert!(
+            leases
+                .leased_agent_snapshot_for_test(&rebound_execution.leased_agent_id)
+                .is_some(),
+            "current Worker B backing agent must be preserved"
+        );
+    }
+
     Box::pin(assert_remote_native_terminal_resize(
         &app_home,
         &app_worker,

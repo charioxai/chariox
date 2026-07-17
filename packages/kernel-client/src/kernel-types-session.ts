@@ -142,6 +142,9 @@ export type WaitingRoomSessionActivitySummary = {
   home_proxy_agent_count?: number
   remote_extension_sync_issue_count?: number
   remote_extension_pending_revoke_count?: number
+  worker_extension_agent_count?: number
+  worker_extension_sync_issue_count?: number
+  worker_extension_pending_revoke_count?: number
   unread_idle_agent_count?: number
 }
 

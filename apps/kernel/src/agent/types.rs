@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
+use crate::extension::{
+    ExtensionGrant, ExtensionKind, ExtensionSource, RemoteExtensionManifestSyncStatus,
+};
 use crate::provider::{
     AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata, ProviderResumeState,
 };
@@ -200,6 +202,8 @@ pub struct AgentInstance {
     extension_grants: Vec<ExtensionGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_extension_manifest_sync: Option<RemoteExtensionManifestSyncStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worker_extension_grant_sync: Option<Box<RemoteExtensionManifestSyncStatus>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,6 +265,7 @@ impl AgentInstance {
             external_provider_import: None,
             extension_grants: Vec::new(),
             remote_extension_manifest_sync: None,
+            worker_extension_grant_sync: None,
             substitutes: Vec::new(),
             active_substitute_index: None,
             last_substitution: None,
@@ -397,11 +402,43 @@ impl AgentInstance {
         self.remote_extension_manifest_sync.as_ref()
     }
 
+    pub fn worker_extension_grant_sync(&self) -> Option<&RemoteExtensionManifestSyncStatus> {
+        self.worker_extension_grant_sync.as_deref()
+    }
+
     pub fn granted_extension_names(&self, kind: ExtensionKind) -> Vec<String> {
+        self.granted_extension_names_from(ExtensionSource::Home, kind)
+    }
+
+    pub fn granted_extension_names_from(
+        &self,
+        source: ExtensionSource,
+        kind: ExtensionKind,
+    ) -> Vec<String> {
         self.extension_grants
             .iter()
-            .filter(|grant| grant.kind == kind)
+            .filter(|grant| grant.source == source && grant.kind == kind)
             .map(|grant| grant.name.clone())
+            .collect()
+    }
+
+    pub fn extension_grants_from(&self, source: ExtensionSource) -> Vec<ExtensionGrant> {
+        self.extension_grants
+            .iter()
+            .filter(|grant| grant.source == source)
+            .cloned()
+            .collect()
+    }
+
+    pub fn extension_grants_of_kind_from(
+        &self,
+        source: ExtensionSource,
+        kind: ExtensionKind,
+    ) -> Vec<ExtensionGrant> {
+        self.extension_grants
+            .iter()
+            .filter(|grant| grant.source == source && grant.kind == kind)
+            .cloned()
             .collect()
     }
 
@@ -414,25 +451,94 @@ impl AgentInstance {
     }
 
     pub fn script_grants(&self) -> Vec<ExtensionGrant> {
-        self.extension_grants
-            .iter()
-            .filter(|grant| grant.kind == ExtensionKind::Script)
-            .cloned()
-            .collect()
+        self.extension_grants_of_kind_from(ExtensionSource::Home, ExtensionKind::Script)
     }
 
     pub fn connector_grants(&self) -> Vec<ExtensionGrant> {
-        self.extension_grants
-            .iter()
-            .filter(|grant| grant.kind == ExtensionKind::Connector)
-            .cloned()
-            .collect()
+        self.extension_grants_of_kind_from(ExtensionSource::Home, ExtensionKind::Connector)
+    }
+
+    pub fn worker_mcp_grants(&self) -> Vec<String> {
+        self.granted_extension_names_from(ExtensionSource::Worker, ExtensionKind::Mcp)
+    }
+
+    pub fn worker_skill_grants(&self) -> Vec<String> {
+        self.granted_extension_names_from(ExtensionSource::Worker, ExtensionKind::Skill)
+    }
+
+    pub fn worker_script_grants(&self) -> Vec<ExtensionGrant> {
+        self.extension_grants_of_kind_from(ExtensionSource::Worker, ExtensionKind::Script)
+    }
+
+    pub fn worker_connector_grants(&self) -> Vec<ExtensionGrant> {
+        self.extension_grants_of_kind_from(ExtensionSource::Worker, ExtensionKind::Connector)
+    }
+
+    pub fn execution_mcp_grants(&self) -> Vec<String> {
+        let mut grants = self.mcp_grants();
+        if self.remote_execution.is_none() {
+            grants.extend(self.worker_mcp_grants());
+        }
+        grants.sort();
+        grants.dedup();
+        grants
+    }
+
+    pub fn execution_skill_grants(&self) -> Vec<String> {
+        let mut grants = self.skill_grants();
+        if self.remote_execution.is_none() {
+            grants.extend(self.worker_skill_grants());
+        }
+        grants.sort();
+        grants.dedup();
+        grants
+    }
+
+    pub fn execution_script_grants(&self) -> Vec<ExtensionGrant> {
+        let mut grants = self.script_grants();
+        if self.remote_execution.is_none() {
+            grants.extend(self.worker_script_grants());
+        }
+        grants.sort();
+        grants.dedup();
+        grants
+    }
+
+    pub fn execution_connector_grants(&self) -> Vec<ExtensionGrant> {
+        let mut grants = self.connector_grants();
+        if self.remote_execution.is_none() {
+            grants.extend(self.worker_connector_grants());
+        }
+        grants.sort();
+        grants.dedup();
+        grants
+    }
+
+    pub fn execution_extension_grant(
+        &self,
+        kind: ExtensionKind,
+        name: &str,
+    ) -> Option<&ExtensionGrant> {
+        self.extension_grants.iter().find(|grant| {
+            grant.kind == kind
+                && grant.name == name
+                && (grant.source == ExtensionSource::Home || self.remote_execution.is_none())
+        })
     }
 
     pub fn has_extension_grant(&self, kind: ExtensionKind, name: &str) -> bool {
+        self.has_extension_grant_from(ExtensionSource::Home, kind, name)
+    }
+
+    pub fn has_extension_grant_from(
+        &self,
+        source: ExtensionSource,
+        kind: ExtensionKind,
+        name: &str,
+    ) -> bool {
         self.extension_grants
             .iter()
-            .any(|grant| grant.kind == kind && grant.name == name)
+            .any(|grant| grant.source == source && grant.kind == kind && grant.name == name)
     }
 
     pub fn substitutes(&self) -> &[AgentSubstituteProfile] {
@@ -627,6 +733,9 @@ impl AgentInstance {
         self.agent_ref = agent_ref.into();
         self.session_id = session_id.into();
         self.remote_execution = None;
+        self.extension_grants
+            .retain(|grant| grant.source == ExtensionSource::Home);
+        self.worker_extension_grant_sync = None;
         self.provider_resume_state = ProviderResumeState::default();
         self.external_provider_import = None;
         self.remote_extension_manifest_sync = None;
@@ -647,7 +756,13 @@ impl AgentInstance {
     }
 
     pub fn set_remote_execution(&mut self, remote_execution: Option<RemoteAgentBinding>) {
+        let binding_changed = self.remote_execution.as_ref().map(remote_binding_identity)
+            != remote_execution.as_ref().map(remote_binding_identity);
         self.remote_execution = remote_execution;
+        if binding_changed {
+            self.remote_extension_manifest_sync = None;
+            self.worker_extension_grant_sync = None;
+        }
     }
 
     pub fn set_remote_execution_active_worker_provider_run_id(
@@ -666,16 +781,39 @@ impl AgentInstance {
         self.remote_extension_manifest_sync = status;
     }
 
-    pub fn grant_extension(&mut self, grant: ExtensionGrant) {
-        self.extension_grants
-            .retain(|existing| !(existing.kind == grant.kind && existing.name == grant.name));
-        self.extension_grants.push(grant);
-        self.extension_grants.sort();
+    pub fn set_worker_extension_grant_sync(
+        &mut self,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) {
+        self.worker_extension_grant_sync = status.map(Box::new);
     }
 
-    pub fn revoke_extension(&mut self, kind: ExtensionKind, name: &str) {
+    pub fn grant_extension(&mut self, grant: ExtensionGrant) {
+        let source = grant.source;
+        self.extension_grants.retain(|existing| {
+            !(existing.source == grant.source
+                && existing.kind == grant.kind
+                && existing.name == grant.name)
+        });
+        self.extension_grants.push(grant);
+        self.extension_grants.sort();
+        self.clear_extension_sync_status(source);
+    }
+
+    pub fn revoke_extension(&mut self, source: ExtensionSource, kind: ExtensionKind, name: &str) {
+        let previous_len = self.extension_grants.len();
         self.extension_grants
-            .retain(|grant| !(grant.kind == kind && grant.name == name));
+            .retain(|grant| !(grant.source == source && grant.kind == kind && grant.name == name));
+        if self.extension_grants.len() != previous_len {
+            self.clear_extension_sync_status(source);
+        }
+    }
+
+    fn clear_extension_sync_status(&mut self, source: ExtensionSource) {
+        match source {
+            ExtensionSource::Home => self.remote_extension_manifest_sync = None,
+            ExtensionSource::Worker => self.worker_extension_grant_sync = None,
+        }
     }
 
     pub fn grant_mcp(&mut self, name: impl Into<String>) {
@@ -683,7 +821,7 @@ impl AgentInstance {
     }
 
     pub fn revoke_mcp(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Mcp, name);
+        self.revoke_extension(ExtensionSource::Home, ExtensionKind::Mcp, name);
     }
 
     pub fn grant_skill(&mut self, name: impl Into<String>) {
@@ -691,7 +829,7 @@ impl AgentInstance {
     }
 
     pub fn revoke_skill(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Skill, name);
+        self.revoke_extension(ExtensionSource::Home, ExtensionKind::Skill, name);
     }
 
     pub fn grant_script(&mut self, name: impl Into<String>, environment: impl Into<String>) {
@@ -699,7 +837,7 @@ impl AgentInstance {
     }
 
     pub fn revoke_script(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Script, name);
+        self.revoke_extension(ExtensionSource::Home, ExtensionKind::Script, name);
     }
 
     pub fn grant_connector(
@@ -712,7 +850,7 @@ impl AgentInstance {
     }
 
     pub fn revoke_connector(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Connector, name);
+        self.revoke_extension(ExtensionSource::Home, ExtensionKind::Connector, name);
     }
 
     pub fn add_substitute(&mut self, profile: AgentSubstituteProfile) {
@@ -773,6 +911,15 @@ impl AgentInstance {
         self.effort = self.primary_effort().map(str::to_string);
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
+}
+
+fn remote_binding_identity(binding: &RemoteAgentBinding) -> (&str, &str, &str, &str) {
+    (
+        binding.worker_kernel_id.as_str(),
+        binding.worker_machine_id.as_str(),
+        binding.execution_lease_id.as_str(),
+        binding.leased_agent_id.as_str(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

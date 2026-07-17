@@ -1,3 +1,9 @@
+import type {
+  ExtensionCatalogSource,
+  ExtensionKind,
+  ExtensionSource,
+} from "./kernel-types.js"
+
 export function installMcpServerRequest(workspaceId: string | null, config: Record<string, unknown>) {
   return {
     InstallMcpServer: {
@@ -122,15 +128,20 @@ export function importSkillsRequest(workspaceId: string | null, provider: string
 export function grantAgentExtensionRequest(
   workspaceId: string | null,
   agentRef: string,
-  kind: "mcp" | "skill" | "script" | "connector",
+  kind: ExtensionKind,
   name: string,
   environment?: string | null,
-  options?: { credential?: string | null; maxSafety?: string | null } | null,
+  options?: {
+    credential?: string | null
+    maxSafety?: string | null
+    source?: ExtensionSource | null
+  } | null,
 ) {
   return {
     GrantAgentExtension: {
       workspace_id: workspaceId ?? null,
       agent_ref: agentRef,
+      source: options?.source ?? "home",
       kind,
       name,
       ...(environment ? { environment } : {}),
@@ -140,12 +151,30 @@ export function grantAgentExtensionRequest(
   }
 }
 
-export function revokeAgentExtensionRequest(agentRef: string, kind: "mcp" | "skill" | "script" | "connector", name: string) {
+export function revokeAgentExtensionRequest(
+  agentRef: string,
+  kind: ExtensionKind,
+  name: string,
+  source: ExtensionSource = "home",
+) {
   return {
     RevokeAgentExtension: {
       agent_ref: agentRef,
+      source,
       kind,
       name,
+    },
+  }
+}
+
+export function listAgentExtensionCatalogRequest(
+  agentRef: string,
+  source: ExtensionCatalogSource = "all",
+) {
+  return {
+    ListAgentExtensionCatalog: {
+      agent_ref: agentRef,
+      source,
     },
   }
 }

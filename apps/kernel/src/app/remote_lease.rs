@@ -66,14 +66,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         lease_id: &str,
     ) -> Result<ExecutionLease, DaemonError> {
-        self.app
-            .leased_agents
-            .retain(|_, agent| agent.lease_id != lease_id);
-        self.app.execution_leases.remove(lease_id).ok_or_else(|| {
-            DaemonError::ExecutionLeaseNotFound {
+        let lease = self
+            .app
+            .execution_leases
+            .get(lease_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: lease_id.to_string(),
-            }
-        })
+            })?;
+        let leased_agent_ids = self
+            .app
+            .leased_agents
+            .values()
+            .filter(|agent| agent.lease_id == lease_id)
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        for leased_agent_id in leased_agent_ids {
+            self.destroy_leased_agent(&leased_agent_id)?;
+        }
+        self.app.execution_leases.remove(lease_id);
+        Ok(lease)
     }
 
     pub(crate) fn create_leased_agent(
@@ -542,6 +554,89 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(())
     }
 
+    pub(crate) fn list_leased_agent_extension_catalog(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        crate::runtime::extension_catalog::local_extension_catalog_entries(
+            Some(session.workspace_id()),
+            crate::extension::ExtensionSource::Worker,
+            &self.app.config().daemon_id,
+        )
+    }
+
+    pub(crate) fn update_leased_agent_worker_extension_grants(
+        &mut self,
+        leased_agent_id: &str,
+        mut grants: Vec<crate::extension::ExtensionGrant>,
+    ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if leased_agent.active_home_prompt_id.is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "worker extension grant sync",
+                message: format!(
+                    "leased agent `{leased_agent_id}` has an active turn; reconcile worker extensions after it finishes"
+                ),
+            });
+        }
+        let session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        let workspace_id = session.workspace_id().to_string();
+        validate_worker_extension_grant_manifest(Some(&workspace_id), &grants)?;
+        grants.sort();
+        for grant in &grants {
+            if grant.source != crate::extension::ExtensionSource::Worker {
+                return Err(DaemonError::LocalTransport {
+                    operation: "worker extension grant sync",
+                    message: "worker grant manifest may only contain source=worker grants"
+                        .to_string(),
+                });
+            }
+            validate_worker_extension_grant(Some(&workspace_id), grant)?;
+        }
+
+        let existing = self
+            .app
+            .agents()
+            .get_agent(&leased_agent.backing_agent_id)?
+            .extension_grants_from(crate::extension::ExtensionSource::Worker);
+        for grant in existing {
+            self.app.agents_mut().revoke_extension(
+                &leased_agent.backing_agent_id,
+                crate::extension::ExtensionSource::Worker,
+                grant.kind,
+                &grant.name,
+            )?;
+        }
+        for grant in &grants {
+            self.app
+                .agents_mut()
+                .grant_extension(&leased_agent.backing_agent_id, grant.clone())?;
+        }
+        self.terminate_backing_provider_runtime(&leased_agent);
+
+        let manifest_hash = crate::extension::extension_grant_manifest_hash(&grants)?;
+        Ok((manifest_hash, grants))
+    }
+
     fn terminate_backing_provider_runtime(&mut self, leased_agent: &LeasedAgent) {
         let Some(run) = self.app.providers.get_run_for_agent(
             &leased_agent.backing_session_id,
@@ -602,9 +697,138 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 }
 
+fn validate_worker_extension_grant(
+    workspace_id: Option<&str>,
+    grant: &crate::extension::ExtensionGrant,
+) -> Result<(), DaemonError> {
+    match grant.kind {
+        crate::extension::ExtensionKind::Mcp => {
+            crate::runtime::capability_registry::ensure_mcp_exists(workspace_id, &grant.name)
+        }
+        crate::extension::ExtensionKind::Skill => {
+            crate::runtime::capability_registry::ensure_skill_exists(workspace_id, &grant.name)
+        }
+        crate::extension::ExtensionKind::Script => {
+            let environment =
+                grant
+                    .environment
+                    .as_deref()
+                    .ok_or_else(|| DaemonError::InvalidConfig {
+                        field: "environment",
+                        message: "worker script extension grants require an environment",
+                    })?;
+            crate::runtime::capability_registry::ensure_script_exists(workspace_id, &grant.name)?;
+            crate::runtime::capability_registry::ensure_environment_exists(
+                workspace_id,
+                environment,
+            )
+        }
+        crate::extension::ExtensionKind::Connector => {
+            crate::runtime::capability_registry::ensure_connector_exists(&grant.name)?;
+            let connector = crate::connector::ArrobaConnectorRegistry::user()?
+                .get(&grant.name)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "worker extension grant sync",
+                    message: format!("connector `{}` is not registered", grant.name),
+                })?;
+            if connector
+                .credential
+                .as_ref()
+                .is_some_and(|policy| policy.required)
+                && grant.credential.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "worker extension grant sync",
+                    message: format!("connector `{}` requires a worker credential", grant.name),
+                });
+            }
+            if let Some(credential) = grant.credential.as_deref() {
+                crate::runtime::capability_registry::ensure_credential_exists(credential)?;
+            }
+            crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref()).map(|_| ())
+        }
+    }
+}
+
+fn validate_worker_extension_grant_manifest(
+    workspace_id: Option<&str>,
+    grants: &[crate::extension::ExtensionGrant],
+) -> Result<(), DaemonError> {
+    let mut grant_keys = std::collections::BTreeSet::new();
+    let mut tool_names = crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
+        .into_iter()
+        .chain(crate::transport::runtime_tools::extension_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::recall_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::credential_runtime_tool_specs())
+        .chain(crate::transport::runtime_tools::workflow_runtime_tool_specs())
+        .map(|spec| spec.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let script_registry = crate::script::ArrobaScriptRegistry::new(
+        crate::runtime::capability_registry::script_registry_roots(workspace_id)?,
+    );
+    let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+
+    for grant in grants {
+        let key = (grant.source, grant.kind.clone(), grant.name.clone());
+        if !grant_keys.insert(key) {
+            return Err(DaemonError::LocalTransport {
+                operation: "worker extension grant sync",
+                message: format!(
+                    "duplicate worker extension grant `{}:{}`",
+                    grant.kind.as_str(),
+                    grant.name
+                ),
+            });
+        }
+        validate_worker_extension_grant(workspace_id, grant)?;
+        let exposed_names = match grant.kind {
+            crate::extension::ExtensionKind::Script => script_registry
+                .get(&grant.name)?
+                .map(|script| vec![script.name])
+                .unwrap_or_default(),
+            crate::extension::ExtensionKind::Connector => {
+                let connector = connector_registry.get(&grant.name)?.ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "worker extension grant sync",
+                        message: format!("connector `{}` is not registered", grant.name),
+                    }
+                })?;
+                let max_safety =
+                    crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())?;
+                connector.allowed_operation_tool_names(max_safety)
+            }
+            crate::extension::ExtensionKind::Mcp | crate::extension::ExtensionKind::Skill => {
+                Vec::new()
+            }
+        };
+        for tool_name in exposed_names {
+            if !tool_names.insert(tool_name.clone()) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "worker extension grant sync",
+                    message: format!(
+                        "worker extension tool name `{tool_name}` collides with another worker runtime tool"
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leased_backing_agent_identity_is_distinct_from_ordinary_local_agents() {
+        let (app, leased_agent) = leased_agent_fixture(false);
+
+        assert!(app.is_leased_backing_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        ));
+        assert!(!app.is_leased_backing_agent("home-session", "home-agent"));
+    }
 
     #[test]
     fn leased_agent_config_update_ignores_legacy_processing_without_active_prompt() {
@@ -664,6 +888,47 @@ mod tests {
             .expect_err("active prompt ownership should block leased config update");
 
         assert_active_turn_error(error, "update leased agent config");
+    }
+
+    #[test]
+    fn worker_extension_manifest_rejects_duplicate_grants_before_mutation() {
+        let _guard = crate::env_lock::lock();
+        let isolation_root = std::env::temp_dir().join(format!(
+            "arroba-worker-extension-manifest-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        let name = "duplicate-worker-mcp";
+        let registry =
+            crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::user_root()
+                .expect("isolated user root should resolve")]);
+        registry
+            .install(&crate::mcp::ArrobaMcpServerConfig::stdio(
+                name,
+                "true",
+                Vec::new(),
+            ))
+            .expect("worker MCP should install");
+        let grant =
+            crate::extension::ExtensionGrant::new(crate::extension::ExtensionKind::Mcp, name)
+                .from_source(crate::extension::ExtensionSource::Worker);
+
+        let error =
+            validate_worker_extension_grant_manifest(Some("/workspace"), &[grant.clone(), grant])
+                .expect_err("duplicate worker grants should be rejected");
+
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        let _ = std::fs::remove_dir_all(&isolation_root);
+        match error {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "worker extension grant sync");
+                assert!(
+                    message.contains("duplicate worker extension grant `mcp:duplicate-worker-mcp`")
+                );
+            }
+            other => panic!("expected duplicate worker grant error, got {other:?}"),
+        }
     }
 
     fn leased_agent_fixture(home_agent_metaagent: bool) -> (DaemonApp, LeasedAgent) {

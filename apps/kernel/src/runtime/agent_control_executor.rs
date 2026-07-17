@@ -38,6 +38,16 @@ pub(crate) async fn execute_agent_control_request(
             )?;
             Ok(LocalDaemonResponse::HomeExtensionAuditListed { events })
         }
+        LocalDaemonRequest::ListAgentExtensionCatalog(request) => {
+            let catalog = crate::runtime::extension_catalog::list_agent_extension_catalog(
+                runtime_state,
+                &request.agent_ref,
+                request.source,
+                caller_user_id,
+            )
+            .await?;
+            Ok(LocalDaemonResponse::AgentExtensionCatalogListed { catalog })
+        }
         LocalDaemonRequest::RevokeAgentExtension(request) => {
             execute_revoke_agent_extension_request(runtime_state, caller_user_id, request).await
         }
@@ -53,6 +63,42 @@ pub(crate) async fn execute_grant_agent_extension_request(
     caller_user_id: &str,
     request: GrantAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.source == crate::extension::ExtensionSource::Worker {
+        let grant = match request.kind {
+            ExtensionKind::Mcp => crate::extension::ExtensionGrant::new(
+                crate::extension::ExtensionKind::Mcp,
+                request.name,
+            ),
+            ExtensionKind::Skill => crate::extension::ExtensionGrant::new(
+                crate::extension::ExtensionKind::Skill,
+                request.name,
+            ),
+            ExtensionKind::Script => {
+                let environment =
+                    request
+                        .environment
+                        .ok_or_else(|| DaemonError::InvalidConfig {
+                            field: "environment",
+                            message: "worker script extension grants require an environment",
+                        })?;
+                crate::extension::ExtensionGrant::script(request.name, environment)
+            }
+            ExtensionKind::Connector => {
+                let max_safety =
+                    crate::connector::ConnectorSafety::parse(request.max_safety.as_deref())?;
+                crate::extension::ExtensionGrant::connector(
+                    request.name,
+                    request.credential,
+                    max_safety.as_str(),
+                )
+            }
+        }
+        .from_source(crate::extension::ExtensionSource::Worker);
+        let agent = runtime_state
+            .grant_agent_extension(&request.agent_ref, grant, caller_user_id)
+            .await?;
+        return Ok(LocalDaemonResponse::AgentExtensionGranted { agent });
+    }
     match request.kind {
         ExtensionKind::Mcp => {
             ensure_mcp_exists(request.workspace_id.as_deref(), &request.name)?;
@@ -135,6 +181,18 @@ pub(crate) async fn execute_revoke_agent_extension_request(
     caller_user_id: &str,
     request: RevokeAgentExtensionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.source == crate::extension::ExtensionSource::Worker {
+        let agent = runtime_state
+            .revoke_agent_extension(
+                &request.agent_ref,
+                request.source,
+                request.kind.clone().into(),
+                &request.name,
+                caller_user_id,
+            )
+            .await?;
+        return Ok(LocalDaemonResponse::AgentExtensionRevoked { agent });
+    }
     let agent = match request.kind {
         ExtensionKind::Mcp => {
             runtime_state
@@ -150,6 +208,7 @@ pub(crate) async fn execute_revoke_agent_extension_request(
             runtime_state
                 .revoke_agent_extension(
                     &request.agent_ref,
+                    request.source,
                     crate::extension::ExtensionKind::Script,
                     &request.name,
                     caller_user_id,
@@ -160,6 +219,7 @@ pub(crate) async fn execute_revoke_agent_extension_request(
             runtime_state
                 .revoke_agent_extension(
                     &request.agent_ref,
+                    request.source,
                     crate::extension::ExtensionKind::Connector,
                     &request.name,
                     caller_user_id,

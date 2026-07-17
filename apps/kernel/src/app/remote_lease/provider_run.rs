@@ -24,7 +24,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             return Ok(());
         }
 
-        let _session = self
+        let session = self
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
@@ -40,15 +40,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_tool_names.insert(spec.name, "worker runtime tool".to_string());
         }
 
-        let mcp_roots = crate::mcp::ArrobaMcpRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
-        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if required_mcps
                 .iter()
                 .any(|required| required.config.name == name)
-                || mcp_registry.get(name)?.is_some()
             {
                 return Err(DaemonError::LocalTransport {
                     operation,
@@ -59,11 +54,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
 
-        let script_roots = crate::script::ArrobaScriptRegistry::user_root()
-            .map(|root| vec![root])
-            .unwrap_or_default();
+        let script_roots = crate::runtime::capability_registry::script_registry_roots(Some(
+            session.workspace_id(),
+        ))?;
         let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
-        for grant in backing_agent.script_grants() {
+        for grant in backing_agent.worker_script_grants() {
             if let Some(script) = script_registry.get(&grant.name)? {
                 worker_tool_names
                     .insert(script.name, format!("worker-local script `{}`", grant.name));
@@ -71,7 +66,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
 
         let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
-        for grant in backing_agent.connector_grants() {
+        for grant in backing_agent.worker_connector_grants() {
             let Some(connector) = connector_registry.get(&grant.name)? else {
                 continue;
             };
@@ -113,9 +108,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
     ) -> Result<LeasedProviderRunMatch, DaemonError> {
+        let effective_required_mcps =
+            self.worker_effective_required_mcps(leased_agent, required_mcps)?;
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
-            required_mcps,
+            &effective_required_mcps,
             remote_extension_manifest,
             "remote provider launch",
         )?;
@@ -132,7 +129,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
         );
         if let Some(run) = existing.as_ref() {
-            if provider_run_mcp_set_matches(run, required_mcps)? {
+            if provider_run_mcp_set_matches(run, &effective_required_mcps)? {
                 if !remote_extension_manifest.is_empty() {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -193,7 +190,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .worktree_id(),
         ))
         .with_mcp_servers(
-            required_mcps
+            effective_required_mcps
                 .iter()
                 .map(|required| required.config.clone())
                 .collect(),
@@ -237,5 +234,127 @@ impl<'a> RemoteLeaseRuntime<'a> {
             ),
         );
         Ok(LeasedProviderRunMatch::LaunchRequired(request))
+    }
+
+    fn worker_effective_required_mcps(
+        &self,
+        leased_agent: &LeasedAgent,
+        home_required_mcps: &[RequiredRemoteMcp],
+    ) -> Result<Vec<RequiredRemoteMcp>, DaemonError> {
+        let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+        let backing_session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)?;
+        let registry = crate::mcp::ArrobaMcpRegistry::new(
+            crate::runtime::capability_registry::mcp_registry_roots(Some(
+                backing_session.workspace_id(),
+            ))?,
+        );
+        let mut required = home_required_mcps.to_vec();
+        for name in backing_agent.worker_mcp_grants() {
+            let config = registry
+                .get(&name)?
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "worker MCP provider launch",
+                    message: format!("worker-local MCP `{name}` is granted but not installed"),
+                })?;
+            if !config.enabled {
+                return Err(DaemonError::LocalTransport {
+                    operation: "worker MCP provider launch",
+                    message: format!("worker-local MCP `{name}` is disabled"),
+                });
+            }
+            if !required
+                .iter()
+                .any(|existing| existing.config.name == config.name)
+            {
+                required.push(RequiredRemoteMcp {
+                    definition_hash: config.definition_hash()?,
+                    config,
+                });
+            }
+        }
+        Ok(required)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_but_ungranted_worker_mcp_does_not_block_home_proxy_mcp() {
+        let _guard = crate::env_lock::lock();
+        let isolation_root = std::env::temp_dir().join(format!(
+            "arroba-home-proxy-installed-worker-mcp-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        let name = "installed-but-ungranted-worker-mcp";
+        let registry =
+            crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::user_root()
+                .expect("isolated MCP root should resolve")]);
+        registry
+            .install(&crate::mcp::ArrobaMcpServerConfig::stdio(
+                name,
+                "true",
+                Vec::new(),
+            ))
+            .expect("worker MCP should install");
+
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("daemon should boot");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .expect("execution lease should create");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should create");
+        let manifest = crate::extension::RemoteExtensionManifest {
+            tools: vec![crate::extension::RemoteExtensionTool {
+                kind: crate::extension::ExtensionKind::Mcp,
+                name: name.to_string(),
+                tool_name: name.to_string(),
+                description: "home MCP proxy".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+                authority: crate::extension::ExtensionAuthority::Home,
+                definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                safety: None,
+                timeout_sec: None,
+                version_hash: None,
+            }],
+        };
+
+        RemoteLeaseRuntime::new(&mut app)
+            .ensure_home_proxy_manifest_has_no_worker_collisions(
+                &leased_agent,
+                &[],
+                &manifest,
+                "test home proxy collision",
+            )
+            .expect("an installed but ungranted worker MCP must not claim execution authority");
+
+        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        let _ = std::fs::remove_dir_all(isolation_root);
     }
 }

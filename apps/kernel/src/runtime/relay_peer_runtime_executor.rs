@@ -163,6 +163,25 @@ pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
         .await
 }
 
+pub(crate) async fn list_relay_leased_agent_extension_catalog(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
+    runtime_state
+        .list_relay_leased_agent_extension_catalog(leased_agent_id)
+        .await
+}
+
+pub(crate) async fn update_relay_leased_agent_worker_extension_grants(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    grants: Vec<crate::extension::ExtensionGrant>,
+) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_worker_extension_grants(leased_agent_id, grants)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn launch_relay_leased_native_provider_run(
     runtime_state: &KernelRuntimeState,

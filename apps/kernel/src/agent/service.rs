@@ -1,5 +1,7 @@
 use crate::error::DaemonError;
-use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
+use crate::extension::{
+    ExtensionGrant, ExtensionKind, ExtensionSource, RemoteExtensionManifestSyncStatus,
+};
 use crate::provider::{
     AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata, ProviderResumeState,
 };
@@ -511,6 +513,98 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn set_worker_extension_grant_sync(
+        &mut self,
+        agent_id: &str,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_worker_extension_grant_sync(status);
+        Ok(agent.clone())
+    }
+
+    pub(crate) fn begin_extension_sync_attempt(
+        &mut self,
+        agent_id: &str,
+        source: ExtensionSource,
+        expected_binding: &RemoteAgentBinding,
+        expected_grant_manifest_hash: &str,
+        syncing_status: RemoteExtensionManifestSyncStatus,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.compare_and_set_extension_sync_attempt(
+            agent_id,
+            source,
+            expected_binding,
+            expected_grant_manifest_hash,
+            None,
+            syncing_status,
+        )
+    }
+
+    pub(crate) fn finish_extension_sync_attempt(
+        &mut self,
+        agent_id: &str,
+        source: ExtensionSource,
+        expected_binding: &RemoteAgentBinding,
+        expected_grant_manifest_hash: &str,
+        expected_syncing_status: &RemoteExtensionManifestSyncStatus,
+        completed_status: RemoteExtensionManifestSyncStatus,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.compare_and_set_extension_sync_attempt(
+            agent_id,
+            source,
+            expected_binding,
+            expected_grant_manifest_hash,
+            Some(expected_syncing_status),
+            completed_status,
+        )
+    }
+
+    fn compare_and_set_extension_sync_attempt(
+        &mut self,
+        agent_id: &str,
+        source: ExtensionSource,
+        expected_binding: &RemoteAgentBinding,
+        expected_grant_manifest_hash: &str,
+        expected_status: Option<&RemoteExtensionManifestSyncStatus>,
+        next_status: RemoteExtensionManifestSyncStatus,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        let binding_matches = agent.remote_execution().is_some_and(|binding| {
+            binding.worker_kernel_id == expected_binding.worker_kernel_id
+                && binding.worker_machine_id == expected_binding.worker_machine_id
+                && binding.execution_lease_id == expected_binding.execution_lease_id
+                && binding.leased_agent_id == expected_binding.leased_agent_id
+        });
+        let grant_manifest_hash =
+            crate::extension::extension_grant_manifest_hash(&agent.extension_grants_from(source))?;
+        let current_status = match source {
+            ExtensionSource::Home => agent.remote_extension_manifest_sync(),
+            ExtensionSource::Worker => agent.worker_extension_grant_sync(),
+        };
+        if !binding_matches
+            || grant_manifest_hash != expected_grant_manifest_hash
+            || expected_status.is_some_and(|expected| current_status != Some(expected))
+        {
+            return Ok(None);
+        }
+        match source {
+            ExtensionSource::Home => agent.set_remote_extension_manifest_sync(Some(next_status)),
+            ExtensionSource::Worker => agent.set_worker_extension_grant_sync(Some(next_status)),
+        }
+        Ok(Some(agent.clone()))
+    }
+
     pub fn set_external_provider_import(
         &mut self,
         agent_id: &str,
@@ -833,6 +927,26 @@ impl AgentService {
         grant: ExtensionGrant,
     ) -> Result<AgentInstance, DaemonError> {
         let agent_id = self.resolve_agent_id(agent_ref)?;
+        let existing = self
+            .store
+            .get(&agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_ref.to_string(),
+            })?;
+        if existing.extension_grants().iter().any(|current| {
+            current.source != grant.source
+                && current.kind == grant.kind
+                && current.name == grant.name
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: format!(
+                    "extension `{}:{}` is already granted from another source and would collide",
+                    grant.kind.as_str(),
+                    grant.name
+                ),
+            });
+        }
         let agent = self
             .store
             .get_mut(&agent_id)
@@ -855,7 +969,7 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.revoke_extension(ExtensionKind::Mcp, name);
+        agent.revoke_extension(ExtensionSource::Home, ExtensionKind::Mcp, name);
         Ok(agent.clone())
     }
 
@@ -879,13 +993,14 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.revoke_extension(ExtensionKind::Skill, name);
+        agent.revoke_extension(ExtensionSource::Home, ExtensionKind::Skill, name);
         Ok(agent.clone())
     }
 
     pub fn revoke_extension(
         &mut self,
         agent_ref: &str,
+        source: ExtensionSource,
         kind: ExtensionKind,
         name: &str,
     ) -> Result<AgentInstance, DaemonError> {
@@ -896,7 +1011,7 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_ref.to_string(),
             })?;
-        agent.revoke_extension(kind, name);
+        agent.revoke_extension(source, kind, name);
         Ok(agent.clone())
     }
 
@@ -946,5 +1061,216 @@ impl AgentService {
 impl Default for AgentService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opposite_source_extension_grant_is_rejected_without_mutation() {
+        let mut service = AgentService::new();
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        let home = ExtensionGrant::script("release", "python");
+        agent.grant_extension(home.clone());
+        service.restore_agent(agent);
+
+        let error = service
+            .grant_extension(
+                "agent-1",
+                ExtensionGrant::script("release", "worker-python")
+                    .from_source(ExtensionSource::Worker),
+            )
+            .expect_err("opposite-source identity must be rejected");
+
+        assert!(error.to_string().contains("another source"));
+        assert_eq!(
+            service
+                .get_agent("agent-1")
+                .expect("agent should remain present")
+                .extension_grants(),
+            &[home]
+        );
+    }
+
+    #[test]
+    fn extension_sync_completion_cannot_cross_worker_migration_or_local_move() {
+        let mut service = AgentService::new();
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.grant_extension(
+            ExtensionGrant::new(ExtensionKind::Mcp, "worker-mcp")
+                .from_source(ExtensionSource::Worker),
+        );
+        service.restore_agent(agent);
+        let binding_a = binding("worker-a", "lease-a", "leased-a");
+        service
+            .bind_remote_execution("agent-1", binding_a.clone())
+            .expect("worker A should bind");
+        let manifest_hash = crate::extension::extension_grant_manifest_hash(
+            &service
+                .get_agent("agent-1")
+                .expect("agent should exist")
+                .extension_grants_from(ExtensionSource::Worker),
+        )
+        .expect("worker grants should hash");
+        let syncing =
+            RemoteExtensionManifestSyncStatus::pending(manifest_hash.clone(), false).syncing();
+        service
+            .begin_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding_a,
+                &manifest_hash,
+                syncing.clone(),
+            )
+            .expect("sync should begin")
+            .expect("worker A should still be current");
+
+        let binding_b = binding("worker-b", "lease-b", "leased-b");
+        service
+            .bind_remote_execution("agent-1", binding_b)
+            .expect("worker B should bind");
+        assert!(service
+            .finish_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding_a,
+                &manifest_hash,
+                &syncing,
+                RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone()),
+            )
+            .expect("stale completion should be evaluated")
+            .is_none());
+        assert!(service
+            .get_agent("agent-1")
+            .expect("agent should exist")
+            .worker_extension_grant_sync()
+            .is_none());
+
+        service
+            .clear_remote_execution("agent-1")
+            .expect("agent should move local");
+        assert!(service
+            .finish_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding_a,
+                &manifest_hash,
+                &syncing,
+                RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone()),
+            )
+            .expect("local stale completion should be evaluated")
+            .is_none());
+    }
+
+    #[test]
+    fn newer_same_manifest_sync_attempt_wins_compare_and_set() {
+        let mut service = AgentService::new();
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-1",
+            "session-1",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.grant_extension(
+            ExtensionGrant::new(ExtensionKind::Mcp, "worker-mcp")
+                .from_source(ExtensionSource::Worker),
+        );
+        service.restore_agent(agent);
+        let binding = binding("worker-a", "lease-a", "leased-a");
+        service
+            .bind_remote_execution("agent-1", binding.clone())
+            .expect("worker should bind");
+        let manifest_hash = crate::extension::extension_grant_manifest_hash(
+            &service
+                .get_agent("agent-1")
+                .expect("agent should exist")
+                .extension_grants_from(ExtensionSource::Worker),
+        )
+        .expect("worker grants should hash");
+        let first =
+            RemoteExtensionManifestSyncStatus::pending(manifest_hash.clone(), false).syncing();
+        let second =
+            RemoteExtensionManifestSyncStatus::pending(manifest_hash.clone(), false).syncing();
+        assert_ne!(first, second);
+        service
+            .begin_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding,
+                &manifest_hash,
+                first.clone(),
+            )
+            .expect("first attempt should begin");
+        service
+            .begin_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding,
+                &manifest_hash,
+                second.clone(),
+            )
+            .expect("second attempt should begin");
+
+        assert!(service
+            .finish_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding,
+                &manifest_hash,
+                &first,
+                RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone()),
+            )
+            .expect("first completion should be evaluated")
+            .is_none());
+        assert!(service
+            .finish_extension_sync_attempt(
+                "agent-1",
+                ExtensionSource::Worker,
+                &binding,
+                &manifest_hash,
+                &second,
+                RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone()),
+            )
+            .expect("second completion should be evaluated")
+            .is_some());
+    }
+
+    fn binding(worker: &str, lease: &str, leased_agent: &str) -> RemoteAgentBinding {
+        RemoteAgentBinding {
+            worker_kernel_id: worker.to_string(),
+            worker_machine_id: format!("machine-{worker}"),
+            execution_lease_id: lease.to_string(),
+            leased_agent_id: leased_agent.to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+        }
     }
 }

@@ -465,6 +465,25 @@ async fn execution_leases_are_managed_through_peer_transport() {
         let mut app = app_b.lock().await;
         assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
     }
+    let destroyed_again = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease.id.clone(),
+        },
+    )
+    .await
+    .expect("repeated execution lease destruction should be idempotent");
+    assert_eq!(
+        destroyed_again,
+        RelayPeerResponse::ExecutionLeaseDestroyed {
+            lease_id: lease.id.clone(),
+        }
+    );
 
     let _ = shutdown_a_tx.send(true);
     let _ = shutdown_b_tx.send(true);
@@ -638,6 +657,25 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         let mut app = app_b.lock().await;
         assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
     }
+    let destroyed_again = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::DestroyLeasedAgent {
+            leased_agent_id: leased_agent.id.clone(),
+        },
+    )
+    .await
+    .expect("repeated leased agent destruction should be idempotent");
+    assert_eq!(
+        destroyed_again,
+        RelayPeerResponse::LeasedAgentDestroyed {
+            leased_agent_id: leased_agent.id.clone(),
+        }
+    );
 
     let _ = shutdown_a_tx.send(true);
     let _ = shutdown_b_tx.send(true);

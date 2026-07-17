@@ -16,12 +16,15 @@ impl KernelRuntimeOwnedState {
     pub(super) fn revoke_agent_extension(
         &self,
         agent_ref: &str,
+        source: crate::extension::ExtensionSource,
         kind: crate::extension::ExtensionKind,
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.ensure_agent_extension_authority(agent_ref, caller_user_id, "revoke agent extension")?;
-        let agent = self.agent_store.revoke_extension(agent_ref, kind, name)?;
+        let agent = self
+            .agent_store
+            .revoke_extension(agent_ref, source, kind, name)?;
         let _ = self.session_snapshot(agent.session_id())?;
         Ok(agent)
     }

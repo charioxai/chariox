@@ -154,10 +154,11 @@ fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
         .agents()
         .get_agent(planner_agent_id)
         .expect("planner agent should exist");
-    assert!(planner
-        .extension_grants()
-        .iter()
-        .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
+    assert!(planner.extension_grants().iter().any(|grant| grant.matches(
+        crate::extension::ExtensionSource::Home,
+        &ExtensionKind::Skill,
+        "workflow-code-skill"
+    )));
     let _ = fs::remove_dir_all(&workspace);
 }
 
@@ -202,7 +203,11 @@ fn workflow_code_apply_grants_extensions_to_authorized_existing_agent() {
     assert!(existing_agent
         .extension_grants()
         .iter()
-        .any(|grant| grant.matches(&ExtensionKind::Skill, "workflow-code-skill")));
+        .any(|grant| grant.matches(
+            crate::extension::ExtensionSource::Home,
+            &ExtensionKind::Skill,
+            "workflow-code-skill"
+        )));
     let _ = fs::remove_dir_all(&workspace);
 }
 

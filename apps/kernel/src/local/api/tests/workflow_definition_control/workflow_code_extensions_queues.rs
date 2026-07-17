@@ -224,6 +224,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
         .iter()
         .find(|grant| {
             grant.matches(
+                crate::extension::ExtensionSource::Home,
                 &crate::extension::ExtensionKind::Script,
                 "workflow-code-script",
             )

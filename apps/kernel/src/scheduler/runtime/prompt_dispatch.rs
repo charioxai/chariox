@@ -37,7 +37,12 @@ pub(super) fn dispatch_workflow_prompt(
     prompt: &PromptQueueItem,
 ) -> Result<(), DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
-    if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+    if target_agent.remote_execution().is_some() {
+        let target_agent = app.reconcile_remote_worker_extension_grants(&target_agent)?;
+        let remote_execution = target_agent
+            .remote_execution()
+            .cloned()
+            .expect("reconciled remote agent should retain worker binding");
         app.mark_active_prompt_delivery(
             session_id,
             target_agent_id,

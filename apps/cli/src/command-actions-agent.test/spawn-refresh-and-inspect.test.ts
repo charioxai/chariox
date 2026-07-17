@@ -194,7 +194,7 @@ test("agent inspect renders diagnostics as a notice with concise footer", async 
   assert.equal(notices.length, 1)
   assert.match(notices[0] ?? "", /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
   assert.match(notices[0] ?? "", /slice: devbox \(id=slice-1, status=running, owner=kernel-home@machine-home, authority=home-managed, display=headless, worktree=worktree-1, agents=1\)/)
-  assert.match(notices[0] ?? "", /remote extension sync: stale, hash=abcdef123456, error=worker offline/)
+  assert.match(notices[0] ?? "", /home extension sync: stale, hash=abcdef123456, error=worker offline/)
 })
 
 test("agent inspect preserves slice lookup failures with recovery guidance", async () => {
@@ -230,4 +230,3 @@ test("agent inspect preserves slice lookup failures with recovery guidance", asy
   assert.match(notices[0] ?? "", /slice lookup: kernel did not return slice inventory/)
   assert.match(notices[0] ?? "", /slice next: run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
 })
-

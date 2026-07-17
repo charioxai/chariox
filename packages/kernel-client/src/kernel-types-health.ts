@@ -243,6 +243,15 @@ export type RemoteExtensionSyncHealthSnapshot = {
   failed_agents: number
   stale_agents: number
   pending_revoke_agents: number
+  worker_extension_agents?: number
+  worker_extension_grants?: number
+  worker_manifest_missing_agents?: number
+  worker_synced_agents?: number
+  worker_syncing_agents?: number
+  worker_pending_agents?: number
+  worker_failed_agents?: number
+  worker_stale_agents?: number
+  worker_pending_revoke_agents?: number
   issues: RemoteExtensionSyncIssue[]
 }
 
@@ -259,7 +268,9 @@ export type RemoteExtensionSyncIssue = {
   manifest_hash?: string | null
   last_error?: string | null
   pending_revoke: boolean
+  source?: "home" | "worker"
   home_proxy_grants: string[]
+  worker_grants?: string[]
   worktree_id?: string | null
 }
 

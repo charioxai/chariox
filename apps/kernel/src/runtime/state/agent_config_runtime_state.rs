@@ -7,6 +7,11 @@ impl KernelRuntimeState {
         grant: crate::extension::ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if grant.source == crate::extension::ExtensionSource::Worker {
+            return self
+                .grant_agent_worker_extension(agent_ref, grant, caller_user_id)
+                .await;
+        }
         match grant.kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.grant_agent_mcp(agent_ref, grant.name, caller_user_id)
@@ -43,7 +48,7 @@ impl KernelRuntimeState {
                     Some(false),
                 )
                 .await?;
-                Ok(agent)
+                self.owned.agent_store.get_agent(agent.id())
             }
             crate::extension::ExtensionKind::Connector => {
                 self.ensure_agent_extension_tool_names_available(
@@ -72,7 +77,7 @@ impl KernelRuntimeState {
                     Some(false),
                 )
                 .await?;
-                Ok(agent)
+                self.owned.agent_store.get_agent(agent.id())
             }
         }
     }
@@ -102,7 +107,27 @@ impl KernelRuntimeState {
         );
         let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
         for grant in agent.extension_grants() {
-            if grant.kind == proposed.kind && grant.name == proposed.name {
+            if grant.source != proposed.source
+                && grant.kind == proposed.kind
+                && grant.name == proposed.name
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "agent.extension.grant",
+                    message: format!(
+                        "extension `{}:{}` is already granted from {:?} and would collide",
+                        grant.kind.as_str(),
+                        grant.name,
+                        grant.source
+                    ),
+                });
+            }
+            if grant.source != crate::extension::ExtensionSource::Home {
+                continue;
+            }
+            if grant.source == proposed.source
+                && grant.kind == proposed.kind
+                && grant.name == proposed.name
+            {
                 continue;
             }
             match grant.kind {
@@ -153,10 +178,16 @@ impl KernelRuntimeState {
     pub(crate) async fn revoke_agent_extension(
         &self,
         agent_ref: &str,
+        source: crate::extension::ExtensionSource,
         kind: crate::extension::ExtensionKind,
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if source == crate::extension::ExtensionSource::Worker {
+            return self
+                .revoke_agent_worker_extension(agent_ref, kind, name, caller_user_id)
+                .await;
+        }
         match kind {
             crate::extension::ExtensionKind::Mcp => {
                 self.revoke_agent_mcp(agent_ref, name, caller_user_id).await
@@ -168,6 +199,7 @@ impl KernelRuntimeState {
             crate::extension::ExtensionKind::Script => {
                 let agent = self.owned.revoke_agent_extension(
                     agent_ref,
+                    crate::extension::ExtensionSource::Home,
                     crate::extension::ExtensionKind::Script,
                     name,
                     caller_user_id,
@@ -191,11 +223,12 @@ impl KernelRuntimeState {
                     Some(true),
                 )
                 .await?;
-                Ok(agent)
+                self.owned.agent_store.get_agent(agent.id())
             }
             crate::extension::ExtensionKind::Connector => {
                 let agent = self.owned.revoke_agent_extension(
                     agent_ref,
+                    crate::extension::ExtensionSource::Home,
                     crate::extension::ExtensionKind::Connector,
                     name,
                     caller_user_id,
@@ -219,9 +252,222 @@ impl KernelRuntimeState {
                     Some(true),
                 )
                 .await?;
-                Ok(agent)
+                self.owned.agent_store.get_agent(agent.id())
             }
         }
+    }
+
+    async fn grant_agent_worker_extension(
+        &self,
+        agent_ref: &str,
+        grant: crate::extension::ExtensionGrant,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let existing = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        self.owned.ensure_agent_extension_authority(
+            existing.id(),
+            caller_user_id,
+            "grant worker extension",
+        )?;
+        if existing.remote_execution().is_none() {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: "worker extensions require an agent assigned to a worker kernel"
+                    .to_string(),
+            });
+        }
+        if existing.has_extension_grant_from(
+            crate::extension::ExtensionSource::Home,
+            grant.kind.clone(),
+            &grant.name,
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: format!(
+                    "extension `{}:{}` is already granted from home and would collide with the worker grant",
+                    grant.kind.as_str(),
+                    grant.name
+                ),
+            });
+        }
+        let agent = self
+            .owned
+            .grant_agent_extension(agent_ref, grant.clone(), caller_user_id)?;
+        self.append_agent_durable_event(
+            "agent.extension_granted",
+            &agent,
+            Some(&format!("worker:{}:{}", grant.kind.as_str(), grant.name)),
+        )
+        .await?;
+        self.append_home_extension_grant_audit_event(
+            "worker_extension.grant.created",
+            &agent,
+            caller_user_id,
+            &grant,
+        )?;
+        self.sync_worker_extension_grants_for_agent(&agent, Some(false))
+            .await?;
+        self.owned.agent_store.get_agent(agent.id())
+    }
+
+    async fn revoke_agent_worker_extension(
+        &self,
+        agent_ref: &str,
+        kind: crate::extension::ExtensionKind,
+        name: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let agent = self.owned.revoke_agent_extension(
+            agent_ref,
+            crate::extension::ExtensionSource::Worker,
+            kind.clone(),
+            name,
+            caller_user_id,
+        )?;
+        self.append_agent_durable_event(
+            "agent.extension_revoked",
+            &agent,
+            Some(&format!("worker:{}:{name}", kind.as_str())),
+        )
+        .await?;
+        let grant = crate::extension::ExtensionGrant::new(kind, name)
+            .from_source(crate::extension::ExtensionSource::Worker);
+        self.append_home_extension_grant_audit_event(
+            "worker_extension.grant.revoked",
+            &agent,
+            caller_user_id,
+            &grant,
+        )?;
+        self.sync_worker_extension_grants_for_agent(&agent, Some(true))
+            .await?;
+        self.owned.agent_store.get_agent(agent.id())
+    }
+
+    pub(crate) async fn sync_worker_extension_grants_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        pending_revoke_intent: Option<bool>,
+    ) -> Result<(), DaemonError> {
+        let Some(remote) = agent.remote_execution().cloned() else {
+            return Ok(());
+        };
+        let mut grants = agent.extension_grants_from(crate::extension::ExtensionSource::Worker);
+        grants.sort();
+        let manifest_hash = crate::extension::extension_grant_manifest_hash(&grants)?;
+        let pending_revoke = pending_revoke_intent.unwrap_or(false)
+            || agent
+                .worker_extension_grant_sync()
+                .is_some_and(|status| status.pending_revoke == Some(true));
+        let syncing = crate::extension::RemoteExtensionManifestSyncStatus::pending(
+            manifest_hash.clone(),
+            pending_revoke,
+        )
+        .syncing();
+        if self
+            .owned
+            .agent_store
+            .begin_extension_sync_attempt(
+                agent.id(),
+                crate::extension::ExtensionSource::Worker,
+                &remote,
+                &manifest_hash,
+                syncing.clone(),
+            )?
+            .is_none()
+        {
+            return Ok(());
+        }
+
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) =
+            (remote.relay_url.clone(), remote.relay_token.clone())
+        {
+            config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &config,
+            ClientTarget {
+                daemon_id: Some(remote.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::UpdateLeasedAgentWorkerExtensionGrants {
+                leased_agent_id: remote.leased_agent_id.clone(),
+                grants: grants.clone(),
+            },
+        )
+        .await;
+        let completed_status = match response {
+            Ok(RelayPeerResponse::LeasedAgentWorkerExtensionGrantsUpdated {
+                leased_agent_id,
+                manifest_hash: applied_hash,
+                grants: applied_grants,
+            }) if {
+                leased_agent_id == remote.leased_agent_id && applied_hash == manifest_hash && {
+                    let mut canonical_applied_grants = applied_grants.clone();
+                    canonical_applied_grants.sort();
+                    canonical_applied_grants == grants
+                }
+            } =>
+            {
+                crate::extension::RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone())
+            }
+            Ok(other) => syncing.clone().failed(format!(
+                "unexpected worker extension sync response: {other:?}"
+            )),
+            Err(error) => syncing.clone().failed(error.to_string()),
+        };
+        if let Some(applied_agent) = self.owned.agent_store.finish_extension_sync_attempt(
+            agent.id(),
+            crate::extension::ExtensionSource::Worker,
+            &remote,
+            &manifest_hash,
+            &syncing,
+            completed_status,
+        )? {
+            self.publish_extension_sync_agent(&applied_agent)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn reconcile_worker_extension_grants_for_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if agent
+            .extension_grants_from(crate::extension::ExtensionSource::Worker)
+            .is_empty()
+            && agent.worker_extension_grant_sync().is_none()
+        {
+            return Ok(agent.clone());
+        }
+        let current_manifest_hash = crate::extension::extension_grant_manifest_hash(
+            &agent.extension_grants_from(crate::extension::ExtensionSource::Worker),
+        )?;
+        if !worker_extension_grants_are_synced(agent, &current_manifest_hash) {
+            self.sync_worker_extension_grants_for_agent(agent, None)
+                .await?;
+        }
+        let refreshed = self.owned.agent_store.get_agent(agent.id())?;
+        let refreshed_manifest_hash = crate::extension::extension_grant_manifest_hash(
+            &refreshed.extension_grants_from(crate::extension::ExtensionSource::Worker),
+        )?;
+        if !worker_extension_grants_are_synced(&refreshed, &refreshed_manifest_hash) {
+            return Err(DaemonError::LocalTransport {
+                operation: "worker extension grant reconciliation",
+                message: refreshed
+                    .worker_extension_grant_sync()
+                    .and_then(|status| status.last_error.clone())
+                    .unwrap_or_else(|| {
+                        "worker extension grants are not synchronized with the current manifest"
+                            .to_string()
+                    }),
+            });
+        }
+        Ok(refreshed)
     }
 
     pub(crate) async fn grant_agent_mcp(
@@ -240,6 +486,18 @@ impl KernelRuntimeState {
             caller_user_id,
             "grant agent capability",
         )?;
+        if existing.has_extension_grant_from(
+            crate::extension::ExtensionSource::Worker,
+            crate::extension::ExtensionKind::Mcp,
+            &name,
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: format!(
+                    "MCP `{name}` is already granted from worker and would collide with the home grant"
+                ),
+            });
+        }
         if existing.remote_execution().is_some() && !existing.mcp_grants().contains(&name) {
             let mut checked = existing.clone();
             checked.grant_mcp(name.clone());
@@ -267,7 +525,7 @@ impl KernelRuntimeState {
                 name,
             })
             .await?;
-        Ok(agent)
+        self.owned.agent_store.get_agent(agent.id())
     }
 
     pub(crate) async fn revoke_agent_mcp(
@@ -297,7 +555,7 @@ impl KernelRuntimeState {
                 name: name.to_string(),
             })
             .await?;
-        Ok(agent)
+        self.owned.agent_store.get_agent(agent.id())
     }
 
     pub(crate) async fn grant_agent_skill(
@@ -306,6 +564,23 @@ impl KernelRuntimeState {
         name: String,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let existing = self
+            .owned
+            .agent_store
+            .get_agent(agent_ref)
+            .or_else(|_| self.owned.agent_store.get_agent_by_ref(agent_ref))?;
+        if existing.has_extension_grant_from(
+            crate::extension::ExtensionSource::Worker,
+            crate::extension::ExtensionKind::Skill,
+            &name,
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "agent.extension.grant",
+                message: format!(
+                    "skill `{name}` is already granted from worker and would collide with the home grant"
+                ),
+            });
+        }
         let agent = self
             .owned
             .grant_agent_skill(agent_ref, name.clone(), caller_user_id)?;
@@ -321,7 +596,7 @@ impl KernelRuntimeState {
         )?;
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
-        Ok(agent)
+        self.owned.agent_store.get_agent(agent.id())
     }
 
     pub(crate) async fn revoke_agent_skill(
@@ -344,7 +619,7 @@ impl KernelRuntimeState {
         )?;
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), Some(false))
             .await?;
-        Ok(agent)
+        self.owned.agent_store.get_agent(agent.id())
     }
 
     async fn sync_remote_extension_manifest_for_agent(
@@ -372,6 +647,9 @@ impl KernelRuntimeState {
         };
         let manifest = self.remote_extension_manifest_for_agent(agent)?;
         let manifest_hash = manifest.manifest_hash();
+        let grant_manifest_hash = crate::extension::extension_grant_manifest_hash(
+            &agent.extension_grants_from(crate::extension::ExtensionSource::Home),
+        )?;
         let tool_count = manifest.tools.len();
         let pending_revoke = remote_extension_manifest_pending_revoke(
             agent.remote_extension_manifest_sync(),
@@ -382,40 +660,81 @@ impl KernelRuntimeState {
             pending_revoke,
         )
         .syncing();
-        let _ = self
+        if self
             .owned
             .agent_store
-            .set_remote_extension_manifest_sync(agent.id(), Some(syncing_status.clone()));
+            .begin_extension_sync_attempt(
+                agent.id(),
+                crate::extension::ExtensionSource::Home,
+                &remote_execution,
+                &grant_manifest_hash,
+                syncing_status.clone(),
+            )?
+            .is_none()
+        {
+            return Ok(());
+        }
         let mut config = self.config_snapshot().await;
         if let (Some(relay_url), Some(relay_token)) = (
             remote_execution.relay_url.clone(),
             remote_execution.relay_token.clone(),
         ) {
-            config.apply_missing_remote_relay_override(relay_url, relay_token);
+            config.apply_remote_relay_override(relay_url, relay_token);
         }
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            ClientTarget {
-                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
-                leased_agent_id: remote_execution.leased_agent_id,
-                remote_extension_manifest: manifest,
-            },
-        )
-        .await;
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedAgentRemoteExtensionManifest {
+            leased_agent_id: remote_execution.leased_agent_id.clone(),
+            remote_extension_manifest: manifest,
+        };
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config, target, request,
+                )
+                .await
+            }
+        };
+        if !self
+            .home_extension_manifest_attempt_is_current::<SCHEDULE_RETRIES>(
+                agent.id(),
+                &remote_execution,
+                &syncing_status,
+                &manifest_hash,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         let response = match response {
             Ok(response) => response,
             Err(error) => {
                 let error_message = error.to_string();
-                let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
+                let applied_agent = self.owned.agent_store.finish_extension_sync_attempt(
                     agent.id(),
-                    Some(syncing_status.failed(error_message.clone())),
-                );
+                    crate::extension::ExtensionSource::Home,
+                    &remote_execution,
+                    &grant_manifest_hash,
+                    &syncing_status,
+                    syncing_status.clone().failed(error_message.clone()),
+                )?;
+                let Some(applied_agent) = applied_agent else {
+                    return Ok(());
+                };
                 let _ = self.append_home_extension_manifest_audit_event(
                     "home_extension.manifest.failed",
-                    agent,
+                    &applied_agent,
                     caller_user_id,
                     &manifest_hash,
                     tool_count,
@@ -425,9 +744,10 @@ impl KernelRuntimeState {
                     None,
                     None,
                 );
+                self.publish_extension_sync_agent(&applied_agent)?;
                 if SCHEDULE_RETRIES {
                     self.schedule_remote_extension_manifest_retry(
-                        agent,
+                        &applied_agent,
                         caller_user_id,
                         manifest_hash.clone(),
                         tool_count,
@@ -449,17 +769,25 @@ impl KernelRuntimeState {
             }
         };
         if !matches!(
-            response,
-            RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { .. }
+            &response,
+            RelayPeerResponse::LeasedAgentRemoteExtensionManifestUpdated { leased_agent_id }
+                if leased_agent_id == &remote_execution.leased_agent_id
         ) {
             let error = "unexpected worker manifest sync response".to_string();
-            let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
+            let applied_agent = self.owned.agent_store.finish_extension_sync_attempt(
                 agent.id(),
-                Some(syncing_status.failed(error.clone())),
-            );
+                crate::extension::ExtensionSource::Home,
+                &remote_execution,
+                &grant_manifest_hash,
+                &syncing_status,
+                syncing_status.clone().failed(error.clone()),
+            )?;
+            let Some(applied_agent) = applied_agent else {
+                return Ok(());
+            };
             let _ = self.append_home_extension_manifest_audit_event(
                 "home_extension.manifest.failed",
-                agent,
+                &applied_agent,
                 caller_user_id,
                 &manifest_hash,
                 tool_count,
@@ -469,9 +797,10 @@ impl KernelRuntimeState {
                 None,
                 None,
             );
+            self.publish_extension_sync_agent(&applied_agent)?;
             if SCHEDULE_RETRIES {
                 self.schedule_remote_extension_manifest_retry(
-                    agent,
+                    &applied_agent,
                     caller_user_id,
                     manifest_hash.clone(),
                     tool_count,
@@ -490,6 +819,17 @@ impl KernelRuntimeState {
                 }),
             );
         } else {
+            let applied_agent = self.owned.agent_store.finish_extension_sync_attempt(
+                agent.id(),
+                crate::extension::ExtensionSource::Home,
+                &remote_execution,
+                &grant_manifest_hash,
+                &syncing_status,
+                crate::extension::RemoteExtensionManifestSyncStatus::synced(manifest_hash.clone()),
+            )?;
+            let Some(applied_agent) = applied_agent else {
+                return Ok(());
+            };
             self.owned
                 .remote_extension_manifest_retry_counts
                 .lock()
@@ -498,15 +838,9 @@ impl KernelRuntimeState {
                     agent.id(),
                     &manifest_hash,
                 ));
-            let _ = self.owned.agent_store.set_remote_extension_manifest_sync(
-                agent.id(),
-                Some(crate::extension::RemoteExtensionManifestSyncStatus::synced(
-                    manifest_hash.clone(),
-                )),
-            );
             self.append_home_extension_manifest_audit_event(
                 "home_extension.manifest.synced",
-                agent,
+                &applied_agent,
                 caller_user_id,
                 &manifest_hash,
                 tool_count,
@@ -516,8 +850,49 @@ impl KernelRuntimeState {
                 None,
                 None,
             )?;
+            self.publish_extension_sync_agent(&applied_agent)?;
         }
         Ok(())
+    }
+
+    fn publish_extension_sync_agent(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let _ = self.owned.session_snapshot(agent.session_id())?;
+        Ok(())
+    }
+
+    async fn home_extension_manifest_attempt_is_current<const SCHEDULE_RETRIES: bool>(
+        &self,
+        agent_id: &str,
+        expected_binding: &crate::agent::RemoteAgentBinding,
+        expected_syncing_status: &crate::extension::RemoteExtensionManifestSyncStatus,
+        expected_manifest_hash: &str,
+    ) -> Result<bool, DaemonError> {
+        let current = self.owned.agent_store.get_agent(agent_id)?;
+        if current.remote_execution() != Some(expected_binding)
+            || current.remote_extension_manifest_sync() != Some(expected_syncing_status)
+        {
+            return Ok(false);
+        }
+        let current_manifest_hash = self
+            .remote_extension_manifest_for_agent(&current)?
+            .manifest_hash();
+        if current_manifest_hash == expected_manifest_hash {
+            return Ok(true);
+        }
+
+        // Registry definitions are part of the manifest authority even when the
+        // grant identities are unchanged. Replace the obsolete in-flight attempt
+        // before its response can publish a stale Synced state.
+        Box::pin(
+            self.sync_remote_extension_manifest_for_agent_inner::<SCHEDULE_RETRIES>(
+                &current, None, None,
+            ),
+        )
+        .await?;
+        Ok(false)
     }
 
     async fn schedule_remote_extension_manifest_retry(
@@ -609,6 +984,14 @@ impl KernelRuntimeState {
         )?;
         self.sync_remote_extension_manifest_for_agent(&agent, Some(caller_user_id), None)
             .await?;
+        if !agent
+            .extension_grants_from(crate::extension::ExtensionSource::Worker)
+            .is_empty()
+            || agent.worker_extension_grant_sync().is_some()
+        {
+            self.sync_worker_extension_grants_for_agent(&agent, None)
+                .await?;
+        }
         self.owned.agent_store.get_agent(agent.id())
     }
 
@@ -623,6 +1006,7 @@ impl KernelRuntimeState {
         payload.insert(
             "grant".to_string(),
             serde_json::json!({
+                "source": grant.source,
                 "kind": grant.kind.as_str(),
                 "name": grant.name,
                 "environment": grant.environment,
@@ -696,6 +1080,7 @@ impl KernelRuntimeState {
         payload.insert(
             "grant".to_string(),
             serde_json::json!({
+                "source": crate::extension::ExtensionSource::Home,
                 "kind": extension_kind.as_str(),
                 "name": name,
             }),
@@ -1022,6 +1407,16 @@ impl KernelRuntimeState {
 
 fn remote_extension_manifest_retry_key(agent_id: &str, manifest_hash: &str) -> String {
     format!("{agent_id}:{manifest_hash}")
+}
+
+fn worker_extension_grants_are_synced(
+    agent: &crate::agent::AgentInstance,
+    current_manifest_hash: &str,
+) -> bool {
+    agent.worker_extension_grant_sync().is_some_and(|status| {
+        status.state == crate::extension::RemoteExtensionManifestSyncState::Synced
+            && status.manifest_hash.as_deref() == Some(current_manifest_hash)
+    })
 }
 
 fn remote_extension_manifest_pending_revoke(

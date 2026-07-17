@@ -262,6 +262,7 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
         relay_override: Option<DaemonConfig>,
     ) -> Result<AgentInstance, DaemonError> {
+        let previous_agent = agent.clone();
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
@@ -302,32 +303,8 @@ impl DaemonApp {
                     });
                 }
             };
-        let cleanup_remote_setup =
-            |app: &mut DaemonApp,
-             relay_config: &DaemonConfig,
-             target: &ClientTarget,
-             lease_id: &str,
-             leased_agent_id: Option<&str>| {
-                if let Some(leased_agent_id) = leased_agent_id {
-                    let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
-                        relay_config,
-                        target.clone(),
-                        RelayPeerRequest::DestroyLeasedAgent {
-                            leased_agent_id: leased_agent_id.to_string(),
-                        },
-                    ));
-                }
-                let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
-                    relay_config,
-                    target.clone(),
-                    RelayPeerRequest::DestroyExecutionLease {
-                        lease_id: lease_id.to_string(),
-                    },
-                ));
-            };
         if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
-            cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-            return Err(DaemonError::LocalTransport {
+            let error = DaemonError::LocalTransport {
                 operation: "create remote execution lease",
                 message: format!(
                     "remote worker `{}` uses relay peer protocol {}, but this home kernel requires {}. Upgrade and restart the worker kernel, then retry the remote agent.",
@@ -335,7 +312,16 @@ impl DaemonApp {
                     relay_peer_protocol_version,
                     RELAY_PEER_PROTOCOL_VERSION
                 ),
-            });
+            };
+            let cleanup = self.retire_remote_binding_candidate(
+                agent.id(),
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
+                &lease.id,
+                None,
+                &relay_config,
+            );
+            return Err(remote_setup_error_with_cleanup(error, cleanup));
         }
         let leased_agent =
             match self.block_on_relay_future(send_peer_request_via_temporary_connection(
@@ -356,15 +342,30 @@ impl DaemonApp {
             )) {
                 Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
                 Ok(other) => {
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(DaemonError::LocalTransport {
+                    let error = DaemonError::LocalTransport {
                         operation: "spawn remote leased agent",
                         message: format!("unexpected peer response: {other:?}"),
-                    });
+                    };
+                    let cleanup = self.retire_remote_binding_candidate(
+                        agent.id(),
+                        &worker_kernel.kernel_id,
+                        &worker_kernel.machine_id,
+                        &lease.id,
+                        None,
+                        &relay_config,
+                    );
+                    return Err(remote_setup_error_with_cleanup(error, cleanup));
                 }
                 Err(error) => {
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(error);
+                    let cleanup = self.retire_remote_binding_candidate(
+                        agent.id(),
+                        &worker_kernel.kernel_id,
+                        &worker_kernel.machine_id,
+                        &lease.id,
+                        None,
+                        &relay_config,
+                    );
+                    return Err(remote_setup_error_with_cleanup(error, cleanup));
                 }
             };
         let leased_agent_id = leased_agent.id.clone();
@@ -387,27 +388,155 @@ impl DaemonApp {
         ) {
             Ok(bound) => bound,
             Err(error) => {
-                cleanup_remote_setup(
-                    self,
-                    &relay_config,
-                    &target,
+                let cleanup = self.retire_remote_binding_candidate(
+                    agent.id(),
+                    &worker_kernel.kernel_id,
+                    &worker_kernel.machine_id,
                     &lease_id,
                     Some(&leased_agent_id),
+                    &relay_config,
                 );
-                return Err(error);
+                return Err(remote_setup_error_with_cleanup(error, cleanup));
             }
         };
         if let Err(error) = self.ensure_remote_agent_skill_packages(&bound) {
-            cleanup_remote_setup(
-                self,
-                &relay_config,
-                &target,
+            self.agents.restore_agent(previous_agent);
+            let cleanup = self.retire_remote_binding_candidate(
+                agent.id(),
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
                 &lease_id,
                 Some(&leased_agent_id),
+                &relay_config,
             );
-            return Err(error);
+            return Err(remote_setup_error_with_cleanup(error, cleanup));
         }
-        Ok(bound)
+        match self.reconcile_remote_worker_extension_grants(&bound) {
+            Ok(bound) => Ok(bound),
+            Err(error) => {
+                self.agents.restore_agent(previous_agent);
+                let cleanup = self.retire_remote_binding_candidate(
+                    agent.id(),
+                    &worker_kernel.kernel_id,
+                    &worker_kernel.machine_id,
+                    &lease_id,
+                    Some(&leased_agent_id),
+                    &relay_config,
+                );
+                Err(remote_setup_error_with_cleanup(error, cleanup))
+            }
+        }
+    }
+
+    pub(crate) fn reconcile_remote_worker_extension_grants(
+        &mut self,
+        agent: &AgentInstance,
+    ) -> Result<AgentInstance, DaemonError> {
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(agent.clone());
+        };
+        let mut grants = agent.extension_grants_from(crate::extension::ExtensionSource::Worker);
+        grants.sort();
+        let manifest_hash = crate::extension::extension_grant_manifest_hash(&grants)?;
+        let pending_revoke = agent
+            .worker_extension_grant_sync()
+            .is_some_and(|status| status.pending_revoke == Some(true));
+        let syncing = crate::extension::RemoteExtensionManifestSyncStatus::pending(
+            manifest_hash.clone(),
+            pending_revoke,
+        )
+        .syncing();
+        if self
+            .agents
+            .begin_extension_sync_attempt(
+                agent.id(),
+                crate::extension::ExtensionSource::Worker,
+                &remote_execution,
+                &manifest_hash,
+                syncing.clone(),
+            )?
+            .is_none()
+        {
+            return self.agents.get_agent(agent.id());
+        }
+        let relay_config = self.relay_config_for_remote_execution(&remote_execution);
+        let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            &relay_config,
+            ClientTarget {
+                daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                daemon_alias: None,
+            },
+            RelayPeerRequest::UpdateLeasedAgentWorkerExtensionGrants {
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+                grants: grants.clone(),
+            },
+        ));
+        match response {
+            Ok(RelayPeerResponse::LeasedAgentWorkerExtensionGrantsUpdated {
+                leased_agent_id,
+                manifest_hash: applied_hash,
+                grants: applied_grants,
+            }) if {
+                leased_agent_id == remote_execution.leased_agent_id
+                    && applied_hash == manifest_hash
+                    && {
+                        let mut canonical_applied_grants = applied_grants.clone();
+                        canonical_applied_grants.sort();
+                        canonical_applied_grants == grants
+                    }
+            } =>
+            {
+                Ok(self
+                    .agents
+                    .finish_extension_sync_attempt(
+                        agent.id(),
+                        crate::extension::ExtensionSource::Worker,
+                        &remote_execution,
+                        &manifest_hash,
+                        &syncing,
+                        crate::extension::RemoteExtensionManifestSyncStatus::synced(
+                            manifest_hash.clone(),
+                        ),
+                    )?
+                    .unwrap_or_else(|| {
+                        self.agents
+                            .get_agent(agent.id())
+                            .unwrap_or_else(|_| agent.clone())
+                    }))
+            }
+            Ok(other) => {
+                let message = format!("unexpected worker extension sync response: {other:?}");
+                let applied = self.agents.finish_extension_sync_attempt(
+                    agent.id(),
+                    crate::extension::ExtensionSource::Worker,
+                    &remote_execution,
+                    &manifest_hash,
+                    &syncing,
+                    syncing.clone().failed(message.clone()),
+                )?;
+                if applied.is_none() {
+                    return self.agents.get_agent(agent.id());
+                }
+                Err(DaemonError::LocalTransport {
+                    operation: "worker extension grant reconciliation",
+                    message,
+                })
+            }
+            Err(error) => {
+                let applied = self.agents.finish_extension_sync_attempt(
+                    agent.id(),
+                    crate::extension::ExtensionSource::Worker,
+                    &remote_execution,
+                    &manifest_hash,
+                    &syncing,
+                    syncing.clone().failed(error.to_string()),
+                )?;
+                if applied.is_none() {
+                    return self.agents.get_agent(agent.id());
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn refresh_remote_agent_binding(
@@ -436,18 +565,7 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
-        self.durable_state_store().append_event(
-            "agent.updated",
-            Some(rebound.id().to_string()),
-            serde_json::json!({
-                "agent": &rebound,
-                "source": "remote_agent_binding_refreshed",
-            }),
-        )?;
-        if let Ok(session) = self.sessions.get_session(rebound.session_id()) {
-            self.update_session_projection(session);
-        }
-        Ok(rebound)
+        self.commit_remote_binding_refresh(agent, remote_execution, rebound)
     }
 
     pub(crate) fn refresh_remote_agent_binding_to_worker_kernel(
@@ -472,14 +590,51 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
         )?;
-        self.durable_state_store().append_event(
-            "agent.updated",
+        self.commit_remote_binding_refresh(agent, remote_execution, rebound)
+    }
+
+    fn commit_remote_binding_refresh(
+        &mut self,
+        previous_agent: AgentInstance,
+        previous_binding: RemoteAgentBinding,
+        rebound: AgentInstance,
+    ) -> Result<AgentInstance, DaemonError> {
+        let rebound_binding =
+            rebound
+                .remote_execution()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "persist remote binding refresh",
+                    message: "rebound agent is missing its Worker binding".to_string(),
+                })?;
+        let cleanup_intent = self.remote_binding_cleanup_intent(rebound.id(), &previous_binding);
+        if let Err(error) = self.durable_state_store().append_event(
+            super::remote_binding_cleanup::REMOTE_BINDING_REFRESHED_EVENT_KIND,
             Some(rebound.id().to_string()),
             serde_json::json!({
                 "agent": &rebound,
                 "source": "remote_agent_binding_refreshed",
+                "cleanup_intent": &cleanup_intent,
             }),
-        )?;
+        ) {
+            self.agents.restore_agent(previous_agent);
+            let cleanup = self.retire_remote_binding(rebound.id(), &rebound_binding);
+            return Err(remote_setup_error_with_cleanup(error, cleanup));
+        }
+        if let Err(error) = self.enqueue_persisted_remote_binding_cleanup(cleanup_intent) {
+            // The atomic event is already durable, so restart recovery will retry even if the
+            // immediate in-memory attempt could not be started.
+            crate::logging::warn_with_fields(
+                "remote_agent_binding.cleanup",
+                "could not start persisted previous binding cleanup",
+                serde_json::json!({
+                    "agent_id": rebound.id(),
+                    "worker_kernel_id": previous_binding.worker_kernel_id,
+                    "execution_lease_id": previous_binding.execution_lease_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
         if let Ok(session) = self.sessions.get_session(rebound.session_id()) {
             self.update_session_projection(session);
         }
@@ -605,6 +760,20 @@ impl DaemonApp {
             }
         }
         let moved = self.agents.clear_remote_execution(agent.id())?;
+        for grant in moved.extension_grants_from(crate::extension::ExtensionSource::Worker) {
+            self.agents.revoke_extension(
+                moved.id(),
+                crate::extension::ExtensionSource::Worker,
+                grant.kind,
+                &grant.name,
+            )?;
+        }
+        let moved = self
+            .agents
+            .set_remote_extension_manifest_sync(moved.id(), None)?;
+        let moved = self
+            .agents
+            .set_worker_extension_grant_sync(moved.id(), None)?;
         self.durable_state_store().append_event(
             "agent.updated",
             Some(moved.id().to_string()),
@@ -811,6 +980,21 @@ impl DaemonApp {
             }
             Ok(())
         });
+    }
+}
+
+fn remote_setup_error_with_cleanup<T>(
+    setup_error: DaemonError,
+    cleanup: Result<T, DaemonError>,
+) -> DaemonError {
+    match cleanup {
+        Ok(_) => setup_error,
+        Err(cleanup_error) => DaemonError::LocalTransport {
+            operation: "clean up failed remote binding setup",
+            message: format!(
+                "{setup_error}; durable candidate lease cleanup could not be scheduled: {cleanup_error}"
+            ),
+        },
     }
 }
 

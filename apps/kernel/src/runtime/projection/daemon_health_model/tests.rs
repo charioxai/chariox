@@ -193,6 +193,15 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
             failed_agents: 1,
             stale_agents: 0,
             pending_revoke_agents: 1,
+            worker_extension_agents: 0,
+            worker_extension_grants: 0,
+            worker_manifest_missing_agents: 0,
+            worker_synced_agents: 0,
+            worker_syncing_agents: 0,
+            worker_pending_agents: 0,
+            worker_failed_agents: 0,
+            worker_stale_agents: 0,
+            worker_pending_revoke_agents: 0,
             issues: vec![RemoteExtensionSyncIssue {
                 session_id: "session-1".to_string(),
                 agent_id: "agent-failed".to_string(),
@@ -206,7 +215,9 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
                 manifest_hash: Some("hash-failed".to_string()),
                 last_error: Some("relay offline".to_string()),
                 pending_revoke: true,
+                source: crate::extension::ExtensionSource::Home,
                 home_proxy_grants: vec!["connector:status-api".to_string()],
+                worker_grants: Vec::new(),
                 worktree_id: Some("/repo".to_string()),
             }],
         },
@@ -676,6 +687,38 @@ fn remote_extension_sync_health_reports_pending_revoke_after_last_grant_removed(
     assert_eq!(snapshot.issues[0].state, "failed");
     assert_eq!(snapshot.issues[0].pending_revoke, true);
     assert!(snapshot.issues[0].home_proxy_grants.is_empty());
+}
+
+#[test]
+fn remote_extension_sync_health_reports_worker_grants_separately() {
+    let mut worker_only = remote_agent("agent-worker-only");
+    worker_only.grant_extension(
+        ExtensionGrant::new(ExtensionKind::Connector, "worker-status")
+            .from_source(crate::extension::ExtensionSource::Worker),
+    );
+    worker_only.set_worker_extension_grant_sync(Some(
+        RemoteExtensionManifestSyncStatus::pending("worker-hash".to_string(), false)
+            .failed("worker sync failed"),
+    ));
+
+    let snapshot = RemoteExtensionSyncHealthSnapshot::from_agents(&[worker_only]);
+
+    assert_eq!(snapshot.remote_agents, 1);
+    assert_eq!(snapshot.home_proxy_agents, 0);
+    assert_eq!(snapshot.home_proxy_grants, 0);
+    assert_eq!(snapshot.worker_extension_agents, 1);
+    assert_eq!(snapshot.worker_extension_grants, 1);
+    assert_eq!(snapshot.worker_failed_agents, 1);
+    assert_eq!(snapshot.issues.len(), 1);
+    assert_eq!(
+        snapshot.issues[0].source,
+        crate::extension::ExtensionSource::Worker
+    );
+    assert!(snapshot.issues[0].home_proxy_grants.is_empty());
+    assert_eq!(
+        snapshot.issues[0].worker_grants,
+        vec!["connector:worker-status"]
+    );
 }
 
 #[test]

@@ -286,6 +286,7 @@ export type AgentInstance = {
   } | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
+  worker_extension_grant_sync?: RemoteExtensionManifestSyncStatus | null
   substitutes?: AgentSubstituteProfile[]
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null

@@ -38,7 +38,7 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/config"), true)
   assert.equal(items.some((item) => item.kind === "group" && item.label === "/meta" && item.value === "/meta "), true)
   assert.equal(items.some((item) => item.kind === "command" && item.label === "/exit"), true)
-  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
+  assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect and assign home-kernel and worker-kernel extensions (8)")
 })
 
 test("buildCommandCenterItems includes config subcommands", () => {
@@ -118,7 +118,8 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
     currentVariant: "high",
   })
 
-  assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-authoritative manifest sync, worker projection, and recovery for an agent")
+  assert.equal(items.find((item) => item.value === "/extension catalog ")?.description, "List extensions available from the home kernel, assigned worker kernel, or both; use --from home|worker|all")
+  assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-proxy and worker-local grant sync, placement, and recovery for an agent")
   assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry worker projection of a home-authoritative extension manifest")
   assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs and skills from provider configs into Arroba")
   assert.equal(buildCommandCenterItems("/extension import provider mcp", {

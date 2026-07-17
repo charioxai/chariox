@@ -55,8 +55,8 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\); skill=review \(skills snapshot\)/)
   assert.match(banner, /ext runtime:    home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(banner, /ext boundary:   home validates every call; credentials never leave home/)
-  assert.match(banner, /remote ext sync: pending/)
-  assert.match(banner, /ext sync next:  home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
+  assert.match(banner, /home ext sync: pending/)
+  assert.match(banner, /home ext next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status A1; run \/machine kernels hetzner if it does not settle; use \/extension sync-retry A1 after worker connectivity is healthy/)
   assert.match(banner, /provider run:   session-run-1/)
   assert.match(banner, /proxy:          ws:\/\/127\.0\.0\.1:1234/)
   assert.match(banner, /prompt policy:  native prompts pass through/)
@@ -88,7 +88,7 @@ test("remote native TUI banner keeps MCPs and skills worker-local while scripts 
   assert.match(banner, /extensions:     mcp=filesystem \(worker-local, hash-validated\); skill=review \(worker-local, hash-validated\)/)
   assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied/)
   assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials/)
-  assert.match(banner, /remote ext sync: pending/)
+  assert.match(banner, /home ext sync: pending/)
 })
 
 test("remote native TUI banner does not invent manifest sync for worker-local MCPs and skills", () => {
@@ -115,7 +115,7 @@ test("remote native TUI banner does not invent manifest sync for worker-local MC
 
   assert.match(banner, /ext runtime:    native MCP and skill grants use hash-validated worker-local installs/)
   assert.match(banner, /ext boundary:   worker validates native MCP and skill hashes; provider credentials and execution stay on the worker/)
-  assert.doesNotMatch(banner, /remote ext sync:/)
+  assert.doesNotMatch(banner, /(?:home|worker) ext sync:/)
 })
 
 test("native TUI runtime banner calls out missing slice provider auth", () => {
@@ -215,12 +215,12 @@ test("native TUI runtime banner renders local defaults without inventing state",
   assert.match(banner, /home kernel:    -/)
   assert.doesNotMatch(banner, /session owner:/)
   assert.match(banner, /worktree:       \/repo/)
-  assert.match(banner, /placement:      worker-local/)
+  assert.match(banner, /placement:      home-local/)
   assert.match(banner, /live sync:      config default/)
   assert.match(banner, /extensions:     none/)
-  assert.match(banner, /ext runtime:    worker-local: definition and execution stay on the selected kernel/)
-  assert.match(banner, /ext boundary:   definition and execution stay on the selected kernel/)
-  assert.doesNotMatch(banner, /remote ext sync:/)
+  assert.match(banner, /ext runtime:    home-local: definition, credentials, and execution stay on the home kernel/)
+  assert.match(banner, /ext boundary:   home resolves, validates, and executes locally; credentials stay on home/)
+  assert.doesNotMatch(banner, /(?:home|worker) ext sync:/)
   assert.doesNotMatch(banner, /provider run:/)
 })
 
@@ -250,8 +250,65 @@ test("native TUI runtime banner surfaces blocked remote extension sync", () => {
   assert.match(banner, /extensions:     mcp=filesystem \(active tools home-proxy\)/)
   assert.match(banner, /ext runtime:    home-proxy: home owns definition, grants, credentials, and execution; worker receives projected tools/)
   assert.match(banner, /ext boundary:   home validates every call; credentials never leave home/)
-  assert.match(banner, /remote ext sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(banner, /ext sync next:  keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+  assert.match(banner, /home ext sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(banner, /home ext next: keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+})
+
+test("native TUI runtime banner keeps Worker-only sync and recovery separate from Home", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "managed" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [{ source: "worker", kind: "mcp", name: "filesystem" }],
+      worker_extension_grant_sync: {
+        state: "failed",
+        pending_revoke: true,
+        manifest_hash: "worker-hash",
+        last_error: "worker offline",
+      },
+    }),
+    worktree: "/repo",
+    grantedMcps: ["filesystem"],
+  })
+
+  assert.match(banner, /extensions:     mcp=filesystem \(worker-local\)/)
+  assert.match(banner, /worker ext sync: failed, pending revoke, hash=worker-hash, error=worker offline/)
+  assert.match(banner, /worker ext next: keep the Worker revoke in place;/)
+  assert.doesNotMatch(banner, /home ext sync:/)
+  assert.doesNotMatch(banner, /home ext next:/)
+})
+
+test("native TUI runtime banner renders both sync lanes for mixed-source grants", () => {
+  const banner = formatNativeTuiRuntimeBanner({
+    surface: "codex native-tui",
+    session: session({ workspace_live_sync_mode: "managed" }),
+    agent: agent({
+      remote_execution: {
+        worker_kernel_id: "worker-kernel",
+        worker_machine_id: "hetzner",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+      extension_grants: [
+        { source: "home", kind: "connector", name: "status-api" },
+        { source: "worker", kind: "mcp", name: "filesystem" },
+      ],
+      remote_extension_manifest_sync: { state: "synced" },
+      worker_extension_grant_sync: { state: "pending" },
+    }),
+    worktree: "/repo",
+    grantedMcps: ["filesystem"],
+  })
+
+  assert.match(banner, /home ext sync: synced/)
+  assert.match(banner, /worker ext sync: pending/)
+  assert.match(banner, /worker ext next: Worker-local grants are not settled on the worker;/)
 })
 
 test("native TUI runtime banner keeps final revokes visible after grants are gone", () => {
@@ -277,8 +334,8 @@ test("native TUI runtime banner keeps final revokes visible after grants are gon
   })
 
   assert.match(banner, /extensions:     none \(final revoke pending\)/)
-  assert.match(banner, /remote ext sync: failed, pending revoke, hash=empty-hash, error=worker offline/)
-  assert.match(banner, /ext sync next:  keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
+  assert.match(banner, /home ext sync: failed, pending revoke, hash=empty-hash, error=worker offline/)
+  assert.match(banner, /home ext next: keep the home revoke in place; run \/extension sync-status A1; run \/machine kernels hetzner if the revoke stays pending; use \/extension sync-retry A1 after the worker reconnects/)
 })
 
 test("native TUI runtime banner surfaces provider run recovery actions", () => {
@@ -331,7 +388,7 @@ test("native TUI runtime banner omits sync line for passive skill snapshots", ()
   assert.match(banner, /extensions:     skill=review \(skills snapshot\)/)
   assert.match(banner, /ext runtime:    skill snapshot: home projects passive content; executable helpers require a separate tool grant/)
   assert.match(banner, /ext boundary:   passive content only; executable helpers require separate tool grants/)
-  assert.doesNotMatch(banner, /remote ext sync:/)
+  assert.doesNotMatch(banner, /(?:home|worker) ext sync:/)
 })
 
 function session(overrides: Partial<RuntimeSession>): RuntimeSession {

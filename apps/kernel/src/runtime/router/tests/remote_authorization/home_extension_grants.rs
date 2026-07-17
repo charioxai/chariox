@@ -129,6 +129,7 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inne
     let grant = LocalDaemonRequest::GrantAgentExtension(crate::local::GrantAgentExtensionRequest {
         workspace_id: Some(workspace.to_string_lossy().to_string()),
         agent_ref: peer_agent.id().to_string(),
+        source: crate::extension::ExtensionSource::Home,
         kind: crate::local::ExtensionKind::Script,
         name: "home-only".to_string(),
         environment: Some("test-env".to_string()),
@@ -221,6 +222,7 @@ async fn home_owner_controls_extension_grants_for_collaborator_remote_agent_inne
     let revoke =
         LocalDaemonRequest::RevokeAgentExtension(crate::local::RevokeAgentExtensionRequest {
             agent_ref: peer_agent.id().to_string(),
+            source: crate::extension::ExtensionSource::Home,
             kind: crate::local::ExtensionKind::Script,
             name: "home-only".to_string(),
         });

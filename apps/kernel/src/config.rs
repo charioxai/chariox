@@ -103,26 +103,6 @@ impl DaemonConfig {
         self.cloud_relay = None;
     }
 
-    pub(crate) fn apply_missing_remote_relay_override(
-        &mut self,
-        relay_url: String,
-        relay_token: String,
-    ) {
-        if self.relay_url.is_some() && self.relay_token.is_some() {
-            return;
-        }
-        if self.relay_url_uses_cloud_profile(&relay_url) {
-            return;
-        }
-        if self.relay_url.is_none() {
-            self.relay_url = Some(relay_url);
-        }
-        if self.relay_token.is_none() {
-            self.relay_token = Some(relay_token);
-        }
-        self.cloud_relay = None;
-    }
-
     pub fn new(
         daemon_id: impl Into<String>,
         host_machine_id: impl Into<String>,

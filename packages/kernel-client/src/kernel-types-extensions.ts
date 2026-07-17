@@ -76,12 +76,40 @@ export type ArrobaCredentialConfig = {
 
 export type ExtensionKind = "mcp" | "skill" | "script" | "connector"
 
+export type ExtensionSource = "home" | "worker"
+
+export type ExtensionCatalogSource = ExtensionSource | "all"
+
 export type ExtensionGrant = {
+  /** Missing on legacy persisted grants; clients must interpret it as home. */
+  source?: ExtensionSource
   kind: ExtensionKind
   name: string
   environment?: string | null
   credential?: string | null
   max_safety?: "read" | "write" | "destructive" | string | null
+}
+
+export type AgentExtensionCatalogEntry = {
+  source: ExtensionSource
+  resolved_kernel_id: string
+  kind: ExtensionKind
+  name: string
+  description?: string | null
+  definition_hash?: string | null
+  environments: string[]
+  credentials: string[]
+  credential_required: boolean
+  max_safety: string[]
+}
+
+export type AgentExtensionCatalog = {
+  agent_id: string
+  home_kernel_id: string
+  worker_kernel_id?: string | null
+  worker_available: boolean
+  worker_error?: string | null
+  entries: AgentExtensionCatalogEntry[]
 }
 
 export type SkillImportSkip = {

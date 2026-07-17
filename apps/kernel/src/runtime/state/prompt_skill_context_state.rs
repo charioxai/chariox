@@ -13,7 +13,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
     ) -> Result<String, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
-        let skill_grants = agent.skill_grants();
+        let skill_grants = agent.execution_skill_grants();
         if skill_grants.is_empty() {
             return Ok(prompt.to_string());
         }
@@ -38,7 +38,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
     ) -> Result<String, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
-        let skill_grants = agent.skill_grants();
+        let skill_grants = agent.execution_skill_grants();
         if skill_grants.is_empty() {
             return Ok(String::new());
         }

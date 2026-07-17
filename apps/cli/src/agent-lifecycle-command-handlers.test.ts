@@ -45,7 +45,7 @@ test("agent list summary renders aliases and pluralization", () => {
       agent({ agent_ref: "agent-a", alias: "builder" }),
       remoteAgent,
     ]),
-    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker (lease=lease-1, leased_agent=leased-agent-1, run=run-worker); 2 grants (active tools home-proxy); manifest stale abcdef12 pending revoke error worker offline; see /extension sync-status agent-b]",
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; home-local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker (lease=lease-1, leased_agent=leased-agent-1, run=run-worker); 2 grants (active tools home-proxy); home manifest stale abcdef12 pending revoke error worker offline; see /extension sync-status agent-b]",
   )
   assert.match(
     formatAgentListSummary([remoteAgent], [slice({
@@ -174,8 +174,8 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
   assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
   assert.match(summary, /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
   assert.match(summary, /extension boundary: home validates every call; credentials never leave home/)
-  assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+  assert.match(summary, /home extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(summary, /home extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
   assert.match(summary, /substitutes: \*0:opencode\/zen\/fast/)
   assert.match(summary, /last substitution: Provider reported a substitutable resource limit: Insufficient balance/)
 })
@@ -244,8 +244,36 @@ test("remote skill-only agent summaries do not report pending home-proxy manifes
   assert.match(inspectSummary, /extensions: 1 grant \(skills snapshot; skill=1\)/)
   assert.match(inspectSummary, /extension runtime: skill snapshot: home projects passive content; executable helpers require a separate tool grant/)
   assert.match(inspectSummary, /extension boundary: passive content only; executable helpers require separate tool grants/)
-  assert.match(inspectSummary, /remote extension sync: not applicable \(no active home-proxy tools\)/)
+  assert.match(inspectSummary, /extension sync: not configured \(no active Home-proxy or Worker-local tools\)/)
   assert.doesNotMatch(inspectSummary, /pending, next=/)
+})
+
+test("agent summaries render Worker-only synchronization without Home recovery", () => {
+  const remoteAgent = agent({
+    id: "agent-worker",
+    agent_ref: "agent-worker",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ source: "worker", kind: "connector", name: "status-api" }],
+    worker_extension_grant_sync: {
+      state: "failed",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+  })
+
+  const listSummary = formatAgentListSummary([remoteAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteAgent)
+
+  assert.match(listSummary, /worker manifest failed pending revoke error worker offline;/)
+  assert.match(inspectSummary, /worker extension sync: failed, pending revoke, error=worker offline/)
+  assert.match(inspectSummary, /worker extension next: keep the Worker revoke in place;/)
+  assert.doesNotMatch(inspectSummary, /home extension sync:/)
+  assert.doesNotMatch(inspectSummary, /home extension next:/)
 })
 
 test("agent summaries keep final remote extension revokes visible after grants are gone", () => {
@@ -273,8 +301,8 @@ test("agent summaries keep final remote extension revokes visible after grants a
   assert.match(listSummary, /0 grants \(final revoke pending\)/)
   assert.match(listSummary, /manifest failed abcdef12 pending revoke error worker offline; see \/extension sync-status agent-remote/)
   assert.match(inspectSummary, /extensions: none \(final revoke pending\)/)
-  assert.match(inspectSummary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
-  assert.match(inspectSummary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+  assert.match(inspectSummary, /home extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(inspectSummary, /home extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
 })
 
 test("agent summaries make settling home-proxy manifests actionable", () => {
@@ -299,8 +327,8 @@ test("agent summaries make settling home-proxy manifests actionable", () => {
   const inspectSummary = formatAgentInspectSummary(remoteAgent)
 
   assert.match(listSummary, /manifest pending abcdef12; see \/extension sync-status agent-remote/)
-  assert.match(inspectSummary, /remote extension sync: pending, hash=abcdef123456/)
-  assert.match(inspectSummary, /remote extension next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if it does not settle; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
+  assert.match(inspectSummary, /home extension sync: pending, hash=abcdef123456/)
+  assert.match(inspectSummary, /home extension next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if it does not settle; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
 })
 
 test("agent summaries expose session and worker provider run pointers", () => {

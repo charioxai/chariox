@@ -69,7 +69,7 @@ pub(crate) fn granted_mcp_servers_for_agent_launch(
     session: &RuntimeSession,
     agent: &AgentInstance,
 ) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
-    let mcp_grants = agent.mcp_grants();
+    let mcp_grants = agent.execution_mcp_grants();
     if mcp_grants.is_empty() {
         return Ok(Vec::new());
     }

@@ -3,14 +3,18 @@ import {
   sessionAgentRuntimeState,
 } from "./session-runtime-status.js"
 import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
-import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "./shell-capability-format.js"
+import {
+  formatRemoteExtensionSyncStatusLine,
+  remoteExtensionSyncNextAction,
+  workerExtensionSyncNextAction,
+} from "./shell-capability-format.js"
 import {
   formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantRuntimeDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantPlacementSummary,
-  hasActiveHomeProxyExtensionGrants,
   shouldShowRemoteExtensionManifestSync,
+  shouldShowWorkerExtensionGrantSync,
 } from "./extension-grant-placement.js"
 import {
   formatSliceProviderAccounts,
@@ -139,7 +143,7 @@ function formatAgentProvider(agent: AgentInstance): string {
 function formatAgentListPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
   const remote = agent.remote_execution
   if (!remote) {
-    return "local"
+    return formatExtensionGrantPlacement(agent.extension_grants, false)
   }
   const details = formatAgentListRemotePlacementDetails(remote)
   if (slice) {
@@ -162,7 +166,10 @@ function formatAgentListGrantCount(agent: AgentInstance): string {
   const grants = agent.extension_grants?.length ?? 0
   const grantList = agent.extension_grants ?? []
   const count = `${grantList.length} grant${grantList.length === 1 ? "" : "s"}`
-  if (grants === 0 && agent.remote_extension_manifest_sync?.pending_revoke) {
+  if (grants === 0 && (
+    agent.remote_extension_manifest_sync?.pending_revoke
+    || agent.worker_extension_grant_sync?.pending_revoke
+  )) {
     return `${count} (final revoke pending)`
   }
   return grants > 0 ? `${count} (${formatAgentExtensionPlacementSummary(agent)})` : count
@@ -172,20 +179,34 @@ function formatAgentListRemoteExtensionSync(agent: AgentInstance): string | null
   if (!agent.remote_execution) {
     return null
   }
-  const status = agent.remote_extension_manifest_sync
-  if (!shouldShowRemoteExtensionManifestSync(agent.extension_grants, status)) {
+  const homeStatus = agent.remote_extension_manifest_sync
+  const workerStatus = agent.worker_extension_grant_sync
+  const showHome = shouldShowRemoteExtensionManifestSync(agent.extension_grants, homeStatus)
+  const showWorker = shouldShowWorkerExtensionGrantSync(agent.extension_grants, workerStatus)
+  if (!showHome && !showWorker) {
     return null
   }
+  return [
+    showHome ? formatAgentListExtensionSyncLane("home manifest", homeStatus, agent.agent_ref) : null,
+    showWorker ? formatAgentListExtensionSyncLane("worker manifest", workerStatus, agent.agent_ref) : null,
+  ].filter(Boolean).join("; ")
+}
+
+function formatAgentListExtensionSyncLane(
+  label: string,
+  status: AgentInstance["remote_extension_manifest_sync"],
+  agentRef: string,
+): string {
   if (!status) {
-    return `manifest pending; see /extension sync-status ${agent.agent_ref}`
+    return `${label} pending; see /extension sync-status ${agentRef}`
   }
   const hash = status.manifest_hash ? ` ${status.manifest_hash.slice(0, 8)}` : ""
   const revoke = status.pending_revoke ? " pending revoke" : ""
   const error = status.last_error ? ` error ${status.last_error}` : ""
   const action = status.state !== "synced" || status.pending_revoke || status.last_error
-    ? `; see /extension sync-status ${agent.agent_ref}`
+    ? `; see /extension sync-status ${agentRef}`
     : ""
-  return `manifest ${status.state}${hash}${revoke}${error}${action}`
+  return `${label} ${status.state}${hash}${revoke}${error}${action}`
 }
 
 export function formatAgentInspectSummary(
@@ -203,7 +224,7 @@ export function formatAgentInspectSummary(
     `session: ${agent.session_id}`,
     `home kernel: ${formatHomeKernel(sessionContext)}`,
     `session owner: ${sessionContext.ownerUserId || "<unknown>"}`,
-    "runtime authority: home owns session, prompts, grants, and live sync; workers execute leases and projected tools",
+    "runtime authority: home owns session, prompts, and live sync; each extension source owns its grants, definitions, credentials, and execution",
     `live sync: ${formatWorkspaceLiveSyncModeLabel(sessionContext.workspaceLiveSyncMode)}`,
     `live sync scope: ${formatLiveSyncScope(sessionContext)}`,
     `provider: ${agent.provider}`,
@@ -294,7 +315,7 @@ export function formatAgentSubstituteSummary(agent: AgentInstance): string {
 function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null = null): string {
   const remote = agent.remote_execution
   if (!remote) {
-    return "worker-local"
+    return formatExtensionGrantPlacement(agent.extension_grants, false)
   }
   const worker = remote.worker_machine_id || remote.worker_kernel_id
   const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
@@ -389,7 +410,10 @@ function agentProviderRunId(
 function formatAgentExtensionSummary(agent: AgentInstance): string {
   const grants = agent.extension_grants ?? []
   if (grants.length === 0) {
-    return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
+    return agent.remote_extension_manifest_sync?.pending_revoke
+      || agent.worker_extension_grant_sync?.pending_revoke
+      ? "none (final revoke pending)"
+      : "none"
   }
   return formatExtensionGrantPlacementSummary(grants, {
     remote: Boolean(agent.remote_execution),
@@ -403,45 +427,42 @@ export function formatAgentExtensionPlacementSummary(agent: AgentInstance): stri
 
 function formatAgentRemoteExtensionSyncLines(agent: AgentInstance): string[] {
   if (!agent.remote_execution) {
-    return ["remote extension sync: not applicable (worker-local agent; no home-proxy manifest)"]
+    return [`extension sync: not applicable (${formatExtensionGrantPlacement(agent.extension_grants, false)} agent; no cross-kernel manifest)`]
   }
-  const status = agent.remote_extension_manifest_sync
-  if (!status) {
-    if (!hasActiveHomeProxyExtensionGrants(agent.extension_grants)) {
-      return ["remote extension sync: not applicable (no active home-proxy tools)"]
-    }
-    return [
-      `remote extension sync: ${formatRemoteExtensionSyncStatusLine(null, {
-        includeNext: false,
-        agentRef: agent.agent_ref,
-        workerMachineId: agent.remote_execution.worker_machine_id,
-        errorPrefix: "error=",
-      })}`,
-      `remote extension next: ${formatAgentRemoteExtensionSyncNextAction(agent)}`,
-    ]
+  const homeStatus = agent.remote_extension_manifest_sync
+  const workerStatus = agent.worker_extension_grant_sync
+  const showHome = shouldShowRemoteExtensionManifestSync(agent.extension_grants, homeStatus)
+  const showWorker = shouldShowWorkerExtensionGrantSync(agent.extension_grants, workerStatus)
+  if (!showHome && !showWorker) {
+    return ["extension sync: not configured (no active Home-proxy or Worker-local tools)"]
   }
+  const lines: string[] = []
+  if (showHome) appendAgentExtensionSyncLane(lines, "home", homeStatus, agent)
+  if (showWorker) appendAgentExtensionSyncLane(lines, "worker", workerStatus, agent)
+  return lines
+}
+
+function appendAgentExtensionSyncLane(
+  lines: string[],
+  source: "home" | "worker",
+  status: AgentInstance["remote_extension_manifest_sync"],
+  agent: AgentInstance,
+): void {
   const details = [
     formatRemoteExtensionSyncStatusLine(status, {
       includeHash: true,
       includeNext: false,
       errorPrefix: "error=",
+      source,
     }),
-    status.last_synced_at_ms ? `synced=${formatTimestamp(status.last_synced_at_ms)}` : null,
-    status.last_attempted_at_ms ? `attempted=${formatTimestamp(status.last_attempted_at_ms)}` : null,
+    status?.last_synced_at_ms ? `synced=${formatTimestamp(status.last_synced_at_ms)}` : null,
+    status?.last_attempted_at_ms ? `attempted=${formatTimestamp(status.last_attempted_at_ms)}` : null,
   ].filter(Boolean)
-  const lines = [`remote extension sync: ${details.join(", ")}`]
-  if (status.state !== "synced" || status.pending_revoke || status.last_error) {
-    lines.push(`remote extension next: ${formatAgentRemoteExtensionSyncNextAction(agent)}`)
-  }
-  return lines
-}
-
-function formatAgentRemoteExtensionSyncNextAction(agent: AgentInstance): string {
-  return remoteExtensionSyncNextAction(
-    agent.remote_extension_manifest_sync,
-    agent.agent_ref,
-    agent.remote_execution?.worker_machine_id,
-  ) ?? `run /extension sync-status ${agent.agent_ref}`
+  lines.push(`${source} extension sync: ${details.join(", ")}`)
+  const next = source === "worker"
+    ? workerExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution?.worker_machine_id)
+    : remoteExtensionSyncNextAction(status, agent.agent_ref, agent.remote_execution?.worker_machine_id)
+  if (next) lines.push(`${source} extension next: ${next}`)
 }
 
 function formatAgentSubstitutesInline(agent: AgentInstance): string {

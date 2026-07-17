@@ -108,6 +108,12 @@ pub struct WaitingRoomSessionActivitySummary {
     #[serde(default, skip_serializing_if = "crate::session::is_zero")]
     pub remote_extension_pending_revoke_count: usize,
     #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub worker_extension_agent_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub worker_extension_sync_issue_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
+    pub worker_extension_pending_revoke_count: usize,
+    #[serde(default, skip_serializing_if = "crate::session::is_zero")]
     pub unread_idle_agent_count: usize,
 }
 

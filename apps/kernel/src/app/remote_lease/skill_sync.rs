@@ -16,9 +16,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
+        let mut skill_grants = backing_agent.skill_grants();
+        skill_grants.extend(backing_agent.worker_skill_grants());
+        skill_grants.sort();
+        skill_grants.dedup();
         crate::skill::format_granted_skill_prompt_context(
             backing_agent.agent_ref(),
-            &backing_agent.skill_grants(),
+            &skill_grants,
             backing_session.workspace_id(),
             prompt,
         )

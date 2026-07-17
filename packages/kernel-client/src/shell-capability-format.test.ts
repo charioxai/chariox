@@ -5,6 +5,7 @@ import {
   formatRemoteExtensionSyncStatus,
   formatRemoteExtensionSyncStatusLine,
   remoteExtensionSyncNextAction,
+  workerExtensionSyncNextAction,
 } from "./shell-capability-format.js"
 import {
   homeExtensionAuditAgentRef,
@@ -49,6 +50,27 @@ test("remote extension sync formatter renders status and recovery consistently",
   )
 })
 
+test("worker extension sync formatter gives Worker-local recovery without Home wording", () => {
+  assert.equal(
+    workerExtensionSyncNextAction({ state: "failed" }, "agent-1", "worker-1"),
+    "Worker-local grants remain blocked on the worker; run /extension sync-status agent-1; run /machine kernels worker-1; use /extension sync-retry agent-1 after worker connectivity is healthy",
+  )
+  assert.equal(
+    workerExtensionSyncNextAction({ state: "synced", pending_revoke: true }, "agent-1", null),
+    "keep the Worker revoke in place; run /extension sync-status agent-1; run /kernel remote-runtime to identify worker connectivity if the Worker revoke stays pending; use /extension sync-retry agent-1 after the worker reconnects",
+  )
+  assert.equal(
+    formatRemoteExtensionSyncStatusLine({ state: "failed", last_error: "worker offline" }, {
+      includeNext: true,
+      agentRef: "agent-1",
+      workerMachineId: "worker-1",
+      source: "worker",
+      errorPrefix: "error=",
+    }),
+    "failed, error=worker offline, next=Worker-local grants remain blocked on the worker; run /extension sync-status agent-1; run /machine kernels worker-1; use /extension sync-retry agent-1 after worker connectivity is healthy",
+  )
+})
+
 test("remote extension sync status keeps final revokes visible after grants are gone", () => {
   const output = formatRemoteExtensionSyncStatus({
     id: "agent-1",
@@ -81,10 +103,61 @@ test("remote extension sync status keeps final revokes visible after grants are 
     },
   })
 
-  assert.match(output, /agent-ref-1 remote extension sync: failed, pending revoke, worker offline/)
+  assert.match(output, /agent-ref-1 home extension sync: failed, pending revoke, worker offline/)
   assert.match(output, /grants: 0 grants \(final revoke pending\)/)
-  assert.match(output, /revoke state: pending worker acknowledgement/)
-  assert.match(output, /next: keep the home revoke in place; run \/extension sync-status agent-ref-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-ref-1 after the worker reconnects/)
+  assert.match(output, /home revoke state: pending worker acknowledgement/)
+  assert.match(output, /home extension next: keep the home revoke in place; run \/extension sync-status agent-ref-1; run \/machine kernels machine-1 if the revoke stays pending; use \/extension sync-retry agent-ref-1 after the worker reconnects/)
+})
+
+test("remote extension sync status renders Worker-only and mixed lanes independently", () => {
+  const base = {
+    id: "agent-1",
+    agent_ref: "agent-ref-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "default",
+    worktree_id: "/repo",
+    state: "Idle" as const,
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    remote_execution: {
+      worker_kernel_id: "worker-1",
+      worker_machine_id: "machine-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  }
+  const workerOnly = formatRemoteExtensionSyncStatus({
+    ...base,
+    extension_grants: [{ source: "worker", kind: "script" as const, name: "deploy" }],
+    worker_extension_grant_sync: {
+      state: "failed",
+      last_error: "worker offline",
+    },
+  })
+  assert.match(workerOnly, /agent-ref-1 worker extension sync: failed, worker offline/)
+  assert.match(workerOnly, /worker extension next: Worker-local grants remain blocked on the worker/)
+  assert.doesNotMatch(workerOnly, /home extension sync:/)
+  assert.doesNotMatch(workerOnly, /home extension next:/)
+
+  const mixed = formatRemoteExtensionSyncStatus({
+    ...base,
+    extension_grants: [
+      { source: "home", kind: "connector" as const, name: "status" },
+      { source: "worker", kind: "script" as const, name: "deploy" },
+    ],
+    remote_extension_manifest_sync: { state: "synced" },
+    worker_extension_grant_sync: { state: "pending" },
+  })
+  assert.match(mixed, /agent-ref-1 home extension sync: synced/)
+  assert.match(mixed, /agent-ref-1 worker extension sync: pending/)
+  assert.match(mixed, /worker extension next:/)
 })
 
 test("home extension audit policy gives binding-specific recovery for worker denials", () => {

@@ -8,8 +8,15 @@ import {
   formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantRuntimeDetail,
+  shouldShowRemoteExtensionManifestSync,
+  shouldShowWorkerExtensionGrantSync,
 } from "@arroba/kernel-client/extension-grant-placement"
-import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
+import { extensionGrantSource } from "@arroba/kernel-client/extension-grant-source"
+import {
+  formatRemoteExtensionSyncStatusLine,
+  remoteExtensionSyncNextAction,
+  workerExtensionSyncNextAction,
+} from "@arroba/kernel-client/shell-capability-format"
 import {
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
@@ -37,8 +44,8 @@ export type NativeTuiRuntimeBannerInput = {
 
 export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput): string {
   const slice = sliceForRemoteAgent(input.agent, input.slices ?? [])
-  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])
   const remoteNativeRun = isRemoteNativeRun(input.agent, input.run ?? null)
+  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [], remoteNativeRun)
   return [
     `[arroba ${input.surface}]`,
     `  arroba session: ${formatSession(input.session)}`,
@@ -64,13 +71,14 @@ function nativeBannerExtensionGrants(
   agent: AgentInstance,
   mcps: readonly string[],
   skills: readonly string[],
-): readonly { readonly kind: string }[] {
+  remoteNativeRun: boolean,
+): readonly { readonly source?: "home" | "worker"; readonly kind: string }[] {
   const grants = [...(agent.extension_grants ?? [])]
   if (mcps.length > 0 && !grants.some((grant) => grant.kind === "mcp")) {
-    grants.push({ kind: "mcp", name: "__native_banner_mcp__" })
+    grants.push({ source: remoteNativeRun ? "worker" : "home", kind: "mcp", name: "__native_banner_mcp__" })
   }
   if (skills.length > 0 && !grants.some((grant) => grant.kind === "skill")) {
-    grants.push({ kind: "skill", name: "__native_banner_skill__" })
+    grants.push({ source: remoteNativeRun ? "worker" : "home", kind: "skill", name: "__native_banner_skill__" })
   }
   return grants
 }
@@ -82,7 +90,10 @@ function formatGrantedExtensions(
   remoteNativeRun: boolean,
 ): string {
   if (mcps.length === 0 && skills.length === 0) {
-    return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
+    return agent.remote_extension_manifest_sync?.pending_revoke
+      || agent.worker_extension_grant_sync?.pending_revoke
+      ? "none (final revoke pending)"
+      : "none"
   }
   if (remoteNativeRun) {
     return [
@@ -91,8 +102,20 @@ function formatGrantedExtensions(
     ].filter(Boolean).join("; ")
   }
   const remote = Boolean(agent.remote_execution)
-  const activePlacement = formatExtensionGrantPlacement([{ kind: "mcp" }], remote)
-  const skillPlacement = formatExtensionGrantPlacement([{ kind: "skill" }], remote)
+  const mcpGrants = (agent.extension_grants ?? []).filter((grant) => (
+    grant.kind === "mcp" && mcps.includes(grant.name)
+  ))
+  const skillGrants = (agent.extension_grants ?? []).filter((grant) => (
+    grant.kind === "skill" && skills.includes(grant.name)
+  ))
+  const activePlacement = formatExtensionGrantPlacement(
+    mcpGrants.length > 0 ? mcpGrants : [{ source: "home", kind: "mcp" }],
+    remote,
+  )
+  const skillPlacement = formatExtensionGrantPlacement(
+    skillGrants.length > 0 ? skillGrants : [{ source: "home", kind: "skill" }],
+    remote,
+  )
   return [
     mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
     skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,
@@ -100,38 +123,68 @@ function formatGrantedExtensions(
 }
 
 function formatNativeExtensionRuntime(
-  grants: readonly { readonly kind: string }[],
+  grants: readonly { readonly source?: "home" | "worker"; readonly kind: string }[],
   agent: AgentInstance,
   remoteNativeRun: boolean,
 ): string {
   if (!remoteNativeRun) {
     return formatExtensionGrantRuntimeDetail(grants, Boolean(agent.remote_execution))
   }
-  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
-  const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
-  if (hasWorkerLocal && homeProxyGrants.length > 0) {
+  const hasNativeWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const hasWorkerSourceTools = grants.some((grant) => (
+    extensionGrantSource(grant) === "worker"
+    && (grant.kind === "script" || grant.kind === "connector")
+  ))
+  const homeProxyGrants = grants.filter((grant) => (
+    extensionGrantSource(grant) === "home"
+    && (grant.kind === "script" || grant.kind === "connector")
+  ))
+  if (hasWorkerSourceTools) {
+    const workerDetail = hasNativeWorkerLocal
+      ? "native MCP and skill grants plus Worker-source scripts and connectors execute worker-local"
+      : "Worker-source scripts and connectors use worker definitions, credentials, and execution"
+    return homeProxyGrants.length > 0
+      ? `${workerDetail}; Home-source scripts and connectors remain home-proxied`
+      : workerDetail
+  }
+  if (hasNativeWorkerLocal && homeProxyGrants.length > 0) {
     return "native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied"
   }
-  if (hasWorkerLocal) {
+  if (hasNativeWorkerLocal) {
     return "native MCP and skill grants use hash-validated worker-local installs"
   }
   return formatExtensionGrantRuntimeDetail(homeProxyGrants, true)
 }
 
 function formatNativeExtensionBoundary(
-  grants: readonly { readonly kind: string }[],
+  grants: readonly { readonly source?: "home" | "worker"; readonly kind: string }[],
   agent: AgentInstance,
   remoteNativeRun: boolean,
 ): string {
   if (!remoteNativeRun) {
     return formatExtensionAuthorityBoundaryDetail(grants, Boolean(agent.remote_execution))
   }
-  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
-  const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
-  if (hasWorkerLocal && homeProxyGrants.length > 0) {
+  const hasNativeWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const hasWorkerSourceTools = grants.some((grant) => (
+    extensionGrantSource(grant) === "worker"
+    && (grant.kind === "script" || grant.kind === "connector")
+  ))
+  const homeProxyGrants = grants.filter((grant) => (
+    extensionGrantSource(grant) === "home"
+    && (grant.kind === "script" || grant.kind === "connector")
+  ))
+  if (hasWorkerSourceTools) {
+    const workerBoundary = hasNativeWorkerLocal
+      ? "worker validates native MCP and skill hashes plus Worker-source script and connector calls"
+      : "worker validates Worker-source script and connector calls; worker credentials stay on worker"
+    return homeProxyGrants.length > 0
+      ? `${workerBoundary}; home validates Home-source calls without exporting credentials`
+      : workerBoundary
+  }
+  if (hasNativeWorkerLocal && homeProxyGrants.length > 0) {
     return "worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials"
   }
-  if (hasWorkerLocal) {
+  if (hasNativeWorkerLocal) {
     return "worker validates native MCP and skill hashes; provider credentials and execution stay on the worker"
   }
   return formatExtensionAuthorityBoundaryDetail(homeProxyGrants, true)
@@ -143,27 +196,51 @@ function formatRemoteExtensionSync(
   remoteNativeRun: boolean,
 ): string[] {
   if (!agent.remote_execution) return []
-  const status = agent.remote_extension_manifest_sync
-  const hasActiveHomeProxy = (!remoteNativeRun && mcps.length > 0) || Boolean(agent.extension_grants?.some((grant) => (
-    (!remoteNativeRun && grant.kind === "mcp") || grant.kind === "script" || grant.kind === "connector"
-  )))
-  if (!status && !hasActiveHomeProxy) return []
-  const lines = [`  remote ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
+  const homeStatus = agent.remote_extension_manifest_sync
+  const workerStatus = agent.worker_extension_grant_sync
+  const homeEligibleGrants = (agent.extension_grants ?? []).filter((grant) => (
+    extensionGrantSource(grant) === "home"
+    && (grant.kind === "script" || grant.kind === "connector" || (!remoteNativeRun && grant.kind === "mcp"))
+  ))
+  const hasUntrackedHomeMcp = !remoteNativeRun && mcps.some((name) => (
+    !(agent.extension_grants ?? []).some((grant) => grant.kind === "mcp" && grant.name === name)
+  ))
+  const showHome = shouldShowRemoteExtensionManifestSync(
+    hasUntrackedHomeMcp
+      ? [...homeEligibleGrants, { source: "home" as const, kind: "mcp" }]
+      : homeEligibleGrants,
+    homeStatus,
+  )
+  const showWorker = shouldShowWorkerExtensionGrantSync(agent.extension_grants, workerStatus)
+  if (!showHome && !showWorker) return []
+  const lines: string[] = []
+  if (showHome) appendNativeExtensionSyncLane(lines, "home", homeStatus, agent)
+  if (showWorker) appendNativeExtensionSyncLane(lines, "worker", workerStatus, agent)
+  return lines
+}
+
+function appendNativeExtensionSyncLane(
+  lines: string[],
+  source: "home" | "worker",
+  status: AgentInstance["remote_extension_manifest_sync"],
+  agent: AgentInstance,
+): void {
+  const remote = agent.remote_execution
+  if (!remote) return
+  lines.push(`  ${source} ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
     includeHash: true,
     includeNext: false,
     agentRef: agent.agent_ref,
-    workerMachineId: agent.remote_execution.worker_machine_id,
+    workerMachineId: remote.worker_machine_id,
     errorPrefix: "error=",
-  })}`]
-  const next = remoteExtensionSyncNextAction(
-    status,
-    agent.agent_ref,
-    agent.remote_execution.worker_machine_id,
-  )
+    source,
+  })}`)
+  const next = source === "worker"
+    ? workerExtensionSyncNextAction(status, agent.agent_ref, remote.worker_machine_id)
+    : remoteExtensionSyncNextAction(status, agent.agent_ref, remote.worker_machine_id)
   if (next) {
-    lines.push(`  ext sync next:  ${next}`)
+    lines.push(`  ${source} ext next: ${next}`)
   }
-  return lines
 }
 
 function isRemoteNativeRun(agent: AgentInstance, run: RuntimeProviderRun | null): boolean {
@@ -297,7 +374,7 @@ function formatSessionOwnerLines(session: RuntimeSession): string[] {
 
 function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
   const remote = agent.remote_execution
-  if (!remote) return "worker-local"
+  if (!remote) return formatExtensionGrantPlacement(agent.extension_grants, false)
   const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
   const parts = [
     remote.worker_machine_id ? `worker=${remote.worker_machine_id}` : null,

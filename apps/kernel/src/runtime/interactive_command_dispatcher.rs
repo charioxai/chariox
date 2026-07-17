@@ -15,6 +15,7 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::MoveAgentToLocal(_)
                 | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
                 | LocalDaemonRequest::ListHomeExtensionAudit(_)
+                | LocalDaemonRequest::ListAgentExtensionCatalog(_)
                 | LocalDaemonRequest::RevokeAgentExtension(_)
                 | LocalDaemonRequest::SubmitPrompt(_)
                 | LocalDaemonRequest::SubmitPrompts(_)
@@ -44,6 +45,7 @@ pub(crate) async fn dispatch_interactive_command(
         | LocalDaemonRequest::MoveAgentToLocal(_)
         | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
         | LocalDaemonRequest::ListHomeExtensionAudit(_)
+        | LocalDaemonRequest::ListAgentExtensionCatalog(_)
         | LocalDaemonRequest::RevokeAgentExtension(_)) => {
             let caller_user_id = command_caller_user_id(&command);
             execute_agent_control_request(runtime_state, &caller_user_id, request).await

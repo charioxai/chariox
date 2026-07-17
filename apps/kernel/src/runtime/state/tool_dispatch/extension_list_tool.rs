@@ -7,7 +7,7 @@ use super::capability_registry::{
 };
 
 impl KernelRuntimeState {
-    pub(super) fn handle_list_extensions_runtime_tool(
+    pub(super) async fn handle_list_extensions_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,
         agent: &crate::agent::AgentInstance,
@@ -28,8 +28,10 @@ impl KernelRuntimeState {
         })?;
         let kind = args.kind.as_deref().unwrap_or("all");
         let remote_home_proxy = agent.remote_execution().is_some();
-        let active_execution_location = if remote_home_proxy { "home" } else { "worker" };
-        let active_definition_origin = if remote_home_proxy { "home" } else { "worker" };
+        let leased_backing = self
+            .with_app_side_effect(|app| app.is_leased_backing_agent(session.id(), agent.id()))
+            .await;
+        let available_source = available_extension_source(leased_backing);
         if !matches!(kind, "all" | "mcp" | "skill" | "script" | "connector") {
             return Ok((
                 crate::transport::runtime_tools::RuntimeToolResult {
@@ -48,19 +50,21 @@ impl KernelRuntimeState {
                 .list()?
                 .into_iter()
                 .map(|mcp| {
-                    let granted =
-                        agent.has_extension_grant(crate::extension::ExtensionKind::Mcp, &mcp.name);
+                    let grant = agent
+                        .execution_extension_grant(crate::extension::ExtensionKind::Mcp, &mcp.name);
+                    let source = grant.map(|grant| grant.source).unwrap_or(available_source);
                     serde_json::json!({
                         "kind": "mcp",
                         "name": mcp.name,
                         "enabled": mcp.enabled,
                         "required": mcp.required,
-                        "granted": granted,
-                        "authority": if remote_home_proxy { "home" } else { "worker" },
-                        "definition_origin": active_definition_origin,
-                        "execution_location": active_execution_location,
+                        "granted": grant.is_some(),
+                        "source": source,
+                        "authority": source,
+                        "definition_origin": source,
+                        "execution_location": source,
                         "effective_when_requested": "after_provider_reload",
-                        "ready_state": if granted { "granted" } else { "available" }
+                        "ready_state": if grant.is_some() { "granted" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -74,19 +78,23 @@ impl KernelRuntimeState {
                 .list()?
                 .into_iter()
                 .map(|skill| {
-                    let granted = agent
-                        .has_extension_grant(crate::extension::ExtensionKind::Skill, &skill.name);
+                    let grant = agent.execution_extension_grant(
+                        crate::extension::ExtensionKind::Skill,
+                        &skill.name,
+                    );
+                    let source = grant.map(|grant| grant.source).unwrap_or(available_source);
                     serde_json::json!({
                         "kind": "skill",
                         "name": skill.name,
                         "description": skill.description,
                         "short_description": skill.short_description,
-                        "granted": granted,
-                        "authority": if remote_home_proxy { "home" } else { "worker" },
-                        "definition_origin": if remote_home_proxy { "projected_snapshot" } else { "worker" },
+                        "granted": grant.is_some(),
+                        "source": source,
+                        "authority": source,
+                        "definition_origin": if remote_home_proxy { "projected_snapshot" } else { extension_source_key(source) },
                         "execution_location": "none",
                         "effective_when_requested": "now",
-                        "ready_state": if granted { "ready" } else { "available" }
+                        "ready_state": if grant.is_some() { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -100,20 +108,24 @@ impl KernelRuntimeState {
                 .list()?
                 .into_iter()
                 .map(|script| {
-                    let granted = agent
-                        .has_extension_grant(crate::extension::ExtensionKind::Script, &script.name);
+                    let grant = agent.execution_extension_grant(
+                        crate::extension::ExtensionKind::Script,
+                        &script.name,
+                    );
+                    let source = grant.map(|grant| grant.source).unwrap_or(available_source);
                     serde_json::json!({
                         "kind": "script",
                         "name": script.name,
                         "description": script.description,
                         "runtime": script.runtime,
                         "definition_hash": script.definition_hash,
-                        "granted": granted,
-                        "authority": if remote_home_proxy { "home" } else { "worker" },
-                        "definition_origin": active_definition_origin,
-                        "execution_location": active_execution_location,
+                        "granted": grant.is_some(),
+                        "source": source,
+                        "authority": source,
+                        "definition_origin": source,
+                        "execution_location": source,
                         "effective_when_requested": "now",
-                        "ready_state": if granted { "ready" } else { "available" }
+                        "ready_state": if grant.is_some() { "ready" } else { "available" }
                     })
                 })
                 .collect::<Vec<_>>()
@@ -128,11 +140,12 @@ impl KernelRuntimeState {
                 .into_iter()
                 .map(|connector| {
                     let grant = agent
-                        .connector_grants()
-                        .into_iter()
-                        .find(|grant| grant.name == connector.name);
+                        .execution_extension_grant(
+                            crate::extension::ExtensionKind::Connector,
+                            &connector.name,
+                        );
+                    let source = grant.map(|grant| grant.source).unwrap_or(available_source);
                     let max_safety = grant
-                        .as_ref()
                         .and_then(|grant| {
                             crate::connector::ConnectorSafety::parse(grant.max_safety.as_deref())
                                 .ok()
@@ -157,10 +170,11 @@ impl KernelRuntimeState {
                         "description": connector.description,
                         "adapter": connector.adapter,
                         "granted": grant.is_some(),
-                        "authority": if remote_home_proxy { "home" } else { "worker" },
-                        "definition_origin": active_definition_origin,
-                        "execution_location": active_execution_location,
-                        "max_safety": grant.as_ref().and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
+                        "source": source,
+                        "authority": source,
+                        "definition_origin": source,
+                        "execution_location": source,
+                        "max_safety": grant.and_then(|grant| grant.max_safety.clone()).unwrap_or_else(|| "read".to_string()),
                         "operations": operations,
                         "effective_when_requested": "now",
                         "ready_state": if grant.is_some() { "ready" } else { "available" }
@@ -186,5 +200,41 @@ impl KernelRuntimeState {
             },
             None,
         ))
+    }
+}
+
+fn available_extension_source(leased_backing: bool) -> crate::extension::ExtensionSource {
+    if leased_backing {
+        crate::extension::ExtensionSource::Worker
+    } else {
+        crate::extension::ExtensionSource::Home
+    }
+}
+
+fn extension_source_key(source: crate::extension::ExtensionSource) -> &'static str {
+    match source {
+        crate::extension::ExtensionSource::Home => "home",
+        crate::extension::ExtensionSource::Worker => "worker",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_local_catalog_is_home_authoritative() {
+        assert_eq!(
+            available_extension_source(false),
+            crate::extension::ExtensionSource::Home
+        );
+    }
+
+    #[test]
+    fn leased_backing_catalog_is_worker_authoritative() {
+        assert_eq!(
+            available_extension_source(true),
+            crate::extension::ExtensionSource::Worker
+        );
     }
 }

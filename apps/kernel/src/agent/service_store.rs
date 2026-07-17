@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::extension::{ExtensionGrant, ExtensionKind, RemoteExtensionManifestSyncStatus};
+use crate::extension::{
+    ExtensionGrant, ExtensionKind, ExtensionSource, RemoteExtensionManifestSyncStatus,
+};
 use crate::provider::{
     AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata, ProviderResumeState,
 };
@@ -168,6 +170,51 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_remote_extension_manifest_sync(agent_id, status)
+    }
+
+    pub fn set_worker_extension_grant_sync(
+        &self,
+        agent_id: &str,
+        status: Option<RemoteExtensionManifestSyncStatus>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_worker_extension_grant_sync(agent_id, status)
+    }
+
+    pub(crate) fn begin_extension_sync_attempt(
+        &self,
+        agent_id: &str,
+        source: ExtensionSource,
+        expected_binding: &RemoteAgentBinding,
+        expected_grant_manifest_hash: &str,
+        syncing_status: RemoteExtensionManifestSyncStatus,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write().begin_extension_sync_attempt(
+            agent_id,
+            source,
+            expected_binding,
+            expected_grant_manifest_hash,
+            syncing_status,
+        )
+    }
+
+    pub(crate) fn finish_extension_sync_attempt(
+        &self,
+        agent_id: &str,
+        source: ExtensionSource,
+        expected_binding: &RemoteAgentBinding,
+        expected_grant_manifest_hash: &str,
+        expected_syncing_status: &RemoteExtensionManifestSyncStatus,
+        completed_status: RemoteExtensionManifestSyncStatus,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        self.write().finish_extension_sync_attempt(
+            agent_id,
+            source,
+            expected_binding,
+            expected_grant_manifest_hash,
+            expected_syncing_status,
+            completed_status,
+        )
     }
 
     pub fn set_external_provider_import(
@@ -344,10 +391,11 @@ impl AgentServiceStore {
     pub fn revoke_extension(
         &self,
         agent_ref: &str,
+        source: ExtensionSource,
         kind: ExtensionKind,
         name: &str,
     ) -> Result<AgentInstance, DaemonError> {
-        self.write().revoke_extension(agent_ref, kind, name)
+        self.write().revoke_extension(agent_ref, source, kind, name)
     }
 
     pub fn remove_session_agents(&self, session_id: &str) -> Vec<AgentInstance> {

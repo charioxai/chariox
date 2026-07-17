@@ -25,6 +25,7 @@
     "remote-home-extension:matrix-drill": "node scripts/live-remote-home-extension-matrix-drill.mjs",
     "remote-home-extension:local-matrix-drill": "node scripts/live-remote-home-extension-matrix-drill.mjs --only local-single,local-collab",
     "tui-remote-owner:drill": "pnpm run build && node scripts/live-tui-remote-owner-drill.mjs",
+    "tui-worker-extension-source:drill": "node scripts/live-worker-extension-source-tui-drill.mjs",
     "tui-remote-owner:cloud-hetzner-drill": "pnpm run build && node scripts/live-tui-remote-owner-cloud-hetzner-drill.mjs",
     "validation:focused-runtime-gate": "node scripts/drill-focused-runtime-gate.mjs --matrix-root .artifacts/drill-matrices --require-complete",
     "validation:distributed-runtime-gate": "node scripts/drill-distributed-runtime-gate.mjs --include-default-artifacts --include-default-failures --require-generated-matrix-registry-parity --require-runtime-signal-registry-parity --require-failure-taxonomy-registry-parity --require-complete",

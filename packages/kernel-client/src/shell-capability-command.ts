@@ -1,4 +1,5 @@
 import type {
+  AgentExtensionCatalog,
   AgentInstance,
   ArrobaConnectorAdapterDefinition,
   ArrobaEnvironmentConfig,
@@ -8,6 +9,8 @@ import type {
   ArrobaScriptMetadata,
   ArrobaSkillMetadata,
   ExtensionKind,
+  ExtensionCatalogSource,
+  ExtensionSource,
   McpImportOutcome,
   ProviderCapabilityImportReport,
   SkillImportOutcome,
@@ -27,6 +30,7 @@ import {
   installMcpServerRequest,
   listHomeExtensionAuditRequest,
   installSkillRequest,
+  listAgentExtensionCatalogRequest,
   listEnvironmentsRequest,
   listConnectorAdaptersRequest,
   listConnectorsRequest,
@@ -54,6 +58,7 @@ import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./she
 import { resolveShellAgent } from "./shell-agent-resolver.js"
 import {
   formatAgentExtensionGrants,
+  formatAgentExtensionCatalog,
   formatEnvironmentList,
   formatMcpImportOutcome,
   formatMcpList,
@@ -166,25 +171,29 @@ export async function executeMcpCommand(
       const agentRef = name
       const grantName = parsed.args[2]
       if (!agentRef || !grantName) {
-        return { ok: false, message: `usage: mcp ${action} <agent-ref> <name>` }
+        return { ok: false, message: `usage: mcp ${action} <agent-ref> <name> [--from home|worker]` }
       }
-      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "mcp", agentRef, grantName)
+      const source = readGrantSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: mcp ${action} <agent-ref> <name> --from home|worker` }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "mcp", agentRef, grantName, source)
       if (confirmation) return confirmation
       const request = action === "grant"
-        ? grantAgentExtensionRequest(context.workspace, agentRef, "mcp", grantName)
-        : revokeAgentExtensionRequest(agentRef, "mcp", grantName)
+        ? grantAgentExtensionRequest(context.workspace, agentRef, "mcp", grantName, null, { source })
+        : revokeAgentExtensionRequest(agentRef, "mcp", grantName, source)
       const response = await deps.client.send(request)
       const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
       const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} MCP ${grantName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+      return extensionMutationResult(action, "MCP", grantName, agent, source)
     }
     case "grants":
     case "agent": {
+      const source = readCatalogSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: mcp ${action} [agent-ref] [--from home|worker|all]` }
       const agent = await resolveShellAgent(context, deps, name)
       if (!agent.ok) {
         return { ok: false, message: agent.message }
       }
-      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "mcp"), data: { agent: agent.agent } }
+      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "mcp", source), data: { agent: agent.agent } }
     }
     default:
       return { ok: false, message: "usage: mcp list|show|install|update|uninstall|import|grant|revoke|grants" }
@@ -248,23 +257,27 @@ export async function executeSkillCommand(
       const agentRef = name
       const grantName = parsed.args[2]
       if (!agentRef || !grantName) {
-        return { ok: false, message: `usage: skill ${action} <agent-ref> <name>` }
+        return { ok: false, message: `usage: skill ${action} <agent-ref> <name> [--from home|worker]` }
       }
+      const source = readGrantSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: skill ${action} <agent-ref> <name> --from home|worker` }
       const request = action === "grant"
-        ? grantAgentExtensionRequest(context.workspace, agentRef, "skill", grantName)
-        : revokeAgentExtensionRequest(agentRef, "skill", grantName)
+        ? grantAgentExtensionRequest(context.workspace, agentRef, "skill", grantName, null, { source })
+        : revokeAgentExtensionRequest(agentRef, "skill", grantName, source)
       const response = await deps.client.send(request)
       const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
       const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} skill ${grantName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+      return extensionMutationResult(action, "skill", grantName, agent, source)
     }
     case "grants":
     case "agent": {
+      const source = readCatalogSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: skill ${action} [agent-ref] [--from home|worker|all]` }
       const agent = await resolveShellAgent(context, deps, name)
       if (!agent.ok) {
         return { ok: false, message: agent.message }
       }
-      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "skill"), data: { agent: agent.agent } }
+      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "skill", source), data: { agent: agent.agent } }
     }
     default:
       return { ok: false, message: "usage: skill list|show|install|update|uninstall|import|grant|revoke|grants" }
@@ -357,23 +370,27 @@ export async function executeScriptCommand(
       const scriptName = parsed.args[2]
       const environment = readOption(parsed.args, "--env")
       if (!agentRef || !scriptName || (action === "grant" && !environment)) {
-        return { ok: false, message: `usage: script ${action} <agent-ref> <name>${action === "grant" ? " --env <environment>" : ""}` }
+        return { ok: false, message: `usage: script ${action} <agent-ref> <name> [--from home|worker]${action === "grant" ? " --env <environment>" : ""}` }
       }
-      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "script", agentRef, scriptName)
+      const source = readGrantSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: script ${action} <agent-ref> <name> --from home|worker${action === "grant" ? " --env <environment>" : ""}` }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "script", agentRef, scriptName, source)
       if (confirmation) return confirmation
       const request = action === "grant"
-        ? grantAgentExtensionRequest(context.workspace, agentRef, "script", scriptName, environment)
-        : revokeAgentExtensionRequest(agentRef, "script", scriptName)
+        ? grantAgentExtensionRequest(context.workspace, agentRef, "script", scriptName, environment, { source })
+        : revokeAgentExtensionRequest(agentRef, "script", scriptName, source)
       const response = await deps.client.send(request)
       const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
       const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} script ${scriptName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+      return extensionMutationResult(action, "script", scriptName, agent, source)
     }
     case "grants":
     case "agent": {
+      const source = readCatalogSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: script ${action} [agent-ref] [--from home|worker|all]` }
       const agent = await resolveShellAgent(context, deps, name)
       if (!agent.ok) return { ok: false, message: agent.message }
-      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "script"), data: { agent: agent.agent } }
+      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "script", source), data: { agent: agent.agent } }
     }
     default:
       return { ok: false, message: "usage: script list|show|validate|register|remove|grant|revoke|grants" }
@@ -436,25 +453,30 @@ export async function executeConnectorCommand(
     case "revoke": {
       const agentRef = name
       const connectorName = parsed.args[2]
-      if (!agentRef || !connectorName) return { ok: false, message: `usage: connector ${action} <agent-ref> <name>` }
-      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "connector", agentRef, connectorName)
+      if (!agentRef || !connectorName) return { ok: false, message: `usage: connector ${action} <agent-ref> <name> [--from home|worker]` }
+      const source = readGrantSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: connector ${action} <agent-ref> <name> --from home|worker` }
+      const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, "connector", agentRef, connectorName, source)
       if (confirmation) return confirmation
       const request = action === "grant"
         ? grantAgentExtensionRequest(context.workspace, agentRef, "connector", connectorName, null, {
           credential: readOption(parsed.args, "--credential"),
           maxSafety: readOption(parsed.args, "--allow"),
+          source,
         })
-        : revokeAgentExtensionRequest(agentRef, "connector", connectorName)
+        : revokeAgentExtensionRequest(agentRef, "connector", connectorName, source)
       const response = await deps.client.send(request)
       const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
       const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-      return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} connector ${connectorName} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+      return extensionMutationResult(action, "connector", connectorName, agent, source)
     }
     case "grants":
     case "agent": {
+      const source = readCatalogSource(parsed.args)
+      if (!source) return { ok: false, message: `usage: connector ${action} [agent-ref] [--from home|worker|all]` }
       const agent = await resolveShellAgent(context, deps, name)
       if (!agent.ok) return { ok: false, message: agent.message }
-      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "connector"), data: { agent: agent.agent } }
+      return { ok: true, message: formatAgentExtensionGrants(agent.agent, "connector", source), data: { agent: agent.agent } }
     }
     default:
       return { ok: false, message: "usage: connector list|show|register|adapter|remove|doctor|test|grant|revoke|grants" }
@@ -466,7 +488,16 @@ export async function executeExtensionCommand(
   context: ShellContext,
   deps: ShellCapabilityCommandDeps,
 ): Promise<ShellCommandResult> {
-  const [action, kind, agentRef, name] = parsed.args
+  const firstOptionIndex = parsed.args.findIndex((arg) => arg.startsWith("--"))
+  const positional = parsed.args.slice(0, firstOptionIndex === -1 ? parsed.args.length : firstOptionIndex)
+  const [action, kind, agentRef, name] = positional
+  if (action === "catalog") {
+    const source = readCatalogSource(parsed.args)
+    if (!kind || !source) return { ok: false, message: "usage: extension catalog <agent-ref> [--from home|worker|all]" }
+    const response = await deps.client.send(listAgentExtensionCatalogRequest(kind, source))
+    const catalog = expectVariant<{ catalog: AgentExtensionCatalog }>(response, "AgentExtensionCatalogListed").catalog
+    return { ok: true, message: formatAgentExtensionCatalog(catalog), data: { catalog } }
+  }
   if (action === "import") {
     if (kind !== "providers") {
       return { ok: false, message: "usage: extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run]" }
@@ -498,35 +529,43 @@ export async function executeExtensionCommand(
     return { ok: true, message: formatHomeExtensionAuditEvents(events), data: { events } }
   }
   if (action !== "grant" && action !== "revoke" && action !== "grants") {
-    return { ok: false, message: "usage: extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
+    return { ok: false, message: "usage: extension catalog <agent-ref> [--from home|worker|all] | extension grant|revoke <mcp|skill|script|connector> <agent-ref> <name> [--from home|worker] [--env <environment>] [--credential <id>] [--allow read|write|destructive] | extension grants <kind> [agent-ref] [--from home|worker|all] | extension import providers [--provider codex|opencode|claude] [--kind all|mcp|skill] [--name <capability>] [--dry-run] | extension sync-status|sync-retry|audit <agent-ref>" }
   }
   if (!isExtensionKind(kind)) {
     return { ok: false, message: "extension kind must be mcp, skill, script, or connector" }
   }
   if (action === "grants") {
+    const source = readCatalogSource(parsed.args)
+    if (!source) return { ok: false, message: "usage: extension grants <kind> [agent-ref] [--from home|worker|all]" }
     const agent = await resolveShellAgent(context, deps, agentRef)
     if (!agent.ok) return { ok: false, message: agent.message }
-    return { ok: true, message: formatAgentExtensionGrants(agent.agent, kind), data: { agent: agent.agent } }
+    return { ok: true, message: formatAgentExtensionGrants(agent.agent, kind, source), data: { agent: agent.agent } }
   }
   if (!agentRef || !name) {
-    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--env <environment>]` }
+    return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector> <agent-ref> <name> [--from home|worker] [--env <environment>]` }
   }
+  const source = readGrantSource(parsed.args)
+  if (!source) return { ok: false, message: `usage: extension ${action} <mcp|skill|script|connector> <agent-ref> <name> --from home|worker` }
   const environment = readOption(parsed.args, "--env")
   if (action === "grant" && kind === "script" && !environment) {
     return { ok: false, message: "usage: extension grant script <agent-ref> <name> --env <environment>" }
   }
-  const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, kind, agentRef, name)
+  const confirmation = await confirmActiveHomeProxyGrant(parsed, context, deps, action, kind, agentRef, name, source)
   if (confirmation) return confirmation
   const request = action === "grant"
     ? grantAgentExtensionRequest(context.workspace, agentRef, kind, name, environment, {
       credential: readOption(parsed.args, "--credential"),
       maxSafety: readOption(parsed.args, "--allow"),
+      source,
     })
-    : revokeAgentExtensionRequest(agentRef, kind, name)
+    : revokeAgentExtensionRequest(agentRef, kind, name, source)
   const response = await deps.client.send(request)
   const variant = action === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked"
   const agent = expectVariant<{ agent: AgentInstance }>(response, variant).agent
-  return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} ${kind} ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
+  const runtime = source === "worker"
+    ? `worker-local on ${agent.remote_execution?.worker_kernel_id ?? "worker"}`
+    : agent.remote_execution ? "home-proxy on home" : "home-local"
+  return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} ${kind} ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref} from ${source} (${runtime})`, data: { agent }, contextUpdates: { agentId: agent.id } }
 }
 
 function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
@@ -631,6 +670,36 @@ function readRepeatedOption(args: string[], flag: string): string[] {
   return values
 }
 
+function readGrantSource(args: string[]): ExtensionSource | null {
+  if (!args.includes("--from")) return "home"
+  const source = readOption(args, "--from")
+  return source === "home" || source === "worker" ? source : null
+}
+
+function readCatalogSource(args: string[]): ExtensionCatalogSource | null {
+  if (!args.includes("--from")) return "all"
+  const source = readOption(args, "--from")
+  return source === "home" || source === "worker" || source === "all" ? source : null
+}
+
+function extensionMutationResult(
+  action: "grant" | "revoke",
+  label: string,
+  name: string,
+  agent: AgentInstance,
+  source: ExtensionSource,
+): ShellCommandResult {
+  const runtime = source === "worker"
+    ? `worker-local on ${agent.remote_execution?.worker_kernel_id ?? "worker"}`
+    : agent.remote_execution ? "home-proxy on home" : "home-local"
+  return {
+    ok: true,
+    message: `${action === "grant" ? "granted" : "revoked"} ${label} ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref} from ${source} (${runtime})`,
+    data: { agent },
+    contextUpdates: { agentId: agent.id },
+  }
+}
+
 async function confirmActiveHomeProxyGrant(
   parsed: ParsedShellCommand,
   context: ShellContext,
@@ -639,8 +708,9 @@ async function confirmActiveHomeProxyGrant(
   kind: ExtensionKind,
   agentRef: string,
   name: string,
+  source: ExtensionSource = "home",
 ): Promise<ShellCommandResult | null> {
-  if (action !== "grant" || kind === "skill") {
+  if (action !== "grant" || kind === "skill" || source !== "home") {
     return null
   }
   const agent = await resolveShellAgent(context, deps, agentRef)

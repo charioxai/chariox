@@ -94,18 +94,48 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
   assert.match(rendered, /^session runtime/)
   assert.match(rendered, /session: release \(session-1\)/)
   assert.match(rendered, /home kernel: home-kernel@home-machine/)
-  assert.match(rendered, /authority: home owns sessions, prompts, grants, and live sync; workers execute leases and projected tools/)
+  assert.match(rendered, /authority: home owns sessions, prompts, and live sync; each extension source owns its grants, definitions, credentials, and execution/)
   assert.match(rendered, /live sync: tracked \(selected workspace\/worktree only; other repositories unrestricted\)/)
   assert.match(rendered, /focused agent: agent-remote/)
   assert.match(rendered, /prompts: active=1, queued=1, busy_agents=1/)
   assert.match(rendered, /agents: 2 total, 1 local, 1 remote\/slice/)
   assert.match(rendered, /remote runtime: 1 agent, 1 worker, 1 slice, 1 worker run gap/)
-  assert.match(rendered, /home-proxy extensions: 1 agent, 1 sync issue, 1 pending revoke/)
-  assert.match(rendered, /agent runtime:\n  - agent-local: Idle opencode\/gpt-5\.2 worktree=\/repo placement=local extensions=none/)
-  assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
+  assert.match(rendered, /home-proxy extensions: 1 agent, 1 grant \(connector=1\), 1 sync issue, 1 pending revoke/)
+  assert.match(rendered, /worker-local extensions: none/)
+  assert.match(rendered, /agent runtime:\n  - agent-local: Idle opencode\/gpt-5\.2 worktree=\/repo placement=home-local extensions=none/)
+  assert.match(rendered, /  - agent-remote: Working opencode\/gpt-5\.2 worktree=\/repo placement=slice:linux-dev slice_status=running slice_worktree=\/repo\/main slice_auth=ready opencode slice_accounts=opencode=daily \(daily@example.com\) worker=worker-machine kernel=worker-kernel lease=lease-1 leased_agent=leased-agent-1 extensions=1 grant \(active tools home-proxy; connector=1\) home_manifest=failed hash=hash-1 pending_revoke=yes error=worker offline/)
   assert.match(rendered, /collaboration: 1 collaborator, 1 mine, 1 others, 2 total/)
   assert.match(rendered, /next: run \/kernel remote-runtime; run \/agent inspect agent-remote; run \/machine kernels worker-machine; reconnect or relaunch the remote\/slice worker/)
   assert.match(rendered, /next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels worker-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+})
+
+test("formatSessionRuntimeStatus counts Worker scripts and connectors in the Worker lane", () => {
+  const remoteAgent = makeAgent({
+    id: "agent-worker",
+    agent_ref: "agent-worker",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [
+      { source: "worker", kind: "script", name: "deploy" },
+      { source: "worker", kind: "connector", name: "status-api" },
+    ],
+    worker_extension_grant_sync: {
+      state: "failed",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+  })
+  const rendered = formatSessionRuntimeStatus(makeSession({ agents: [remoteAgent] }))
+
+  assert.match(rendered, /home-proxy extensions: none/)
+  assert.match(rendered, /worker-local extensions: 1 agent, 2 grants \(script=1, connector=1\), 1 sync issue, 1 pending revoke/)
+  assert.match(rendered, /worker_manifest=failed pending_revoke=yes error=worker offline/)
+  assert.match(rendered, /next: keep the Worker revoke in place;/)
+  assert.doesNotMatch(rendered, /home keeps stale home-proxy calls blocked/)
 })
 
 test("formatSessionRuntimeStatus renders slice provider auth recovery", () => {

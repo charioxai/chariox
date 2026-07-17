@@ -97,7 +97,8 @@ impl RestoredExternalProviderAttachmentState {
             | "agent.extension_granted"
             | "agent.extension_revoked"
             | "agent.runtime_profile_updated"
-            | "agent.updated" => {
+            | "agent.updated"
+            | super::remote_binding_cleanup::REMOTE_BINDING_REFRESHED_EVENT_KIND => {
                 if let Ok(agent) = decode_durable_payload_field::<AgentInstance>(
                     event,
                     "agent",
@@ -178,6 +179,7 @@ impl DaemonApp {
         {
             self.restore_durable_state_event(event)?;
         }
+        self.restore_remote_binding_cleanup_intents()?;
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_runtime_state_after_restart()?;
         Ok(())
@@ -631,7 +633,8 @@ impl DaemonApp {
             | "agent.extension_granted"
             | "agent.extension_revoked"
             | "agent.runtime_profile_updated"
-            | "agent.updated" => {
+            | "agent.updated"
+            | super::remote_binding_cleanup::REMOTE_BINDING_REFRESHED_EVENT_KIND => {
                 let agent: AgentInstance = decode_durable_payload_field(
                     &event,
                     "agent",
