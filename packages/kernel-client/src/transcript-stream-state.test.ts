@@ -169,6 +169,26 @@ test("transcript stream state ignores a late live chunk already covered by hydra
   assert.deepEqual(result.entries, [history])
 })
 
+test("transcript stream state ignores a late live chunk covered by outline history", () => {
+  const history = {
+    ...entry(1, "assistant", "complete response\n", {
+      turnId: 2,
+      promptId: "prompt-1",
+    }),
+    historyTurnLifecycle: "completed" as const,
+  }
+  const result = applyTranscriptProviderChunk([history], {
+    role: "assistant",
+    chunk: "complete response\r\n",
+    metadata: {
+      promptId: "prompt-1",
+    },
+  })
+
+  assert.equal(result.kind, "noop")
+  assert.deepEqual(result.entries, [history])
+})
+
 test("transcript stream state replaces a cumulative live snapshot after hydrated history", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "assistant", "partial", {
