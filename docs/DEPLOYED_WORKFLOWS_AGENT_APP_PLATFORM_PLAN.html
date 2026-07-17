@@ -792,13 +792,13 @@
     <div id="scroll-progress" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-16</p>
+      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-17</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: core product, callback, egress and local two-surface paths are implemented; live-provider and guarded Hetzner Phase 7 acceptance remain open</span>
+        <span>Status: core product, callback, egress, local two-surface and live-provider paths are implemented; guarded Hetzner and real DNS/TLS Phase 7 acceptance remain open</span>
       </div>
     </header>
 
@@ -880,7 +880,7 @@
         <section id="baseline">
           <p class="eyebrow">02 / Current baseline</p>
           <h2>The product path exists; production acceptance is now the boundary.</h2>
-          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at OSS <code>4d503ba98</code> and Cloud <code>6ca6fffe</code> on 2026-07-16. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. The final local drill records stable fingerprints for these committed revisions; focused tests alone still do not count as launch acceptance.</p>
+          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at OSS <code>66c859e60</code> and Cloud <code>59693abb</code> on 2026-07-17. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. The final OpenCode drill pair records stable clean-worktree fingerprints for these exact revisions; Codex and Claude passed on their clean immediate-parent revisions before the provider-neutral failure-settlement and web turn-reconciliation patches, whose focused shared suites and final-head OpenCode paths are green. Focused tests alone still do not count as launch acceptance.</p>
 
           <div class="table-wrap">
             <table>
@@ -920,7 +920,7 @@
                 <tr>
                   <td>Credentials</td>
                   <td><span class="status have">Landed</span> Destination-owned profiles, one-time enrollments, runner affinity, bind/test/rotate/revoke/purge and direct protocol-241 Claude callback arming from TUI and web.</td>
-                  <td>Refresh the Claude credential, then complete live web/TUI enrollment, expiry, replay, rotation, revocation and cleanup acceptance against the committed callback path.</td>
+                  <td>Local live web/TUI enrollment, expiry, replay rejection, rotation, revocation, purge and cleanup are green for Codex, Claude and OpenCode; repeat the credential matrix through guarded hosted runtimes.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
@@ -1261,7 +1261,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </ol>
           <div class="callout info">
             <strong>Current checkpoint</strong>
-            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. The final local matrix passes the callback path with durable test credentials. Keep the live-provider gate open until refreshed Claude credentials pass real web- and TUI-initiated connect, rotate, cancel, timeout, replay, expiry and revocation drills.
+            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. Refreshed Claude credentials passed real web-to-TUI and TUI-to-web provider lifecycle drills, including enrollment expiry, replay rejection, rotation, revocation, purge and cleanup. Keep the hosted-provider gate open until the same path passes through the guarded Hetzner runtime matrix.
           </div>
 
           <h3>Credential classes that must stay distinct</h3>
@@ -1696,17 +1696,21 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="callout info">
-            <strong>Implementation and validation checkpoint / 2026-07-16</strong>
+            <strong>Implementation and validation checkpoint / 2026-07-17</strong>
             <ul>
               <li>Working vertical paths cover immutable releases, project/environment promotion and rollback, the Deployed web surface and TUI commands, customer handoff and revocable builder access, audience policy, credential lifecycle, domains, HTTP/SSE/WebSocket/MCP, Agent App invocation identity, usage/limits, operations detail, audit and reconciliation.</li>
-              <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Live Claude acceptance remains gated on refreshed credentials, not missing callback code.</li>
+              <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Refreshed Claude credentials now pass both live terminal directions locally.</li>
               <li>The OSS v3 network ceiling and dedicated CONNECT gateway are committed at <code>d45177951</code> and <code>b3acbf488</code>. Cloud <code>bac401e2</code>, <code>cff0062</code> and <code>7833a66e</code> landed policy compilation, hosted legacy rejection, revision-scoped internal and dual-homed network orchestration, host enforcement, recovery and convergent cleanup.</li>
               <li>The final local two-surface artifact <code>local-idle-browser-kernel-86004-1784180201325</code> is green with stable OSS <code>4d503ba984c6782c4cc6c73a2acd74b0fd80cd2f</code> and Cloud <code>6ca6fffe05cf48177df947864d06e123949ae39e</code> provenance. It covers six web/TUI transport cases, two Agent App cases and ten disruption cases across nine components.</li>
               <li>The same local run exercised same-caller serialization, different-caller concurrency, forged-header denial, cross-surface key lifecycle, bounded load in both directions, handoff, audience, credentials, domains and telemetry. Evidence includes 100 screenshots, 299 TUI snapshots, 18 visual checkpoints and 24 resource checkpoints.</li>
               <li>The run used its own relay, kernel, Cloud API/server, publication ingress and dynamically probed ports. Peak sampled load was 56 processes and 1,993,424 KiB RSS; cleanup left zero owned processes, freed all 32 core/transient ports, removed temporary and credential roots, and preserved unrelated local containers.</li>
               <li>Managed-slice relocation, image protocol labels and canonical package digests are committed at OSS <code>8d5d68d28</code>, <code>d25eefcf4</code> and <code>9fd24c57a</code>. A guarded Hetzner preflight then stopped before mutation because 3,286,196,224 bytes were available against the 3,489,660,928-byte effective managed-slice requirement, a 203,464,704-byte shortfall. Its cleanup audit is green and preserved all unrelated workloads.</li>
+              <li>OSS <code>66c859e60</code> now emits one prompt echo at admission, emits completion on synchronous and structured dispatch failure, and ignores stale failures for a newer prompt. Cloud <code>59693abb</code> reconciles an already-completed optimistic web turn with exact history prompt identity without merging separate prompts that share a provider run. Shared kernel-client, CLI, kernel and 165 focused Cloud turn/history/notice/renderer/event tests pass.</li>
+              <li>The deliberate unqualified OpenCode negative probe records one completed history turn, one TUI prompt plus failure notice, an idle agent, no queued interaction and complete PID/port cleanup. Its success-oriented harness exits because no assistant text is expected from the rejected model; the diagnostic exposed and drove the web completed-turn reconciliation fix.</li>
+              <li>Live Codex <code>gpt-5.4</code> and Claude <code>sonnet-4-6</code> pass web-to-TUI and TUI-to-web at clean parent heads <code>3d577945</code>/<code>ebbb9ca78</code>. Live OpenCode <code>opencode/big-pickle</code> passes both directions at exact final heads <code>59693abb</code>/<code>66c859e60</code>. Every run proves one prompt and one response on both terminals, one completed history turn, initial/rotated/recovered invocation markers, credential expiry/retry/replay/rotation/revocation/purge, inspected screenshots and zero remaining owned PIDs or ports.</li>
+              <li>The final OpenCode stacks were run serially, peaked at approximately 2.66 GiB RSS while Chromium and two provider servers were active, and returned task-owned RSS to zero after each direction. The temporary OpenCode credential source was deleted; the post-matrix app-family audit measured approximately 3.7 GiB RSS and no task-owned runtime process.</li>
             </ul>
-            <p><strong>Open acceptance work:</strong> rerun the guarded Hetzner hosted-container, pinned remote-machine, live shared managed-slice and second-account collaborator matrix once the host has at least 3,489,660,928 bytes of available disk and the memory floor passes. Refresh Claude credentials and complete live Codex/Claude/OpenCode connect, expiry, rotation and revocation cases; validate one real temporary DNS/TLS hostname; and repeat hosted egress, restart/partition, rollback, signed machine auth and bounded-load checks from both web and TUI with inspected screenshots. Record before/during/after resources and perform ownership-scoped cleanup twice, preserving unrelated workloads. When technical issues appear, compare the existing publication, resilience, provider, remote-agent and slice drills for guidance before changing architecture. Keep temporary/local substitutes nonblocking and ask for external registrations only in the final evidence-based acceptance report. Commit and push every meaningful green increment.</p>
+            <p><strong>Open acceptance work:</strong> rerun the guarded Hetzner hosted-container, pinned remote-machine, live shared managed-slice and second-account collaborator matrix once the host has at least 3,489,660,928 bytes of available disk and the memory floor passes. Validate one real temporary DNS/TLS hostname; repeat hosted provider credentials, egress, restart/partition, rollback, signed machine auth and bounded-load checks from both web and TUI with inspected screenshots; and rerun any provider whose path is affected by later code changes. Record before/during/after resources and perform ownership-scoped cleanup twice, preserving unrelated workloads. When technical issues appear, compare the existing publication, resilience, provider, remote-agent and slice drills for guidance before changing architecture. Keep temporary/local substitutes nonblocking and ask for external registrations only in the final evidence-based acceptance report. Commit and push every meaningful green increment.</p>
           </div>
         </section>
 
@@ -1868,7 +1872,7 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="footer">
-            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession and fail-closed egress orchestration are committed. The final-revision local web/TUI matrix is green with inspected visual and cleanup evidence. Refresh live provider credentials, free the guarded Hetzner managed-slice headroom without disturbing unrelated workloads, run the hosted/remote/slice/collaborator and real DNS/TLS matrices, commit and push each meaningful green milestone, then issue the final acceptance report. Keep the production launch gate closed until that evidence is green.
+            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession and fail-closed egress orchestration are committed. The local web/TUI matrix and live Codex, Claude and OpenCode provider coverage are green with inspected visual and cleanup evidence. Free the guarded Hetzner managed-slice headroom without disturbing unrelated workloads, run the hosted/remote/slice/collaborator and real DNS/TLS matrices, commit and push each meaningful green milestone, then issue the final acceptance report. Keep the production launch gate closed until that evidence is green.
           </div>
         </section>
       </article>
