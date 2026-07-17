@@ -566,6 +566,7 @@ fn outline_turn_from_events(
     events: Vec<HistoryEvent>,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
+    let events = suppress_sparse_legacy_transcript_duplicates(events);
     let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
@@ -634,6 +635,50 @@ fn outline_turn_from_events(
         entries,
         summary,
         blobs,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LegacyTranscriptDuplicateKey {
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    provider_run_id: Option<String>,
+    kind: String,
+    timestamp_ms: u64,
+    merge_key: String,
+    content: String,
+}
+
+fn suppress_sparse_legacy_transcript_duplicates(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let attributed_keys = events
+        .iter()
+        .filter(|event| event.prompt_id.is_some() || event.turn_id.is_some())
+        .filter_map(legacy_transcript_duplicate_key)
+        .collect::<BTreeSet<_>>();
+    events
+        .into_iter()
+        .filter(|event| {
+            event.prompt_id.is_some()
+                || event.turn_id.is_some()
+                || legacy_transcript_duplicate_key(event)
+                    .is_none_or(|key| !attributed_keys.contains(&key))
+        })
+        .collect()
+}
+
+fn legacy_transcript_duplicate_key(event: &HistoryEvent) -> Option<LegacyTranscriptDuplicateKey> {
+    let merge_key = event
+        .metadata
+        .get("merge_key")
+        .and_then(|value| value.as_str())?;
+    Some(LegacyTranscriptDuplicateKey {
+        session_id: event.session_id.clone(),
+        agent_id: event.agent_id.clone(),
+        provider_run_id: event.provider_run_id.clone(),
+        kind: format!("{:?}", event.kind),
+        timestamp_ms: event.timestamp_ms,
+        merge_key: merge_key.to_string(),
+        content: event.content.clone()?,
     })
 }
 

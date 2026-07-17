@@ -292,6 +292,8 @@ impl KernelRuntimeOwnedState {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entry(&entry, None, None, None);
         if let Err(error) = self.history_store.append(&session, &entry) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -302,7 +304,6 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entry(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -328,6 +329,8 @@ impl KernelRuntimeOwnedState {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entries(&entries);
         if let Err(error) = self.history_store.append_many(&session, &entries) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -339,7 +342,6 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entries(&entries);
     }
 
     pub(super) fn append_operational_history_entry(

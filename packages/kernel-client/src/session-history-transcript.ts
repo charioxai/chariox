@@ -137,6 +137,7 @@ export function hydrateSessionHistoryTranscriptEntries(
       role,
       chunk,
       mergeKey: options.mergeKey,
+      historyEntryIndex: options.historyEntryIndex,
       sourceText: options.sourceText,
       nextEntryId: nextId + 1,
       currentTurnId: options.turnId ?? null,

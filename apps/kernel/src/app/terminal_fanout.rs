@@ -200,6 +200,8 @@ impl DaemonApp {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entry(&entry);
         if let Err(error) = self.history.append(&session, &entry) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -210,7 +212,6 @@ impl DaemonApp {
                 }),
             );
         }
-        self.append_operational_history_entry(&entry);
     }
 
     pub(crate) fn replace_history_entry_by_merge_key_or_append(

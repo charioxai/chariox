@@ -412,16 +412,6 @@ impl ProviderOutputFanout {
                 return;
             }
         };
-        if let Err(error) = self.history_store.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append provider-output session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
-        }
         let context = crate::app::HistoryEventContextResolver::new(
             self.provider_store.clone(),
             self.session_store.clone(),
@@ -429,6 +419,7 @@ impl ProviderOutputFanout {
             self.active_turns.clone(),
         )
         .resolve(&entry);
+        // Make authoritative history visible before readers can import the legacy copy.
         match self
             .operational_history_store
             .append_transcript(&entry, context)
@@ -469,6 +460,16 @@ impl ProviderOutputFanout {
                     }),
                 );
             }
+        }
+        if let Err(error) = self.history_store.append(&session, &entry) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to append provider-output session history",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 }

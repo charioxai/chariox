@@ -160,6 +160,72 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
 }
 
 #[test]
+fn outline_turn_suppresses_sparse_legacy_reimport_of_keyed_delta() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        1,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "reply"),
+        context.clone(),
+    );
+    let chunks = [
+        "LOCAL",
+        "_DEPLOYED_WORKFLOW_SOURCE",
+        "_",
+        "39669-178431858622",
+        "1",
+        "_COMPLE",
+        "TED",
+    ];
+    let mut events = vec![prompt.clone()];
+    let mut final_entry = None;
+    for (index, text) in chunks.iter().enumerate() {
+        let mut entry = SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some("message-1".to_string()),
+            *text,
+        );
+        entry.timestamp_ms = 42;
+        if index == chunks.len() - 1 {
+            final_entry = Some(entry.clone());
+        }
+        events.push(HistoryEvent::transcript(
+            index as u64 + 2,
+            &entry,
+            context.clone(),
+        ));
+    }
+    events.push(HistoryEvent::transcript(
+        chunks.len() as u64 + 2,
+        &final_entry.expect("final chunk should exist"),
+        HistoryEventTurnContext::default(),
+    ));
+
+    let turn = outline_turn_from_events(&prompt, events, false).expect("turn should be outlined");
+    let output = turn
+        .entries
+        .iter()
+        .chain(turn.summary.iter())
+        .filter(|entry| entry.entry.kind == SessionHistoryEntryKind::ProviderOutput)
+        .map(|entry| entry.entry.text.as_str())
+        .collect::<String>();
+
+    assert_eq!(
+        output,
+        "LOCAL_DEPLOYED_WORKFLOW_SOURCE_39669-1784318586221_COMPLETED"
+    );
+}
+
+#[test]
 fn outline_external_turn_without_settlement_stays_incomplete() {
     let observed_at_ms = crate::session::unix_epoch_ms();
     let context = HistoryEventTurnContext {

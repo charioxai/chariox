@@ -205,6 +205,23 @@ test("transcript stream state replaces a cumulative live snapshot after hydrated
   assert.equal(result.entries[0]?.text, "partial response")
 })
 
+test("transcript stream state preserves repeated ordered history deltas", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "LOCAL_DEPLOYED_WORKFLOW_SOURCE", {
+      mergeKey: "reply-1",
+      historyEntryIndex: 4,
+    }),
+  ], {
+    role: "assistant",
+    chunk: "_",
+    mergeKey: "reply-1",
+    historyEntryIndex: 5,
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.entries[0]?.text, "LOCAL_DEPLOYED_WORKFLOW_SOURCE_")
+})
+
 test("transcript stream state keeps ordinary live chunks append-only", () => {
   const result = applyTranscriptProviderChunk([
     entry(1, "assistant", "same", { mergeKey: "reply-1" }),

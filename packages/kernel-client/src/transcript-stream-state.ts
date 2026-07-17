@@ -52,6 +52,7 @@ export type TranscriptProviderChunkOptions = {
   readonly role: string
   readonly chunk: string
   readonly mergeKey?: string | null | undefined
+  readonly historyEntryIndex?: number | undefined
   readonly sourceText?: string | null | undefined
   readonly metadata?: TranscriptStreamMetadata
   readonly nextEntryId?: number | null | undefined
@@ -160,6 +161,7 @@ export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntr
     normalized,
     normalizedSource,
     mergeKey: options.mergeKey ?? undefined,
+    historyEntryIndex: options.historyEntryIndex,
     metadata,
     currentTurnId,
     providerRunId: options.providerRunId,
@@ -253,6 +255,7 @@ function mergeProviderChunk(
     normalized: string
     normalizedSource: string | undefined
     mergeKey: string | undefined
+    historyEntryIndex: number | undefined
     metadata: TranscriptStreamMetadata
     currentTurnId: number | null
     providerRunId: string | null | undefined
@@ -264,6 +267,7 @@ function mergeProviderChunk(
     normalized,
     normalizedSource,
     mergeKey,
+    historyEntryIndex,
     metadata,
     currentTurnId,
     providerRunId,
@@ -280,7 +284,13 @@ function mergeProviderChunk(
       ) {
         continue
       }
-      const kind = applyMergedChunk(candidate, role, normalized, normalizedSource)
+      const kind = applyMergedChunk(
+        candidate,
+        role,
+        normalized,
+        normalizedSource,
+        historyEntryIndex,
+      )
       if (kind === "noop") {
         return { kind, entry: candidate }
       }
@@ -296,7 +306,13 @@ function mergeProviderChunk(
     && sameStreamingMergeIdentity(last, { currentTurnId, providerRunId, metadata })
     && mergeAdjacentUnkeyedRoles.includes(role)
   ) {
-    const kind = applyMergedChunk(last, role, normalized, normalizedSource)
+    const kind = applyMergedChunk(
+      last,
+      role,
+      normalized,
+      normalizedSource,
+      historyEntryIndex,
+    )
     if (kind === "noop") {
       return { kind, entry: last }
     }
@@ -335,13 +351,14 @@ function applyMergedChunk(
   role: string,
   normalized: string,
   normalizedSource: string | undefined,
+  historyEntryIndex: number | undefined,
 ): "noop" | "merged" {
   if (role === "assistant" || role === "reasoning") {
     if (transcriptStreamEntryIsHydratedHistory(candidate)) {
-      if (candidate.text.includes(normalized)) {
+      if (historyEntryIndex === undefined && candidate.text === normalized) {
         return "noop"
       }
-      if (normalized.startsWith(candidate.text)) {
+      if (normalized.length > candidate.text.length && normalized.startsWith(candidate.text)) {
         candidate.text = normalized
         if (normalizedSource !== undefined) {
           candidate.sourceText = normalizedSource
