@@ -86,7 +86,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     )
                     .into_iter(),
             )
-            .filter(|record| record.provider_run_id == provider_run_id)
+            .filter(|record| {
+                record.provider_run_id == provider_run_id
+                    && record.kind != TerminalOutputKind::PromptEcho
+            })
             .map(|record| RelayProjectedOutputChunk {
                 kind: record.kind,
                 merge_key: record.merge_key,
@@ -94,7 +97,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         let mut projected_output_history_keys = Vec::new();
-        let mut history_chunks =
+        let history_chunks =
             self.leased_provider_run_output_history_chunks(&leased_agent, provider_run_id)?;
         let latest_output_history_completion_key = history_chunks
             .iter()
@@ -103,31 +106,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|chunk| {
                 leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk)
             });
-        history_chunks.retain(|history_chunk| {
+        let mut unprojected_history_chunks = Vec::new();
+        for history_chunk in history_chunks {
             let history_key = leased_provider_run_history_chunk_key(
                 &leased_agent,
                 provider_run_id,
-                history_chunk,
+                &history_chunk,
             );
-            !leased_agent
+            if leased_agent
                 .projected_output_history_keys
                 .iter()
                 .any(|key| key == &history_key)
-                && !output_chunks.iter().any(|chunk| {
-                    chunk.kind == history_chunk.kind
-                        && chunk.merge_key == history_chunk.merge_key
-                        && chunk.bytes == history_chunk.bytes
-                })
-        });
-        for history_chunk in &history_chunks {
-            projected_output_history_keys.push(leased_provider_run_history_chunk_key(
-                &leased_agent,
-                provider_run_id,
-                history_chunk,
-            ));
+            {
+                continue;
+            }
+            projected_output_history_keys.push(history_key);
+            if output_chunks.iter().any(|chunk| {
+                chunk.kind == history_chunk.kind
+                    && chunk.merge_key == history_chunk.merge_key
+                    && chunk.bytes == history_chunk.bytes
+            }) {
+                continue;
+            }
+            unprojected_history_chunks.push(history_chunk);
         }
-        if !history_chunks.is_empty() {
-            output_chunks.extend(history_chunks);
+        if !unprojected_history_chunks.is_empty() {
+            output_chunks.extend(unprojected_history_chunks);
         }
         let notices = self
             .app

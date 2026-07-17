@@ -79,6 +79,14 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
     assert!(completions[0]
         .message_id
         .contains(&format!("leased-{provider_run_id}-completion")));
+
+    let duplicate = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("second projection drain should succeed");
+    assert!(
+        duplicate.is_none(),
+        "live output already matched to history must not replay from history"
+    );
 }
 
 #[test]
