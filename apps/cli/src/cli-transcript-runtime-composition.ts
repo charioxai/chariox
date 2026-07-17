@@ -354,6 +354,7 @@ export function createCliTranscriptRuntimeComposition(deps: CliTranscriptRuntime
     appendProviderChunk: transcriptStreamController.appendProviderChunk,
     appendToolUpdate: transcriptStreamController.appendToolUpdate,
     queueTerminalOutputRecords: terminalOutputRecordQueue.queue,
+    drainTerminalOutputRecords: terminalOutputRecordQueue.drain,
     clearTerminalOutputRecordTimer: terminalOutputRecordQueue.clearTimer,
     setKernelTerminalOutputRecordProcessor(processor: (record: TerminalOutputRecord) => void) {
       processKernelTerminalOutputRecord = processor

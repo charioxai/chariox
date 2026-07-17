@@ -305,16 +305,7 @@ impl KernelRuntimeState {
         } else if saw_runtime_activity {
             owned.note_prompt_output(provider_run_id);
         }
-        for completion in &poll_result.completions {
-            owned.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-                &completion.message_id,
-                completion.completed_at_ms,
-            );
-            owned.mark_prompt_completion_recorded(provider_run_id);
-        }
+        let completions = poll_result.completions;
         let prompt_completed = poll_result.prompt_completed;
         if let Some(message) = terminal_failure.as_deref() {
             let run = owned
@@ -356,10 +347,20 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
-            recipient_attachment_ids,
+            recipient_attachment_ids.clone(),
             terminal_outputs,
         );
         owned.append_history_entries(session_id, history_entries);
+        for completion in &completions {
+            owned.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
         if let Some(message) = terminal_failure {
             self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
                 .await?;

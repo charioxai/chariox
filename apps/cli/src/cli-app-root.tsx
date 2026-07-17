@@ -522,7 +522,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     appendEntry, appendUserPrompt, appendSteeredPrompt, appendNotice,
     appendCloudNotice, appendProviderError, clearLocalBusyStateForAuthoritativeIdle, applyProviderActivity,
     markAssistantMessageCompleted, syncVisibleActivityLabel, appendProviderChunk, appendToolUpdate,
-    queueTerminalOutputRecords, clearTerminalOutputRecordTimer, setKernelTerminalOutputRecordProcessor,
+    queueTerminalOutputRecords, drainTerminalOutputRecords, clearTerminalOutputRecordTimer,
+    setKernelTerminalOutputRecordProcessor,
   } = createCliTranscriptRuntimeComposition({
     batchUpdate: batch,
     client, formatError,
@@ -912,7 +913,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     clearLocalBusyStateForAuthoritativeIdle,
     attachToSession: (sessionId: string) => attachToSession(client, sessionId, options.clientId),
     setAttachmentState, kernelEventSubscriptionController, syncKernelEventSubscription, transitionToNoSession,
-    queueTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
+    queueTerminalOutputRecords, drainTerminalOutputRecords, scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: refreshWaitingRoomData,
     applyWaitingRoomRowsChanged, applyRelayStatusChanged, applyRemoteMachinesChanged, applyProviderCatalogChanged,
     applySlicesChanged, recoverAttachedSessionAfterKernelRestart, setFatalError,

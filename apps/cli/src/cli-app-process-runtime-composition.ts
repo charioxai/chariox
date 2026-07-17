@@ -161,6 +161,7 @@ export function createCliAppProcessRuntimeComposition(
     syncKernelEventSubscription: deps.syncKernelEventSubscription,
     transitionToNoSession: deps.transitionToNoSession,
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
+    drainTerminalOutputRecords: deps.drainTerminalOutputRecords,
     scheduleSharedPromptInputHistoryRefresh: deps.scheduleSharedPromptInputHistoryRefresh,
     handleWaitingRoomRefresh: deps.handleWaitingRoomRefresh,
     applyWaitingRoomRowsChanged: deps.applyWaitingRoomRowsChanged,

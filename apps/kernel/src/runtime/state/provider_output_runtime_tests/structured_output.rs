@@ -245,6 +245,10 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
                         bytes: vec![0xff, b's', b'e', b'c', b'o', b'n', b'd'],
                     },
                 ],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "structured-batch-2".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
         )
@@ -259,8 +263,27 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
     );
     assert_eq!(
         terminal.attachment_change_sequence(session.id(), attachment.id()),
-        before + 1,
-        "structured output chunks should use one terminal batch notification"
+        before + 2,
+        "the output batch and its completion should each notify the attachment"
+    );
+    assert_eq!(
+        terminal
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|record| record.bytes)
+            .collect::<Vec<_>>(),
+        vec![
+            b"first".to_vec(),
+            vec![0xff, b's', b'e', b'c', b'o', b'n', b'd']
+        ]
+    );
+    assert_eq!(
+        terminal
+            .drain_completion_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|completion| completion.message_id)
+            .collect::<Vec<_>>(),
+        vec!["structured-batch-2".to_string()]
     );
 }
 

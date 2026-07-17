@@ -603,16 +603,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
         } else if saw_runtime_activity {
             self.note_prompt_output(provider_run_id);
         }
-        for completion in &poll_result.completions {
-            terminal_sink.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-                &completion.message_id,
-                completion.completed_at_ms,
-            );
-            self.mark_prompt_completion_recorded(provider_run_id);
-        }
+        let completions = poll_result.completions;
         let prompt_completed = poll_result.prompt_completed;
         let terminal_failure = poll_result.terminal_failure.clone();
         if let Some(message) = terminal_failure.as_deref() {
@@ -646,6 +637,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
             "structured_poll_records_fanned_out",
             &records,
         );
+        for completion in &completions {
+            terminal_sink.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
             self.trace_prompt_state(

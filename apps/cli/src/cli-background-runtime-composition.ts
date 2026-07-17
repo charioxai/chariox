@@ -119,6 +119,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   syncKernelEventSubscription: AnyFn
   transitionToNoSession: AnyFn
   queueTerminalOutputRecords: AnyFn
+  drainTerminalOutputRecords: AnyFn
   scheduleSharedPromptInputHistoryRefresh: AnyFn
   handleWaitingRoomRefresh: AnyFn
   applyWaitingRoomRowsChanged: AnyFn
@@ -504,6 +505,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const kernelEventDispatchController = createKernelEventDispatchController({
     recordDaemonActivity,
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
+    drainTerminalOutputRecords: deps.drainTerminalOutputRecords,
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
     refreshAssistantMessageHistory,

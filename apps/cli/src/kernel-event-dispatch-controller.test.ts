@@ -386,6 +386,7 @@ test("kernel event dispatch reconciles durable history after assistant completio
   })
 
   assert.deepEqual(harness.calls, [
+    "drain-terminal-records",
     "assistant-completed:agent-1",
     "refresh-assistant-history:agent-1",
   ])
@@ -405,6 +406,9 @@ function createHarness() {
     queueTerminalOutputRecords: (records) => {
       terminalRecords.push(records)
       calls.push(`queue-terminal-records:${records.length}`)
+    },
+    drainTerminalOutputRecords: () => {
+      calls.push("drain-terminal-records")
     },
     applyRuntimeNotices: (notices) => {
       calls.push(`runtime-notices:${notices.length}`)
