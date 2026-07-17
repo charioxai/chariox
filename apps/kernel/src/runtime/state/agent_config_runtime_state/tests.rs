@@ -212,6 +212,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             projected_prompt_ids: Vec::new(),
             projected_completion_keys: Vec::new(),
             projected_output_history_keys: Vec::new(),
+            projected_provider_run: None,
             active_home_prompt_id: None,
             applied_home_steer_ids: Vec::new(),
             replayable_completion: None,

@@ -430,6 +430,162 @@ async fn workflow_prompt_settles_after_structured_message_completion_drain() {
 }
 
 #[tokio::test]
+async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("missing-output-retry".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node should be allowed to complete the run");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("return challenge RUNTIME-RETRY".to_string()),
+        )
+        .expect("workflow run should be created");
+    let first_node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &first_node_run_id,
+            format!("workflow-ack:{first_node_run_id}"),
+            "workflow node prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &first_node_run_id)
+        .expect("workflow node run should start");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "workflow node prompt".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &first_node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("workflow prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-without-structured-output".to_string()),
+                    bytes: b"I finished the workflow.".to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "assistant-without-structured-output".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: false,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("plain completion should be accepted while output drains");
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet drain should settle and schedule a correction");
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let resolved_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should exist");
+    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert_eq!(
+        resolved_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Failed
+    );
+    let correction_node_run = &resolved_run.node_runs()[1];
+    assert_eq!(
+        correction_node_run.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    let correction_prompt = correction_node_run
+        .turn_envelope()
+        .and_then(|envelope| envelope.rendered_prompt())
+        .expect("corrective workflow turn should preserve its rendered prompt");
+    assert!(correction_prompt.contains("return challenge RUNTIME-RETRY"));
+    assert!(correction_prompt.contains(
+        "The previous workflow turn ended without the required validated structured output"
+    ));
+    assert!(correction_prompt.contains("validate_and_submit_workflow_run_output"));
+    assert!(resolved_run.final_output().is_none());
+    assert!(resolved_run.failure_events().iter().any(|event| {
+        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
+            && event.source_node_run_id() == first_node_run_id
+    }));
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("corrective workflow prompt should be active");
+    assert_eq!(
+        active_prompt.workflow_node_run_id(),
+        Some(correction_node_run.id())
+    );
+    assert!(active_prompt.prompt().contains(
+        "The previous workflow turn ended without the required validated structured output"
+    ));
+}
+
+#[tokio::test]
 async fn workflow_reasoning_records_thinking_from_prompt_owner_context() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

@@ -246,6 +246,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .iter()
             .any(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput);
         let provider_run = self.app.providers.get_run(provider_run_id).ok();
+        let provider_run_projection = provider_run
+            .as_ref()
+            .map(|run| (run.id().to_string(), run.state()));
+        let provider_run_changed = provider_run_projection.is_some()
+            && leased_agent.projected_provider_run != provider_run_projection;
         let requires_explicit_completion = leased_provider_requires_explicit_completion(
             &leased_agent.provider,
             provider_run.as_ref(),
@@ -393,8 +398,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && notices.is_empty()
             && completions.is_empty()
             && prompts.is_empty()
+            && !provider_run_changed
         {
             return Ok(None);
+        }
+        if provider_run_changed {
+            if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+                agent.projected_provider_run = provider_run_projection;
+            }
         }
         Ok(Some((
             lease.home_kernel_id,
@@ -402,7 +413,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 home_session_id: lease.home_session_id,
                 home_agent_id: lease.home_agent_id,
                 provider_run_id: provider_run_id.to_string(),
-                provider_run: self.app.providers.get_run(provider_run_id).ok(),
+                provider_run,
                 prompts,
                 output_chunks,
                 notices,
@@ -693,73 +704,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     Some(provider_run_id),
                 );
             if !saw_completion && !workflow_output_ready {
-                return Ok(outcome);
-            }
-            if active_prompt.workflow_run_id().is_some() && !workflow_output_ready {
-                if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
-                    active_prompt.workflow_run_id(),
-                    active_prompt.workflow_node_run_id(),
-                ) {
-                    let message =
-                        "provider completed workflow turn without a validated workflow output";
-                    let provider_diagnostic = self
-                        .app
-                        .providers()
-                        .get_run(provider_run_id)
-                        .ok()
-                        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
-                        .filter(|message| !message.trim().is_empty());
-                    let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
-                        provider_diagnostic
-                    {
-                        (
-                            crate::session::WorkflowFailureKind::ProviderFailure,
-                            diagnostic.clone(),
-                            format!(
-                                "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
-                            ),
-                        )
-                    } else {
-                        (
-                            crate::session::WorkflowFailureKind::MissingStructuredOutput,
-                            message.to_string(),
-                            format!(
-                                "Workflow run `{workflow_run_id}` failed after provider turn completion without workflow output."
-                            ),
-                        )
-                    };
-                    let failure = crate::session::WorkflowFailureEvent::new(
-                        failure_kind,
-                        workflow_node_run_id,
-                        Vec::new(),
-                        failure_message,
-                    );
-                    let _ = self.app.sessions_mut().record_workflow_failure_event(
-                        session_id,
-                        workflow_run_id,
-                        failure,
-                    );
-                    self.app.sessions_mut().fail_workflow_node_run(
-                        session_id,
-                        workflow_run_id,
-                        workflow_node_run_id,
-                    )?;
-                    self.app.record_notice(
-                        session_id,
-                        Some(provider_run_id),
-                        recipient_attachment_ids.clone(),
-                        notice_message,
-                    );
-                    let _ = crate::app::KernelSessionReadService::new(self.app)
-                        .session_snapshot(session_id);
-                    let completed = self
-                        .app
-                        .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
-                    outcome.completions.push(PromptCompletion {
-                        completed,
-                        started_next: None,
-                    });
-                }
                 return Ok(outcome);
             }
             let completed = self
@@ -1059,6 +1003,84 @@ mod explicit_completion_tests {
                 structured_endpoint: None,
             },
         )
+    }
+
+    #[test]
+    fn provider_state_change_projects_without_terminal_records() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let mut run = provider_run(
+            "provider-run-state-only",
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            "managed-dev-stub",
+            "managed-dev-stub",
+            ProviderClientInterface::Arroba,
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+
+        let first = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
+            .expect("state-only projection should succeed")
+            .expect("new provider state should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            prompts,
+            output_chunks,
+            notices,
+            completions,
+            ..
+        } = first.1;
+        assert_eq!(
+            provider_run.map(|provider_run| provider_run.state()),
+            Some(crate::provider::ProviderRunState::Running)
+        );
+        assert!(prompts.is_empty());
+        assert!(output_chunks.is_empty());
+        assert!(notices.is_empty());
+        assert!(completions.is_empty());
+
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
+            .expect("unchanged provider state drain should succeed")
+            .is_none());
+
+        run.mark_parked();
+        app.providers_mut().insert_run_for_test(run.clone());
+        let parked = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
+            .expect("parked state projection should succeed")
+            .expect("changed provider state should be projected");
+        let RelayPeerEvent::LeasedRuntimeProjection { provider_run, .. } = parked.1;
+        assert_eq!(
+            provider_run.map(|provider_run| provider_run.state()),
+            Some(crate::provider::ProviderRunState::Parked)
+        );
     }
 
     #[test]

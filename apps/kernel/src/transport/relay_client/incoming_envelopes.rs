@@ -57,15 +57,22 @@ pub(super) async fn handle_incoming_envelope(
         }
         RelayEnvelope::DaemonIncomingPeerRequest {
             relay_request_id,
-            from_daemon_id: _,
+            from_daemon_id,
             caller_identity: _,
             encrypted_request,
         } => {
             let router = Arc::clone(router);
+            let state = Arc::clone(state);
             let outgoing_tx = outgoing_tx.clone();
             tokio::spawn(async move {
-                let relay_response =
-                    handle_daemon_peer_request(&router, &outgoing_tx, encrypted_request).await;
+                let relay_response = handle_daemon_peer_request(
+                    &router,
+                    &state,
+                    &outgoing_tx,
+                    &from_daemon_id,
+                    encrypted_request,
+                )
+                .await;
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonIncomingPeerResponse {

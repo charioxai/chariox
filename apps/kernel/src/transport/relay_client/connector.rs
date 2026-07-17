@@ -226,11 +226,12 @@ fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> J
 
 fn spawn_leased_projection_pump(
     router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
     outgoing_tx: RelayOutgoingSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         await_leased_projection_pump(
-            pump_leased_projection_events(&router, &outgoing_tx),
+            pump_leased_projection_events(&router, &state, &outgoing_tx),
             RELAY_HEARTBEAT_APP_WORK_SLOW_THRESHOLD,
         )
         .await;
@@ -890,6 +891,7 @@ async fn run_daemon_relay_connector_inner(
                             ) {
                                 leased_projection_pump_task = Some(spawn_leased_projection_pump(
                                     Arc::clone(&router),
+                                    Arc::clone(&state),
                                     outgoing_tx.clone(),
                                 ));
                             }

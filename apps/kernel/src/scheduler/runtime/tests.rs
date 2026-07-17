@@ -202,6 +202,85 @@ fn workflow_notice_uses_current_run_after_dispatch_failure() {
 }
 
 #[test]
+fn provider_completion_without_structured_output_schedules_a_correction_turn() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-missing-output");
+    let (workflow_id, node_id) = create_workflow_node(
+        &mut app,
+        session.id(),
+        "wf-scheduler-missing-output",
+        &agent_id,
+    );
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
+        .expect("node completion setting should update");
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &node_id,
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("return challenge SCHEDULER-RETRY".to_string()),
+        )
+        .expect("workflow should invoke");
+    super::schedule_workflow_run_entry_node(&mut app, session.id(), &workflow_run)
+        .expect("entry prompt should schedule");
+    let first_node_run_id = workflow_run.node_runs()[0].id().to_string();
+    let completed_prompt = app
+        .prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+        .expect("entry prompt should complete without advancing");
+
+    super::on_workflow_prompt_completed(&mut app, session.id(), &completed_prompt, None)
+        .expect("missing structured output should schedule a correction");
+
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let resolved_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should resolve");
+    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert_eq!(
+        resolved_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Failed
+    );
+    let correction_node_run = &resolved_run.node_runs()[1];
+    assert_eq!(
+        correction_node_run.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    let correction_prompt = correction_node_run
+        .turn_envelope()
+        .and_then(|envelope| envelope.rendered_prompt())
+        .expect("correction prompt should be rendered");
+    assert!(correction_prompt.contains("return challenge SCHEDULER-RETRY"));
+    assert!(correction_prompt.contains(
+        "The previous workflow turn ended without the required validated structured output"
+    ));
+    assert!(resolved_run.failure_events().iter().any(|event| {
+        event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
+            && event.source_node_run_id() == first_node_run_id
+    }));
+    let active_prompt = session_state
+        .active_prompt_for_agent(&agent_id)
+        .expect("correction prompt should be active");
+    assert_eq!(
+        active_prompt.workflow_node_run_id(),
+        Some(correction_node_run.id())
+    );
+}
+
+#[test]
 fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let _guard = crate::env_lock::lock();
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");

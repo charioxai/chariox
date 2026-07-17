@@ -201,37 +201,6 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && (prompt_completed || settlement_pending) {
-            if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
-                active_prompt.workflow_run_id(),
-                active_prompt.workflow_node_run_id(),
-            ) {
-                if !owned.workflow_prompt_has_completion_output(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                    provider_run_id,
-                ) {
-                    let message =
-                        "provider completed workflow turn without a validated workflow output";
-                    owned.workflow_fail_provider_prompt(
-                        session_id,
-                        &active_prompt,
-                        Some(provider_run_id),
-                        message,
-                    )?;
-                    let _ = owned.complete_local_prompt_without_advance(
-                        session_id,
-                        &agent_id,
-                        Some(provider_run_id),
-                    )?;
-                    return Ok(crate::app::ProviderRunExitSessionSummary {
-                        had_active_prompt: true,
-                        started_next_prompt: false,
-                    });
-                }
-            }
-        }
         let provider_run_state = provider_run.state();
         let next_queued_prompt = if provider_run_state == crate::provider::ProviderRunState::Running
         {
