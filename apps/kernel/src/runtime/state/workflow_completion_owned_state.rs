@@ -7,6 +7,22 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    fn persist_workflow_completion_session(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.session_snapshot(session_id)?;
+        self.durable_state_store.append_event(
+            "session.updated",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "session": &session,
+                "reason": "workflow_prompt_completed",
+            }),
+        )?;
+        Ok(session)
+    }
+
     #[allow(dead_code)]
     pub(super) fn workflow_complete_prompt(
         &self,
@@ -79,7 +95,7 @@ impl KernelRuntimeOwnedState {
                 notice_message,
             );
             self.workflow_maybe_start_next_queued_prompt(session_id);
-            let _ = self.session_snapshot(session_id)?;
+            self.persist_workflow_completion_session(session_id)?;
             return Ok(WorkflowPromptDispatches::default());
         }
         let max_turns = self.workflow_max_turns(session_id);
@@ -126,7 +142,7 @@ impl KernelRuntimeOwnedState {
                     ),
                 );
                 self.workflow_maybe_start_next_queued_prompt(session_id);
-                let _ = self.session_snapshot(session_id)?;
+                self.persist_workflow_completion_session(session_id)?;
                 return Ok(WorkflowPromptDispatches::default());
             }
             Err(error) => return Err(error),
@@ -282,7 +298,7 @@ impl KernelRuntimeOwnedState {
         ) {
             dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
-        let _ = self.session_snapshot(session_id)?;
+        self.persist_workflow_completion_session(session_id)?;
         Ok(dispatches)
     }
 

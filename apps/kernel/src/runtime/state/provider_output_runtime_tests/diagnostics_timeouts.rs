@@ -199,6 +199,21 @@ async fn structured_terminal_failure_records_single_clean_notice() {
         notices[0].message,
         "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
     );
+    let durable_notices = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load")
+        .into_iter()
+        .filter(|event| {
+            event.kind == crate::history::HistoryEventKind::Notice
+                && event.content.as_deref()
+                    == Some(
+                        "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model.",
+                    )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(durable_notices.len(), 1);
     assert_eq!(
         runtime
             .owned

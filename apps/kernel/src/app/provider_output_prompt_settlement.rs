@@ -8,6 +8,9 @@ use crate::session::{PromptQueueItem, PromptStatus};
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
 const STRUCTURED_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
+const WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(
+    crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 50,
+);
 
 pub(crate) struct ProviderOutputPromptSettlement<'a> {
     app: &'a mut DaemonApp,
@@ -93,6 +96,14 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             }
         } else if prompt_completed || settlement_pending {
             if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
+                if !crate::transport::flow_control::prompt_output_quiet_after_response(
+                    self.app,
+                    provider_run_id,
+                    WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR,
+                ) {
+                    self.note_prompt_settlement_requested(provider_run_id);
+                    return Ok(());
+                }
                 self.fail_for_missing_workflow_output(
                     session_id,
                     provider_run_id,

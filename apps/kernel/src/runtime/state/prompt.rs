@@ -50,7 +50,7 @@ impl KernelRuntimeOwnedState {
         self.record_completed_prompt_settlement(
             session_id,
             agent_id,
-            completed.id(),
+            &completed,
             completion_provider_run_id.as_deref(),
             settled_at_ms,
         );
@@ -128,7 +128,7 @@ impl KernelRuntimeOwnedState {
         self.record_completed_prompt_settlement(
             session_id,
             agent_id,
-            completed.id(),
+            &completed,
             Some(&provider_run_id),
             crate::session::unix_epoch_ms(),
         );
@@ -274,10 +274,17 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: &str,
-        prompt_id: &str,
+        completed_prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         settled_at_ms: u64,
     ) {
+        let started_at_ms = provider_run_id
+            .and_then(|provider_run_id| {
+                self.active_turns
+                    .get(provider_run_id)
+                    .map(|turn| turn.started_at_ms)
+            })
+            .or(Some(completed_prompt.created_at_ms()));
         let archive_enabled = self
             .config_projection
             .snapshot()
@@ -290,10 +297,18 @@ impl KernelRuntimeOwnedState {
             archive_enabled,
             session_id,
             agent_id,
-            prompt_id,
+            completed_prompt.id(),
             provider_run_id,
             settled_at_ms,
             "completed",
+        );
+        self.completed_git_turn_snapshots.record_prompt_settlement(
+            session_id,
+            agent_id,
+            provider_run_id.unwrap_or("provider-run-completed"),
+            completed_prompt,
+            settled_at_ms,
+            started_at_ms,
         );
     }
 }

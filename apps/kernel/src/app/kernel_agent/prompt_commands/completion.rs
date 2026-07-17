@@ -140,6 +140,15 @@ impl<'a> KernelAgentService<'a> {
                 .map(|run| run.id().to_string())
         });
         let settled_at_ms = crate::session::unix_epoch_ms();
+        let started_at_ms = completion_provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| {
+                self.app
+                    .active_turn_store()
+                    .get(provider_run_id)
+                    .map(|turn| turn.started_at_ms)
+            })
+            .or(Some(completion.completed.created_at_ms()));
         self.app
             .operational_history_store()
             .record_prompt_settlement(
@@ -150,6 +159,18 @@ impl<'a> KernelAgentService<'a> {
                 completion_provider_run_id.as_deref(),
                 settled_at_ms,
                 "completed",
+            );
+        self.app
+            .completed_git_turn_snapshot_store()
+            .record_prompt_settlement(
+                &completion.session_id,
+                &completion.agent_id,
+                completion_provider_run_id
+                    .as_deref()
+                    .unwrap_or("provider-run-completed"),
+                &completion.completed,
+                settled_at_ms,
+                started_at_ms,
             );
         if !flow_control::prompt_completion_recorded(
             self.app,

@@ -546,7 +546,13 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     );
     let prompt_id = "prompt-ack";
     write_claude_native_marker(&context_file, &format!("injected:{prompt_id}"));
-    write_claude_headless_submit_retry(&context_file, prompt_id, 0, unix_epoch_ms());
+    write_claude_headless_submit_retry(
+        &context_file,
+        prompt_id,
+        0,
+        unix_epoch_ms(),
+        "Explain the lifecycle briefly.",
+    );
     let dispatch = KernelPromptDispatch {
         session_id: "session-1".to_string(),
         provider_run_id: run.id().to_string(),
@@ -579,7 +585,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
 }
 
 #[test]
-fn claude_headless_steering_dispatch_completes_after_pty_injection() {
+fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let root = std::env::temp_dir().join(format!(
@@ -637,16 +643,26 @@ fn claude_headless_steering_dispatch_completes_after_pty_injection() {
         &context_file.to_string_lossy(),
         "injected:pending-steering-1",
     );
-    let attempt = ProviderOutputClaudeNativeBridge::new(&mut app)
+    let injected = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
-        .expect("steering injection should be accepted");
+        .expect("injected steering should remain pending");
 
-    assert_eq!(attempt, ClaudeNativeDispatchAttempt::Completed);
+    assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
+
+    write_claude_native_marker(
+        &context_file.to_string_lossy(),
+        "accepted:pending-steering-1",
+    );
+    let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
+        .expect("acknowledged steering should complete dispatch");
+
+    assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
     let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn claude_headless_user_prompt_submit_acknowledges_active_submit_wait_marker() {
+fn claude_headless_user_prompt_submit_only_acknowledges_matching_steering_marker() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -675,7 +691,7 @@ fn claude_headless_user_prompt_submit_acknowledges_active_submit_wait_marker() {
         &events_file,
         serde_json::json!({
             "hook_event_name": "UserPromptSubmit",
-            "prompt": "Run the web tests and summarize them.",
+            "prompt": "A stale prompt from the active turn.",
         })
         .to_string(),
     )
@@ -733,18 +749,41 @@ fn claude_headless_user_prompt_submit_acknowledges_active_submit_wait_marker() {
         crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
-    write_claude_native_marker(
+    let steering_prompt_id = "leased-steer:steer-1";
+    let steering_marker = format!("submit-wait:{steering_prompt_id}:{}", unix_epoch_ms());
+    write_claude_native_marker(&context_file, &steering_marker);
+    write_claude_headless_submit_retry(
         &context_file,
-        &format!("submit-wait:{}:{}", active_prompt.id(), unix_epoch_ms()),
+        steering_prompt_id,
+        0,
+        unix_epoch_ms(),
+        "Also report the package version.",
     );
 
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("stale UserPromptSubmit should be consumed");
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(steering_marker.as_str())
+    );
+
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Also report the package version.",
+        })
+        .to_string(),
+    )
+    .expect("matching UserPromptSubmit event should be written");
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
         .expect("active UserPromptSubmit should be acknowledged");
 
     assert_eq!(
         claude_native_marker(&context_file).as_deref(),
-        Some(format!("accepted:{}", active_prompt.id()).as_str())
+        Some(format!("accepted:{steering_prompt_id}").as_str())
     );
     let projected = app
         .sessions()
@@ -774,6 +813,51 @@ fn claude_native_dispatch_marker_extracts_steering_identity() {
         Some("steering-prompt-1")
     );
     assert_eq!(claude_native_dispatch_prompt_id("startup-wait:1234"), None);
+}
+
+#[test]
+fn claude_headless_steering_enqueue_acknowledges_exact_injected_prompt() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-headless-steering-enqueue-ack-test-{}-{}",
+        std::process::id(),
+        unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let steering_prompt_id = "leased-steer:steer-1";
+    let steering_prompt = "Also report the package version.";
+    write_claude_native_marker(&context_file, &format!("injected:{steering_prompt_id}"));
+    write_claude_headless_submit_retry(
+        &context_file,
+        steering_prompt_id,
+        0,
+        unix_epoch_ms(),
+        steering_prompt,
+    );
+
+    acknowledge_claude_headless_steering_enqueue(
+        &context_file,
+        Some("active-prompt-1"),
+        &["A different queued prompt.".to_string()],
+    );
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("injected:{steering_prompt_id}").as_str())
+    );
+
+    acknowledge_claude_headless_steering_enqueue(
+        &context_file,
+        Some("active-prompt-1"),
+        &[steering_prompt.to_string()],
+    );
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{steering_prompt_id}").as_str())
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -901,7 +985,7 @@ fn claude_transcript_drain_skips_content_before_active_prompt() {
 }
 
 #[test]
-fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
+fn claude_transcript_drain_exposes_queue_enqueues_without_rendering_them() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
         "arroba-claude-transcript-dedupe-test-{}",
@@ -921,7 +1005,12 @@ fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
     fs::write(
         &transcript,
         [
-            serde_json::json!({ "type": "queue-operation", "operation": "enqueue" }).to_string(),
+            serde_json::json!({
+                "type": "queue-operation",
+                "operation": "enqueue",
+                "content": "Also report the package version."
+            })
+            .to_string(),
             assistant.clone(),
             assistant,
         ]
@@ -934,6 +1023,10 @@ fn claude_transcript_drain_skips_internal_and_duplicate_entries() {
     assert_eq!(drain.chunks.len(), 1);
     assert_eq!(drain.chunks[0].text, "once");
     assert_eq!(drain.assistant_message_ids, vec!["assistant-1"]);
+    assert_eq!(
+        drain.enqueued_prompts,
+        vec!["Also report the package version."]
+    );
 
     let _ = fs::remove_dir_all(dir);
 }

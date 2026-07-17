@@ -2,6 +2,10 @@ use super::*;
 
 const STRUCTURED_PROMPT_SETTLE_QUIET_FOR: std::time::Duration =
     std::time::Duration::from_millis(50);
+const WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR: std::time::Duration =
+    std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 50,
+    );
 
 impl KernelRuntimeState {
     pub(super) async fn settle_owned_provider_prompt(
@@ -245,6 +249,17 @@ impl KernelRuntimeState {
                     workflow_node_run_id,
                     provider_run_id,
                 ) {
+                    if !owned.prompt_output_quiet_after_response(
+                        provider_run_id,
+                        WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR,
+                    ) {
+                        owned.note_prompt_settlement_requested(provider_run_id);
+                        let _ = owned.session_snapshot(session_id);
+                        return Ok(crate::app::ProviderRunExitSessionSummary {
+                            had_active_prompt: true,
+                            started_next_prompt: false,
+                        });
+                    }
                     let message =
                         "provider completed workflow turn without a validated workflow output";
                     owned.workflow_fail_provider_prompt(

@@ -26,6 +26,28 @@ impl KernelRuntimeOwnedState {
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };
+        if let Some(error) =
+            super::remote_prompt_worker_submission_runtime::remote_prompt_unavailable_slice_error(
+                &self.slice_store,
+                &remote_execution,
+                &session_id,
+                &target_agent_id,
+            )
+        {
+            let _ = self
+                .agent_store
+                .set_agent_processing(&target_agent_id, false)?;
+            let _ = self
+                .agent_store
+                .set_agent_state(&target_agent_id, crate::agent::AgentState::Error)?;
+            let _ = self.session_snapshot(&session_id)?;
+            return Err(error);
+        }
+        if target_agent.state() == crate::agent::AgentState::Error {
+            let _ = self
+                .agent_store
+                .set_agent_state(&target_agent_id, crate::agent::AgentState::Idle)?;
+        }
         let session = self.session_store.get_session(&session_id)?;
         let queued_while_active = self
             .prompt_state_owner
@@ -509,6 +531,118 @@ mod tests {
         assert!(projected
             .queued_prompts_for_agent(&agent_id)
             .is_some_and(|queue| queue.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn stopped_slice_rejects_prompt_without_starting_or_admitting_it() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-stopped-slice",
+                "worktree-stopped-slice",
+            ))
+            .expect("session should be created");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-stopped-slice",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-stopped".to_string(),
+                    worker_machine_id: "worker-machine-stopped".to_string(),
+                    execution_lease_id: "lease-stopped".to_string(),
+                    leased_agent_id: "leased-agent-stopped".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let slice = app
+            .slices()
+            .create(
+                "owner-kernel",
+                "owner-machine",
+                crate::slice::CreateSliceInput {
+                    name: "stopped-slice".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headless,
+                    workspace_id: Some("workspace-stopped-slice".to_string()),
+                    worktree_id: Some("worktree-stopped-slice".to_string()),
+                    workspace_mount: None,
+                    worker_kernel_ref: Some("slice:stopped-slice".to_string()),
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("slice should be created stopped");
+        app.slices()
+            .attach_agent(&slice.id, session.id(), agent.id(), 2)
+            .expect("agent should attach to slice");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        let result = runtime
+            .owned
+            .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending:stopped",
+                    attachment.id(),
+                    &agent_id,
+                    "prompt for stopped slice",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("stopped slice prompt should be rejected"),
+        };
+
+        assert!(error.to_string().contains("stopped slice `stopped-slice`"));
+        assert_eq!(
+            runtime
+                .owned
+                .slice_store
+                .resolve(&slice.id)
+                .expect("slice should remain available")
+                .status,
+            crate::slice::SliceStatus::Stopped,
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should remain available"),
+                &agent_id,
+            )
+            .is_none());
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .state(),
+            crate::agent::AgentState::Error,
+        );
     }
 
     #[tokio::test]

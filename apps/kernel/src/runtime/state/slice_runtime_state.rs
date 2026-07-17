@@ -89,8 +89,12 @@ impl KernelRuntimeState {
                     let remote = agent.remote_execution();
                     projection_has_agent
                         && remote.is_some_and(|remote| {
-                            slice.worker_kernel_id.as_deref()
-                                == Some(remote.worker_kernel_id.as_str())
+                            let live_worker_identity_available = slice.worker_kernel_id.is_some()
+                                || slice.worker_machine_id.is_some();
+                            (!live_worker_identity_available
+                                && slice.status != crate::slice::SliceStatus::Running)
+                                || slice.worker_kernel_id.as_deref()
+                                    == Some(remote.worker_kernel_id.as_str())
                                 || slice.worker_kernel_ref == remote.worker_kernel_id
                         })
                 });
@@ -842,6 +846,38 @@ mod tests {
             }
             other => panic!("expected active prompt ownership error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn stopped_slice_reconciliation_keeps_durable_remote_agent_attachments() {
+        let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(
+                &agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "previous-worker-kernel".to_string(),
+                    worker_machine_id: "slice:previous-worker".to_string(),
+                    execution_lease_id: "previous-lease".to_string(),
+                    leased_agent_id: "previous-leased-agent".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("remote execution should bind");
+        runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("session projection should refresh");
+
+        let reconciled = runtime
+            .reconcile_slice_agent_attachments(&slice)
+            .await
+            .expect("stopped slice attachments should reconcile");
+
+        assert_eq!(reconciled.agent_ids, vec![agent_id]);
     }
 
     async fn slice_runtime() -> (

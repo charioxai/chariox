@@ -33,6 +33,7 @@ pub(super) struct ClaudeTranscriptChunk {
 pub(super) struct ClaudeTranscriptDrain {
     pub(super) chunks: Vec<ClaudeTranscriptChunk>,
     pub(super) assistant_message_ids: Vec<String>,
+    pub(super) enqueued_prompts: Vec<String>,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
 }
@@ -122,6 +123,9 @@ pub(super) fn drain_claude_transcript_file_since(
         if let Some(model) = claude_transcript_model(&value) {
             drain.model = Some(model);
         }
+        if let Some(prompt) = claude_transcript_enqueued_prompt(&value) {
+            drain.enqueued_prompts.push(prompt);
+        }
         drain.chunks.extend(claude_transcript_chunks(&value));
         if let Some(message_id) = claude_transcript_assistant_message_id(&value) {
             if cursor.seen_assistant_message_ids.insert(message_id.clone()) {
@@ -136,6 +140,13 @@ pub(super) fn drain_claude_transcript_file_since(
         },
     );
     drain
+}
+
+fn claude_transcript_enqueued_prompt(value: &Value) -> Option<String> {
+    (value.get("type").and_then(Value::as_str) == Some("queue-operation")
+        && value.get("operation").and_then(Value::as_str) == Some("enqueue"))
+    .then(|| claude_string_field(value, &["content"]))
+    .flatten()
 }
 
 fn claude_transcript_timestamp_ms(value: &Value) -> Option<u64> {

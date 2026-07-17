@@ -13,6 +13,9 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
 ) -> Result<String, DaemonError> {
     let mut attempt = 0_u32;
     loop {
+        if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
+            return Err(error);
+        }
         if attempt > 0 && !remote_prompt_dispatch_is_current(state, dispatch) {
             return Err(DaemonError::NoActivePrompt {
                 session_id: dispatch.session_id.clone(),
@@ -122,6 +125,59 @@ fn remote_prompt_dispatch_is_current(
 pub(super) fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1_u64 << attempt.saturating_sub(1).min(3);
     std::time::Duration::from_millis(250_u64.saturating_mul(multiplier))
+}
+
+pub(super) fn remote_prompt_unavailable_slice_error(
+    slice_store: &crate::slice::SliceStore,
+    remote_execution: &crate::agent::RemoteAgentBinding,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<DaemonError> {
+    let slice = slice_store
+        .list_by_session(session_id)
+        .into_iter()
+        .find(|slice| {
+            slice
+                .agent_ids
+                .iter()
+                .any(|candidate| candidate == agent_id)
+        })
+        .or_else(|| slice_store.resolve_by_worker_kernel_ref(&remote_execution.worker_kernel_id))
+        .or_else(|| {
+            slice_store.resolve_by_worker_kernel_ref(&remote_execution.worker_machine_id)
+        })?;
+    if remote_prompt_slice_status_allows_transport_retry(&slice.status) {
+        return None;
+    }
+    let status = format!("{:?}", slice.status).to_ascii_lowercase();
+    Some(DaemonError::LocalTransport {
+        operation: "submit remote prompt to unavailable slice",
+        message: format!(
+            "agent `{agent_id}` is deployed in {status} slice `{}`; start the slice before sending a prompt (worker kernel `{}` is unreachable)",
+            slice.name, remote_execution.worker_kernel_id
+        ),
+    })
+}
+
+fn remote_prompt_dispatch_unavailable_slice_error(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Option<DaemonError> {
+    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id).ok()?;
+    let remote_execution = agent.remote_execution()?;
+    remote_prompt_unavailable_slice_error(
+        &state.owned.slice_store,
+        remote_execution,
+        &dispatch.session_id,
+        &dispatch.agent_id,
+    )
+}
+
+fn remote_prompt_slice_status_allows_transport_retry(status: &crate::slice::SliceStatus) -> bool {
+    matches!(
+        status,
+        crate::slice::SliceStatus::Starting | crate::slice::SliceStatus::Running
+    )
 }
 
 async fn submit_remote_prompt_to_worker(
@@ -312,6 +368,25 @@ mod tests {
         };
 
         assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_does_not_retry_stopped_slice_forever() {
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Stopped,
+        ));
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Stopping,
+        ));
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Unhealthy,
+        ));
+        assert!(remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Starting,
+        ));
+        assert!(remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Running,
+        ));
     }
 
     #[test]

@@ -232,6 +232,11 @@ impl WorkflowRun {
         self.messages.retain(|message| predicate(message));
     }
 
+    pub fn discard_unconsumed_messages(&mut self) {
+        self.messages
+            .retain(|message| message.consumed_by_node_run_id().is_some());
+    }
+
     pub fn resume(&mut self) {
         self.status = WorkflowRunStatus::Waiting;
         self.completed_at_ms = None;

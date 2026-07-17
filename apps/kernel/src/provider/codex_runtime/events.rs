@@ -271,6 +271,7 @@ pub(super) fn apply_notification_with_manifest(
             });
         }
         CodexNotification::Error { message } => {
+            *active_turn_id = None;
             *terminal_failure = Some(message.clone());
             *prompt_completed = true;
             notices.push(message);

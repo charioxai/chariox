@@ -958,8 +958,8 @@ fn failed_turn_records_terminal_failure() {
 }
 
 #[test]
-fn error_notification_without_active_turn_records_terminal_failure() {
-    let mut active_turn_id = None;
+fn error_notification_clears_active_turn_and_records_terminal_failure() {
+    let mut active_turn_id = Some("turn-auth-failure".to_string());
     let mut turn_tracker = CodexTurnTracker::default();
     let mut text_items = BTreeMap::new();
     let mut tool_items = BTreeMap::new();
@@ -987,6 +987,7 @@ fn error_notification_without_active_turn_records_terminal_failure() {
     );
 
     assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
     assert_eq!(
         terminal_failure.as_deref(),
         Some("unsupported model gpt-5.2-codex")

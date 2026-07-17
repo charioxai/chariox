@@ -334,6 +334,12 @@ impl<'a> KernelAgentService<'a> {
             completion.remote_provider_run_id.as_deref(),
         );
         let settled_at_ms = crate::session::unix_epoch_ms();
+        let started_at_ms = self
+            .app
+            .active_turn_store()
+            .get(&remote_provider_run_id)
+            .map(|turn| turn.started_at_ms)
+            .or(Some(completion.completed.created_at_ms()));
         self.app
             .operational_history_store()
             .record_prompt_settlement(
@@ -344,6 +350,16 @@ impl<'a> KernelAgentService<'a> {
                 Some(&remote_provider_run_id),
                 settled_at_ms,
                 "completed",
+            );
+        self.app
+            .completed_git_turn_snapshot_store()
+            .record_prompt_settlement(
+                &completion.session_id,
+                &completion.agent_id,
+                &remote_provider_run_id,
+                &completion.completed,
+                settled_at_ms,
+                started_at_ms,
             );
         let recipient_attachment_ids = self
             .app

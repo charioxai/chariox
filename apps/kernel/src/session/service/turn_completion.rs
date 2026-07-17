@@ -86,7 +86,7 @@ impl SessionService {
             workflow_run.add_message(message);
         }
         if workflow_run.completed_by_node_run_id() == Some(workflow_node_run_id) {
-            workflow_run.retain_messages(|_| false);
+            workflow_run.discard_unconsumed_messages();
             Self::stop_other_workflow_node_runs(workflow_run, workflow_node_run_id);
             workflow_run.set_status(WorkflowRunStatus::Completed);
             return Ok(WorkflowCompletionUpdate {
@@ -132,7 +132,7 @@ impl SessionService {
             )
         });
         if node_turn_budget_exhausted {
-            workflow_run.retain_messages(|_| false);
+            workflow_run.discard_unconsumed_messages();
             Self::stop_other_workflow_node_runs(workflow_run, workflow_node_run_id);
             workflow_run.set_final_output(None, None, None, None);
             workflow_run.set_status(WorkflowRunStatus::Stopped);
