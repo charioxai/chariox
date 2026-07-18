@@ -354,6 +354,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
                                 subscription_id: subscription_id.clone(),
+                                client_public_key: client_public_key.clone(),
                             },
                         },
                     );
@@ -698,8 +699,9 @@ pub(super) async fn close_slow_subscription(
     routes: &Arc<crate::registry::RelayRouteIndex>,
     subscription_id: &str,
     daemon_key: &DaemonKey,
+    relay_request_counter: &AtomicU64,
 ) {
-    let sender = {
+    let removed = {
         let mut guard = registry.write().await;
         let active = guard
             .subscriptions
@@ -709,14 +711,27 @@ pub(super) async fn close_slow_subscription(
         if let Some(active) = active {
             guard.subscriptions.remove(subscription_id);
             routes.remove_subscription(subscription_id);
-            routes.client_sender(&active.client_addr)
+            Some((
+                routes.client_sender(&active.client_addr),
+                active.client_public_key,
+            ))
         } else {
             None
         }
     };
-    if let Some(sender) = sender {
-        send_close(&sender, "relay event consumer is too slow".to_string());
-        let _ = sender.try_send(Message::Close(None));
+    if let Some((client_sender, client_public_key)) = removed {
+        if let Some(daemon_sender) = routes.daemon_sender(daemon_key) {
+            let _ = send_daemon_subscription_cleanup(
+                &daemon_sender,
+                relay_request_counter,
+                subscription_id.to_string(),
+                client_public_key,
+            );
+        }
+        if let Some(sender) = client_sender {
+            send_close(&sender, "relay event consumer is too slow".to_string());
+            let _ = sender.try_send(Message::Close(None));
+        }
         registry.write().await.record_slow_subscription_close();
     }
 }
@@ -737,6 +752,7 @@ fn subscription_owned_by_other_client(
                     &pending.kind,
                     PendingRequestKind::Subscribe {
                         subscription_id: pending_subscription_id,
+                        ..
                     } if pending_subscription_id == subscription_id
                 )
         })
@@ -873,6 +889,27 @@ pub(super) fn send_envelope(
     sender
         .try_send(Message::Text(payload.into()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+pub(super) fn send_daemon_subscription_cleanup(
+    sender: &RelaySender,
+    relay_request_counter: &AtomicU64,
+    relay_subscription_id: String,
+    client_public_key: String,
+) -> Result<(), std::io::Error> {
+    let relay_request_id = format!(
+        "relay-request-{}",
+        relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    send_envelope(
+        sender,
+        &RelayEnvelope::DaemonUnsubscribe {
+            relay_request_id,
+            relay_subscription_id,
+            caller_identity: None,
+            client_public_key,
+        },
+    )
 }
 
 pub(super) fn send_close(sender: &RelaySender, reason: String) {

@@ -149,13 +149,128 @@ async fn remove_daemon_peer_clears_daemon_route_index() {
     registry.daemon_peers.insert(daemon_key.clone(), peer_addr);
     let routes = registry.route_index();
     let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
 
-    let _ = remove_peer(&registry, &routes, peer_addr, Some(&daemon_key)).await;
+    let _ = remove_peer(
+        &registry,
+        &routes,
+        peer_addr,
+        Some(&daemon_key),
+        &relay_request_counter,
+    )
+    .await;
 
     let guard = registry.read().await;
     assert!(!guard.daemons.contains_key(&daemon_key));
     assert!(!guard.daemon_peers.contains_key(&daemon_key));
     assert!(!guard.peers.contains_key(&peer_addr));
+}
+
+#[tokio::test]
+async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let client_addr = peer_addr(10_007);
+    let other_client_addr = peer_addr(10_008);
+    let (client_sender, _client_receiver) = mpsc::channel::<Message>(4);
+    let (other_client_sender, _other_client_receiver) = mpsc::channel::<Message>(4);
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(4);
+    let mut registry = RelayRegistry::default();
+    registry
+        .peers
+        .insert(client_addr, client_peer(client_sender.clone()));
+    registry
+        .peers
+        .insert(other_client_addr, client_peer(other_client_sender));
+    registry.subscriptions.insert(
+        "active-subscription".to_string(),
+        ActiveSubscription {
+            client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "active-public-key".to_string(),
+        },
+    );
+    registry.subscriptions.insert(
+        "other-subscription".to_string(),
+        ActiveSubscription {
+            client_addr: other_client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "other-public-key".to_string(),
+        },
+    );
+    let routes = registry.route_index();
+    routes.set_client_sender(client_addr, client_sender.clone());
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    routes.set_subscription(
+        "active-subscription".to_string(),
+        ActiveEventRoute {
+            daemon_key: daemon_key.clone(),
+            client_sender,
+        },
+    );
+    routes.insert_pending_client(
+        "relay-request-pending".to_string(),
+        PendingClientRequest {
+            client_addr,
+            client_request_id: "client-request-pending".to_string(),
+            daemon_key: daemon_key.clone(),
+            kind: PendingRequestKind::Subscribe {
+                subscription_id: "pending-subscription".to_string(),
+                client_public_key: "pending-public-key".to_string(),
+            },
+        },
+    );
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+
+    let (_, _, _, _, cleanup_count, dropped_pending_count) = remove_peer(
+        &registry,
+        &routes,
+        client_addr,
+        None,
+        &relay_request_counter,
+    )
+    .await;
+
+    assert_eq!(cleanup_count, 2);
+    assert_eq!(dropped_pending_count, 1);
+    let guard = registry.read().await;
+    assert!(!guard.subscriptions.contains_key("active-subscription"));
+    assert!(guard.subscriptions.contains_key("other-subscription"));
+    drop(guard);
+    let mut cleanups = (0..2)
+        .map(|_| {
+            match daemon_receiver
+                .try_recv()
+                .expect("daemon cleanup should enqueue")
+            {
+                Message::Text(text) => match serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("daemon cleanup should decode")
+                {
+                    RelayEnvelope::DaemonUnsubscribe {
+                        relay_subscription_id,
+                        client_public_key,
+                        ..
+                    } => (relay_subscription_id, client_public_key),
+                    other => panic!("expected daemon unsubscribe, got {other:?}"),
+                },
+                other => panic!("expected daemon cleanup text, got {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    cleanups.sort();
+    assert_eq!(
+        cleanups,
+        vec![
+            (
+                "active-subscription".to_string(),
+                "active-public-key".to_string()
+            ),
+            (
+                "pending-subscription".to_string(),
+                "pending-public-key".to_string()
+            ),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -302,6 +417,7 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
         ActiveSubscription {
             client_addr,
             daemon_key: daemon_key.clone(),
+            client_public_key: "slow-public-key".to_string(),
         },
     );
     registry.subscriptions.insert(
@@ -309,9 +425,12 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
         ActiveSubscription {
             client_addr: other_client_addr,
             daemon_key: other_daemon_key.clone(),
+            client_public_key: "other-public-key".to_string(),
         },
     );
     let routes = registry.route_index();
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
     routes.set_client_sender(client_addr, sender.clone());
     routes.set_subscription(
         "slow-subscription".to_string(),
@@ -321,6 +440,7 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
         },
     );
     let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
 
     let result = send_envelope(
         &sender,
@@ -336,7 +456,14 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
     );
     assert!(result.is_err(), "full client queue should reject event");
 
-    close_slow_subscription(&registry, &routes, "slow-subscription", &daemon_key).await;
+    close_slow_subscription(
+        &registry,
+        &routes,
+        "slow-subscription",
+        &daemon_key,
+        &relay_request_counter,
+    )
+    .await;
 
     let guard = registry.read().await;
     assert!(!guard.subscriptions.contains_key("slow-subscription"));
@@ -350,6 +477,21 @@ async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
     assert!(matches!(
         receiver.try_recv(),
         Ok(Message::Text(text)) if text == "occupied"
+    ));
+    let cleanup = daemon_receiver
+        .try_recv()
+        .expect("slow subscription cleanup should reach daemon");
+    let Message::Text(payload) = cleanup else {
+        panic!("expected daemon cleanup text")
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("daemon cleanup should decode"),
+        RelayEnvelope::DaemonUnsubscribe {
+            relay_subscription_id,
+            client_public_key,
+            ..
+        } if relay_subscription_id == "slow-subscription"
+            && client_public_key == "slow-public-key"
     ));
 }
 

@@ -324,14 +324,20 @@ pub(crate) struct PendingDaemonPeerRequest {
 #[derive(Debug, Clone)]
 pub(crate) enum PendingRequestKind {
     Request,
-    Subscribe { subscription_id: String },
-    Unsubscribe { subscription_id: String },
+    Subscribe {
+        subscription_id: String,
+        client_public_key: String,
+    },
+    Unsubscribe {
+        subscription_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveSubscription {
     pub(crate) client_addr: SocketAddr,
     pub(crate) daemon_key: DaemonKey,
+    pub(crate) client_public_key: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
