@@ -74,6 +74,8 @@ struct ExternalProviderTranscriptIndexEntry {
     modified_at_ms: u64,
     discovery_record: Option<ExternalProviderSessionRecord>,
     last_observed_offset: u64,
+    observed_len: Option<u64>,
+    observed_modified_at_ms: Option<u64>,
     observed_turns: Option<Vec<ObservedExternalProviderTurn>>,
 }
 
@@ -110,19 +112,13 @@ impl ExternalProviderSessionDiscoverySignature {
                 .zip(other.files.iter())
                 .all(|(left, right)| left.provider == right.provider && left.path == right.path)
     }
+}
 
-    pub(crate) fn changed_content_provider_ids(&self, other: &Self) -> BTreeSet<String> {
-        self.files
-            .iter()
-            .zip(other.files.iter())
-            .filter(|(left, right)| {
-                left.provider == right.provider
-                    && left.path == right.path
-                    && (left.len != right.len || left.modified_at_ms != right.modified_at_ms)
-            })
-            .map(|(left, _)| left.provider.clone())
-            .collect()
-    }
+pub(crate) fn external_provider_session_transcript_needs_refresh(
+    provider: &str,
+    provider_session_id: &str,
+) -> bool {
+    provider_observed_transcript_needs_refresh(provider, provider_session_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

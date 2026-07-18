@@ -289,20 +289,22 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        let persisted = PersistentCommandResult {
-            command_id: command_id.clone(),
-            completed_at_ms: cached.completed_at_ms,
-            result: cached.clone(),
-        };
         // Account every completed result in memory, including responses that are too large or
         // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
         // so entry-count retention alone is not a meaningful memory bound.
-        let result_jsonl_bytes = persistent_result_jsonl_bytes(&persisted).ok();
+        // Do not clone and serialize large read-only responses merely to decide that they should
+        // not be written. History outlines are intentionally paged and may still be large enough
+        // for this work to become visible on every browser refresh.
+        let result_jsonl_bytes = should_persist_completed_result(&cached.fingerprint)
+            .then(|| PersistentCommandResult {
+                command_id: command_id.clone(),
+                completed_at_ms: cached.completed_at_ms,
+                result: cached.clone(),
+            })
+            .and_then(|persisted| persistent_result_jsonl_bytes(&persisted).ok());
         let result_memory_bytes = cached_command_result_memory_bytes(&command_id, &cached);
-        let persisted_bytes = result_jsonl_bytes.filter(|bytes| {
-            should_persist_completed_result(&cached.fingerprint)
-                && *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES
-        });
+        let persisted_bytes = result_jsonl_bytes
+            .filter(|bytes| *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES);
         let should_persist = persisted_bytes.is_some();
         let compact_after_append = self
             .apply_retention_to_completed_results(&command_id, result_memory_bytes)
@@ -678,6 +680,10 @@ fn read_persistent_results(
             compact_after_load = true;
             continue;
         };
+        if !should_persist_completed_result(&entry.result.fingerprint) {
+            compact_after_load = true;
+            continue;
+        }
         let completed_at_ms = persistent_result_completed_at_ms(&entry);
         entry.completed_at_ms = completed_at_ms;
         entry.result.completed_at_ms = completed_at_ms;
@@ -762,8 +768,12 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
         fingerprint.command_type.as_str(),
         "external_provider_session.list"
             | "provider.catalog.get"
+            | "prompt_input_history.get"
             | "session.state.get"
+            | "session.history.blob"
+            | "session.history.outline"
             | "slice.list"
+            | "terminal.command_catalog.get"
             | "waiting_room.inventory.get"
             | "waiting_room.public_snapshot.get"
     )

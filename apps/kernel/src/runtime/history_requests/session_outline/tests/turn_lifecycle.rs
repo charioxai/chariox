@@ -97,12 +97,13 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
         provider_run_id: Some("run-1".to_string()),
         ..HistoryEventTurnContext::default()
     };
-    let prompt = HistoryEvent::transcript(
+    let mut prompt = HistoryEvent::transcript(
         10,
         &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
         context.clone(),
     );
-    let output = HistoryEvent::transcript(
+    prompt.timestamp_ms = 9_000;
+    let mut output = HistoryEvent::transcript(
         11,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -114,6 +115,7 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
         ),
         context.clone(),
     );
+    output.timestamp_ms = 9_500;
     let settlement = HistoryEvent::operational(
         12,
         HistoryEventKind::ProviderStatus,
@@ -139,6 +141,60 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
         turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
         Some("finished response")
     );
+}
+
+#[test]
+fn outline_completed_turn_never_settles_before_its_final_output() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    let settlement = HistoryEvent::operational(
+        11,
+        HistoryEventKind::ProviderStatus,
+        Some(crate::history::HistoryEventRole::System),
+        None,
+        BTreeMap::from([(
+            crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY.to_string(),
+            serde_json::json!(1_500),
+        )]),
+        context.clone(),
+    );
+    let final_output = HistoryEvent::transcript(
+        12,
+        &SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some("assistant".to_string()),
+            "finished response",
+        ),
+        context,
+    );
+    let final_output_at_ms = final_output.timestamp_ms;
+
+    let turn = outline_turn_from_events(
+        &prompt,
+        vec![prompt.clone(), settlement, final_output],
+        false,
+    )
+    .expect("settled turn should be outlined");
+
+    assert_eq!(
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Completed
+    );
+    assert_eq!(turn.completed_at_ms, Some(final_output_at_ms));
 }
 
 #[test]
@@ -170,12 +226,13 @@ fn agent_outline_joins_prompt_settlement_that_persisted_before_prompt_history() 
         )]),
         context.clone(),
     );
-    let prompt = HistoryEvent::transcript(
+    let mut prompt = HistoryEvent::transcript(
         11,
         &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
         context.clone(),
     );
-    let output = HistoryEvent::transcript(
+    prompt.timestamp_ms = 9_000;
+    let mut output = HistoryEvent::transcript(
         12,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -187,6 +244,7 @@ fn agent_outline_joins_prompt_settlement_that_persisted_before_prompt_history() 
         ),
         context,
     );
+    output.timestamp_ms = 9_500;
     store
         .append_many(&[settlement, prompt, output])
         .expect("out-of-order prompt lifecycle should append");
@@ -217,12 +275,13 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
         provider_run_id: Some("run-1".to_string()),
         ..HistoryEventTurnContext::default()
     };
-    let prompt = HistoryEvent::transcript(
+    let mut prompt = HistoryEvent::transcript(
         10,
         &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
         context.clone(),
     );
-    let assistant = HistoryEvent::transcript(
+    prompt.timestamp_ms = 10;
+    let mut assistant = HistoryEvent::transcript(
         11,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -234,7 +293,8 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
         ),
         context.clone(),
     );
-    let tool = HistoryEvent::transcript(
+    assistant.timestamp_ms = 11;
+    let mut tool = HistoryEvent::transcript(
         12,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -246,7 +306,8 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
         ),
         context.clone(),
     );
-    let status = HistoryEvent::transcript(
+    tool.timestamp_ms = 12;
+    let mut status = HistoryEvent::transcript(
         13,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -258,6 +319,7 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
         ),
         context.clone(),
     );
+    status.timestamp_ms = 13;
     let mut external_status_entry = SessionHistoryEntry::external_provider_observed(
         "session-1",
         None,
@@ -274,7 +336,8 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
             settles_active_prompt: true,
             passive_telemetry: false,
         });
-    let external_status = HistoryEvent::transcript(15, &external_status_entry, context.clone());
+    let mut external_status = HistoryEvent::transcript(15, &external_status_entry, context.clone());
+    external_status.timestamp_ms = 15;
     let mut passive_status_entry = SessionHistoryEntry::external_provider_observed(
         "session-1",
         None,
@@ -291,8 +354,9 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
             settles_active_prompt: false,
             passive_telemetry: true,
         });
-    let passive_status = HistoryEvent::transcript(16, &passive_status_entry, context.clone());
-    let summary = HistoryEvent::transcript(
+    let mut passive_status = HistoryEvent::transcript(16, &passive_status_entry, context.clone());
+    passive_status.timestamp_ms = 16;
+    let mut summary = HistoryEvent::transcript(
         14,
         &SessionHistoryEntry::provider_output(
             "session-1",
@@ -304,6 +368,7 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
         ),
         context,
     );
+    summary.timestamp_ms = 14;
 
     let turn = outline_turn_from_events(
         &prompt,

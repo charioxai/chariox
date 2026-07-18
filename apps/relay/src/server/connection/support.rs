@@ -594,7 +594,7 @@ pub(super) async fn resolve_target_daemon_key(
     let guard = registry.read().await;
     if let Some(daemon_id) = target.daemon_id.as_ref() {
         let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
-        return guard.daemons.get(&key).map(|_| key);
+        return guard.live_daemon_sender(&key).map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
     let mut matches = guard
@@ -604,6 +604,7 @@ pub(super) async fn resolve_target_daemon_key(
             key.realm_id == realm_id
                 && registration.daemon_alias.as_ref() == Some(alias)
                 && crate::registry::daemon_registration_is_kernel_target(registration)
+                && guard.live_daemon_sender(key).is_some()
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;

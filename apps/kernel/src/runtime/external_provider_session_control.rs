@@ -45,7 +45,6 @@ use self::import::*;
 use self::poller::*;
 pub(crate) use self::poller::{
     execute_external_provider_session_request,
-    refresh_attached_external_provider_histories_for_runtime_session,
     refresh_attached_external_provider_histories_for_session,
 };
 use self::targets::*;

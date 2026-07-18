@@ -171,6 +171,21 @@ async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
     let mut registry = RelayRegistry::default();
     registry.daemons.insert(real_key.clone(), real);
     registry.daemons.insert(temp_key, temporary);
+    let real_addr = peer_addr(10_006);
+    let real_registration = registry
+        .daemons
+        .get(&real_key)
+        .expect("real registration should exist")
+        .clone();
+    let (real_sender, _receiver) = mpsc::channel::<Message>(1);
+    registry.peers.insert(
+        real_addr,
+        daemon_peer(real_sender.clone(), real_registration),
+    );
+    registry.daemon_peers.insert(real_key.clone(), real_addr);
+    registry
+        .route_index()
+        .set_daemon_sender(real_key.clone(), real_sender);
     let registry = Arc::new(RwLock::new(registry));
 
     let resolved = resolve_target_daemon_key(
@@ -184,6 +199,84 @@ async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
     .await;
 
     assert_eq!(resolved, Some(real_key));
+}
+
+#[tokio::test]
+async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() {
+    let stale_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-stale");
+    let live_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-live");
+    let mut stale_registration = daemon_registration("daemon-stale");
+    stale_registration.daemon_alias = Some("stale".to_string());
+    stale_registration.capabilities = vec!["kernel_ws".to_string()];
+    let mut live_registration = daemon_registration("daemon-live");
+    live_registration.daemon_alias = Some("live".to_string());
+    live_registration.capabilities = vec!["kernel_ws".to_string()];
+    let live_addr = peer_addr(10_006);
+    let (live_sender, _receiver) = mpsc::channel::<Message>(1);
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(stale_key.clone(), stale_registration);
+    registry
+        .daemons
+        .insert(live_key.clone(), live_registration.clone());
+    registry.peers.insert(
+        live_addr,
+        daemon_peer(live_sender.clone(), live_registration),
+    );
+    registry.daemon_peers.insert(live_key.clone(), live_addr);
+    registry
+        .route_index()
+        .set_daemon_sender(live_key.clone(), live_sender);
+    let registry = Arc::new(RwLock::new(registry));
+
+    let stale_exact = resolve_target_daemon_key(
+        &registry,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: Some("daemon-stale".to_string()),
+            daemon_alias: None,
+        },
+    )
+    .await;
+    let stale_alias = resolve_target_daemon_key(
+        &registry,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("stale".to_string()),
+        },
+    )
+    .await;
+    let live_exact = resolve_target_daemon_key(
+        &registry,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: Some("daemon-live".to_string()),
+            daemon_alias: None,
+        },
+    )
+    .await;
+
+    let guard = registry.read().await;
+    assert_eq!(stale_exact, None);
+    assert_eq!(stale_alias, None);
+    assert_eq!(live_exact, Some(live_key));
+    assert_eq!(
+        guard.live_machines_in_realm(DEFAULT_RELAY_REALM_ID).len(),
+        1
+    );
+    assert_eq!(
+        guard.live_kernel_in_realm(DEFAULT_RELAY_REALM_ID, "daemon-stale"),
+        None
+    );
+    assert_eq!(
+        guard
+            .live_kernel_in_realm(DEFAULT_RELAY_REALM_ID, "daemon-live")
+            .expect("live daemon should remain visible")
+            .kernel_id,
+        "daemon-live"
+    );
 }
 
 #[tokio::test]

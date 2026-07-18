@@ -556,6 +556,11 @@ impl RelayRegistry {
         }
     }
 
+    pub(crate) fn live_daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {
+        self.resolve_daemon_sender(daemon_key)?;
+        self.routes.daemon_sender(daemon_key)
+    }
+
     pub(crate) fn insert_pending_display_stream(
         &mut self,
         stream_id: String,
@@ -708,7 +713,9 @@ impl RelayRegistry {
     ) -> impl Iterator<Item = &'a DaemonRegistration> + 'a {
         self.daemons
             .iter()
-            .filter(move |(key, _)| key.realm_id == realm_id)
+            .filter(move |(key, _)| {
+                key.realm_id == realm_id && self.live_daemon_sender(key).is_some()
+            })
             .map(|(_, registration)| registration)
             .filter(|registration| daemon_registration_is_kernel_target(registration))
     }

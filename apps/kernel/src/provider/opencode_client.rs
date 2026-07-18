@@ -81,6 +81,7 @@ mod tests {
             parse_model(Some("anthropic/claude-sonnet-4")),
             Some(("anthropic", "claude-sonnet-4"))
         );
+        assert_eq!(parse_model(Some("gpt-5.4")), Some(("opencode", "gpt-5.4")));
         assert_eq!(parse_model(Some("default")), None);
         assert_eq!(parse_model(None), None);
     }

@@ -58,8 +58,12 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_roles
                     .insert(info.id.clone(), info.role.clone());
+                state
+                    .message_parent_ids
+                    .insert(info.id.clone(), info.parent_id.clone());
                 if info.session_id == state.session_id
                     && info.role == "assistant"
+                    && state.message_belongs_to_active_prompt(&info.id)
                     && info.time.completed.is_some()
                     && !info.is_tool_call_only_completion()
                     && state

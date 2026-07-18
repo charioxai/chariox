@@ -272,30 +272,42 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let mut session = self.owned.session_store.get_session(session_id)?;
-        let collaboration_level = session
-            .collaboration_level_for_user(caller_user_id)
-            .unwrap_or(crate::session::CollaborationLevel::Private);
-        if agent.owner_user_id() != caller_user_id && !collaboration_level.can_view_agent_trace() {
-            return Err(DaemonError::OwnershipAccessDenied {
-                user_id: caller_user_id.to_string(),
-                owner_user_id: agent.owner_user_id().to_string(),
-                resource: agent_id.to_string(),
-                operation: "acknowledge agent output",
-            });
-        }
-        let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+        let (session, changed) = {
+            // Read, mutate, and replace while holding one write guard. The previous
+            // clone -> durable append -> restore sequence could overwrite a provider
+            // or workflow transition that landed while the large session snapshot
+            // was being serialized.
+            let mut sessions = self.owned.session_store.write();
+            let mut session = sessions.get_session(session_id)?;
+            let collaboration_level = session
+                .collaboration_level_for_user(caller_user_id)
+                .unwrap_or(crate::session::CollaborationLevel::Private);
+            if agent.owner_user_id() != caller_user_id
+                && !collaboration_level.can_view_agent_trace()
+            {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id.to_string(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                    resource: agent_id.to_string(),
+                    operation: "acknowledge agent output",
+                });
+            }
+            let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+            if changed {
+                session.touch();
+                sessions.restore_session(session.clone());
+            }
+            (session, changed)
+        };
         if !changed {
             return Ok(AgentOutputSeenAck { session, changed });
         }
-        session.touch();
         self.append_session_durable_event(
             "session.updated",
             &session,
             "agent_output_seen_acknowledged",
         )
         .await?;
-        self.owned.session_store.restore_session(session);
         Ok(AgentOutputSeenAck {
             session: self.owned.session_snapshot(session_id)?,
             changed,

@@ -35,6 +35,21 @@ pub enum AgentState {
     Error,
 }
 
+impl AgentState {
+    pub(crate) fn with_focus(self, focused: bool) -> Self {
+        match self {
+            Self::Working | Self::Error => self,
+            Self::Idle | Self::Focused => {
+                if focused {
+                    Self::Focused
+                } else {
+                    Self::Idle
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {

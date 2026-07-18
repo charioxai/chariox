@@ -58,11 +58,11 @@ impl AgentStore {
                 if let Some(position) = positions.get(index) {
                     agent.set_position(position.clone());
                 }
-                agent.set_state(if focused_agent_id == Some(agent.id()) {
-                    AgentState::Focused
-                } else {
-                    AgentState::Idle
-                });
+                agent.set_state(
+                    agent
+                        .state()
+                        .with_focus(focused_agent_id == Some(agent.id())),
+                );
             }
         }
 
@@ -80,11 +80,11 @@ impl AgentStore {
             if let Some(position) = positions.get(existing_count + index) {
                 agent.set_position(position.clone());
             }
-            agent.set_state(if focused_agent_id == Some(agent.id()) {
-                AgentState::Focused
-            } else {
-                AgentState::Idle
-            });
+            agent.set_state(
+                agent
+                    .state()
+                    .with_focus(focused_agent_id == Some(agent.id())),
+            );
             let agent_id = agent.id().to_string();
             if !session_index.iter().any(|existing| existing == &agent_id) {
                 session_index.push(agent_id.clone());
@@ -173,11 +173,9 @@ impl AgentStore {
                 if let Some(position) = positions.get(index) {
                     agent.set_position(position.clone());
                 }
-                let next_state = if focused_agent_id == Some(agent.id()) {
-                    AgentState::Focused
-                } else {
-                    AgentState::Idle
-                };
+                let next_state = agent
+                    .state()
+                    .with_focus(focused_agent_id == Some(agent.id()));
                 agent.set_state(next_state);
             }
         }

@@ -271,12 +271,30 @@ pub(super) fn apply_notification_with_manifest(
             });
         }
         CodexNotification::Error { message } => {
+            if codex_error_is_retry_progress(&message) {
+                turn_tracker.note_activity();
+                notices.push(message);
+                return;
+            }
             *active_turn_id = None;
             *terminal_failure = Some(message.clone());
             *prompt_completed = true;
             notices.push(message);
         }
     }
+}
+
+fn codex_error_is_retry_progress(message: &str) -> bool {
+    let Some(progress) = message.trim().strip_prefix("Reconnecting...") else {
+        return false;
+    };
+    let Some((attempt, limit)) = progress.trim().split_once('/') else {
+        return false;
+    };
+    let (Ok(attempt), Ok(limit)) = (attempt.parse::<u32>(), limit.parse::<u32>()) else {
+        return false;
+    };
+    limit > 0 && attempt > 0 && attempt <= limit
 }
 
 pub(super) fn backfill_completed_turn(

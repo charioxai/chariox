@@ -52,6 +52,10 @@ impl SessionStateStore {
         self.read().get_session(session_id)
     }
 
+    pub(crate) fn has_session(&self, session_id: &str) -> bool {
+        self.read().has_session(session_id)
+    }
+
     pub(crate) fn list_sessions(&self) -> Vec<RuntimeSession> {
         self.read().list_sessions()
     }

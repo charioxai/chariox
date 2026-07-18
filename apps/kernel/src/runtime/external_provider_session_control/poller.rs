@@ -31,19 +31,17 @@ pub(super) async fn refresh_external_provider_session_index(
         if cached_signature
             .is_some_and(|cached| cached.same_candidate_files(&signature_read.signature))
         {
-            let changed_provider_ids = cached_signature
-                .map(|cached| cached.changed_content_provider_ids(&signature_read.signature))
-                .unwrap_or_default();
             if let Some(cache) = cache.as_mut() {
                 cache.signature = Some(signature_read.signature);
                 cache.candidate_paths = Some(signature_read.candidate_paths);
                 cache.cached_signature_checks = cache.cached_signature_checks.saturating_add(1);
             }
-            let changed_provider_filter = single_provider_filter(&changed_provider_ids);
-            refresh_attached_external_provider_histories(
+            refresh_attached_external_provider_histories_matching(
                 app,
                 runtime_state,
-                changed_provider_filter,
+                None,
+                None,
+                true,
             )
             .await;
             let total_elapsed = refresh_started.elapsed();
@@ -81,7 +79,8 @@ pub(super) async fn refresh_external_provider_session_index(
                 cache.cached_signature_checks.saturating_add(1)
             };
         }
-        refresh_attached_external_provider_histories(app, runtime_state, None).await;
+        refresh_attached_external_provider_histories_matching(app, runtime_state, None, None, true)
+            .await;
         let total_elapsed = refresh_started.elapsed();
         if total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE {
             crate::logging::info_with_fields(
@@ -167,14 +166,6 @@ pub(super) async fn refresh_external_provider_session_index(
                 "opencode_count": opencode_count,
             }),
         );
-    }
-}
-
-fn single_provider_filter(provider_ids: &BTreeSet<String>) -> Option<&str> {
-    if provider_ids.len() == 1 {
-        provider_ids.iter().next().map(String::as_str)
-    } else {
-        None
     }
 }
 
@@ -304,6 +295,7 @@ pub(super) async fn refresh_attached_external_provider_histories(
         runtime_state,
         provider_filter,
         None,
+        false,
     )
     .await;
 }
@@ -318,50 +310,9 @@ pub(crate) async fn refresh_attached_external_provider_histories_for_session(
         runtime_state,
         None,
         Some(session_id),
+        true,
     )
     .await;
-}
-
-pub(crate) async fn refresh_attached_external_provider_histories_for_runtime_session(
-    runtime_state: &KernelRuntimeState,
-    session_id: &str,
-) {
-    let targets = runtime_state
-        .with_app_side_effect(|app| attached_external_observer_targets(app))
-        .await
-        .into_iter()
-        .filter(|target| {
-            attached_external_observer_target_matches_refresh_filters(
-                target,
-                None,
-                Some(session_id),
-            )
-        })
-        .collect::<Vec<_>>();
-    for target in targets {
-        let provider = target.provider.clone();
-        let provider_session_id = target.provider_session_id.clone();
-        let read = match tokio::task::spawn_blocking(move || {
-            crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
-        })
-        .await
-        {
-            Ok(turns) => AttachedExternalObserverRead { target, turns },
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.external_provider_sessions",
-                    "external provider session refresh failed to read imported history",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                continue;
-            }
-        };
-        let _ = runtime_state
-            .with_app_side_effect(|app| {
-                append_observed_external_turns_for_attached_target(app, read).unwrap_or_default()
-            })
-            .await;
-    }
 }
 
 pub(super) async fn refresh_attached_external_provider_histories_matching(
@@ -369,6 +320,7 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
     runtime_state: Option<&KernelRuntimeState>,
     provider_filter: Option<&str>,
     session_filter: Option<&str>,
+    changed_transcripts_only: bool,
 ) {
     let targets = attached_external_observer_targets_for_runtime(app, runtime_state)
         .await
@@ -378,7 +330,11 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
                 target,
                 provider_filter,
                 session_filter,
-            )
+            ) && (!changed_transcripts_only
+                || crate::app::external_provider_session_transcript_needs_refresh(
+                    &target.provider,
+                    &target.provider_session_id,
+                ))
         })
         .collect::<Vec<_>>();
     for target in targets {

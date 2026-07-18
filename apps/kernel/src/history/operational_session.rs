@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::MutexGuard;
 
 use rusqlite::params;
 
@@ -30,6 +31,43 @@ pub struct ExternalImportHistoryEntry {
 }
 
 impl OperationalHistoryStore {
+    pub(crate) fn lock_legacy_import(&self) -> Result<MutexGuard<'_, ()>, DaemonError> {
+        self.legacy_import_lock
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "lock legacy history import",
+                message: error.to_string(),
+            })
+    }
+
+    pub fn mark_legacy_fallback_disabled(&self, session_id: &str) -> Result<(), DaemonError> {
+        let connection =
+            self.connection
+                .lock()
+                .map_err(|error| DaemonError::SessionHistoryFailed {
+                    session_id: Some(session_id.to_string()),
+                    operation: "lock legacy history fallback marker",
+                    message: error.to_string(),
+                })?;
+        connection
+            .execute(
+                "INSERT INTO history_session_markers (
+                    session_id,
+                    legacy_fallback_disabled_at_ms
+                 ) VALUES (?1, ?2)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    legacy_fallback_disabled_at_ms = excluded.legacy_fallback_disabled_at_ms",
+                params![session_id, super::unix_epoch_ms() as i64],
+            )
+            .map(|_| ())
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "mark legacy history fallback disabled",
+                message: error.to_string(),
+            })
+    }
+
     pub fn max_prompt_number(&self) -> Result<u64, DaemonError> {
         let connection = self.lock_read_connection(None)?;
         let mut statement = connection

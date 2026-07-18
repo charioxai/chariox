@@ -330,6 +330,42 @@ fn leased_projection_recovers_history_output_when_tool_chunks_are_drained() {
         chunk.kind == TerminalOutputKind::ProviderOutput
             && chunk.bytes == b"remote assistant output"
     }));
+
+    app.terminal_mut().fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote tool output",
+    );
+    let duplicate = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("duplicate tool snapshot drain should succeed");
+    assert!(
+        duplicate.is_none(),
+        "an unchanged cumulative provider-tool snapshot must not be relayed again"
+    );
+
+    app.terminal_mut().fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote tool output updated",
+    );
+    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("updated tool snapshot drain should succeed")
+        .expect("updated tool snapshot should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+    assert!(output_chunks.iter().any(|chunk| {
+        chunk.kind == TerminalOutputKind::ProviderTool
+            && chunk.bytes == b"remote tool output updated"
+    }));
 }
 
 #[test]

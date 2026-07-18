@@ -278,7 +278,7 @@ fn agent_outline_rehydrates_file_image_attachment_previews() {
 }
 
 #[test]
-fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
+fn agent_outline_rehydrates_promptless_local_provider_activity() {
     let path = std::env::temp_dir().join(format!(
         "arroba-promptless-outline-{}-{}.db",
         std::process::id(),
@@ -316,23 +316,13 @@ fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
 
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "run-1");
-    assert_eq!(outline.turns[0].started_at_ms, 1_234);
-    assert_eq!(outline.turns[0].completed_at_ms, Some(1_234));
-    assert!(
-        outline.turns[0]
-            .user_prompt
-            .entry
-            .text
-            .contains("no recorded prompt"),
-        "{:?}",
-        outline.turns[0].user_prompt
-    );
     assert_eq!(outline.turns[0].blobs.len(), 1);
     assert_eq!(
         outline.turns[0].blobs[0].kind,
         SessionHistoryEntryKind::ProviderTool
     );
     assert_eq!(outline.turns[0].blobs[0].summary, "$ cargo test");
+    assert_eq!(outline.next_cursor, None);
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
@@ -340,7 +330,125 @@ fn agent_outline_synthesizes_turn_for_promptless_provider_activity() {
 }
 
 #[test]
-fn agent_outline_pages_promptless_provider_activity_groups() {
+fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_store_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-history-restart-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    {
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open before restart");
+        let promptless_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-primary".to_string()),
+            turn_id: Some("turn-primary".to_string()),
+            provider_run_id: Some("run-primary".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        store
+            .append(&HistoryEvent::transcript(
+                10,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-primary",
+                    Some("agent-primary"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some("assistant-primary".to_string()),
+                    "recovered promptless output",
+                ),
+                promptless_context,
+            ))
+            .expect("promptless output should persist");
+
+        let image_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-image".to_string()),
+            turn_id: Some("turn-image".to_string()),
+            prompt_id: Some("prompt-image".to_string()),
+            provider_run_id: Some("run-image".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut image_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-image",
+            "agent-image",
+            "inspect this image",
+        );
+        image_prompt.attachments = vec![SessionHistoryPromptAttachment {
+            url: "data:image/png;base64,aW1hZ2U=".to_string(),
+            mime: "image/png".to_string(),
+            filename: Some("screen.png".to_string()),
+            preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+        }];
+        store
+            .append(&HistoryEvent::transcript(
+                20,
+                &image_prompt,
+                image_context.clone(),
+            ))
+            .expect("image prompt should persist");
+        store
+            .append(&HistoryEvent::transcript(
+                21,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-image",
+                    Some("agent-image"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some("assistant-image".to_string()),
+                    "image response",
+                ),
+                image_context,
+            ))
+            .expect("image response should persist");
+    }
+
+    let restored = OperationalHistoryStore::open(path.clone())
+        .expect("operational history store should reopen after restart");
+    let promptless = load_agent_outline(&restored, "session-1", "agent-primary", 4, None)
+        .expect("promptless history should reload after restart");
+    let image = load_agent_outline(&restored, "session-1", "agent-image", 4, None)
+        .expect("image history should reload after restart");
+
+    assert_eq!(promptless.turns.len(), 1);
+    assert_eq!(promptless.turns[0].turn_id, "turn-primary");
+    assert_eq!(
+        promptless.turns[0]
+            .summary
+            .as_ref()
+            .map(|entry| entry.entry.text.as_str()),
+        Some("recovered promptless output")
+    );
+    assert_eq!(image.turns.len(), 1);
+    assert_eq!(image.turns[0].user_prompt.entry.text, "inspect this image");
+    assert_eq!(
+        image.turns[0].user_prompt.entry.attachments[0]
+            .filename
+            .as_deref(),
+        Some("screen.png")
+    );
+    assert_eq!(
+        image.turns[0]
+            .summary
+            .as_ref()
+            .map(|entry| entry.entry.text.as_str()),
+        Some("image response")
+    );
+
+    drop(restored);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_pages_promptless_imported_provider_activity_groups() {
     let path = std::env::temp_dir().join(format!(
         "arroba-promptless-outline-pages-{}-{}.db",
         std::process::id(),
@@ -378,7 +486,9 @@ fn agent_outline_pages_promptless_provider_activity_groups() {
             .expect("promptless provider activity should append");
     }
 
-    let latest = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+    let import =
+        ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+    let latest = load_scoped_agent_outline(&store, "session-1", "agent-1", 2, None, Some(&import))
         .expect("latest outline should load");
 
     assert_eq!(latest.turns.len(), 2);
@@ -392,7 +502,7 @@ fn agent_outline_pages_promptless_provider_activity_groups() {
         Some(20)
     );
 
-    let older = load_agent_outline(
+    let older = load_scoped_agent_outline(
         &store,
         "session-1",
         "agent-1",
@@ -401,6 +511,7 @@ fn agent_outline_pages_promptless_provider_activity_groups() {
             .next_cursor
             .as_ref()
             .map(|cursor| cursor.before_sequence),
+        Some(&import),
     )
     .expect("older promptless outline page should load");
 
@@ -450,8 +561,10 @@ fn agent_outline_preserves_external_identity_for_promptless_observed_activity() 
         .append(&tool)
         .expect("promptless external activity should append");
 
-    let outline =
-        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+    let import =
+        ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+    let outline = load_scoped_agent_outline(&store, "session-1", "agent-1", 1, None, Some(&import))
+        .expect("outline should load");
 
     assert_eq!(outline.turns.len(), 1);
     let turn = &outline.turns[0];

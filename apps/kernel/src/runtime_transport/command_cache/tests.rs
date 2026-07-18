@@ -378,8 +378,12 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
     let noisy_command_types = [
         "external_provider_session.list",
         "provider.catalog.get",
+        "prompt_input_history.get",
         "session.state.get",
+        "session.history.blob",
+        "session.history.outline",
         "slice.list",
+        "terminal.command_catalog.get",
         "waiting_room.inventory.get",
         "waiting_room.public_snapshot.get",
     ];
@@ -418,6 +422,48 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
             CommandReservation::Dispatch
         ));
     }
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn persistent_command_cache_removes_read_only_history_records_on_load() {
+    let path = temp_cache_path("drop-persisted-history-reads");
+    let history_fingerprint =
+        CommandResultCache::fingerprint_for_command_type_test("session.history.outline");
+    let mutation_fingerprint =
+        CommandResultCache::fingerprint_for_command_type_test("prompt.submit");
+    let history = persistent_result_for_test(
+        "command-history",
+        history_fingerprint.clone(),
+        crate::session::unix_epoch_ms(),
+        Some(serde_json::json!({ "history": "large paged response" })),
+    );
+    let mutation = persistent_result_for_test(
+        "command-mutation",
+        mutation_fingerprint.clone(),
+        crate::session::unix_epoch_ms(),
+        Some(serde_json::json!({ "submitted": true })),
+    );
+    rewrite_persistent_results(&path, &[history, mutation]).expect("cache fixture should write");
+
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should reload");
+
+    assert!(matches!(
+        cache.reserve("command-history", &history_fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    cache.forget_pending("command-history").await;
+    assert!(matches!(
+        cache
+            .reserve("command-mutation", &mutation_fingerprint)
+            .await,
+        CommandReservation::Wait(_)
+    ));
+    let stored = fs::read_to_string(&path).expect("compacted cache should exist");
+    assert!(!stored.contains("command-history"));
+    assert!(stored.contains("command-mutation"));
 
     let _ = fs::remove_file(path);
 }

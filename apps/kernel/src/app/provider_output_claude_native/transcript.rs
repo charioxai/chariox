@@ -120,6 +120,9 @@ pub(super) fn drain_claude_transcript_file_since(
         if drain.session_id.is_none() {
             drain.session_id = claude_string_field(&value, &["sessionId", "session_id"]);
         }
+        if claude_transcript_is_internal_resume_entry(&value) {
+            continue;
+        }
         if let Some(model) = claude_transcript_model(&value) {
             drain.model = Some(model);
         }
@@ -140,6 +143,20 @@ pub(super) fn drain_claude_transcript_file_since(
         },
     );
     drain
+}
+
+fn claude_transcript_is_internal_resume_entry(value: &Value) -> bool {
+    match value.get("type").and_then(Value::as_str) {
+        Some("user") => value.get("isMeta").and_then(Value::as_bool) == Some(true),
+        Some("assistant") => {
+            value
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(Value::as_str)
+                == Some("<synthetic>")
+        }
+        _ => false,
+    }
 }
 
 fn claude_transcript_enqueued_prompt(value: &Value) -> Option<String> {

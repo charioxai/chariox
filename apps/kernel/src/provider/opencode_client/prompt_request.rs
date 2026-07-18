@@ -90,5 +90,5 @@ pub(super) fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
     if value.is_empty() || value == "default" {
         return None;
     }
-    value.split_once('/')
+    Some(value.split_once('/').unwrap_or(("opencode", value)))
 }

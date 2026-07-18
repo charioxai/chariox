@@ -66,7 +66,7 @@ pub(super) async fn emit_relay_event(
             message: error.to_string(),
         })?
         .event_id;
-    send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event)
+    send_relay_event_frame(outgoing_tx, subscription_id, event_id, encrypted_event).await
 }
 
 pub(super) async fn replay_recent_relay_events(
@@ -155,7 +155,8 @@ pub(super) async fn replay_recent_relay_events(
             subscription_id,
             persisted.event_id,
             encrypted_event,
-        )?;
+        )
+        .await?;
     }
     emit_relay_event(
         router,
@@ -219,13 +220,13 @@ async fn emit_relay_replay_gap_snapshot(
     Ok(())
 }
 
-fn send_relay_event_frame(
+async fn send_relay_event_frame(
     outgoing_tx: &RelayOutgoingSender,
     subscription_id: &str,
     event_id: u64,
     encrypted_event: EncryptedRelayPayload,
 ) -> Result<(), DaemonError> {
-    send_outgoing_envelope(
+    let result = send_outgoing_event_envelope(
         outgoing_tx,
         RelayEnvelope::DaemonEvent {
             subscription_id: subscription_id.to_string(),
@@ -233,4 +234,17 @@ fn send_relay_event_frame(
             encrypted_event,
         },
     )
+    .await;
+    if let Err(error) = &result {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "relay subscription event delivery ended",
+            serde_json::json!({
+                "relay_subscription_id": subscription_id,
+                "event_id": event_id,
+                "error": error.to_string(),
+            }),
+        );
+    }
+    result
 }

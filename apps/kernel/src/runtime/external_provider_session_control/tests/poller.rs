@@ -174,8 +174,9 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
     env::set_var("CODEX_HOME", &codex_home);
     let session_dir = codex_home.join("sessions");
     fs::create_dir_all(&session_dir).expect("codex session dir should create");
+    let transcript = session_dir.join("attach-catchup.jsonl");
     fs::write(
-            session_dir.join("attach-catchup.jsonl"),
+            &transcript,
             concat!(
                 "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-attach-catchup\",\"cwd\":\"/tmp/attach-catchup\",\"model_provider\":\"openai\"}}\n",
                 "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"catch up this attached thread\"}]}}\n",
@@ -212,6 +213,36 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
         };
 
         refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+        assert!(
+            !crate::app::external_provider_session_transcript_needs_refresh(
+                "codex",
+                "thread-attach-catchup",
+            ),
+            "the observed transcript fingerprint should be current after catch-up",
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("codex transcript should open");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-01-01T00:00:03.000Z\",\"type\":\"response_item\",\"payload\":{{\"id\":\"a2\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"caught up after attach reload\"}}]}}}}"
+        )
+        .expect("codex transcript update should write");
+        assert!(crate::app::external_provider_session_transcript_needs_refresh(
+            "codex",
+            "thread-attach-catchup",
+        ));
+
+        refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+        assert!(
+            !crate::app::external_provider_session_transcript_needs_refresh(
+                "codex",
+                "thread-attach-catchup",
+            ),
+            "session-bounded catch-up should reread a changed transcript",
+        );
 
         let app = crate::runtime::app_lock::lock_app_instrumented(
             &app,
@@ -229,6 +260,9 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
             .iter()
             .any(|entry| entry.text == "catch up this attached thread"));
         assert!(entries.iter().any(|entry| entry.text == "caught up"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "caught up after attach reload"));
         let agent = app
             .agents()
             .get_agent(&agent_id)

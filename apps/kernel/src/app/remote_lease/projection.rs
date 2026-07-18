@@ -95,6 +95,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .collect::<Vec<_>>();
         let mut projected_output_history_keys = Vec::new();
+        output_chunks.retain(|chunk| {
+            if chunk.kind != TerminalOutputKind::ProviderTool {
+                return true;
+            }
+            let snapshot_key =
+                leased_provider_run_history_chunk_key(&leased_agent, provider_run_id, chunk);
+            if leased_agent
+                .projected_output_history_keys
+                .iter()
+                .any(|key| key == &snapshot_key)
+            {
+                return false;
+            }
+            projected_output_history_keys.push(snapshot_key);
+            true
+        });
         let mut projected_output_stream_keys = output_chunks
             .iter()
             .map(|chunk| leased_provider_run_stream_key(&leased_agent, provider_run_id, chunk))

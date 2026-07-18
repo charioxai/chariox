@@ -18,6 +18,7 @@ use crate::runtime::history_requests::{
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+use std::time::Instant;
 
 pub(crate) async fn execute_history_request(
     history_store: SessionHistoryStore,
@@ -28,17 +29,19 @@ pub(crate) async fn execute_history_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetSessionHistoryOutline(request) => {
-            crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_runtime_session(
-                runtime_state,
-                &request.session_id,
-            )
-            .await;
+            let started = Instant::now();
+            let session_id = request.session_id.clone();
+            let requested_agent_count = request.agent_ids.as_ref().map_or(0, Vec::len);
+            let snapshot_started = Instant::now();
             let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
+            let snapshot_ms = snapshot_started.elapsed().as_millis();
+            let legacy_import_started = Instant::now();
             ensure_operational_history_for_outline(
                 &history_store,
                 &operational_history_store,
                 &snapshot,
             )?;
+            let legacy_import_ms = legacy_import_started.elapsed().as_millis();
             let agent_imports = snapshot
                 .agents()
                 .iter()
@@ -49,19 +52,33 @@ pub(crate) async fn execute_history_request(
                         .map(|import| (agent.id().to_string(), import))
                 })
                 .collect();
-            execute_scoped_session_history_outline_request(
+            let projection_started = Instant::now();
+            let response = execute_scoped_session_history_outline_request(
                 operational_history_store,
                 request,
                 agent_imports,
             )
-            .await
+            .await;
+            let projection_ms = projection_started.elapsed().as_millis();
+            let total_ms = started.elapsed().as_millis();
+            if total_ms >= 500 {
+                crate::logging::info_with_fields(
+                    "history.outline",
+                    "session history outline request completed slowly",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "requested_agent_count": requested_agent_count,
+                        "snapshot_ms": snapshot_ms,
+                        "legacy_import_ms": legacy_import_ms,
+                        "projection_ms": projection_ms,
+                        "total_ms": total_ms,
+                        "succeeded": response.is_ok(),
+                    }),
+                );
+            }
+            response
         }
         LocalDaemonRequest::GetSessionHistoryBlobContent(request) => {
-            crate::runtime::external_provider_session_control::refresh_attached_external_provider_histories_for_runtime_session(
-                runtime_state,
-                &request.session_id,
-            )
-            .await;
             let snapshot = runtime_state.session_snapshot(&request.session_id).await?;
             let agent_import = snapshot
                 .agents()
@@ -112,14 +129,17 @@ fn ensure_operational_history_for_outline(
     operational_history_store: &OperationalHistoryStore,
     session: &crate::session::RuntimeSession,
 ) -> Result<(), DaemonError> {
+    let _import_guard = operational_history_store.lock_legacy_import()?;
     if operational_history_store.legacy_fallback_disabled(session.id())? {
         return Ok(());
     }
     let entries = history_store.load(session)?;
     if entries.is_empty() {
+        operational_history_store.mark_legacy_fallback_disabled(session.id())?;
         return Ok(());
     }
     let imported = operational_history_store.append_missing_legacy_transcripts(&entries)?;
+    operational_history_store.mark_legacy_fallback_disabled(session.id())?;
     if !imported.is_empty() {
         crate::logging::info_with_fields(
             "history.outline",
@@ -284,6 +304,12 @@ mod tests {
             &session,
         )
         .expect("legacy history should import");
+        assert!(
+            operational_history_store
+                .legacy_fallback_disabled(session.id())
+                .expect("legacy import marker should load"),
+            "completed legacy imports should not rescan the JSONL transcript"
+        );
 
         let entries = operational_history_store
             .load_session_history_entries(session.id(), Some("agent-1"))

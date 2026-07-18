@@ -739,7 +739,13 @@ fn outline_turn_completed_at_ms(
     has_newer_prompt: bool,
 ) -> Option<u64> {
     if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
-        return Some(settled_at_ms);
+        let latest_content_at_ms = events
+            .iter()
+            .filter(|event| outline_turn_completion_content_is_visible(event))
+            .map(|event| event.timestamp_ms)
+            .max()
+            .unwrap_or(prompt.timestamp_ms);
+        return Some(settled_at_ms.max(latest_content_at_ms));
     }
     if prompt_origin == PromptOrigin::Arroba
         && !has_newer_prompt
@@ -762,6 +768,24 @@ fn outline_turn_completed_at_ms(
             .max()
             .unwrap_or(prompt.timestamp_ms),
     )
+}
+
+fn outline_turn_completion_content_is_visible(event: &HistoryEvent) -> bool {
+    if !has_content(event) {
+        return false;
+    }
+    let Some(entry) = event.to_session_history_entry() else {
+        return false;
+    };
+    if entry.is_external_provider_observed_state_signal()
+        || entry
+            .external_observation
+            .as_ref()
+            .is_some_and(|observation| observation.passive_telemetry)
+    {
+        return false;
+    }
+    event.kind != HistoryEventKind::ProviderStatus || event_projects_as_outline_entry(event)
 }
 
 fn external_turn_observation_is_stale(prompt: &HistoryEvent, events: &[HistoryEvent]) -> bool {

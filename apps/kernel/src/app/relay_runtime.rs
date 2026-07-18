@@ -55,17 +55,29 @@ impl DaemonApp {
 
     pub(crate) fn block_on_relay_future<F, T>(&self, future: F) -> Result<T, DaemonError>
     where
-        F: std::future::Future<Output = Result<T, DaemonError>>,
+        F: std::future::Future<Output = Result<T, DaemonError>> + Send,
+        T: Send,
     {
         if let Ok(handle) = Handle::try_current() {
             match handle.runtime_flavor() {
                 RuntimeFlavor::MultiThread => {
                     tokio::task::block_in_place(|| handle.block_on(future))
                 }
-                RuntimeFlavor::CurrentThread => Err(DaemonError::LocalTransport {
-                    operation: "block relay future",
-                    message: "cannot block on a relay future from a current-thread tokio runtime"
-                        .to_string(),
+                RuntimeFlavor::CurrentThread => std::thread::scope(|scope| {
+                    scope
+                        .spawn(move || {
+                            Runtime::new()
+                                .map_err(|error| DaemonError::LocalTransport {
+                                    operation: "create relay runtime",
+                                    message: error.to_string(),
+                                })?
+                                .block_on(future)
+                        })
+                        .join()
+                        .map_err(|_| DaemonError::LocalTransport {
+                            operation: "block relay future",
+                            message: "relay runtime worker thread panicked".to_string(),
+                        })?
                 }),
                 _ => Err(DaemonError::LocalTransport {
                     operation: "block relay future",
@@ -89,7 +101,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_on_relay_future_does_not_panic_on_current_thread_runtime() {
+    fn block_on_relay_future_uses_a_scoped_runtime_from_current_thread_runtime() {
         let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("test daemon app should bootstrap");
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -100,12 +112,6 @@ mod tests {
         let result = runtime
             .block_on(async { app.block_on_relay_future(async { Ok::<_, DaemonError>(()) }) });
 
-        assert!(matches!(
-            result,
-            Err(DaemonError::LocalTransport {
-                operation: "block relay future",
-                ..
-            })
-        ));
+        result.expect("scoped relay runtime should complete");
     }
 }

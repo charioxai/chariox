@@ -985,6 +985,83 @@ fn claude_transcript_drain_skips_content_before_active_prompt() {
 }
 
 #[test]
+fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-resume-pair-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        [
+            serde_json::json!({
+                "type": "user",
+                "uuid": "synthetic-user",
+                "isMeta": true,
+                "sessionId": "claude-session-1",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "Continue from where you left off." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "synthetic-assistant",
+                "parentUuid": "synthetic-user",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "id": "synthetic-message",
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "No response requested." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "user",
+                "uuid": "real-user",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "Explain authoritative completion." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "real-assistant",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "id": "real-message",
+                    "model": "claude-opus-4-7",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Only the real response settles the turn." }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.session_id.as_deref(), Some("claude-session-1"));
+    assert_eq!(drain.model.as_deref(), Some("claude/claude-opus-4-7"));
+    assert_eq!(drain.assistant_message_ids, vec!["real-message"]);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(
+        drain.chunks[0].text,
+        "Only the real response settles the turn."
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn claude_transcript_drain_exposes_queue_enqueues_without_rendering_them() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(

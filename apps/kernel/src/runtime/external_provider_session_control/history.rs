@@ -55,7 +55,9 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     if read.turns.is_empty() {
         return Ok(outcome);
     }
-    let session = app.sessions().get_session(&read.target.session_id)?;
+    let session = app
+        .session_state_store()
+        .get_session(&read.target.session_id)?;
     let agent = app.agents.get_agent(&read.target.agent_id)?;
     let (active_prompt, queued_prompts) =
         app.prompt_state_owner().state_parts(&session, agent.id());

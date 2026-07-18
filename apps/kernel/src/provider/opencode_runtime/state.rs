@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::terminal::TerminalOutputKind;
 
-use super::super::OpenCodeEventSubscription;
+use super::super::{OpenCodeEventSubscription, OpenCodeMessage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeOutputChunk {
@@ -33,12 +33,14 @@ pub struct OpenCodeAssistantCompletion {
 pub(crate) struct OpenCodeRuntimeState {
     pub(super) base_url: String,
     pub(super) session_id: String,
-    pub(super) emitted_text_offsets: BTreeMap<String, usize>,
+    pub(super) emitted_text_by_part: BTreeMap<String, String>,
     pub(super) emitted_tool_summaries: BTreeMap<String, String>,
     pub(super) buffered_text_deltas: BTreeMap<String, Vec<String>>,
     pub(super) message_roles: BTreeMap<String, String>,
     pub(super) part_kinds: BTreeMap<String, String>,
     pub(super) part_message_ids: BTreeMap<String, String>,
+    pub(super) message_parent_ids: BTreeMap<String, Option<String>>,
+    pub(super) preexisting_message_ids: BTreeSet<String>,
     pub(super) event_subscription: OpenCodeEventSubscription,
     pub(super) last_status_kind: Option<String>,
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
@@ -55,12 +57,14 @@ impl OpenCodeRuntimeState {
         Self {
             base_url,
             session_id,
-            emitted_text_offsets: BTreeMap::new(),
+            emitted_text_by_part: BTreeMap::new(),
             emitted_tool_summaries: BTreeMap::new(),
             buffered_text_deltas: BTreeMap::new(),
             message_roles: BTreeMap::new(),
             part_kinds: BTreeMap::new(),
             part_message_ids: BTreeMap::new(),
+            message_parent_ids: BTreeMap::new(),
+            preexisting_message_ids: BTreeSet::new(),
             event_subscription,
             last_status_kind: None,
             completed_assistant_message_ids: BTreeSet::new(),
@@ -84,5 +88,40 @@ impl OpenCodeRuntimeState {
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
+    }
+
+    pub(in crate::provider) fn baseline_existing_messages(&mut self, messages: &[OpenCodeMessage]) {
+        self.preexisting_message_ids = messages
+            .iter()
+            .map(|message| message.info.id.clone())
+            .collect();
+        for message in messages {
+            self.message_roles
+                .insert(message.info.id.clone(), message.info.role.clone());
+            self.message_parent_ids
+                .insert(message.info.id.clone(), message.info.parent_id.clone());
+            if message.info.role == "assistant" && message.info.time.completed.is_some() {
+                self.completed_assistant_message_ids
+                    .insert(message.info.id.clone());
+            }
+            for part in &message.parts {
+                self.part_message_ids
+                    .insert(part.id.clone(), part.message_id.clone());
+                self.part_kinds.insert(part.id.clone(), part.kind.clone());
+            }
+        }
+    }
+
+    pub(super) fn message_belongs_to_active_prompt(&self, message_id: &str) -> bool {
+        let Some(active_user_message_id) = self.active_user_message_id.as_deref() else {
+            return false;
+        };
+        if self.preexisting_message_ids.contains(message_id) {
+            return false;
+        }
+        self.message_parent_ids
+            .get(message_id)
+            .and_then(|parent_id| parent_id.as_deref())
+            .is_none_or(|parent_id| parent_id == active_user_message_id)
     }
 }

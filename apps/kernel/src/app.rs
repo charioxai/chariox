@@ -49,7 +49,8 @@ pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artif
 pub(crate) use external_provider_session_discovery::{
     discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
-    read_external_provider_observed_turns, ExternalProviderSessionDiscoverySignature,
+    external_provider_session_transcript_needs_refresh, read_external_provider_observed_turns,
+    ExternalProviderSessionDiscoverySignature,
 };
 pub(crate) use external_provider_sessions::{
     external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,

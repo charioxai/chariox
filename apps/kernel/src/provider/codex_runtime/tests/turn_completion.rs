@@ -996,6 +996,75 @@ fn error_notification_clears_active_turn_and_records_terminal_failure() {
 }
 
 #[test]
+fn reconnect_progress_keeps_active_turn_running() {
+    let mut active_turn_id = Some("turn-reconnecting".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::Error {
+            message: "Reconnecting... 2/5".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-reconnecting"));
+    assert!(terminal_failure.is_none());
+    assert_eq!(notices, vec!["Reconnecting... 2/5".to_string()]);
+}
+
+#[test]
+fn malformed_reconnect_error_remains_terminal() {
+    let mut active_turn_id = Some("turn-reconnecting".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::Error {
+            message: "Reconnecting failed".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(terminal_failure.as_deref(), Some("Reconnecting failed"));
+}
+
+#[test]
 fn completed_turn_backfill_requires_final_answer_or_error_evidence() {
     let empty_items = Vec::new();
     assert!(!codex_completed_turn_has_settlement_evidence(

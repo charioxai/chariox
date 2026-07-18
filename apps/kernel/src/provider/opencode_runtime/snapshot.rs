@@ -5,6 +5,7 @@ use crate::extension::RemoteExtensionManifest;
 use crate::provider::{OpenCodeClient, OpenCodeMessage, OpenCodeMessageInfo};
 use crate::terminal::TerminalOutputKind;
 
+use super::parts::emit_authoritative_part_text;
 use super::transcript::render_tool_transcript_update;
 use super::{OpenCodeAssistantCompletion, OpenCodeOutputChunk, OpenCodeRuntimeState};
 
@@ -53,6 +54,9 @@ pub(super) fn record_snapshot_message_metadata(
         state
             .message_roles
             .insert(message.info.id.clone(), message.info.role.clone());
+        state
+            .message_parent_ids
+            .insert(message.info.id.clone(), message.info.parent_id.clone());
         for part in &message.parts {
             state
                 .part_message_ids
@@ -66,10 +70,12 @@ pub(super) fn collect_new_completed_assistant_messages(
     state: &mut OpenCodeRuntimeState,
     messages: &[OpenCodeMessage],
 ) -> Vec<OpenCodeAssistantCompletion> {
+    record_snapshot_message_metadata(state, messages);
     let mut completions = Vec::new();
     for message in messages {
         let is_new_completed = message.info.session_id == state.session_id
             && message.info.role == "assistant"
+            && state.message_belongs_to_active_prompt(&message.info.id)
             && message.info.time.completed.is_some()
             && !message.info.is_tool_call_only_completion()
             && !state
@@ -106,35 +112,28 @@ pub(super) fn render_snapshot_output_chunks(
     remote_extension_manifest: &RemoteExtensionManifest,
     messages: &[OpenCodeMessage],
 ) -> SnapshotRenderResult {
+    record_snapshot_message_metadata(state, messages);
     let mut chunks = Vec::new();
-    for message in messages
-        .iter()
-        .filter(|message| message.info.role == "assistant")
-    {
+    for message in messages {
+        if message.info.role != "assistant"
+            || !state.message_belongs_to_active_prompt(&message.info.id)
+        {
+            continue;
+        }
         for part in &message.parts {
             match part.kind.as_str() {
                 "text" | "reasoning" => {
-                    if part.text.is_empty() {
-                        continue;
-                    }
-                    let emitted = state
-                        .emitted_text_offsets
-                        .entry(part.id.clone())
-                        .or_insert(0);
-                    let start = (*emitted).min(part.text.len());
-                    if start == part.text.len() {
-                        continue;
-                    }
-                    chunks.push(OpenCodeOutputChunk {
-                        kind: if part.kind == "reasoning" {
+                    emit_authoritative_part_text(
+                        state,
+                        &part.id,
+                        &part.text,
+                        if part.kind == "reasoning" {
                             TerminalOutputKind::ProviderReasoning
                         } else {
                             TerminalOutputKind::ProviderOutput
                         },
-                        merge_key: Some(part.id.clone()),
-                        bytes: part.text.as_bytes()[start..].to_vec(),
-                    });
-                    *emitted = part.text.len();
+                        &mut chunks,
+                    );
                 }
                 "tool" => {
                     let summary = render_tool_transcript_update(part, remote_extension_manifest);

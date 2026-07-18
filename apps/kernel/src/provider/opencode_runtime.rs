@@ -30,6 +30,7 @@ mod tests {
 
     use super::{
         drain_opencode_events,
+        parts::{handle_message_part_delta, handle_message_part_updated},
         snapshot::render_snapshot_output_chunks,
         snapshot::{collect_new_completed_assistant_messages, latest_assistant_usage_tokens},
         transcript::render_tool_transcript_update,
@@ -157,6 +158,7 @@ mod tests {
                 std::sync::mpsc::channel().1,
             ),
         );
+        state.note_prompt_submitted("msg_user".to_string());
         let rendered = render_snapshot_output_chunks(
             &mut state,
             &RemoteExtensionManifest::default(),
@@ -165,6 +167,7 @@ mod tests {
                     "id": "message-1",
                     "sessionID": "session-1",
                     "role": "assistant",
+                    "parentID": "msg_user",
                     "time": { "completed": 1 }
                 }))
                 .expect("message info should deserialize"),
@@ -226,6 +229,191 @@ mod tests {
                     "second thought\n".to_string()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn snapshot_rendering_excludes_messages_from_before_the_active_prompt() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        let messages = vec![
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-old",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user_old",
+                    "time": { "completed": 1 }
+                },
+                "parts": [{
+                    "id": "part-old",
+                    "sessionID": "session-1",
+                    "messageID": "message-old",
+                    "type": "text",
+                    "text": "old answer"
+                }]
+            }))
+            .expect("old message should deserialize"),
+            serde_json::from_value::<OpenCodeMessage>(json!({
+                "info": {
+                    "id": "message-current",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user_current",
+                    "time": { "completed": 2 }
+                },
+                "parts": [{
+                    "id": "part-current",
+                    "sessionID": "session-1",
+                    "messageID": "message-current",
+                    "type": "text",
+                    "text": "current answer"
+                }]
+            }))
+            .expect("current message should deserialize"),
+        ];
+        state.baseline_existing_messages(&messages[..1]);
+        state.note_prompt_submitted("msg_user_current".to_string());
+
+        let rendered = render_snapshot_output_chunks(
+            &mut state,
+            &RemoteExtensionManifest::default(),
+            &messages,
+        );
+
+        assert_eq!(rendered.chunks.len(), 1);
+        assert_eq!(
+            rendered.chunks[0].merge_key.as_deref(),
+            Some("part-current")
+        );
+        assert_eq!(rendered.chunks[0].bytes, b"current answer");
+
+        let mut event_chunks = Vec::new();
+        handle_message_part_updated(
+            &mut state,
+            "provider-run-1",
+            &RemoteExtensionManifest::default(),
+            messages[0].parts[0].clone(),
+            &mut event_chunks,
+        )
+        .expect("historical event should be ignored");
+        assert!(event_chunks.is_empty());
+    }
+
+    #[test]
+    fn late_attach_delta_waits_for_authoritative_part_prefix() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        state
+            .message_roles
+            .insert("message-1".to_string(), "assistant".to_string());
+        state
+            .part_kinds
+            .insert("part-1".to_string(), "text".to_string());
+        let mut chunks = Vec::new();
+
+        handle_message_part_updated(
+            &mut state,
+            "provider-run-1",
+            &RemoteExtensionManifest::default(),
+            OpenCodePart {
+                id: "part-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "text".to_string(),
+                text: String::new(),
+                tool: String::new(),
+                state: None,
+                time: None,
+            },
+            &mut chunks,
+        )
+        .expect("empty part creation should not establish an offset baseline");
+
+        handle_message_part_delta(
+            &mut state,
+            "provider-run-1",
+            "session-1".to_string(),
+            "message-1".to_string(),
+            "part-1".to_string(),
+            "text".to_string(),
+            "feels indistinguishable from a local one".to_string(),
+            &mut chunks,
+        )
+        .expect("late delta should buffer");
+        assert!(chunks.is_empty());
+
+        handle_message_part_updated(
+            &mut state,
+            "provider-run-1",
+            &RemoteExtensionManifest::default(),
+            OpenCodePart {
+                id: "part-1".to_string(),
+                session_id: "session-1".to_string(),
+                message_id: "message-1".to_string(),
+                kind: "text".to_string(),
+                text: "A remote worker feels indistinguishable from a local one".to_string(),
+                tool: String::new(),
+                state: None,
+                time: None,
+            },
+            &mut chunks,
+        )
+        .expect("full part should establish its prefix");
+
+        handle_message_part_delta(
+            &mut state,
+            "provider-run-1",
+            "session-1".to_string(),
+            "message-1".to_string(),
+            "part-1".to_string(),
+            "text".to_string(),
+            " and completes the illusion.".to_string(),
+            &mut chunks,
+        )
+        .expect("subsequent delta should append");
+
+        let rendered = render_snapshot_output_chunks(
+            &mut state,
+            &RemoteExtensionManifest::default(),
+            &[OpenCodeMessage {
+                info: serde_json::from_value(json!({
+                    "id": "message-1",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "time": { "completed": 1 }
+                }))
+                .expect("message info should deserialize"),
+                parts: vec![OpenCodePart {
+                    id: "part-1".to_string(),
+                    session_id: "session-1".to_string(),
+                    message_id: "message-1".to_string(),
+                    kind: "text".to_string(),
+                    text: "A remote worker feels indistinguishable from a local one and completes the illusion.".to_string(),
+                    tool: String::new(),
+                    state: None,
+                    time: None,
+                }],
+            }],
+        );
+        assert!(rendered.chunks.is_empty());
+        assert_eq!(
+            chunks
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+                .collect::<String>(),
+            "A remote worker feels indistinguishable from a local one and completes the illusion."
         );
     }
 
@@ -427,12 +615,14 @@ mod tests {
             "session-1".to_string(),
             crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
         );
+        state.note_prompt_submitted("msg_user".to_string());
         let messages = vec![
             serde_json::from_value::<OpenCodeMessage>(json!({
                 "info": {
                     "id": "message-1",
                     "sessionID": "session-1",
                     "role": "assistant",
+                    "parentID": "msg_user",
                     "finish": "stop",
                     "time": { "completed": 1 }
                 },
@@ -444,6 +634,7 @@ mod tests {
                     "id": "message-2",
                     "sessionID": "session-1",
                     "role": "assistant",
+                    "parentID": "msg_user",
                     "finish": "stop",
                     "time": { "completed": 2 }
                 },

@@ -69,33 +69,60 @@ impl KernelRuntimeState {
         slice: &crate::slice::SliceRecord,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         let mut current = slice.clone();
-        for agent_id in slice.agent_ids.clone() {
+        let missing_attachments = self
+            .owned
+            .agent_store
+            .list_agents()
+            .into_iter()
+            .filter_map(|agent| {
+                let remote = agent.remote_execution()?;
+                let targets_slice = remote.worker_machine_id == format!("slice:{}", slice.id)
+                    || slice.worker_kernel_id.as_deref() == Some(remote.worker_kernel_id.as_str())
+                    || slice.worker_kernel_ref == remote.worker_kernel_id;
+                (targets_slice
+                    && !slice
+                        .agent_ids
+                        .iter()
+                        .any(|agent_id| agent_id == agent.id()))
+                .then(|| crate::slice::SliceAgentAttachment {
+                    slice_ref: slice.id.clone(),
+                    session_id: agent.session_id().to_string(),
+                    agent_id: agent.id().to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        for attached in self
+            .owned
+            .slice_store
+            .attach_agents(missing_attachments, crate::session::unix_epoch_ms())?
+        {
+            current = attached;
+            self.append_slice_durable_event("slice.updated", &current)?;
+        }
+
+        for agent_id in current.agent_ids.clone() {
             let matches_canonical_agent = self
                 .owned
                 .agent_store
                 .get_agent(&agent_id)
                 .ok()
                 .is_some_and(|agent| {
-                    let projection_has_agent = self
+                    let session_exists = self
                         .owned
-                        .session_projection
-                        .get(agent.session_id())
-                        .is_some_and(|session| {
-                            session
-                                .agents()
-                                .iter()
-                                .any(|candidate| candidate.id() == agent_id)
-                        });
+                        .session_store
+                        .get_session(agent.session_id())
+                        .is_ok();
                     let remote = agent.remote_execution();
-                    projection_has_agent
+                    session_exists
                         && remote.is_some_and(|remote| {
-                            let live_worker_identity_available = slice.worker_kernel_id.is_some()
-                                || slice.worker_machine_id.is_some();
+                            let live_worker_identity_available = current.worker_kernel_id.is_some()
+                                || current.worker_machine_id.is_some();
                             (!live_worker_identity_available
-                                && slice.status != crate::slice::SliceStatus::Running)
-                                || slice.worker_kernel_id.as_deref()
+                                && current.status != crate::slice::SliceStatus::Running)
+                                || remote.worker_machine_id == format!("slice:{}", current.id)
+                                || current.worker_kernel_id.as_deref()
                                     == Some(remote.worker_kernel_id.as_str())
-                                || slice.worker_kernel_ref == remote.worker_kernel_id
+                                || current.worker_kernel_ref == remote.worker_kernel_id
                         })
                 });
             if !matches_canonical_agent {
@@ -104,11 +131,7 @@ impl KernelRuntimeState {
                     &agent_id,
                     crate::session::unix_epoch_ms(),
                 )?;
-                self.owned.durable_state_store.append_event(
-                    "slice.updated",
-                    Some(current.id.clone()),
-                    serde_json::json!({ "slice": &current }),
-                )?;
+                self.append_slice_durable_event("slice.updated", &current)?;
             }
         }
         Ok(current)
@@ -849,7 +872,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stopped_slice_reconciliation_keeps_durable_remote_agent_attachments() {
+    async fn stopped_slice_reconciliation_uses_canonical_session_without_projection() {
         let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
         runtime
             .owned
@@ -867,16 +890,48 @@ mod tests {
                 },
             )
             .expect("remote execution should bind");
-        runtime
-            .owned
-            .session_snapshot(&session_id)
-            .expect("session projection should refresh");
+        runtime.owned.session_projection.remove(&session_id);
 
         let reconciled = runtime
             .reconcile_slice_agent_attachments(&slice)
             .await
             .expect("stopped slice attachments should reconcile");
 
+        assert_eq!(reconciled.agent_ids, vec![agent_id]);
+    }
+
+    #[tokio::test]
+    async fn slice_reconciliation_restores_missing_canonical_remote_attachment() {
+        let (_app, runtime, slice, session_id, agent_id) = slice_runtime().await;
+        runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(
+                &agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: format!("slice:{}", slice.id),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("remote execution should bind");
+        let detached = runtime
+            .owned
+            .slice_store
+            .detach_agent(&slice.id, &agent_id, 3)
+            .expect("attachment should detach for the regression setup");
+        runtime.owned.session_projection.remove(&session_id);
+
+        let reconciled = runtime
+            .reconcile_slice_agent_attachments(&detached)
+            .await
+            .expect("missing canonical attachment should reconcile");
+
+        assert_eq!(reconciled.session_ids, vec![session_id]);
         assert_eq!(reconciled.agent_ids, vec![agent_id]);
     }
 
