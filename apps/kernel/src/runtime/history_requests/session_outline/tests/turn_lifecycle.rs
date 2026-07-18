@@ -48,6 +48,56 @@ fn outline_turn_joins_trailing_assistant_fragments_into_complete_summary() {
 }
 
 #[test]
+fn outline_turn_restores_provider_fragment_order_when_concurrent_history_writes_cross() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    let fragments = [
+        (11, 100, "new "),
+        (12, 300, "both "),
+        (13, 200, "turn "),
+        (14, 400, "placeholder"),
+    ]
+    .into_iter()
+    .map(|(sequence, timestamp_ms, text)| {
+        let mut event = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some("msg-provider-final-1".to_string()),
+                text,
+            ),
+            context.clone(),
+        );
+        event.timestamp_ms = timestamp_ms;
+        event
+    })
+    .collect::<Vec<_>>();
+    let mut events = vec![prompt.clone()];
+    events.extend(fragments);
+
+    let turn = outline_turn_from_events(&prompt, events, false).expect("turn should be outlined");
+
+    assert_eq!(
+        turn.summary.as_ref().map(|entry| entry.entry.text.as_str()),
+        Some("new turn both placeholder")
+    );
+}
+
+#[test]
 fn outline_latest_arroba_turn_does_not_infer_completion_from_output() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),

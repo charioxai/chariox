@@ -182,7 +182,9 @@ pub(super) fn outline_page_entry_from_event_group(
 ) -> Option<SessionHistoryPageEntry> {
     let first = events.first()?;
     let mut page_entry = outline_page_entry_from_event((*first).clone())?;
-    let text = events
+    let mut ordered_events = events.to_vec();
+    ordered_events.sort_by_key(|event| (event.timestamp_ms, event.sequence));
+    let text = ordered_events
         .iter()
         .filter_map(|event| event.to_session_history_entry())
         .map(|entry| entry.text)

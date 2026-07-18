@@ -278,6 +278,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let _append_guard = self.transcript_history_append_guard();
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -302,7 +303,7 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entry(&entry, None, None, None);
+        self.append_operational_history_entry_unlocked(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -313,6 +314,7 @@ impl KernelRuntimeOwnedState {
         if entries.is_empty() {
             return;
         }
+        let _append_guard = self.transcript_history_append_guard();
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -343,6 +345,22 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn append_operational_history_entry(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        prompt_id_override: Option<&str>,
+        workflow_run_id_override: Option<&str>,
+        workflow_node_run_id_override: Option<&str>,
+    ) {
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(
+            entry,
+            prompt_id_override,
+            workflow_run_id_override,
+            workflow_node_run_id_override,
+        );
+    }
+
+    fn append_operational_history_entry_unlocked(
         &self,
         entry: &crate::history::SessionHistoryEntry,
         prompt_id_override: Option<&str>,
@@ -534,6 +552,7 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: Option<&str>,
         timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
+        let _append_guard = self.transcript_history_append_guard();
         let session = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
@@ -559,7 +578,7 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entry(
+        self.append_operational_history_entry_unlocked(
             &entry,
             prompt_id,
             workflow_run_id,
@@ -609,6 +628,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
+        let _append_guard = self.transcript_history_append_guard();
         let agent = self.agent_store.get_agent(agent_id)?;
         let (history_provider_run_id, provider_run) =
             if let Some(remote_execution) = agent.remote_execution() {
@@ -708,6 +728,12 @@ impl KernelRuntimeOwnedState {
             self.enqueue_history_archive_event(&event);
         }
         Ok(())
+    }
+
+    fn transcript_history_append_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.transcript_history_append_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(super) fn echo_prompt_to_other_attachments(
