@@ -752,6 +752,41 @@ mod tests {
     }
 
     #[test]
+    fn idle_after_observed_busy_status_completes_prompt_without_terminal_assistant() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "busy".to_string(),
+            },
+        )
+        .expect("busy status should send");
+        let first = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("busy drain should succeed");
+        assert!(!first.prompt_completed);
+
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+        let second = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("idle drain should succeed");
+
+        assert!(second.prompt_completed);
+        assert!(state.active_user_message_id.is_none());
+    }
+
+    #[test]
     fn idle_status_after_assistant_text_does_not_complete_without_terminal_assistant() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(
