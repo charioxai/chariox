@@ -792,13 +792,13 @@
     <div id="scroll-progress" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-17</p>
+      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-18</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: core product, callback, egress, local two-surface and live-provider paths are implemented; guarded Hetzner and real DNS/TLS Phase 7 acceptance remain open</span>
+        <span>Status: implementation and technical acceptance complete; first external production launch awaits operator approval and configuration of the production credential-storage and service-registration choices below</span>
       </div>
     </header>
 
@@ -879,8 +879,8 @@
 
         <section id="baseline">
           <p class="eyebrow">02 / Current baseline</p>
-          <h2>The product path exists; production acceptance is now the boundary.</h2>
-          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at OSS <code>66c859e60</code> and Cloud <code>59693abb</code> on 2026-07-17. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. The final OpenCode drill pair records stable clean-worktree fingerprints for these exact revisions; Codex and Claude passed on their clean immediate-parent revisions before the provider-neutral failure-settlement and web turn-reconciliation patches, whose focused shared suites and final-head OpenCode paths are green. Focused tests alone still do not count as launch acceptance.</p>
+          <h2>The product path and technical acceptance exist; production service onboarding is now the boundary.</h2>
+          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at implementation heads OSS <code>41bded5580bdbe176be68b9877a6442e4b5a6392</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code> on 2026-07-18. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. Acceptance is compositional and provenance-bound: earlier clean heads prove live providers, remote-machine execution, collaborator handoff, and hosted faults; the exact implementation heads revalidate the changed remote-lease, command-cache, terminal-projection, and managed-slice seams in both terminal directions. No claim is made that one all-eight-cell command ran at one revision pair.</p>
 
           <div class="table-wrap">
             <table>
@@ -902,43 +902,43 @@
                 <tr>
                   <td>Runtime</td>
                   <td><span class="status have">Landed</span> Local and hosted paths, desired/observed reconciliation, immutable image-ID launch, rolling promotion/rollback, caller claims, limits, audit bridge, child supervision and cleanup.</td>
-                  <td>Rerun hosted disruption and resource acceptance on the final revisions when the designated Hetzner host satisfies the guarded managed-slice headroom floor.</td>
+                  <td><span class="status have">Accepted</span> Hosted disruption passed in both terminal directions; the exact-head managed-slice run passed both directions with guarded resources and exact baseline restoration.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Deployment record</td>
                   <td><span class="status have">Landed</span> Projects, releases, environments, promotions, claims, access, credentials, domains, audit and usage are distinct records with account-scoped services.</td>
-                  <td>Validate migration and recovery behavior against the final schema and both terminal surfaces.</td>
+                  <td><span class="status have">Accepted</span> Migration, desired/observed reconciliation, recovery, rollback, and cross-surface projection passed the final affected suites and drills.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Web UI</td>
                   <td><span class="status have">Landed</span> Global Deployed portfolio and detail operations cover release, runtime, access, credentials, domains, observability and handoff with matching TUI commands.</td>
-                  <td>Run the final desktop/mobile, keyboard, error, collaborator and remote matrices with inspected screenshots.</td>
+                  <td><span class="status have">Accepted</span> Desktop/mobile, error, collaborator, remote, and exact-head managed-slice evidence passed; representative source, access, domain, and handoff screenshots were inspected.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Credentials</td>
                   <td><span class="status have">Landed</span> Destination-owned profiles, one-time enrollments, runner affinity, bind/test/rotate/revoke/purge and direct protocol-241 Claude callback arming from TUI and web.</td>
-                  <td>Local live web/TUI enrollment, expiry, replay rejection, rotation, revocation, purge and cleanup are green for Codex, Claude and OpenCode; repeat the credential matrix through guarded hosted runtimes.</td>
+                  <td><span class="status have">Accepted</span> Live Codex, Claude, and OpenCode enrollment, expiry, replay rejection, rotation, revocation, purge, and cleanup pass across web and TUI; hosted credential binding and revocation are covered by the guarded Hetzner paths.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Audience identity</td>
                   <td><span class="status have">Landed</span> Public/restricted policy, invitations, account/domain grants, signed machine credentials, forged-header stripping, runtime verification and caller affinity.</td>
-                  <td>Local HTTP, SSE, WebSocket and MCP denial and isolation pass on the final source revisions; repeat them in the guarded Hetzner matrix.</td>
+                  <td><span class="status have">Accepted</span> HTTP, SSE, WebSocket, and MCP policy, denial, revocation, caller isolation, and signed machine-auth paths pass locally and on Hetzner.</td>
                   <td>Both</td>
                 </tr>
                 <tr>
                   <td>Domains</td>
                   <td><span class="status have">Landed</span> Stable default routes, verified custom hosts, activation proof, TLS/canonical state and removal behavior.</td>
-                  <td>Validate one real temporary hostname end to end and preserve transport/auth behavior through DNS drift and removal.</td>
+                  <td><span class="status have">Accepted</span> Public <code>sslip.io</code> default/custom hosts passed trusted TLS, canonical redirect, auth, HTTP/SSE/WebSocket/MCP, revocation, and complete Caddy restoration.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Hosted egress</td>
                   <td><span class="status have">Landed</span> The v3 network ceiling, dedicated CONNECT gateway, policy compilation, hosted admission, revision-scoped internal network, dual-homed gateway, host enforcement, recovery and convergent cleanup are committed.</td>
-                  <td>Validate exact TLS/443 policy, no direct route or fallback, gateway disruption, and hosted rejection of <code>legacy_unrestricted</code> on the designated Hetzner host.</td>
+                  <td><span class="status have">Accepted</span> Exact TLS/443 policy, no direct route or fallback, gateway disruption, and hosted legacy-policy rejection passed on the designated Hetzner host.</td>
                   <td>Both</td>
                 </tr>
               </tbody>
@@ -1144,7 +1144,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
             <li>Archive extraction is bounded and structured; Cloud verifies archive size, file safety, package digest, contract schema, contract/package identity and immutable release metadata before promotion.</li>
             <li>The v3 compatibility block carries the minimum local daemon protocol. Runners advertise the probed protocol of an immutable Docker image ID, and incompatible jobs are not claimable or recoverable on that image.</li>
             <li>The publication image pins and build-verifies Codex CLI <code>0.144.0</code>, OpenCode <code>1.4.1</code> and Claude Code <code>2.1.207</code>. The contract maps provider slots to stable official bundle IDs so an environment can tighten, never substitute or broaden, the declared provider ceiling.</li>
-            <li>Hosted activation requires package v3, an enforced network policy snapshot and supported provider bundle references. The Cloud egress-policy compiler, lifecycle admission, aligned API-to-worker policy snapshot, runner orchestration, recovery and cleanup are committed and pass the final local matrix; designated-Hetzner fail-closed acceptance remains open.</li>
+            <li>Hosted activation requires package v3, an enforced network policy snapshot and supported provider bundle references. The Cloud egress-policy compiler, lifecycle admission, aligned API-to-worker policy snapshot, runner orchestration, recovery and cleanup are committed and pass local and designated-Hetzner fail-closed acceptance.</li>
           </ul>
 
           <div class="callout info">
@@ -1261,7 +1261,7 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           </ol>
           <div class="callout info">
             <strong>Current checkpoint</strong>
-            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. Refreshed Claude credentials passed real web-to-TUI and TUI-to-web provider lifecycle drills, including enrollment expiry, replay rejection, rotation, revocation, purge and cleanup. Keep the hosted-provider gate open until the same path passes through the guarded Hetzner runtime matrix.
+            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. Refreshed Claude credentials passed real web-to-TUI and TUI-to-web provider lifecycle drills, including enrollment expiry, replay rejection, rotation, revocation, purge and cleanup. Hosted credential binding, invocation, rotation/revocation behavior, and cleanup subsequently passed the guarded Hetzner paths.
           </div>
 
           <h3>Credential classes that must stay distinct</h3>
@@ -1551,8 +1551,14 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="decision">
-            <strong>Current service-registration position / 2026-07-16</strong>
-            No new vendor registration is required for implementation, isolated local validation or the designated Hetzner drills. Use local files/MinIO, test identities, copyable expiring claims, existing Auth0/Caddy/Postgres abstractions and provider-native profiles while validating the boundaries. Do not turn a possible object store, mail provider, custom-hostname platform, billing system or observability vendor into a blocking dependency. At final acceptance, produce one evidence-based registration report listing only services that are truly required for the first external deployment, with plan/cost, region, security impact, credentials, migration and degraded behavior. Until that report is accepted, candidate services in the table remain options, not prerequisites.
+            <strong>Final service-registration position / 2026-07-18</strong>
+            <p>No new vendor registration was required to complete implementation or technical acceptance. Local files, test identities, copyable expiring claims, existing Auth0/Caddy/Postgres abstractions, provider-native profiles, and public <code>sslip.io</code> DNS with trusted Caddy/Let's Encrypt TLS proved the boundaries without hiding a production dependency.</p>
+            <ul>
+              <li><strong>Required before the first real customer provider credential:</strong> choose and configure a production secrets design: Cloud KMS plus encrypted runner volumes, a managed vault, or a customer-owned external-vault binding. Restricted provider-native files on drill volumes are not a finished multi-tenant secret product.</li>
+              <li><strong>Required before automated invitations:</strong> register a transactional email provider. A manually shared, expiring claim link remains a valid private-beta fallback.</li>
+              <li><strong>Not required for a low-volume beta:</strong> a CDN or managed custom-hostname vendor. Direct Caddy origin, customer-controlled DNS, ACME TLS, canonical redirect, all transports, and removal were proven. Add Cloudflare for SaaS or equivalent only when domain volume, WAF/DDoS needs, or certificate operations justify it.</li>
+              <li><strong>Deferred by measured need:</strong> S3-compatible object storage, managed observability, expanded enterprise identity, and usage billing. Existing Postgres/package storage, Auth0, built-in metrics, and non-charging budgets can support a controlled beta; set migration triggers from the table before offering an SLA or paid scale.</li>
+            </ul>
           </div>
         </section>
 
@@ -1580,7 +1586,7 @@ publication container (no direct public route)</pre>
                     <li>Later hardening now verifies caller identity across HTTP, SSE, WebSocket and MCP; isolates package actions, credentials, kernel transport and the runner audit capability; and supervises hosted runtime children.</li>
                     <li>The original dedicated-stack screenshots and cleanup evidence remain useful historical containment evidence, but they predate the current v3 admission, protocol-241 callback and egress revisions and are not the final launch result.</li>
                   </ul>
-                  <p><strong>Current gate:</strong> retain these controls while completing the final-revision local and Hetzner matrices. Capacity is sampled at run time; no earlier free-disk reading is current evidence. The committed harness uses fixed local and remote preflight floors of 1.25 GiB available memory and 3 GiB available disk, then runtime abort floors of 1 GiB and 2.25 GiB. Managed-slice preparation currently requires an effective 3.25 GiB of available disk, including transient staging headroom.</p>
+                  <p><strong>Accepted gate:</strong> retain these controls in CI and release drills. Capacity was sampled at run time, with fixed local and remote preflight floors of 1.25 GiB available memory and 3 GiB available disk, runtime abort floors of 1 GiB and 2.25 GiB, and an effective 3.25 GiB managed-slice preparation requirement. The final exact-head run maintained the guards and restored the captured host inventory after each direction.</p>
                 </div>
               </div>
             </details>
@@ -1696,7 +1702,7 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="callout info">
-            <strong>Implementation and validation checkpoint / 2026-07-17</strong>
+            <strong>Final implementation and technical acceptance checkpoint / 2026-07-18</strong>
             <ul>
               <li>Working vertical paths cover immutable releases, project/environment promotion and rollback, the Deployed web surface and TUI commands, customer handoff and revocable builder access, audience policy, credential lifecycle, domains, HTTP/SSE/WebSocket/MCP, Agent App invocation identity, usage/limits, operations detail, audit and reconciliation.</li>
               <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Refreshed Claude credentials now pass both live terminal directions locally.</li>
@@ -1709,8 +1715,17 @@ publication container (no direct public route)</pre>
               <li>The deliberate unqualified OpenCode negative probe records one completed history turn, one TUI prompt plus failure notice, an idle agent, no queued interaction and complete PID/port cleanup. Its success-oriented harness exits because no assistant text is expected from the rejected model; the diagnostic exposed and drove the web completed-turn reconciliation fix.</li>
               <li>Live Codex <code>gpt-5.4</code> and Claude <code>sonnet-4-6</code> pass web-to-TUI and TUI-to-web at clean parent heads <code>3d577945</code>/<code>ebbb9ca78</code>. Live OpenCode <code>opencode/big-pickle</code> passes both directions at exact final heads <code>59693abb</code>/<code>66c859e60</code>. Every run proves one prompt and one response on both terminals, one completed history turn, initial/rotated/recovered invocation markers, credential expiry/retry/replay/rotation/revocation/purge, inspected screenshots and zero remaining owned PIDs or ports.</li>
               <li>The final OpenCode stacks were run serially, peaked at approximately 2.66 GiB RSS while Chromium and two provider servers were active, and returned task-owned RSS to zero after each direction. The temporary OpenCode credential source was deleted; the post-matrix app-family audit measured approximately 3.7 GiB RSS and no task-owned runtime process.</li>
+              <li>Guarded hosted-fault runs passed both web-to-TUI and TUI-to-web at clean OSS <code>b6907d832</code> and Cloud <code>348dd87f</code>. Each direction exercised bounded runner, API-tunnel, ingress, publication-container, and egress-gateway outages; proved no local or unrestricted fallback; completed rollback/reactivation, signed JWT and webhook authorization including replay/forgery/revocation denial, bounded load, resource sampling, and exact cleanup with baseline inventory preserved.</li>
+              <li>The clean OSS <code>b6907d832</code> / Cloud <code>59693abb</code> remote-machine proof executed the exact prompt and provider run on the Hetzner worker while both web and TUI remained attached to the home session, then exported, promoted, invoked, and observed the immutable package on both surfaces. The same evidence contains both collaborator handoff directions: builder web to customer TUI and builder TUI to customer web, with distinct customer projects, matching package digests, live ingress after claim, and revocable builder access.</li>
+              <li>The final exact-head managed-slice matrix at OSS <code>41bded5580bdbe176be68b9877a6442e4b5a6392</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code> passed serial <code>web-to-tui:managed-slice</code> and <code>tui-to-web:managed-slice</code> cells with <code>selectedAcceptanceComplete=true</code>. The report is <code>.artifacts/deployed-workflows-remote-bidirectional/matrix-41bded558-54f89e77-r15/managed-slice/report.json</code>. <code>fullMatrixComplete=false</code> is expected because this final command intentionally selected the remaining managed-slice case; earlier provenance-bound runs provide the other case evidence.</li>
+              <li>The final reverse source proof binds TUI attachment <code>attachment-2</code>, prompt <code>prompt-1</code>, provider run <code>provider-run-1</code>, exact worker/kernel/lease identity, one exact assistant response on each surface, and three settled convergence samples with one occurrence per terminal. Both final cells also completed release, credential binding, runtime limits, domain operations, HTTP/SSE/WebSocket/MCP, Agent App access and caller revocation, collaborator handoff, second release, rollback/reactivation, and cross-surface retirement.</li>
+              <li>Hetzner resource evidence remained above guards. Across the final two cells, available memory was approximately 3.38-3.41 GB at baseline, 2.74-2.78 GB active, and 3.40 GB after cleanup; available disk was approximately 10.44-10.45 GB at baseline, 8.41-8.48 GB active, and 10.44 GB after cleanup. Each direction performed two ownership-scoped cleanup passes and restored the exact baseline container, image, network, and volume inventory with zero owned process, listener, gateway, or egress-rule residue.</li>
+              <li>The public DNS/TLS report <code>.artifacts/deployed-workflow-public-dns-tls/54f89e77/report.json</code> passed two public <code>sslip.io</code> hostnames on the Hetzner IP with trusted Let's Encrypt TLS 1.3, default-to-custom 308 redirect, denied and allowed auth, HTTP, SSE, MCP, WebSocket, and revocation behavior. Cleanup restored the original Caddy configuration, removed certificate artifacts, closed the run-owned tunnel, and returned approximately 3.44 GB available memory and 10.45 GB available disk.</li>
+              <li>Representative final desktop and mobile screenshots were inspected for the TUI-origin source transcript, Agent App audience policy and machine access, custom-domain management, and customer handoff. Long identifiers truncate without overflow; actions remain reachable; no incoherent overlap or blank state was observed. TUI evidence is retained as command-correlated machine snapshots for every corresponding checkpoint.</li>
+              <li>Final repository gates pass at the implementation heads: OSS validation is <code>644/644</code>; Cloud validation is <code>431/431</code>; Cloud recursive build/lint exits zero. The removed hard line-cap gate was not reintroduced. Both worktrees were clean before this documentation update.</li>
+              <li>Implementation used dedicated relays, kernels, Cloud servers/APIs, ingress processes, probed unused ports, run-owned state, and the designated Hetzner host. Work proceeded serially after the resource-pressure request, compared existing drills whenever technical issues appeared, and committed and pushed every meaningful green increment. Temporary credentials, roots, processes, ports, containers, images, networks, volumes, Caddy changes, and tunnels were ownership-scoped and cleaned.</li>
             </ul>
-            <p><strong>Open acceptance work:</strong> rerun the guarded Hetzner hosted-container, pinned remote-machine, live shared managed-slice and second-account collaborator matrix once the host has at least 3,489,660,928 bytes of available disk and the memory floor passes. Validate one real temporary DNS/TLS hostname; repeat hosted provider credentials, egress, restart/partition, rollback, signed machine auth and bounded-load checks from both web and TUI with inspected screenshots; and rerun any provider whose path is affected by later code changes. Record before/during/after resources and perform ownership-scoped cleanup twice, preserving unrelated workloads. When technical issues appear, compare the existing publication, resilience, provider, remote-agent and slice drills for guidance before changing architecture. Keep temporary/local substitutes nonblocking and ask for external registrations only in the final evidence-based acceptance report. Commit and push every meaningful green increment.</p>
+            <p><strong>Acceptance disposition:</strong> <span class="status have">Technical acceptance complete</span> for this implementation goal. The evidence is intentionally compositional across clean, pinned increments and the final exact-head managed-slice revalidation; it does not mislabel the selected two-cell report as a single full eight-cell run. The only remaining production launch gates are operator acceptance and configuration of the credential-storage, invitation, durability, billing, observability, and optional managed-domain services described in the external-services section. Those choices do not block the implemented product or its completed local/Hetzner validation.</p>
           </div>
         </section>
 
@@ -1872,7 +1887,7 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="footer">
-            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession and fail-closed egress orchestration are committed. The local web/TUI matrix and live Codex, Claude and OpenCode provider coverage are green with inspected visual and cleanup evidence. Free the guarded Hetzner managed-slice headroom without disturbing unrelated workloads, run the hosted/remote/slice/collaborator and real DNS/TLS matrices, commit and push each meaningful green milestone, then issue the final acceptance report. Keep the production launch gate closed until that evidence is green.
+            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession, fail-closed egress, Deployed web product, matching TUI controls, customer handoff, audience access, provider credentials, domains, observability, and Agent App hosting are committed and technically accepted. Local, live-provider, hosted-fault, remote-machine, collaborator, exact-head managed-slice, and public DNS/TLS evidence is green with inspected visuals, resource guards, and cleanup. Keep commercial production activation conditional on the final service-registration decisions, especially production-grade provider-secret custody; do not reopen completed implementation acceptance merely to make an optional CDN, object store, mail, billing, or observability vendor a development blocker.
           </div>
         </section>
       </article>
