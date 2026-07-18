@@ -129,7 +129,12 @@ pub(super) fn provider_observed_transcript_needs_refresh(
     let Some(entry) = entry else {
         return true;
     };
-    let Some(fingerprint) = provider_transcript_file_fingerprint(&entry.path) else {
+    let fingerprint = if provider == "opencode" && is_opencode_sqlite_db(&entry.path) {
+        opencode_sqlite_session_fingerprint(&entry.path, provider_session_id)
+    } else {
+        provider_transcript_file_fingerprint(&entry.path)
+    };
+    let Some(fingerprint) = fingerprint else {
         return true;
     };
     entry.observed_turns.is_none()
