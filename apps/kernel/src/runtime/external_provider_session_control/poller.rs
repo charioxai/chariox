@@ -99,23 +99,52 @@ pub(super) async fn refresh_external_provider_session_index(
         }
         return;
     }
+    let providers_to_refresh = if force {
+        external_provider_session_providers()
+            .iter()
+            .map(|provider| (*provider).to_string())
+            .collect::<BTreeSet<_>>()
+    } else if let Some(cached_signature) = cached_signature {
+        cached_signature.providers_with_changed_candidate_files(&signature)
+    } else {
+        external_provider_session_providers()
+            .iter()
+            .map(|provider| (*provider).to_string())
+            .collect::<BTreeSet<_>>()
+    };
+    if providers_to_refresh.is_empty() {
+        if let Some(cache) = cache.as_mut() {
+            cache.signature = Some(signature);
+            cache.candidate_paths = Some(signature_read.candidate_paths);
+            cache.cached_signature_checks = 0;
+        }
+        refresh_attached_external_provider_histories(app, runtime_state, None).await;
+        return;
+    }
     let discovery_started = Instant::now();
-    let discovered =
-        match tokio::task::spawn_blocking(|| crate::app::discover_external_provider_sessions(None))
-            .await
-        {
-            Ok(discovered) => discovered,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.external_provider_sessions",
-                    "external provider session discovery task failed",
-                    serde_json::json!({
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
+    let discovery_providers = providers_to_refresh.clone();
+    let discovered = match tokio::task::spawn_blocking(move || {
+        discovery_providers
+            .iter()
+            .flat_map(|provider| {
+                crate::app::discover_external_provider_sessions(Some(provider.as_str()))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        Ok(discovered) => discovered,
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.external_provider_sessions",
+                "external provider session discovery task failed",
+                serde_json::json!({
+                    "error": error.to_string(),
+                }),
+            );
+            return;
+        }
+    };
     let discovery_ms = discovery_started.elapsed().as_millis();
     let codex_count = count_external_provider_sessions(&discovered, "codex");
     let claude_count = count_external_provider_sessions(&discovered, "claude");
@@ -126,7 +155,7 @@ pub(super) async fn refresh_external_provider_session_index(
         cache.cached_signature_checks = 0;
     }
     let store = external_provider_session_index_store(app, runtime_state).await;
-    for provider in external_provider_session_providers() {
+    for provider in &providers_to_refresh {
         let provider_sessions = discovered
             .iter()
             .filter(|session| session.provider == *provider)
@@ -160,6 +189,7 @@ pub(super) async fn refresh_external_provider_session_index(
                 "discovery_ms": discovery_ms,
                 "total_ms": total_elapsed.as_millis(),
                 "signature_full_scan": signature_read.full_scan,
+                "providers_refreshed": providers_to_refresh,
                 "session_count": discovered.len(),
                 "codex_count": codex_count,
                 "claude_count": claude_count,

@@ -112,6 +112,35 @@ impl ExternalProviderSessionDiscoverySignature {
                 .zip(other.files.iter())
                 .all(|(left, right)| left.provider == right.provider && left.path == right.path)
     }
+
+    pub(crate) fn providers_with_changed_candidate_files(&self, other: &Self) -> BTreeSet<String> {
+        let providers = self
+            .files
+            .iter()
+            .chain(other.files.iter())
+            .map(|file| file.provider.as_str())
+            .collect::<BTreeSet<_>>();
+
+        providers
+            .into_iter()
+            .filter(|provider| {
+                let left = self
+                    .files
+                    .iter()
+                    .filter(|file| file.provider == **provider)
+                    .map(|file| file.path.as_path())
+                    .collect::<Vec<_>>();
+                let right = other
+                    .files
+                    .iter()
+                    .filter(|file| file.provider == **provider)
+                    .map(|file| file.path.as_path())
+                    .collect::<Vec<_>>();
+                left != right
+            })
+            .map(str::to_string)
+            .collect()
+    }
 }
 
 pub(crate) fn external_provider_session_transcript_needs_refresh(

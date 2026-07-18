@@ -62,6 +62,11 @@ fn external_provider_discovery_poller_is_not_demand_gated() {
             >= 2,
         "discovery poller should refresh before the loop and on interval ticks"
     );
+    assert!(
+        poller_source.contains("EXTERNAL_PROVIDER_ATTACHED_HISTORY_REFRESH_INTERVAL")
+            && poller_source.contains("refresh_attached_external_provider_histories_matching"),
+        "attached history catch-up should retain its own responsive cadence"
+    );
 }
 
 #[test]

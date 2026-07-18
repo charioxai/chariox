@@ -446,12 +446,12 @@ pub(super) fn discover_opencode_sqlite_sessions(root: &Path) -> Vec<ExternalProv
     let mut statement = match connection.prepare(
         "select s.id, s.title, s.directory, s.time_created, s.time_updated, \
             (select p.data \
-               from part p \
-               join message m on m.id = p.message_id \
-              where p.session_id = s.id \
+               from message m \
+               join part p on p.message_id = m.id \
+              where m.session_id = s.id \
                 and json_extract(m.data, '$.role') = 'user' \
                 and json_extract(p.data, '$.type') = 'text' \
-              order by p.time_created asc, p.id asc \
+              order by m.time_created asc, m.id asc, p.time_created asc, p.id asc \
               limit 1) as first_user_part \
            from session s \
           order by s.time_updated desc, s.id asc \
