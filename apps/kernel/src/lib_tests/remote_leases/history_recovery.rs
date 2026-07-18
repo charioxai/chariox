@@ -39,6 +39,7 @@ fn leased_projection_emits_source_proof_output_once() {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let mut projected_output = String::new();
     let mut completed = false;
+    let mut completion_observed_at = None;
     while std::time::Instant::now() < deadline {
         if let Some((
             _target,
@@ -55,8 +56,13 @@ fn leased_projection_emits_source_proof_output_once() {
                 projected_output.push_str(&String::from_utf8_lossy(&chunk.bytes));
             }
             completed |= !completions.is_empty();
+            if completed && completion_observed_at.is_none() {
+                completion_observed_at = Some(std::time::Instant::now());
+            }
         }
-        if completed {
+        if completion_observed_at
+            .is_some_and(|observed_at| observed_at.elapsed() >= Duration::from_millis(500))
+        {
             break;
         }
         thread::sleep(Duration::from_millis(25));
@@ -133,7 +139,7 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
         TerminalOutputKind::ProviderOutput,
         Some("assistant-1".to_string()),
         vec![leased_agent.backing_attachment_id.clone()],
-        b"remote output",
+        b"remote output\n",
     );
 
     let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)

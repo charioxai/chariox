@@ -121,11 +121,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 continue;
             }
             projected_output_history_keys.push(history_key);
-            if output_chunks.iter().any(|chunk| {
-                chunk.kind == history_chunk.kind
-                    && chunk.merge_key == history_chunk.merge_key
-                    && chunk.bytes == history_chunk.bytes
-            }) {
+            if output_chunks
+                .iter()
+                .any(|chunk| leased_projected_output_matches_history(chunk, &history_chunk))
+            {
                 continue;
             }
             unprojected_history_chunks.push(history_chunk);
@@ -942,6 +941,27 @@ fn leased_provider_run_history_chunk_key(
         chunk.merge_key.as_deref().unwrap_or(""),
         stable_bytes_hash(&chunk.bytes)
     )
+}
+
+fn leased_projected_output_matches_history(
+    live: &RelayProjectedOutputChunk,
+    history: &RelayProjectedOutputChunk,
+) -> bool {
+    if live.kind != history.kind || live.merge_key != history.merge_key {
+        return false;
+    }
+    if live.bytes == history.bytes {
+        return true;
+    }
+    live.kind == TerminalOutputKind::ProviderOutput
+        && trim_terminal_line_endings(&live.bytes) == trim_terminal_line_endings(&history.bytes)
+}
+
+fn trim_terminal_line_endings(mut bytes: &[u8]) -> &[u8] {
+    while matches!(bytes.last(), Some(b'\r' | b'\n')) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
 }
 
 fn stable_bytes_hash(bytes: &[u8]) -> u64 {
