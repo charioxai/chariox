@@ -68,29 +68,43 @@ fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
 }
 
 #[test]
-fn local_docker_provisioner_override_supports_relocated_kernel_binaries() {
-    let root = test_root("slice-provisioner-override");
-    let script = root.join("provision-linux-docker-slice.sh");
-    std::fs::create_dir_all(&root).expect("provisioner root should be created");
-    std::fs::write(&script, "#!/bin/sh\n").expect("provisioner should be written");
+fn linux_docker_slice_provisioner_validation_requires_an_existing_file() {
+    let root = test_root("slice-provisioner");
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    let script = root.join("provision.sh");
+    std::fs::write(&script, "#!/usr/bin/env bash\n").expect("script should be written");
 
-    let resolved =
-        resolve_linux_docker_slice_script(Some(script.clone()), Path::new("/source/apps/kernel"))
-            .expect("explicit provisioner should not depend on the build checkout");
+    assert_eq!(
+        validate_linux_docker_slice_script(script.clone())
+            .expect("existing provisioner should resolve"),
+        script
+    );
+    assert!(validate_linux_docker_slice_script(root.join("missing.sh")).is_err());
 
-    assert_eq!(resolved, script);
     let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
-fn local_docker_provisioner_override_fails_closed_when_missing() {
-    let missing = test_root("missing-slice-provisioner").join("provision-linux-docker-slice.sh");
+fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
 
-    let error =
-        resolve_linux_docker_slice_script(Some(missing.clone()), Path::new("/source/apps/kernel"))
-            .expect_err("missing explicit provisioner should not fall back to the build checkout");
-
-    assert!(error.to_string().contains(&missing.display().to_string()));
+    for support_file in [
+        "start-runtime.sh",
+        "start-providers.sh",
+        "slice-screen.sh",
+        "browser-cdp.mjs",
+        "provider-port-bridge.mjs",
+        "validate-screen.sh",
+    ] {
+        assert!(
+            script.contains(&format!("docker/{support_file}")),
+            "slice support refresh must copy {support_file}"
+        );
+    }
 }
 
 #[test]

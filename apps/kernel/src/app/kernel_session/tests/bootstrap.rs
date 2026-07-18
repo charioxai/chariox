@@ -522,7 +522,7 @@ fn bootstrap_preserves_durable_runtime_work_for_restart_recovery() {
 }
 
 #[test]
-fn bootstrap_preserves_prepared_workflow_run_after_restart() {
+fn bootstrap_stops_orphaned_prepared_workflow_run_after_restart() {
     let config = DaemonConfig::for_tests();
     let (session_id, workflow_run_id, workflow_node_run_id) = {
         let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
@@ -575,14 +575,114 @@ fn bootstrap_preserves_prepared_workflow_run_after_restart() {
         .sessions()
         .get_session(&session_id)
         .expect("session should restore");
+    assert!(!restored.has_active_workflow_run());
+    let workflow_run = restored
+        .workflow_run(&workflow_run_id)
+        .expect("workflow run should restore");
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Stopped);
+    assert_eq!(workflow_run.active_node_run_id(), None);
+    let node_run = &workflow_run.node_runs()[0];
+    assert_eq!(node_run.id(), workflow_node_run_id);
+    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Stopped);
+    assert_eq!(
+        node_run
+            .turn_envelope()
+            .expect("turn envelope should remain visible")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Cancelled
+    );
+    assert!(workflow_run.failure_events().iter().any(|event| {
+        event
+            .message()
+            .contains("no durable active or queued prompt")
+    }));
+}
+
+#[test]
+fn bootstrap_preserves_prepared_workflow_run_with_durable_prompt_after_restart() {
+    let config = DaemonConfig::for_tests();
+    let (session_id, workflow_run_id, workflow_node_run_id, prompt_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+
+        let mut session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should still exist");
+        let session_id = session.id().to_string();
+        let workflow_run_id = "workflow-run-prepared".to_string();
+        let workflow_node_run_id = "node-run-prepared".to_string();
+        let prompt_draft_id = "prompt-workflow-prepared".to_string();
+        let mut node_run = WorkflowNodeRun::new(
+            &workflow_node_run_id,
+            "node-1",
+            agent.id(),
+            1,
+            WorkflowNodeRunStatus::Ready,
+        );
+        node_run.set_turn_envelope(Some(WorkflowTurnEnvelope::new(
+            "workflow-ack:node-run-prepared",
+            "assembled prompt".to_string(),
+            None,
+            None,
+        )));
+        let mut workflow_run = WorkflowRun::new(
+            &workflow_run_id,
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("invoke".to_string()),
+            None,
+            vec![node_run],
+            Vec::new(),
+        );
+        workflow_run.set_active_node_run(&workflow_node_run_id);
+        session.create_workflow_run(workflow_run);
+        app.sessions.restore_session(session);
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                PromptQueueItem::new(
+                    &prompt_draft_id,
+                    "workflow-run:workflow-run-prepared",
+                    agent.id(),
+                    "assembled prompt",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context(&workflow_run_id, &workflow_node_run_id),
+                false,
+            )
+            .expect("workflow prompt should persist");
+        let prompt_id = match outcome {
+            PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            other => panic!("expected started workflow prompt, got {other:?}"),
+        };
+        app.save_durable_state_snapshot()
+            .expect("snapshot should save prepared runtime state");
+        (session_id, workflow_run_id, workflow_node_run_id, prompt_id)
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored = app
+        .sessions()
+        .get_session(&session_id)
+        .expect("session should restore");
+    assert_eq!(
+        restored.active_prompt().map(|prompt| prompt.id()),
+        Some(prompt_id.as_str())
+    );
     assert!(restored.has_active_workflow_run());
     let workflow_run = restored
         .workflow_run(&workflow_run_id)
         .expect("workflow run should restore");
     assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
-    assert_eq!(workflow_run.active_node_run_id(), Some("node-run-prepared"));
+    assert_eq!(
+        workflow_run.active_node_run_id(),
+        Some(workflow_node_run_id.as_str())
+    );
     let node_run = &workflow_run.node_runs()[0];
-    assert_eq!(node_run.id(), workflow_node_run_id);
     assert_eq!(node_run.status(), WorkflowNodeRunStatus::Ready);
     assert_eq!(
         node_run
@@ -591,8 +691,5 @@ fn bootstrap_preserves_prepared_workflow_run_after_restart() {
             .state(),
         crate::session::WorkflowTurnRuntimeState::Prepared
     );
-    assert!(!workflow_run
-        .failure_events()
-        .iter()
-        .any(|event| { event.message().contains("interrupted by kernel restart") }));
+    assert!(workflow_run.failure_events().is_empty());
 }

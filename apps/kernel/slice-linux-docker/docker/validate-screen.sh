@@ -45,6 +45,10 @@ write_page() {
       input.addEventListener("input", () => {
         status.textContent = "TYPED " + input.value.toUpperCase();
       });
+      document.getElementById("button").addEventListener("click", () => {
+        alert("ARROBA SLICE DIALOG READY");
+        status.textContent = "DIALOG ACCEPTED";
+      });
       setTimeout(() => input.focus(), 300);
     </script>
   </body>
@@ -74,6 +78,13 @@ if ! "$CDP" text | grep -q "SLICEPROBE"; then
   exit 1
 fi
 printf 'browser_input=SLICEPROBE\n'
+
+  "$CDP" click-selector "#button" >/dev/null
+  "$CDP" cursor-status | grep -q '"visible":true'
+  printf 'agent_cursor=visible\n'
+  "$SCREEN" browser-dialog accept | grep -q '"ok":true'
+  "$CDP" wait-text "DIALOG ACCEPTED" 5000 | grep -q '"ok":true'
+  printf 'browser_dialog=accepted\n'
 
   "$SCREEN" clipboard-set "slice clipboard ok"
   clipboard="$("$SCREEN" clipboard-get)"

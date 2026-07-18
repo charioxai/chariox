@@ -267,6 +267,7 @@ where
                     other => panic!("unexpected envelope: {other:?}"),
                 }
             }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
             other => panic!("unexpected relay message: {other:?}"),
         }
     }
@@ -307,6 +308,7 @@ where
                     other => panic!("unexpected envelope: {other:?}"),
                 }
             }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
             other => panic!("unexpected relay message: {other:?}"),
         }
     }
@@ -374,6 +376,7 @@ where
                     other => panic!("unexpected envelope: {other:?}"),
                 }
             }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
             other => panic!("unexpected relay message: {other:?}"),
         }
     }
@@ -412,6 +415,7 @@ where
                     other => panic!("unexpected envelope: {other:?}"),
                 }
             }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
             other => panic!("unexpected relay message: {other:?}"),
         }
     }

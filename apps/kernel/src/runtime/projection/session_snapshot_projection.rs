@@ -240,7 +240,7 @@ pub(crate) fn agent_activity_for_session_projection(
                         prompt.external_observed_id(),
                         prompt_status.clone(),
                         AgentTurnRuntimePhase::Accepted,
-                        None,
+                        Some(prompt.created_at_ms()),
                     )
                 })
             });

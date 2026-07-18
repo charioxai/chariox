@@ -232,57 +232,6 @@ fn validate_config(config: &HttpConfig) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-
-    use super::*;
-
-    #[test]
-    fn http_agent_does_not_follow_redirects_after_policy_validation() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
-        let address = listener
-            .local_addr()
-            .expect("read redirect fixture address");
-        let fixture = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept redirect request");
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).expect("read redirect request");
-            stream
-                .write_all(
-                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .expect("write redirect response");
-        });
-
-        let response = http_agent(1_000)
-            .get(&format!("http://{address}/allowed"))
-            .call()
-            .expect("redirect response must be returned without following it");
-        assert_eq!(response.status(), 302);
-        fixture.join().expect("redirect fixture thread");
-    }
-
-    #[test]
-    fn http_config_rejects_non_http_and_embedded_credentials() {
-        let config = |base_url: &str| HttpConfig {
-            base_url: base_url.to_string(),
-            method: "GET".to_string(),
-            path: "/resource".to_string(),
-            query: BTreeMap::new(),
-            headers: BTreeMap::new(),
-            body_json: None,
-            body_text: None,
-        };
-
-        assert!(validate_config(&config("ftp://example.com")).is_err());
-        assert!(validate_config(&config("https://user:secret@example.com")).is_err());
-        assert!(validate_config(&config("https://api.example.com")).is_ok());
-    }
-}
-
 fn render_json_template(value: &Value, arguments: &Value) -> Result<Value, String> {
     match value {
         Value::String(text) if exact_template_key(text).is_some() => {
@@ -362,4 +311,55 @@ fn decode_response(response: ureq::Response, max_response_bytes: u64) -> Result<
         "body_text": if body_json.is_none() { Some(body_text) } else { None::<String> },
         "body_json": body_json
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn http_agent_does_not_follow_redirects_after_policy_validation() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind redirect fixture");
+        let address = listener
+            .local_addr()
+            .expect("read redirect fixture address");
+        let fixture = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept redirect request");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read redirect request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write redirect response");
+        });
+
+        let response = http_agent(1_000)
+            .get(&format!("http://{address}/allowed"))
+            .call()
+            .expect("redirect response must be returned without following it");
+        assert_eq!(response.status(), 302);
+        fixture.join().expect("redirect fixture thread");
+    }
+
+    #[test]
+    fn http_config_rejects_non_http_and_embedded_credentials() {
+        let config = |base_url: &str| HttpConfig {
+            base_url: base_url.to_string(),
+            method: "GET".to_string(),
+            path: "/resource".to_string(),
+            query: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            body_json: None,
+            body_text: None,
+        };
+
+        assert!(validate_config(&config("ftp://example.com")).is_err());
+        assert!(validate_config(&config("https://user:secret@example.com")).is_err());
+        assert!(validate_config(&config("https://api.example.com")).is_ok());
+    }
 }

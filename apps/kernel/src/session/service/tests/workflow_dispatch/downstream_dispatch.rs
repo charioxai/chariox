@@ -16,7 +16,7 @@ fn completing_a_workflow_node_run_creates_structured_downstream_dispatches() {
     let second = service
         .add_workflow_node(session.id(), workflow.id(), "agent-2")
         .expect("second workflow node should be added");
-    service
+    let edge = service
         .add_workflow_edge(
             session.id(),
             workflow.id(),
@@ -94,6 +94,86 @@ fn completing_a_workflow_node_run_creates_structured_downstream_dispatches() {
     assert_eq!(resolved.status(), WorkflowRunStatus::Waiting);
     assert_eq!(resolved.node_runs().len(), 2);
     assert_eq!(resolved.messages().len(), 2);
+
+    let downstream_node_run_id = completion.dispatches[0].node_run.id().to_string();
+    service
+        .start_workflow_node_run(session.id(), workflow_run.id(), &downstream_node_run_id)
+        .expect("downstream node should start");
+    let delivery_token = format!("workflow-ack:{downstream_node_run_id}");
+    service
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &downstream_node_run_id,
+            delivery_token.clone(),
+            "downstream workflow turn".to_string(),
+            None,
+            None,
+        )
+        .expect("downstream turn should prepare");
+    service
+        .mark_workflow_turn_dispatched(session.id(), workflow_run.id(), &downstream_node_run_id)
+        .expect("downstream turn should dispatch");
+    service
+        .ack_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &downstream_node_run_id,
+            &delivery_token,
+        )
+        .expect("downstream turn should acknowledge");
+    service
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            &downstream_node_run_id,
+            crate::session::WorkflowOutputPayload::new(r#"{"result":"done"}"#, Vec::new()),
+            true,
+            None,
+        )
+        .expect("downstream final output should submit");
+    let validated = service
+        .mark_workflow_turn_validated_completed(
+            session.id(),
+            workflow_run.id(),
+            &downstream_node_run_id,
+        )
+        .expect("downstream turn should validate");
+    assert!(validated.messages().iter().any(|message| {
+        message.edge_id() == Some(edge.id())
+            && message.consumed_by_node_run_id() == Some(downstream_node_run_id.as_str())
+    }));
+
+    let completed = service
+        .complete_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            &downstream_node_run_id,
+            None,
+            None,
+        )
+        .expect("downstream final output should complete the workflow");
+    assert_eq!(
+        completed.workflow_run.status(),
+        WorkflowRunStatus::Completed
+    );
+    assert!(completed.workflow_run.messages().iter().any(|message| {
+        message.edge_id() == Some(edge.id())
+            && message.consumed_by_node_run_id() == Some(downstream_node_run_id.as_str())
+    }));
+
+    let next_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("review another diff".to_string()),
+        )
+        .expect("next workflow run should be created");
+    assert!(next_run
+        .messages()
+        .iter()
+        .all(|message| message.edge_id() != Some(edge.id())));
 }
 
 #[test]

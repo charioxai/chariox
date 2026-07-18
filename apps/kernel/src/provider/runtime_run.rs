@@ -403,6 +403,10 @@ impl RuntimeProviderRun {
         }
     }
 
+    pub fn clear_terminal_diagnostic(&mut self) {
+        self.terminal_diagnostic = None;
+    }
+
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {
         self.runtime_mcp_auth_token = auth_token;
     }
@@ -576,6 +580,29 @@ mod tests {
         };
         let run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
         assert_eq!(run.provider_session_id(), Some("open-session-1"));
+    }
+
+    #[test]
+    fn runtime_provider_run_clears_a_previous_turn_diagnostic() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "default");
+        let launch_result = ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        };
+        let mut run = RuntimeProviderRun::new("provider-run-1", &request, launch_result);
+        run.set_terminal_diagnostic("refresh token revoked");
+
+        run.clear_terminal_diagnostic();
+
+        assert!(run.terminal_diagnostic().is_none());
     }
 
     #[test]

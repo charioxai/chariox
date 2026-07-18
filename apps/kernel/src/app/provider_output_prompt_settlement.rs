@@ -7,6 +7,10 @@ use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::session::{PromptQueueItem, PromptStatus};
 
 const PTY_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
+const STRUCTURED_PROMPT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(50);
+const WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR: Duration = Duration::from_millis(
+    crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 50,
+);
 
 pub(crate) struct ProviderOutputPromptSettlement<'a> {
     app: &'a mut DaemonApp,
@@ -46,6 +50,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         else {
             return Ok(());
         };
+        if prompt_completed {
+            crate::transport::flow_control::mark_prompt_completion_recorded(
+                self.app,
+                provider_run_id,
+            );
+        }
         let completion_recorded =
             crate::transport::flow_control::prompt_completion_recorded(self.app, provider_run_id);
         let mut settlement_pending =
@@ -53,6 +63,18 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 self.app,
                 provider_run_id,
             );
+        if prompt_completed || settlement_pending {
+            let quiet_after_response =
+                crate::transport::flow_control::prompt_output_quiet_after_response(
+                    self.app,
+                    provider_run_id,
+                    STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+                );
+            if !settlement_pending || saw_settlement_blocking_activity || !quiet_after_response {
+                self.note_prompt_settlement_requested(provider_run_id);
+                return Ok(());
+            }
+        }
         if !prompt_completed && !settlement_pending && completion_recorded {
             self.note_prompt_settlement_requested(provider_run_id);
             let _ =
@@ -73,6 +95,22 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 self.clear_active_turn(provider_run_id);
             }
         } else if prompt_completed || settlement_pending {
+            if self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)? {
+                if !crate::transport::flow_control::prompt_output_quiet_after_response(
+                    self.app,
+                    provider_run_id,
+                    WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR,
+                ) {
+                    self.note_prompt_settlement_requested(provider_run_id);
+                    return Ok(());
+                }
+                self.fail_for_missing_workflow_output(
+                    session_id,
+                    provider_run_id,
+                    "provider completed workflow turn without a validated workflow output",
+                )?;
+                return Ok(());
+            }
             self.settle_prompt_by_status(session_id, provider_run_id)?;
         }
         Ok(())
@@ -155,6 +193,57 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         Ok(())
     }
 
+    fn fail_for_missing_workflow_output(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
+            self.clear_prompt_activity(provider_run_id);
+            return Ok(());
+        };
+        let agent_id = self.provider_run_agent_id(provider_run_id)?;
+        if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        {
+            let failure = crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                workflow_node_run_id,
+                Vec::new(),
+                message,
+            );
+            let _ = self.app.sessions_mut().record_workflow_failure_event(
+                session_id,
+                workflow_run_id,
+                failure,
+            );
+            let workflow_run = self.app.sessions_mut().fail_workflow_node_run(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            )?;
+            let _ = self.app.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            self.app.record_notice(
+                session_id,
+                Some(provider_run_id),
+                self.app.attachments.list_session_attachment_ids(session_id),
+                format!("Workflow run `{}` failed: {message}.", workflow_run.id()),
+            );
+            let _ =
+                crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
+        }
+        let _ = self
+            .app
+            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+        self.clear_active_turn(provider_run_id);
+        Ok(())
+    }
+
     fn workflow_prompt_is_waiting_for_completion_output(
         &mut self,
         session_id: &str,
@@ -182,9 +271,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             .write()
             .entry(provider_run_id.to_string())
             .and_modify(|state| {
-                state.last_output_at = Some(Instant::now());
-                state.saw_response_content = true;
-                state.settlement_requested = true;
+                state.request_settlement();
             })
             .or_insert(ActivePromptState {
                 last_output_at: Some(Instant::now()),

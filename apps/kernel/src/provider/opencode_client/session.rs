@@ -83,17 +83,20 @@ impl OpenCodeClient {
     }
 
     pub fn snapshot(&self, session_id: &str) -> Result<OpenCodeSessionSnapshot, DaemonError> {
-        let status_map: BTreeMap<String, OpenCodeSessionStatus> =
-            self.send_json_request("GET", "/session/status", None)?;
-        // OpenCode removes idle sessions from SessionStatus.list(), so omission means idle.
-        let status = status_map
-            .get(session_id)
-            .map(|status| status.kind.clone())
-            .unwrap_or_else(|| "idle".to_string());
-
+        let status = self.session_status(session_id)?;
         let messages = self.messages(session_id)?;
 
         Ok(OpenCodeSessionSnapshot { status, messages })
+    }
+
+    pub fn session_status(&self, session_id: &str) -> Result<String, DaemonError> {
+        let status_map: BTreeMap<String, OpenCodeSessionStatus> =
+            self.send_json_request("GET", "/session/status", None)?;
+        // OpenCode removes idle sessions from SessionStatus.list(), so omission means idle.
+        Ok(status_map
+            .get(session_id)
+            .map(|status| status.kind.clone())
+            .unwrap_or_else(|| "idle".to_string()))
     }
 
     pub fn messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {

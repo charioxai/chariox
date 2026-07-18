@@ -559,28 +559,40 @@ pub(crate) async fn handle_connection(
                                 &relay_request_id,
                                 |pending| pending.daemon_key == current_daemon_key,
                             );
+                            let mut orphaned_subscription = None;
                             let client_target = if let Some(pending) = pending {
                                     if error.is_none() {
                                         match &pending.kind {
-                                            PendingRequestKind::Subscribe { subscription_id } => {
+                                            PendingRequestKind::Subscribe {
+                                                subscription_id,
+                                                client_public_key,
+                                            } => {
                                                 let mut guard = registry.write().await;
-                                                guard.subscriptions.insert(
-                                                    subscription_id.clone(),
-                                                    ActiveSubscription {
-                                                        client_addr: pending.client_addr,
-                                                        daemon_key: pending.daemon_key.clone(),
-                                                    },
-                                                );
-                                                if let Some(client_sender) =
-                                                    routes.client_sender(&pending.client_addr)
-                                                {
-                                                    routes.set_subscription(
+                                                if guard.peers.contains_key(&pending.client_addr) {
+                                                    guard.subscriptions.insert(
                                                         subscription_id.clone(),
-                                                        ActiveEventRoute {
+                                                        ActiveSubscription {
+                                                            client_addr: pending.client_addr,
                                                             daemon_key: pending.daemon_key.clone(),
-                                                            client_sender,
+                                                            client_public_key: client_public_key.clone(),
                                                         },
                                                     );
+                                                    if let Some(client_sender) =
+                                                        routes.client_sender(&pending.client_addr)
+                                                    {
+                                                        routes.set_subscription(
+                                                            subscription_id.clone(),
+                                                            ActiveEventRoute {
+                                                                daemon_key: pending.daemon_key.clone(),
+                                                                client_sender,
+                                                            },
+                                                        );
+                                                    }
+                                                } else {
+                                                    orphaned_subscription = Some((
+                                                        subscription_id.clone(),
+                                                        client_public_key.clone(),
+                                                    ));
                                                 }
                                             }
                                             PendingRequestKind::Unsubscribe { subscription_id } => {
@@ -597,6 +609,14 @@ pub(crate) async fn handle_connection(
                                 } else {
                                     None
                             };
+                            if let Some((subscription_id, client_public_key)) = orphaned_subscription {
+                                let _ = send_daemon_subscription_cleanup(
+                                    &outgoing_tx,
+                                    &relay_request_counter,
+                                    subscription_id,
+                                    client_public_key,
+                                );
+                            }
                             if let Some((client_sender, client_request_id)) = client_target {
                                 send_envelope(
                                     &client_sender,
@@ -814,6 +834,7 @@ pub(crate) async fn handle_connection(
                                         &routes,
                                         &subscription_id,
                                         &current_daemon_key,
+                                        &relay_request_counter,
                                     )
                                     .await;
                                 }
@@ -861,12 +882,14 @@ pub(crate) async fn handle_connection(
         disconnect_peer_errors,
         disconnect_subscription_senders,
         disconnect_display_stream_senders,
+        daemon_subscription_cleanups,
         dropped_client_pending_requests,
     ) = remove_peer(
         &registry,
         &routes,
         peer_addr,
         registered_daemon_key.as_ref(),
+        &relay_request_counter,
     )
     .await;
     if connection_result.is_err()
@@ -875,6 +898,7 @@ pub(crate) async fn handle_connection(
         || !disconnect_peer_errors.is_empty()
         || !disconnect_subscription_senders.is_empty()
         || !disconnect_display_stream_senders.is_empty()
+        || daemon_subscription_cleanups > 0
         || dropped_client_pending_requests > 0
     {
         relay_log(
@@ -891,6 +915,7 @@ pub(crate) async fn handle_connection(
                 "daemon_peer_request_errors": disconnect_peer_errors.len(),
                 "subscription_closes": disconnect_subscription_senders.len(),
                 "display_stream_closes": disconnect_display_stream_senders.len(),
+                "daemon_subscription_cleanups": daemon_subscription_cleanups,
                 "client_pending_request_drops": dropped_client_pending_requests,
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
             }),

@@ -32,6 +32,8 @@ pub(super) struct ClaudeHeadlessSubmitRetry {
     pub(super) prompt_id: String,
     pub(super) count: u8,
     pub(super) last_attempt_ms: u64,
+    #[serde(default)]
+    pub(super) visible_prompt: String,
 }
 
 pub(super) fn read_claude_headless_submit_retry(context_file: &str) -> ClaudeHeadlessSubmitRetry {
@@ -49,6 +51,7 @@ pub(super) fn write_claude_headless_submit_retry(
     prompt_id: &str,
     count: u8,
     last_attempt_ms: u64,
+    visible_prompt: &str,
 ) {
     let Some(path) = claude_headless_submit_retry_path(context_file) else {
         return;
@@ -57,6 +60,7 @@ pub(super) fn write_claude_headless_submit_retry(
         prompt_id: prompt_id.to_string(),
         count,
         last_attempt_ms,
+        visible_prompt: visible_prompt.to_string(),
     };
     if let Ok(raw) = serde_json::to_string(&payload) {
         let _ = fs::write(path, raw);

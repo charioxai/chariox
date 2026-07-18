@@ -297,7 +297,7 @@ impl AgentService {
             if was_focused || focus_is_stale_after_destroy {
                 if let Some(first) = remaining_agents.first() {
                     if let Some(stored) = self.store.get_mut(first.id()) {
-                        stored.set_state(AgentState::Focused);
+                        stored.set_state(stored.state().with_focus(true));
                     }
                     sessions.set_focused_agent(&session_id, Some(first.id().to_string()))?;
                 }
@@ -340,7 +340,7 @@ impl AgentService {
 
         // Focus target agent
         if let Some(stored) = self.store.get_mut(agent_id) {
-            stored.set_state(AgentState::Focused);
+            stored.set_state(stored.state().with_focus(true));
         }
 
         sessions.set_focused_agent(session_id, Some(agent_id.to_string()))?;
@@ -376,11 +376,12 @@ impl AgentService {
             return Ok(None);
         }
 
-        // Find currently focused agent
-        let current_focused = agents
-            .iter()
-            .find(|a| a.state() == AgentState::Focused)
-            .map(|a| a.id().to_string());
+        // Canonical focus belongs to the session. Runtime states such as Error
+        // and Working must remain visible while that agent is focused.
+        let current_focused = sessions
+            .get_session(session_id)?
+            .focused_agent_id()
+            .map(str::to_string);
 
         let next_agent_id = if let Some(current_id) = current_focused {
             self.get_next_agent_in_session(session_id, &current_id)

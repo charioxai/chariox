@@ -6,9 +6,10 @@ mod store;
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,
-    inspect_local_docker_slice_host_runtime, local_docker_private_relay,
-    local_docker_private_relay_endpoint, local_docker_private_relay_token,
-    remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
+    inspect_local_docker_slice_host_runtime, inspect_local_docker_slice_provider_auth,
+    local_docker_private_relay, local_docker_private_relay_endpoint,
+    local_docker_private_relay_token, remove_local_docker_saved_state,
+    run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
     start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
 };
@@ -287,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_store_reconciles_stopped_record_with_running_host_to_unhealthy() {
+    fn slice_store_reconciles_stopped_record_with_running_host_to_running() {
         let store = SliceStore::default();
         let slice = store
             .create("kernel-1", "machine-1", create_input("dev"))
@@ -299,8 +300,55 @@ mod tests {
         });
 
         assert_eq!(reconciled.len(), 1);
-        assert_eq!(reconciled[0].status, SliceStatus::Unhealthy);
+        assert_eq!(reconciled[0].status, SliceStatus::Running);
+        assert_eq!(reconciled[0].last_error, None);
         assert_eq!(reconciled[0].updated_at_ms, 46);
+    }
+
+    #[test]
+    fn slice_store_recovers_unhealthy_record_when_host_is_running() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("dev"))
+            .expect("slice should create");
+        let relay_endpoint = local_docker_private_relay_endpoint(&slice);
+        store
+            .set_worker_presence(
+                &slice.id,
+                Some("worker-1".to_string()),
+                Some("machine-2".to_string()),
+                vec!["codex".to_string()],
+                44,
+            )
+            .expect("slice worker presence should update");
+        store
+            .set_relay_endpoint(&slice.id, Some(relay_endpoint.clone()), 44)
+            .expect("slice relay endpoint should update");
+        store
+            .set_status(&slice.id, SliceStatus::Unhealthy, 45)
+            .expect("slice should be unhealthy");
+
+        let reconciled = store
+            .reconcile_after_kernel_restart_with_host_state(46, |_| SliceHostRuntimeState::Running);
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, SliceStatus::Running);
+        assert_eq!(
+            reconciled[0].last_operation.as_deref(),
+            Some("restart_reconcile")
+        );
+        assert_eq!(
+            reconciled[0].last_operation_status,
+            Some(SliceOperationStatus::Reconciled)
+        );
+        assert_eq!(reconciled[0].last_error, None);
+        assert_eq!(reconciled[0].worker_kernel_id.as_deref(), Some("worker-1"));
+        assert_eq!(
+            reconciled[0].worker_machine_id.as_deref(),
+            Some("machine-2")
+        );
+        assert_eq!(reconciled[0].providers, vec!["codex"]);
+        assert_eq!(reconciled[0].relay_endpoint, Some(relay_endpoint));
     }
 
     #[test]
@@ -406,6 +454,7 @@ mod tests {
             .expect("provision log should be present");
         assert_eq!(provision.text, "line-2\nline-3");
         assert!(provision.truncated);
+        assert!(entries.iter().any(|entry| entry.source == "runtime"));
         assert!(entries.iter().any(|entry| entry.source == "container"));
 
         let _ = fs::remove_dir_all(&root);

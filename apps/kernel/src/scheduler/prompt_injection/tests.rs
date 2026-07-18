@@ -101,6 +101,25 @@ fn workflow_prompt_assembly_omits_empty_workflow_prompt_section() {
 }
 
 #[test]
+fn downstream_workflow_handoff_is_the_visible_user_prompt() {
+    let mut context = test_context();
+    context.endpoint_prompt.clear();
+    context.handoff_payloads_json =
+        Some(r#"[{"completion":{"output":{"message":"The number is 20."}}}]"#.to_string());
+
+    let assembly = build_workflow_turn_prompt_assembly(context);
+
+    assert!(assembly
+        .visible_user_prompt
+        .contains("<workflow-handoff-payloads>"));
+    assert!(assembly.visible_user_prompt.contains("The number is 20."));
+    assert!(!assembly
+        .hidden_system_context
+        .contains("<workflow-handoff-payloads>"));
+    assert!(!assembly.hidden_system_context.contains("The number is 20."));
+}
+
+#[test]
 fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
     let _guard = env_lock::lock();
     let home = temp_arroba_home("tagged-subprompts");
@@ -126,7 +145,6 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
         "node-level-prompt",
         "workflow-runtime-instructions",
         "system-node-level-prompt",
-        "workflow-handoff-payloads",
         "outgoing-edge-contracts",
         "node-instruction-reference",
         "control-mailbox",
@@ -142,6 +160,12 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
             "missing closing tag {tag}"
         );
     }
+    assert!(assembly
+        .visible_user_prompt
+        .contains("<workflow-handoff-payloads>"));
+    assert!(assembly
+        .visible_user_prompt
+        .contains("</workflow-handoff-payloads>"));
     for title in [
         "Endpoint prompt:",
         "Workflow-level prompt:",

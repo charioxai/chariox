@@ -238,19 +238,16 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
         })
         .map(|component| format!("{component}\n\n"))
         .unwrap_or_default();
-    let payload_block = if context
+    let handoff_payload_prompt = if context
         .handoff_payloads_json
         .as_deref()
         .is_none_or(|payloads| payloads.trim().is_empty() || payloads.trim() == "[]")
     {
         String::new()
     } else {
-        format!(
-            "{}\n\n",
-            prompt_component(
-                WORKFLOW_HANDOFF_PAYLOADS_TAG,
-                context.handoff_payloads_json.as_deref().unwrap_or("[]"),
-            )
+        prompt_component(
+            WORKFLOW_HANDOFF_PAYLOADS_TAG,
+            context.handoff_payloads_json.as_deref().unwrap_or("[]"),
         )
     };
     let outgoing_edge_contracts_block = if context.outgoing_edge_contracts.trim().is_empty() {
@@ -270,13 +267,19 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
             )
         )
     };
-    let visible_user_prompt = if context.endpoint_prompt.trim().is_empty() {
-        String::new()
+    let visible_user_prompt = [
+        (!context.endpoint_prompt.trim().is_empty())
+            .then(|| prompt_component(ENDPOINT_PROMPT_TAG, &context.endpoint_prompt)),
+        (!handoff_payload_prompt.is_empty()).then_some(handoff_payload_prompt),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    let visible_user_prompt = if visible_user_prompt.is_empty() {
+        visible_user_prompt
     } else {
-        format!(
-            "{}\n\n",
-            prompt_component(ENDPOINT_PROMPT_TAG, &context.endpoint_prompt)
-        )
+        format!("{visible_user_prompt}\n\n")
     };
     let system_prompt = assembled_prompt_component(
         WORKFLOW_RUNTIME_INSTRUCTIONS_TAG,
@@ -284,7 +287,7 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
             context.base_directory.as_ref(),
             &mut manifest,
             &context.delivery_token,
-            &payload_block,
+            "",
             &outgoing_edge_contracts_block,
             &reference_line,
             &control_line,

@@ -133,6 +133,45 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         completion: KernelPromptOwnerCompletion,
     ) -> Result<PromptCompletion, DaemonError> {
+        let completion_provider_run_id = completion.provider_run_id.clone().or_else(|| {
+            self.app
+                .providers
+                .get_run_for_agent(&completion.session_id, &completion.agent_id)
+                .map(|run| run.id().to_string())
+        });
+        let settled_at_ms = crate::session::unix_epoch_ms();
+        let started_at_ms = completion_provider_run_id
+            .as_deref()
+            .and_then(|provider_run_id| {
+                self.app
+                    .active_turn_store()
+                    .get(provider_run_id)
+                    .map(|turn| turn.started_at_ms)
+            })
+            .or(Some(completion.completed.created_at_ms()));
+        self.app
+            .operational_history_store()
+            .record_prompt_settlement(
+                self.app.history_archive_enabled(),
+                &completion.session_id,
+                &completion.agent_id,
+                completion.completed.id(),
+                completion_provider_run_id.as_deref(),
+                settled_at_ms,
+                "completed",
+            );
+        self.app
+            .completed_git_turn_snapshot_store()
+            .record_prompt_settlement(
+                &completion.session_id,
+                &completion.agent_id,
+                completion_provider_run_id
+                    .as_deref()
+                    .unwrap_or("provider-run-completed"),
+                &completion.completed,
+                settled_at_ms,
+                started_at_ms,
+            );
         if !flow_control::prompt_completion_recorded(
             self.app,
             completion
@@ -153,7 +192,7 @@ impl<'a> KernelAgentService<'a> {
                 completion_provider_run_id,
                 recipient_attachment_ids,
                 &format!("prompt-complete:{}", completion.completed.id()),
-                crate::session::unix_epoch_ms(),
+                settled_at_ms,
             );
             flow_control::mark_prompt_completion_recorded(self.app, completion_provider_run_id);
         }
@@ -163,12 +202,6 @@ impl<'a> KernelAgentService<'a> {
             &completion.completed,
             completion.provider_run_id.as_deref(),
         )?;
-        let completion_provider_run_id = completion.provider_run_id.clone().or_else(|| {
-            self.app
-                .providers
-                .get_run_for_agent(&completion.session_id, &completion.agent_id)
-                .map(|run| run.id().to_string())
-        });
         if let Some(provider_run_id) = completion_provider_run_id.as_deref() {
             flow_control::clear_prompt_activity(self.app, provider_run_id);
         }

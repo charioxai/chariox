@@ -13,6 +13,17 @@ pub(crate) struct ActivePromptState {
     pub(crate) settlement_requested: bool,
 }
 
+impl ActivePromptState {
+    pub(crate) fn request_settlement(&mut self) {
+        if self.settlement_requested {
+            return;
+        }
+        self.last_output_at = Some(Instant::now());
+        self.saw_response_content = true;
+        self.settlement_requested = true;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveTurnPhase {
     Accepted,
@@ -88,6 +99,7 @@ impl ActiveTurnState {
         self.source_attachment_id = Some(prompt.source_attachment_id().to_string());
         self.prompt_origin = Some(prompt.prompt_origin());
         self.external_observed_id = prompt.external_observed_id();
+        self.started_at_ms = prompt.created_at_ms();
         self
     }
 
@@ -280,9 +292,9 @@ fn merge_active_turn_start(
     mut incoming: ActiveTurnState,
 ) -> ActiveTurnState {
     if existing.prompt_id == incoming.prompt_id {
+        incoming.started_at_ms = incoming.started_at_ms.min(existing.started_at_ms);
         if existing.trace_id != existing.prompt_id && incoming.trace_id == incoming.prompt_id {
             incoming.trace_id = existing.trace_id.clone();
-            incoming.started_at_ms = existing.started_at_ms;
         }
         if existing.phase.rank() > incoming.phase.rank() {
             incoming.phase = existing.phase.clone();
@@ -382,6 +394,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repeated_settlement_requests_preserve_the_quiet_window() {
+        let mut activity = ActivePromptState {
+            last_output_at: None,
+            saw_response_content: false,
+            completion_recorded: true,
+            settlement_requested: false,
+        };
+
+        activity.request_settlement();
+        let first_requested_at = activity
+            .last_output_at
+            .expect("first settlement request should start the quiet window");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        activity.request_settlement();
+
+        assert_eq!(activity.last_output_at, Some(first_requested_at));
+        assert!(activity.saw_response_content);
+        assert!(activity.settlement_requested);
+    }
+
+    #[test]
     fn active_turn_start_does_not_infer_external_metadata_from_prompt_ids() {
         let turn = ActiveTurnState::new(
             "session-1".to_string(),
@@ -392,6 +425,39 @@ mod tests {
 
         assert_eq!(turn.prompt_origin, None);
         assert_eq!(turn.external_observed_id, None);
+    }
+
+    #[test]
+    fn active_turn_uses_prompt_acceptance_timestamp_and_keeps_it_on_restart() {
+        let prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "hello",
+            crate::session::PromptStatus::Running,
+        );
+        let accepted_at_ms = prompt.created_at_ms();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let store = ActiveTurnStore::default();
+        store.start(
+            ActiveTurnState::new(
+                "session-1".to_string(),
+                "agent-1".to_string(),
+                prompt.id().to_string(),
+                "run-1".to_string(),
+            )
+            .with_prompt_metadata(&prompt),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        store.start(ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            prompt.id().to_string(),
+            "run-1".to_string(),
+        ));
+
+        let turn = store.get("run-1").expect("turn should remain active");
+        assert_eq!(turn.started_at_ms, accepted_at_ms);
     }
 
     #[test]

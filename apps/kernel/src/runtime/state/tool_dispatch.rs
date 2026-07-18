@@ -342,23 +342,7 @@ impl KernelRuntimeState {
                     )
                     .await;
             }
-            if matches!(
-                canonical_tool_name,
-                crate::transport::runtime_tools::SLICE_SCREEN_STATUS_TOOL
-                    | crate::transport::runtime_tools::SLICE_SCREENSHOT_TOOL
-                    | crate::transport::runtime_tools::SLICE_OCR_TOOL
-                    | crate::transport::runtime_tools::SLICE_FIND_TEXT_TOOL
-                    | crate::transport::runtime_tools::SLICE_MOUSE_TOOL
-                    | crate::transport::runtime_tools::SLICE_KEYBOARD_TOOL
-                    | crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
-                    | crate::transport::runtime_tools::SLICE_OPEN_URL_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_FIND_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_FILL_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_CLICK_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_SUBMIT_TOOL
-                    | crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL
-            ) {
+            if is_slice_runtime_tool(canonical_tool_name) {
                 return self
                     .dispatch_slice_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
@@ -384,6 +368,10 @@ impl KernelRuntimeState {
             .strip_prefix("slice:")
             .map(str::to_string)
     }
+}
+
+fn is_slice_runtime_tool(tool_name: &str) -> bool {
+    crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
 }
 
 fn unambiguous_runtime_tool_provider_run<'a>(
@@ -421,4 +409,18 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
     ) || (slice_available
         && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_advertised_slice_tool_uses_the_slice_dispatch_path() {
+        for spec in crate::transport::runtime_tools::slice_runtime_tool_specs() {
+            assert!(
+                super::is_slice_runtime_tool(&spec.name),
+                "advertised slice tool {} must use slice dispatch",
+                spec.name
+            );
+        }
+    }
 }

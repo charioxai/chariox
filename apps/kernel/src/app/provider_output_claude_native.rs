@@ -43,12 +43,16 @@ use permission::{
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_response,
 };
+#[cfg(test)]
+use transcript::drain_claude_transcript_file;
 use transcript::{
-    drain_claude_transcript_file, known_claude_transcript_paths, load_claude_transcript_cursor,
-    save_claude_transcript_cursor,
+    drain_claude_transcript_file_since, known_claude_transcript_paths,
+    load_claude_transcript_cursor, save_claude_transcript_cursor,
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
+const CLAUDE_HEADLESS_STOP_DRAIN_MS: u64 = 300;
+const CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
 
 /// Delay between writing a prompt's visible text into the provider PTY and
 /// sending the Enter keystroke, giving the terminal time to register the
@@ -98,6 +102,61 @@ fn claude_native_history_source_attachment_id(
         .unwrap_or_else(|| fallback_attachment_id.to_string())
 }
 
+fn claude_headless_prompt_input(
+    prompt: &ClaudeNativePromptInjection<'_>,
+    context_file: &str,
+) -> String {
+    let native_attachment_suffix =
+        format_claude_native_attachment_prompt_suffix(prompt.attachments, context_file);
+    let visible = redact_native_hidden_instructions(prompt.prompt)
+        .trim()
+        .to_string();
+    normalize_claude_visible_prompt_for_headless(&join_claude_context([
+        native_attachment_suffix,
+        visible,
+    ]))
+}
+
+fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
+    let normalize = |value: &str| value.replace("\r\n", "\n").replace('\r', "\n");
+    normalize(expected).trim() == normalize(observed).trim()
+}
+
+fn claude_headless_dispatch_matches_prompt(
+    context_file: &str,
+    dispatch_prompt_id: &str,
+    observed_prompt: &str,
+) -> bool {
+    let retry = read_claude_headless_submit_retry(context_file);
+    retry.prompt_id == dispatch_prompt_id
+        && !retry.visible_prompt.is_empty()
+        && claude_headless_prompt_matches(&retry.visible_prompt, observed_prompt)
+}
+
+fn acknowledge_claude_headless_steering_enqueue(
+    context_file: &str,
+    active_prompt_id: Option<&str>,
+    enqueued_prompts: &[String],
+) {
+    let Some(active_prompt_id) = active_prompt_id else {
+        return;
+    };
+    let Some(marker) = claude_native_marker(context_file) else {
+        return;
+    };
+    let Some(dispatch_prompt_id) = marker.strip_prefix("injected:") else {
+        return;
+    };
+    if dispatch_prompt_id.is_empty() || dispatch_prompt_id == active_prompt_id {
+        return;
+    }
+    if enqueued_prompts.iter().any(|prompt| {
+        claude_headless_dispatch_matches_prompt(context_file, dispatch_prompt_id, prompt)
+    }) {
+        write_claude_native_marker(context_file, &format!("accepted:{dispatch_prompt_id}"));
+    }
+}
+
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self { app }
@@ -139,6 +198,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     context_file,
                     resolved_prompt_marker.as_deref().unwrap_or_default(),
                 );
+            }
+        }
+        if provider_run.provider() == "claude-headless" {
+            if let Some(settled) = self.process_pending_headless_stop(
+                session_id,
+                provider_run_id,
+                &agent_id,
+                context_file,
+                false,
+            )? {
+                outcome.needs_deferred_headless_drain = !settled;
+                return Ok(outcome);
             }
         }
         self.inject_pending_prompt(
@@ -198,15 +269,33 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 else {
                     continue;
                 };
-                let active_prompt_id = self
+                let active_prompt = self
                     .app
-                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
-                    .map(|prompt| prompt.id().to_string());
+                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;
                 let marker = claude_native_marker(context_file);
-                if active_prompt_id
-                    .as_deref()
-                    .is_some_and(|id| marker.as_deref() == Some(&format!("injected:{id}")))
-                {
+                if let (Some(active_prompt), Some(dispatch_prompt_id)) = (
+                    active_prompt.as_ref(),
+                    marker.as_deref().and_then(claude_native_dispatch_prompt_id),
+                ) {
+                    // Idle submissions acknowledge through UserPromptSubmit.
+                    // A busy Claude run records steering as a native queue
+                    // enqueue instead, but some versions also emit this hook;
+                    // only accept that steering hook when its prompt matches
+                    // the exact text Arroba injected. Consume mismatched/stale
+                    // hook events while a dispatch marker is active so they
+                    // cannot create duplicate native prompt history.
+                    if dispatch_prompt_id == active_prompt.id()
+                        || claude_headless_dispatch_matches_prompt(
+                            context_file,
+                            dispatch_prompt_id,
+                            prompt,
+                        )
+                    {
+                        write_claude_native_marker(
+                            context_file,
+                            &format!("accepted:{dispatch_prompt_id}"),
+                        );
+                    }
                     continue;
                 }
                 if let Some(request_id) =
@@ -251,34 +340,32 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         provider_run_id,
                         context_file,
                     )?;
-                    outcome.needs_deferred_headless_drain = true;
-                }
-                let _ = fs::write(context_file, "");
-                write_claude_native_marker(context_file, "");
-                let _ =
-                    self.app
-                        .complete_active_prompt(session_id, &agent_id, Some(provider_run_id));
-                if provider_run.provider() == "claude-headless" {
-                    if let Some(next_prompt) = self
+                    if let Some(active_prompt) = self
                         .app
                         .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
                     {
-                        crate::logging::debug_with_fields(
-                            "daemon.claude_headless",
-                            "marked post-stop queued prompt ready",
-                            serde_json::json!({
-                                "session_id": session_id,
-                                "provider_run_id": provider_run_id,
-                                "agent_id": agent_id,
-                                "prompt_id": next_prompt.id(),
-                            }),
-                        );
                         write_claude_native_marker(
                             context_file,
-                            &format!("post-stop-ready:{}", next_prompt.id()),
+                            &format!(
+                                "{CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX}{}:{}",
+                                active_prompt.id(),
+                                unix_epoch_ms()
+                            ),
                         );
+                        outcome.needs_deferred_headless_drain = true;
+                    } else {
+                        let _ = fs::write(context_file, "");
+                        write_claude_native_marker(context_file, "");
                     }
+                    continue;
                 }
+                self.complete_native_prompt_after_stop(
+                    session_id,
+                    provider_run_id,
+                    &agent_id,
+                    context_file,
+                    false,
+                )?;
             } else if matches!(event_name, "PreToolUse" | "PermissionRequest") {
                 self.resolve_permission_event(
                     session_id,
@@ -296,7 +383,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(outcome)
     }
 
-    pub(crate) fn drain_headless_transcripts_for_context(
+    pub(crate) fn finish_deferred_headless_stop(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
@@ -305,10 +392,109 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         if provider_run.provider() != "claude-headless" {
             return Ok(());
         }
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return Ok(());
+        };
         let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
-        self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)
+        let _ = self.process_pending_headless_stop(
+            session_id,
+            provider_run_id,
+            agent_id,
+            context_file,
+            true,
+        )?;
+        Ok(())
+    }
+
+    fn process_pending_headless_stop(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        context_file: &str,
+        force: bool,
+    ) -> Result<Option<bool>, DaemonError> {
+        let Some((prompt_id, stopped_at_ms)) = claude_headless_stop_drain_marker(context_file)
+        else {
+            return Ok(None);
+        };
+        self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
+        if !force && unix_epoch_ms().saturating_sub(stopped_at_ms) < CLAUDE_HEADLESS_STOP_DRAIN_MS {
+            return Ok(Some(false));
+        }
+        let active_prompt = self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+        if active_prompt
+            .as_ref()
+            .is_some_and(|active_prompt| active_prompt.id() != prompt_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.claude_headless",
+                "ignored stale deferred stop settlement",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "stopped_prompt_id": prompt_id,
+                    "active_prompt_id": active_prompt.as_ref().map(|prompt| prompt.id()),
+                }),
+            );
+            write_claude_native_marker(context_file, "");
+            return Ok(Some(true));
+        }
+        self.complete_native_prompt_after_stop(
+            session_id,
+            provider_run_id,
+            agent_id,
+            context_file,
+            true,
+        )?;
+        Ok(Some(true))
+    }
+
+    fn complete_native_prompt_after_stop(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        context_file: &str,
+        mark_next_headless_prompt_ready: bool,
+    ) -> Result<(), DaemonError> {
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some()
+        {
+            self.app
+                .complete_active_prompt(session_id, agent_id, Some(provider_run_id))?;
+        }
+        let _ = fs::write(context_file, "");
+        write_claude_native_marker(context_file, "");
+        if mark_next_headless_prompt_ready {
+            if let Some(next_prompt) = self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            {
+                crate::logging::debug_with_fields(
+                    "daemon.claude_headless",
+                    "marked post-stop queued prompt ready",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "provider_run_id": provider_run_id,
+                        "agent_id": agent_id,
+                        "prompt_id": next_prompt.id(),
+                    }),
+                );
+                write_claude_native_marker(
+                    context_file,
+                    &format!("post-stop-ready:{}", next_prompt.id()),
+                );
+            }
+        }
+        Ok(())
     }
 
     fn drain_known_headless_transcripts(
@@ -331,9 +517,48 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         context_file: &str,
         transcript_path: &str,
     ) -> Result<(), DaemonError> {
+        let minimum_timestamp_ms = self
+            .app
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string))
+            .and_then(|agent_id| {
+                self.app
+                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
+                    .ok()
+                    .flatten()
+            })
+            .map(|prompt| prompt.created_at_ms())
+            .or_else(|| {
+                self.app
+                    .providers
+                    .get_run(provider_run_id)
+                    .ok()
+                    .map(|run| run.started_at_ms())
+            });
         let mut cursor = load_claude_transcript_cursor(context_file);
-        let drain = drain_claude_transcript_file(transcript_path, &mut cursor);
+        let drain =
+            drain_claude_transcript_file_since(transcript_path, &mut cursor, minimum_timestamp_ms);
         save_claude_transcript_cursor(context_file, &cursor);
+        let active_prompt_id = self
+            .app
+            .providers
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.agent_instance_id().map(str::to_string))
+            .and_then(|agent_id| {
+                self.app
+                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
+                    .ok()
+                    .flatten()
+            })
+            .map(|prompt| prompt.id().to_string());
+        acknowledge_claude_headless_steering_enqueue(
+            context_file,
+            active_prompt_id.as_deref(),
+            &drain.enqueued_prompts,
+        );
         if drain.chunks.is_empty()
             && drain.assistant_message_ids.is_empty()
             && drain.session_id.is_none()
@@ -677,12 +902,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
             &prompt,
         )?;
-        // Injection completes once the Enter keystroke has been submitted and
-        // the marker reads `injected`. Both TUI and headless runs now defer
-        // that keystroke via `submit-wait`, so the async caller retries off
-        // the app lock until the PTY-settle delay elapses.
-        if claude_native_marker(context_file).as_deref() == Some(&format!("injected:{}", prompt.id))
-        {
+        // Native TUI injection completes once Enter reaches the provider. A
+        // headless run must additionally acknowledge UserPromptSubmit; an
+        // `injected` marker only proves that bytes were written to the PTY and
+        // is not enough to leave the turn running indefinitely if Claude
+        // dropped them during cold startup.
+        let marker = claude_native_marker(context_file);
+        let completed_marker = if provider_run.provider() == "claude-headless" {
+            format!("accepted:{}", prompt.id)
+        } else {
+            format!("injected:{}", prompt.id)
+        };
+        if marker.as_deref() == Some(completed_marker.as_str()) {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         }
         Ok(ClaudeNativeDispatchAttempt::AwaitingInjection)
@@ -719,6 +950,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         else {
             return Ok(());
         };
+        if claude_native_marker(context_file)
+            .as_deref()
+            .and_then(claude_native_dispatch_prompt_id)
+            .is_some_and(|dispatch_prompt_id| dispatch_prompt_id != prompt.id())
+        {
+            // The output pump also revisits pending injection. Do not let it
+            // overwrite a concurrent steering dispatch, whose injection id is
+            // intentionally different from the active turn's prompt id.
+            return Ok(());
+        }
         let prompt = ClaudeNativePromptInjection {
             id: prompt.id(),
             prompt: prompt.prompt(),
@@ -785,7 +1026,25 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
                 write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
                 if provider_run.provider() == "claude-headless" {
-                    write_claude_headless_submit_retry(context_file, prompt.id, 0, unix_epoch_ms());
+                    let retry = read_claude_headless_submit_retry(context_file);
+                    let count = if retry.prompt_id == prompt.id {
+                        retry.count
+                    } else {
+                        0
+                    };
+                    let visible_prompt =
+                        if retry.prompt_id == prompt.id && !retry.visible_prompt.is_empty() {
+                            retry.visible_prompt
+                        } else {
+                            claude_headless_prompt_input(prompt, context_file)
+                        };
+                    write_claude_headless_submit_retry(
+                        context_file,
+                        prompt.id,
+                        count,
+                        unix_epoch_ms(),
+                        &visible_prompt,
+                    );
                 }
                 return Ok(());
             }
@@ -861,7 +1120,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
             write_claude_native_marker(context_file, &format!("injected:{}", prompt.id));
             if provider_run.provider() == "claude-headless" {
-                write_claude_headless_submit_retry(context_file, prompt.id, 0, unix_epoch_ms());
+                let visible_prompt = claude_headless_prompt_input(prompt, context_file);
+                write_claude_headless_submit_retry(
+                    context_file,
+                    prompt.id,
+                    0,
+                    unix_epoch_ms(),
+                    &visible_prompt,
+                );
             }
             return Ok(());
         }
@@ -883,6 +1149,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else {
                 0
             };
+            let visible_prompt = if retry.prompt_id == prompt.id && !retry.visible_prompt.is_empty()
+            {
+                retry.visible_prompt.clone()
+            } else {
+                claude_headless_prompt_input(prompt, context_file)
+            };
             if count < 3
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_prompt_waiting_in_composer(
@@ -897,7 +1169,35 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 );
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-                write_claude_headless_submit_retry(context_file, prompt.id, count + 1, now);
+                write_claude_headless_submit_retry(
+                    context_file,
+                    prompt.id,
+                    count + 1,
+                    now,
+                    &visible_prompt,
+                );
+            } else if count < 3
+                && now.saturating_sub(last_attempt_ms) >= 2_000
+                && claude_headless_composer_visible(&recent)
+            {
+                // Claude can drop both the pasted text and Enter while its
+                // cold-start composer is still taking ownership of the PTY.
+                // UserPromptSubmit changes the marker to `accepted` before
+                // this grace period expires on successful submissions, so an
+                // idle composer with no acknowledgement is safe to retype.
+                let input = claude_headless_prompt_input(prompt, context_file);
+                append_claude_headless_debug(
+                    context_file,
+                    "inject_prompt_retry",
+                    &format!("{}:{}", prompt.id, count + 1),
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
+                write_claude_headless_submit_retry(context_file, prompt.id, count + 1, now, &input);
+                write_claude_native_marker(
+                    context_file,
+                    &format!("submit-wait:{}:{}", prompt.id, now),
+                );
             }
             return Ok(());
         }
@@ -945,12 +1245,22 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             append_claude_headless_debug(context_file, "inject_prompt", &input);
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, input.as_bytes())?;
+            let written_at_ms = unix_epoch_ms();
+            if provider_run.provider() == "claude-headless" {
+                write_claude_headless_submit_retry(
+                    context_file,
+                    prompt.id,
+                    0,
+                    written_at_ms,
+                    &input,
+                );
+            }
             // Defer the Enter keystroke: mark `submit-wait` with the write
             // time so a later pass (off the app lock) submits it once the PTY
             // has had CLAUDE_SUBMIT_DELAY_MS to register the pasted text.
             write_claude_native_marker(
                 context_file,
-                &format!("submit-wait:{}:{}", prompt.id, unix_epoch_ms()),
+                &format!("submit-wait:{}:{written_at_ms}", prompt.id),
             );
         } else {
             append_claude_headless_debug(context_file, "inject_empty", prompt.id);
@@ -965,6 +1275,19 @@ enum SubmitWaitState {
     NotSubmitWait,
     Waiting,
     ReadyToSubmit,
+}
+
+fn claude_native_dispatch_prompt_id(marker: &str) -> Option<&str> {
+    for prefix in ["typed:", "injected:", "accepted:"] {
+        if let Some(prompt_id) = marker.strip_prefix(prefix) {
+            return (!prompt_id.is_empty()).then_some(prompt_id);
+        }
+    }
+    marker
+        .strip_prefix("submit-wait:")
+        .and_then(|rest| rest.rsplit_once(':'))
+        .map(|(prompt_id, _)| prompt_id)
+        .filter(|prompt_id| !prompt_id.is_empty())
 }
 
 /// Decide whether a deferred Enter keystroke is due for the given prompt,
@@ -986,4 +1309,12 @@ fn submit_wait_state(marker: Option<&str>, prompt_id: &str, now_ms: u64) -> Subm
         }
         _ => SubmitWaitState::ReadyToSubmit,
     }
+}
+
+fn claude_headless_stop_drain_marker(context_file: &str) -> Option<(String, u64)> {
+    let marker = claude_native_marker(context_file)?;
+    let payload = marker.strip_prefix(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)?;
+    let (prompt_id, stopped_at_ms) = payload.rsplit_once(':')?;
+    let stopped_at_ms = stopped_at_ms.parse::<u64>().ok()?;
+    (!prompt_id.trim().is_empty()).then(|| (prompt_id.to_string(), stopped_at_ms))
 }

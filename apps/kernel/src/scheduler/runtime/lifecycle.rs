@@ -1,5 +1,22 @@
 use super::*;
 
+fn persist_workflow_session_state(
+    app: &DaemonApp,
+    session_id: &str,
+    reason: &'static str,
+) -> Result<(), DaemonError> {
+    let session = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
+    app.durable_state_store().append_event(
+        "session.updated",
+        Some(session_id.to_string()),
+        serde_json::json!({
+            "session": &session,
+            "reason": reason,
+        }),
+    )?;
+    Ok(())
+}
+
 pub fn on_workflow_prompt_started(
     app: &mut DaemonApp,
     session_id: &str,
@@ -27,6 +44,7 @@ pub fn on_workflow_prompt_started(
             prompt.target_agent_id()
         ),
     );
+    persist_workflow_session_state(app, session_id, "workflow_prompt_started")?;
     Ok(())
 }
 
@@ -55,9 +73,9 @@ pub fn on_workflow_prompt_completed(
         workflow_node_run_id,
     );
     if completion_snapshot.is_none() && !has_valid_pending_final_output {
-        let provider_diagnostic =
-            provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id));
-        if let Some(diagnostic) = provider_diagnostic {
+        if let Some(provider_diagnostic) =
+            provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id))
+        {
             app.sessions_mut().fail_workflow_node_run(
                 session_id,
                 workflow_run_id,
@@ -71,7 +89,7 @@ pub fn on_workflow_prompt_completed(
                     WorkflowFailureKind::ProviderFailure,
                     workflow_node_run_id,
                     Vec::new(),
-                    diagnostic.clone(),
+                    provider_diagnostic.clone(),
                 ),
             );
             app.record_notice(
@@ -79,11 +97,11 @@ pub fn on_workflow_prompt_completed(
                 provider_run_id,
                 app.attachments().list_session_attachment_ids(session_id),
                 format!(
-                    "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                    "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
                 ),
             );
             maybe_start_next_queued_workflow_prompt(app, session_id);
-            let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
+            persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
             return Ok(());
         }
     }
@@ -136,6 +154,7 @@ pub fn on_workflow_prompt_completed(
                 ),
             );
             maybe_start_next_queued_workflow_prompt(app, session_id);
+            persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
             return Ok(());
         }
         Err(error) => return Err(error),
@@ -299,6 +318,7 @@ pub fn on_workflow_prompt_completed(
     ) {
         maybe_start_next_queued_workflow_prompt(app, session_id);
     }
+    persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
     Ok(())
 }
 
@@ -355,7 +375,7 @@ pub fn on_workflow_provider_failure(
         format!("Workflow run `{workflow_run_id}` failed after provider turn failure: {message}"),
     );
     maybe_start_next_queued_workflow_prompt(app, session_id);
-    let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id);
+    persist_workflow_session_state(app, session_id, "workflow_provider_failed")?;
     Ok(())
 }
 
@@ -392,6 +412,7 @@ pub fn on_workflow_prompt_cancelled(
         format!("Workflow run `{}` was stopped.", workflow_run.id()),
     );
     maybe_start_next_queued_workflow_prompt(app, session_id);
+    persist_workflow_session_state(app, session_id, "workflow_prompt_cancelled")?;
     Ok(())
 }
 

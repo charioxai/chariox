@@ -53,6 +53,9 @@ impl<'a> KernelAgentService<'a> {
                 session_id: session_id.to_string(),
             })?;
         if active_prompt.status() == PromptStatus::Cancelling {
+            if target_agent.remote_execution().is_some() {
+                return self.finalize_active_prompt_cancellation(session_id, agent_id, None);
+            }
             return Ok(PromptCancellation {
                 prompt: active_prompt,
                 started_next: None,

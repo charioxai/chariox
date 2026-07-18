@@ -100,9 +100,7 @@ pub(super) fn parse_model(model: Option<&str>) -> Result<Option<(&str, &str)>, &
     if value.is_empty() || value == "default" {
         return Ok(None);
     }
-    let Some((provider_id, model_id)) = value.split_once('/') else {
-        return Err(value);
-    };
+    let (provider_id, model_id) = value.split_once('/').unwrap_or(("opencode", value));
     if provider_id.is_empty() || model_id.is_empty() {
         return Err(value);
     }

@@ -60,9 +60,7 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
         .write()
         .entry(provider_run_id.to_string())
         .and_modify(|state| {
-            state.last_output_at = Some(Instant::now());
-            state.saw_response_content = true;
-            state.settlement_requested = true;
+            state.request_settlement();
         })
         .or_insert(ActivePromptState {
             last_output_at: Some(Instant::now()),

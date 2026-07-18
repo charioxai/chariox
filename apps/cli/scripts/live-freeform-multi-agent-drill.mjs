@@ -46,6 +46,7 @@ function parseArgs(argv) {
     providers: DEFAULT_PROVIDERS,
     model: DEFAULT_MODEL,
     providerModels: {},
+    sliceRef: null,
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
     spawnDaemon: true,
@@ -62,6 +63,7 @@ function parseArgs(argv) {
       if (!provider || !model) throw new Error('--provider-model must use provider=model')
       options.providerModels[provider] = model
     }
+    else if (arg === '--slice-ref') options.sliceRef = argv[++i]
     else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
     else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
     else if (arg === '--no-spawn-daemon') options.spawnDaemon = false
@@ -82,6 +84,7 @@ function printHelp() {
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
     `  --model ${DEFAULT_MODEL}`,
     '  --provider-model PROVIDER=MODEL (for example opencode=opencode/gpt-5.2)',
+    '  --slice-ref SLICE (run every drill agent on one existing slice)',
     `  --timeout-ms ${DEFAULT_TIMEOUT_MS}`,
     `  --poll-ms ${DEFAULT_POLL_MS}`,
     '  --no-spawn-daemon',
@@ -185,15 +188,111 @@ async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionReques
   throw new Error('daemon did not become ready')
 }
 
-async function waitForCompletions(client, sessionId, attachmentId, events, expectedCount, timeoutMs, pollMs) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
-    const completed = events.filter((event) => event.event === 'assistant_message_completed')
-    if (completed.length >= expectedCount) return completed
-    await sleep(pollMs)
+function sessionStatePayload(response) {
+  return unwrapVariant(response, 'SessionStateLoaded', 'SessionState')
+}
+
+function activityForAgent(state, agentId) {
+  const activity = state?.agent_activity ?? state?.agentActivity ?? state?.session?.agent_activity ?? null
+  if (Array.isArray(activity)) {
+    return activity.find((entry) => entry?.agent_id === agentId || entry?.agentId === agentId) ?? null
   }
-  throw new Error(`timed out waiting for ${expectedCount} assistant completions`)
+  return activity?.[agentId] ?? activity?.[String(agentId)] ?? null
+}
+
+function activityIsWorking(activity) {
+  if (!activity) return false
+  const status = String(activity.status ?? '').toLowerCase()
+  const promptStatus = String(activity.prompt_status ?? activity.promptStatus ?? '').toLowerCase()
+  const activePromptCount = Number(activity.active_prompt_count ?? activity.activePromptCount ?? 0)
+  return activity.busy === true
+    || activePromptCount > 0
+    || Boolean(activity.active_turn ?? activity.activeTurn)
+    || ['working', 'running', 'thinking', 'streaming'].includes(status)
+    || (promptStatus !== '' && !['none', 'idle', 'completed', 'cancelled'].includes(promptStatus))
+}
+
+function completedOutlineTurn(outline, agentId, expectedPrompt) {
+  const agent = (outline.agents ?? []).find((entry) => entry.agent_id === agentId)
+  const turns = [...(agent?.turns ?? [])].reverse()
+  for (const turn of turns) {
+    const promptText = turn.user_prompt?.entry?.text ?? ''
+    if (promptText.trim() !== expectedPrompt.trim()) continue
+    const outputText = [
+      ...(turn.entries ?? []).map((entry) => entry?.entry?.text ?? ''),
+      turn.summary?.entry?.text ?? '',
+    ].join('\n')
+    const startedAtMs = Number(turn.started_at_ms ?? 0)
+    const completedAtMs = Number(turn.completed_at_ms ?? 0)
+    return {
+      lifecycle: String(turn.lifecycle ?? '').toLowerCase(),
+      startedAtMs,
+      completedAtMs,
+      durationMs: completedAtMs - startedAtMs,
+      hasProviderResponse: outputText.trim().length > 0,
+    }
+  }
+  return null
+}
+
+function naturalLifecyclePrompt(provider, index) {
+  const subject = provider === 'claude-headless'
+    ? 'why an interface should keep its running timer visible until the underlying operation has actually finished'
+    : provider === 'codex'
+      ? 'the difference between optimistically displaying a submitted message and declaring its operation complete'
+      : 'why a page reload should preserve an active operation and its queued follow-up'
+  return `In two short sentences, explain ${subject}. This is acceptance scenario ${index + 1}.`
+}
+
+async function waitForAuthoritativeLifecycles({
+  client,
+  requests,
+  sessionId,
+  attachmentId,
+  agents,
+  expectedPrompts,
+  timeoutMs,
+  pollMs,
+}) {
+  const deadline = Date.now() + timeoutMs
+  const observations = new Map(agents.map((agent) => [agent.id, {
+    sawWorking: false,
+    sawIdleAfterWorking: false,
+    activity: null,
+    turn: null,
+  }]))
+  while (Date.now() < deadline) {
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const state = sessionStatePayload(await client.send(requests.getSessionStateRequest(sessionId)))
+    for (const agent of agents) {
+      const observation = observations.get(agent.id)
+      const activity = activityForAgent(state, agent.id)
+      observation.activity = activity
+      if (activityIsWorking(activity)) {
+        observation.sawWorking = true
+        continue
+      }
+      if (!activity || !observation.sawWorking) continue
+      observation.sawIdleAfterWorking = true
+      const outline = unwrap(
+        await client.send(requests.getSessionHistoryOutlineRequest(sessionId, [agent.id], 4)),
+        'SessionHistoryOutline',
+      )
+      observation.turn = completedOutlineTurn(outline, agent.id, expectedPrompts.get(agent.id))
+    }
+    const complete = [...observations.values()].every((observation) => (
+      observation.sawWorking
+      && observation.sawIdleAfterWorking
+      && observation.turn?.lifecycle === 'completed'
+      && observation.turn.durationMs > 0
+      && observation.turn.hasProviderResponse
+    ))
+    if (complete) {
+      return agents.map((agent) => ({ agentId: agent.id, ...observations.get(agent.id) }))
+    }
+    await sleep(Math.min(pollMs, 250))
+  }
+  throw new Error(`timed out waiting for authoritative prompt lifecycles: ${JSON.stringify(Object.fromEntries(observations))}`)
 }
 
 async function main() {
@@ -222,6 +321,7 @@ async function main() {
   let listedAgents = []
   let processes = []
   let finalState = null
+  let lifecycles = []
   const events = []
 
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
@@ -283,25 +383,51 @@ async function main() {
     for (let index = 0; index < options.providers.length; index += 1) {
       const provider = options.providers[index]
       const agent = unwrapVariant(
-        await client.send(spawnAgentRequest(session.id, provider, `${provider}-${index + 1}`, modelForProvider(provider, options), options.worktree, 'low')),
+        await client.send(spawnAgentRequest(
+          session.id,
+          provider,
+          `${provider}-${index + 1}`,
+          modelForProvider(provider, options),
+          options.worktree,
+          'low',
+          'plan',
+          'required',
+          undefined,
+          undefined,
+          options.sliceRef ?? undefined,
+        )),
         'AgentSpawned',
       ).agent
       agents.push(agent)
     }
 
+    const expectedPrompts = new Map(agents.map((agent, index) => [
+      agent.id,
+      naturalLifecyclePrompt(options.providers[index], index),
+    ]))
+    const lifecyclePromise = waitForAuthoritativeLifecycles({
+      client,
+      requests,
+      sessionId: session.id,
+      attachmentId: attachment.id,
+      agents,
+      expectedPrompts,
+      timeoutMs: options.timeoutMs,
+      pollMs: options.pollMs,
+    })
     for (let index = 0; index < agents.length; index += 1) {
       const agent = agents[index]
-      const provider = options.providers[index]
+      const expectedPrompt = expectedPrompts.get(agent.id)
       await client.send(submitPromptRequest(
         session.id,
         attachment.id,
         agent.id,
-        `Reply with exactly ${provider.toUpperCase()}_${index + 1}_FREEFORM_OK and nothing else.`,
+        expectedPrompt,
         [],
       ))
     }
 
-    const completions = await waitForCompletions(client, session.id, attachment.id, events, agents.length, options.timeoutMs, options.pollMs)
+    lifecycles = await lifecyclePromise
     finalState = unwrapVariant(await client.send(getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState')
     listedAgents = unwrapVariant(await client.send(listAgentsRequest(session.id)), 'AgentsListed').agents || []
     processes = unwrapVariant(await client.send(listProviderProcessesRequest()), 'ProviderProcessesListed').processes || []
@@ -320,7 +446,8 @@ async function main() {
         provider: agent.provider,
       })),
       listedAgentCount: listedAgents.length,
-      completionCount: completions.length,
+      completionCount: lifecycles.length,
+      lifecycles,
       providerProcesses: processes.map((process) => ({
         processId: process.process_id,
         provider: process.provider,
@@ -350,6 +477,7 @@ async function main() {
         workspace: options.workspace,
         worktree: options.worktree,
         providers: options.providers,
+        sliceRef: options.sliceRef,
         model: options.model,
         providerModels: options.providerModels,
         timeoutMs: options.timeoutMs,
@@ -370,6 +498,7 @@ async function main() {
           ownerRunIds: process.owner_provider_run_ids || [],
         })),
         focusedAgentId: finalState?.session?.focused_agent_id ?? finalState?.focused_agent_id ?? null,
+        lifecycles,
         eventCount: events.length,
         eventCounts: summarizeEvents(events),
         recentEvents: events.slice(-20),

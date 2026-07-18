@@ -74,6 +74,8 @@ struct ExternalProviderTranscriptIndexEntry {
     modified_at_ms: u64,
     discovery_record: Option<ExternalProviderSessionRecord>,
     last_observed_offset: u64,
+    observed_len: Option<u64>,
+    observed_modified_at_ms: Option<u64>,
     observed_turns: Option<Vec<ObservedExternalProviderTurn>>,
 }
 
@@ -111,18 +113,41 @@ impl ExternalProviderSessionDiscoverySignature {
                 .all(|(left, right)| left.provider == right.provider && left.path == right.path)
     }
 
-    pub(crate) fn changed_content_provider_ids(&self, other: &Self) -> BTreeSet<String> {
-        self.files
+    pub(crate) fn providers_with_changed_candidate_files(&self, other: &Self) -> BTreeSet<String> {
+        let providers = self
+            .files
             .iter()
-            .zip(other.files.iter())
-            .filter(|(left, right)| {
-                left.provider == right.provider
-                    && left.path == right.path
-                    && (left.len != right.len || left.modified_at_ms != right.modified_at_ms)
+            .chain(other.files.iter())
+            .map(|file| file.provider.as_str())
+            .collect::<BTreeSet<_>>();
+
+        providers
+            .into_iter()
+            .filter(|provider| {
+                let left = self
+                    .files
+                    .iter()
+                    .filter(|file| file.provider == **provider)
+                    .map(|file| file.path.as_path())
+                    .collect::<Vec<_>>();
+                let right = other
+                    .files
+                    .iter()
+                    .filter(|file| file.provider == **provider)
+                    .map(|file| file.path.as_path())
+                    .collect::<Vec<_>>();
+                left != right
             })
-            .map(|(left, _)| left.provider.clone())
+            .map(str::to_string)
             .collect()
     }
+}
+
+pub(crate) fn external_provider_session_transcript_needs_refresh(
+    provider: &str,
+    provider_session_id: &str,
+) -> bool {
+    provider_observed_transcript_needs_refresh(provider, provider_session_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

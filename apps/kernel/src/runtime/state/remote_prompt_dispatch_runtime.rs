@@ -738,6 +738,13 @@ impl KernelRuntimeState {
             let owned = &self.owned;
             match result {
                 Ok(remote_provider_run_id) => {
+                    if owned.agent_store.get_agent(&dispatch.agent_id)?.state()
+                        == crate::agent::AgentState::Error
+                    {
+                        let _ = owned
+                            .agent_store
+                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Idle)?;
+                    }
                     let _ = owned
                         .agent_store
                         .set_remote_execution_active_worker_provider_run_id(
@@ -782,6 +789,12 @@ impl KernelRuntimeState {
                         );
                     let _ =
                         owned.cancel_active_prompt_only(&dispatch.session_id, &dispatch.agent_id);
+                    let _ = owned
+                        .agent_store
+                        .set_agent_processing(&dispatch.agent_id, false);
+                    let _ = owned
+                        .agent_store
+                        .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error);
                     let _ = owned.session_snapshot(&dispatch.session_id);
                     let recipients = owned
                         .attachment_store
@@ -807,8 +820,20 @@ impl KernelRuntimeState {
         &self,
         mut dispatch: crate::app::KernelRemotePromptDispatch,
     ) {
+        // A stale projection drain can discover a dead lease while the initial
+        // dispatch is already refreshing that same binding. Both paths submit
+        // the active prompt, so serialize them per agent to prevent one browser
+        // prompt from starting on two freshly-created worker agents.
+        let Some(claim) = RemotePromptAgentClaim::try_acquire(
+            Arc::clone(&self.owned.remote_prompt_recoveries),
+            &dispatch.session_id,
+            &dispatch.agent_id,
+        ) else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
+            let _claim = claim;
             crate::logging::info_with_fields(
                 "daemon.remote_prompt_dispatch",
                 "remote prompt dispatch starting",
@@ -1149,12 +1174,133 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn remote_prompt_dispatch_failure_projects_agent_error() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-1",
+                "worktree-1",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-remote-dispatch-error",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            "pending:remote-dispatch-error",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let submission = runtime
+            .owned
+            .submit_remote_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session.id().to_string(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .expect("remote prompt should submit")
+            .expect("remote prompt should be handled");
+        let dispatch = submission
+            .remote_dispatch
+            .expect("started remote prompt should dispatch");
+
+        let result = runtime
+            .finish_remote_prompt_dispatch(
+                dispatch,
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "submit remote prompt",
+                    message: "provider rejected the prompt".to_string(),
+                }),
+            )
+            .await;
+
+        assert!(result.is_err(), "dispatch failure must be preserved");
+        let failed_agent = runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("failed agent should remain available");
+        assert_eq!(failed_agent.state(), crate::agent::AgentState::Error);
+        assert!(!failed_agent.is_processing());
+        {
+            let mut sessions = runtime.owned.session_store.write();
+            runtime
+                .owned
+                .agent_store
+                .focus_agent(session.id(), agent.id(), &mut sessions)
+                .expect("failed agent should remain focusable");
+        }
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(agent.id())
+                .expect("focused failed agent should remain available")
+                .state(),
+            crate::agent::AgentState::Error,
+            "focusing or restoring a failed pane must not erase its error badge",
+        );
+        let snapshot = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("failed session should remain projectable");
+        assert_eq!(
+            runtime
+                .agent_activity_for_session(&snapshot)
+                .get(agent.id())
+                .expect("failed agent activity should remain projected")
+                .status,
+            crate::runtime::projection::AgentRuntimeStatus::Error,
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("session should remain available"),
+                agent.id(),
+            )
+            .is_none());
+    }
+
     #[test]
     fn remote_prompt_projection_drain_claims_coalesce_restart_before_release() {
         let claims = Arc::new(std::sync::Mutex::new(BTreeMap::new()));
         let mut first =
             RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1")
                 .expect("first drain should claim the agent");
+
+        let other_agent =
+            RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-2", "agent-2")
+                .expect("a different agent must remain independently dispatchable");
 
         assert!(
             RemotePromptAgentClaim::try_acquire(Arc::clone(&claims), "session-1", "agent-1",)
@@ -1174,6 +1320,7 @@ mod tests {
             RemotePromptAgentClaim::try_acquire(claims, "session-1", "agent-1",).is_some(),
             "an atomically released claim must allow reconnect recovery to start a new drain"
         );
+        drop(other_agent);
     }
 
     #[test]

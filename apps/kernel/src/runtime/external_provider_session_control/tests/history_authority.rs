@@ -64,6 +64,73 @@ fn observed_external_history_appends_without_creating_active_prompt() {
 }
 
 #[test]
+fn arroba_owned_turn_with_generated_runtime_context_is_not_imported_again() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.append_user_prompt_history(
+        session.id(),
+        attachment.id(),
+        agent.id(),
+        "run the check",
+        &[],
+    );
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-owned".to_string(),
+        "codex".to_string(),
+        "thread-owned".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "run the check <runtime-instructions>generated</runtime-instructions> \
+                        <native-permission-instructions>generated</native-permission-instructions>"
+                        .to_string(),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "done".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed history should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_external_provider_observed());
+}
+
+#[test]
 fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -221,7 +288,7 @@ fn timestamp_less_external_turn_is_stable_across_repeated_polls() {
 }
 
 #[test]
-fn observed_live_external_user_turn_starts_active_prompt() {
+fn observed_live_external_user_turn_is_history_only() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -264,22 +331,14 @@ fn observed_live_external_user_turn_starts_active_prompt() {
     )
     .expect("observed history should append");
 
-    let active = app
+    assert!(app
         .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
         .expect("active prompt should load")
-        .expect("live external prompt should become active");
-    assert_eq!(active.prompt(), "external live prompt");
-    assert_eq!(
-        active.prompt_origin(),
-        crate::session::PromptOrigin::External
-    );
-    assert_eq!(active.external_provider(), Some("opencode"));
-    assert_eq!(active.external_provider_session_id(), Some("thread-live"));
-    assert_eq!(active.external_provider_turn_id(), Some("opencode-user-2"));
+        .is_none());
 }
 
 #[test]
-fn observed_live_external_completion_clears_active_prompt() {
+fn observed_live_external_completion_does_not_clear_active_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -331,14 +390,15 @@ fn observed_live_external_completion_clears_active_prompt() {
     )
     .expect("observed completion should append");
 
-    assert!(app
+    let active = app
         .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
         .expect("active prompt should load")
-        .is_none());
+        .expect("observed completion must not settle kernel prompt state");
+    assert_eq!(active.prompt(), "external live prompt");
 }
 
 #[test]
-fn observed_live_external_completion_advances_queued_arroba_prompt() {
+fn observed_live_external_completion_does_not_advance_queued_arroba_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -415,13 +475,16 @@ fn observed_live_external_completion_advances_queued_arroba_prompt() {
     let active = app
         .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
         .expect("active prompt should load")
-        .expect("queued prompt should advance after external completion");
-    assert_eq!(active.prompt(), "queued kernel prompt after external turn");
-    assert_eq!(active.prompt_origin(), crate::session::PromptOrigin::Arroba);
+        .expect("observed completion must not settle kernel prompt state");
+    assert_eq!(active.prompt(), "external live prompt");
+    assert_eq!(
+        active.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
     assert_eq!(
         app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
             .expect("queued count should load"),
-        0
+        1
     );
 }
 

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::config::{DaemonConfig, SliceImageBuildPolicy, DEFAULT_LINUX_SLICE_DOCKER_IMAGE};
 use crate::error::DaemonError;
+use crate::slice_provider_auth::{SliceProviderAuthState, SliceProviderAuthSummary};
 
 use super::model::{
     LocalDockerSliceAction, SliceBackendKind, SliceDisplayMode, SliceLogEntry,
@@ -251,6 +252,105 @@ pub fn start_local_docker_slice_provider_login(
     })
 }
 
+pub fn inspect_local_docker_slice_provider_auth(
+    record: &SliceRecord,
+    provider: &str,
+) -> Result<Vec<SliceProviderAuthSummary>, DaemonError> {
+    if record.backend != SliceBackendKind::LocalDocker {
+        return Err(DaemonError::LocalTransport {
+            operation: "slice.auth.inspect",
+            message: format!("slice `{}` is not a local Docker slice", record.name),
+        });
+    }
+    let container = local_docker_container_name(record);
+    let checks = match provider {
+        "all" => vec![
+            ("codex", "/home/slice/.codex/auth.json"),
+            ("opencode", "/home/slice/.local/share/opencode/auth.json"),
+            ("claude", "/home/slice/.claude/.credentials.json"),
+        ],
+        "codex" => vec![("codex", "/home/slice/.codex/auth.json")],
+        "opencode" => vec![("opencode", "/home/slice/.local/share/opencode/auth.json")],
+        "claude" => vec![("claude", "/home/slice/.claude/.credentials.json")],
+        "github" => Vec::new(),
+        value if value.starts_with("opencode:") => {
+            vec![("opencode", "/home/slice/.local/share/opencode/auth.json")]
+        }
+        _ => {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!("unsupported slice provider `{provider}`"),
+            });
+        }
+    };
+    let mut summaries = Vec::new();
+    for (summary_provider, path) in checks {
+        let status = Command::new("docker")
+            .args(["exec", "-u", "slice", &container, "test", "-s", path])
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!(
+                    "failed to inspect {summary_provider} auth in slice `{}`: {error}",
+                    record.name
+                ),
+            })?;
+        if status.success() {
+            summaries.push(SliceProviderAuthSummary {
+                provider: summary_provider.to_string(),
+                state: SliceProviderAuthState::Configured,
+                auth_type: None,
+                account_id: None,
+                email: None,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: None,
+                alias: None,
+                source: "slice_provider_auth_file".to_string(),
+            });
+        }
+    }
+    if provider == "all" || provider == "github" {
+        let status = Command::new("docker")
+            .args([
+                "exec",
+                "-u",
+                "slice",
+                &container,
+                "gh",
+                "auth",
+                "token",
+                "--hostname",
+                "github.com",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "slice.auth.inspect",
+                message: format!(
+                    "failed to inspect github auth in slice `{}`: {error}",
+                    record.name
+                ),
+            })?;
+        if status.success() {
+            summaries.push(SliceProviderAuthSummary {
+                provider: "github".to_string(),
+                state: SliceProviderAuthState::Configured,
+                auth_type: Some("oauth_token".to_string()),
+                account_id: None,
+                email: None,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: None,
+                alias: None,
+                source: "slice_github_cli".to_string(),
+            });
+        }
+    }
+    Ok(summaries)
+}
+
 pub fn collect_local_docker_slice_logs(
     record: &SliceRecord,
     options: &LocalDockerSliceOptions,
@@ -290,6 +390,7 @@ pub fn collect_local_docker_slice_logs(
             ));
         }
     }
+    entries.push(local_docker_runtime_log_entry(record, tail_lines));
     entries.push(local_docker_container_log_entry(record, tail_lines));
     Ok(entries)
 }
@@ -372,6 +473,59 @@ fn local_docker_container_log_entry(record: &SliceRecord, tail_lines: u32) -> Sl
             source: "container".to_string(),
             path: None,
             text: format!("docker logs unavailable: {error}"),
+            truncated: false,
+        },
+    }
+}
+
+fn local_docker_runtime_log_entry(record: &SliceRecord, tail_lines: u32) -> SliceLogEntry {
+    let container = local_docker_container_name(record);
+    let tail_lines_arg = tail_lines.to_string();
+    let script = r#"
+set -eu
+found=0
+for file in /opt/arroba-slice/logs/*.log /home/slice/.local/state/arroba/logs/*.ndjson; do
+  [ -f "$file" ] || continue
+  found=1
+  printf '\n=== %s ===\n' "$file"
+  tail -n "$1" "$file"
+done
+if [ "$found" -eq 0 ]; then
+  printf '<no slice runtime logs>\n'
+fi
+"#;
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            "-u",
+            "slice",
+            &container,
+            "sh",
+            "-c",
+            script,
+            "slice-runtime-logs",
+            &tail_lines_arg,
+        ])
+        .output();
+    match output {
+        Ok(output) => {
+            let mut text = String::new();
+            text.push_str(&String::from_utf8_lossy(&output.stdout));
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() && text.trim().is_empty() {
+                text = format!("slice runtime logs failed with status {}", output.status);
+            }
+            SliceLogEntry {
+                source: "runtime".to_string(),
+                path: None,
+                text: text.trim().to_string(),
+                truncated: false,
+            }
+        }
+        Err(error) => SliceLogEntry {
+            source: "runtime".to_string(),
+            path: None,
+            text: format!("slice runtime logs unavailable: {error}"),
             truncated: false,
         },
     }
@@ -719,40 +873,35 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
-    resolve_linux_docker_slice_script(
-        std::env::var_os(SLICE_DOCKER_PROVISIONER_ENV).map(PathBuf::from),
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-    )
+    if let Some(script) = std::env::var_os("ARROBA_SLICE_DOCKER_PROVISIONER") {
+        let script = expand_user_path_for_slice(&script.to_string_lossy());
+        return validate_linux_docker_slice_script(script);
+    }
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "slice.local_docker",
+            message: "failed to resolve repository root for slice scripts".to_string(),
+        })?;
+    let script = repo_root
+        .join("apps")
+        .join("kernel")
+        .join("slice-linux-docker")
+        .join("provision-linux-docker-slice.sh");
+    validate_linux_docker_slice_script(script)
 }
 
-fn resolve_linux_docker_slice_script(
-    configured: Option<PathBuf>,
-    manifest_dir: &Path,
-) -> Result<PathBuf, DaemonError> {
-    let script = match configured {
-        Some(script) => script,
-        None => {
-            let repo_root = manifest_dir
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "slice.local_docker",
-                    message: "failed to resolve repository root for slice scripts".to_string(),
-                })?;
-            repo_root
-                .join("apps")
-                .join("kernel")
-                .join("slice-linux-docker")
-                .join("provision-linux-docker-slice.sh")
-        }
-    };
-    if script.is_file() {
-        Ok(script)
-    } else {
+fn validate_linux_docker_slice_script(script: PathBuf) -> Result<PathBuf, DaemonError> {
+    if !script.is_file() {
         Err(DaemonError::LocalTransport {
             operation: "slice.local_docker",
             message: format!("slice Docker provisioner not found at {}", script.display()),
         })
+    } else {
+        Ok(script)
     }
 }
 

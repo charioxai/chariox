@@ -413,6 +413,62 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(updated.clone())
     }
 
+    pub(crate) fn update_leased_agent_profile(
+        &mut self,
+        leased_agent_id: &str,
+        provider: String,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<LeasedAgent, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "update leased agent profile",
+                message: format!(
+                    "leased agent `{leased_agent_id}` has an active turn; update the profile after it finishes"
+                ),
+            });
+        }
+
+        let profile_changed = leased_agent.provider != provider
+            || leased_agent.model != model
+            || leased_agent.effort != effort;
+        if profile_changed {
+            self.terminate_backing_provider_runtime(&leased_agent);
+            self.app.agents.update_agent_profile(
+                &leased_agent.backing_agent_id,
+                Some(provider.clone()),
+                model.clone(),
+                Some(effort.clone()),
+            )?;
+        }
+        let updated = self
+            .app
+            .leased_agents
+            .get_mut(leased_agent_id)
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        updated.provider = provider;
+        updated.model = model;
+        updated.effort = effort;
+        Ok(updated.clone())
+    }
+
     pub(crate) fn update_leased_agent_meta_mode(
         &mut self,
         leased_agent_id: &str,

@@ -43,6 +43,7 @@ fn only_turn_completed_marks_the_prompt_as_complete() {
             turn_id: "turn-1".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -67,6 +68,68 @@ fn only_turn_completed_marks_the_prompt_as_complete() {
     assert_eq!(active_turn_id, None);
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].message_id, "codex-turn:turn-1");
+}
+
+#[test]
+fn turn_completed_reconciles_full_assistant_item_after_partial_stream() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::AgentMessageDelta {
+            item_id: "message-1".to_string(),
+            delta: "```".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: vec![json!({
+                "type": "agentMessage",
+                "id": "message-1",
+                "text": "```json\n{\"summary\":\"done\",\"output\":{\"message\":\"20\"}}\n```",
+            })],
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert_eq!(
+        chunks
+            .iter()
+            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderOutput)
+            .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+            .collect::<String>(),
+        "```json\n{\"summary\":\"done\",\"output\":{\"message\":\"20\"}}\n```"
+    );
 }
 
 #[test]
@@ -123,6 +186,7 @@ fn steering_turn_start_preserves_original_active_turn_tracking() {
             turn_id: "original-turn".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -168,6 +232,7 @@ fn turn_completion_waits_for_socket_quiet_before_prompt_completion() {
             turn_id: "turn-1".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -215,6 +280,7 @@ fn terminal_completion_waits_for_late_tool_output_before_prompt_completion() {
             turn_id: "turn-1".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -341,6 +407,7 @@ fn turn_completion_waits_for_running_command_execution() {
             turn_id: "turn-1".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -413,6 +480,7 @@ fn turn_completion_waits_for_running_command_execution() {
             turn_id: "turn-1".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -475,6 +543,7 @@ fn stale_turn_completion_before_tool_finish_does_not_settle_after_tool_finishes(
             turn_id: "stale-turn".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -777,6 +846,7 @@ fn stale_turn_completion_does_not_complete_prompt() {
             turn_id: "stale-turn".to_string(),
             status: "completed".to_string(),
             error_message: None,
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -813,6 +883,7 @@ fn interrupted_turn_is_treated_as_terminal_cancellation() {
             turn_id: "turn-2".to_string(),
             status: "interrupted".to_string(),
             error_message: Some("Aborted".to_string()),
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -859,6 +930,7 @@ fn failed_turn_records_terminal_failure() {
             turn_id: "turn-3".to_string(),
             status: "failed".to_string(),
             error_message: Some("model rejected".to_string()),
+            items: Vec::new(),
         },
         &mut active_turn_id,
         &mut turn_tracker,
@@ -886,8 +958,8 @@ fn failed_turn_records_terminal_failure() {
 }
 
 #[test]
-fn error_notification_without_active_turn_records_terminal_failure() {
-    let mut active_turn_id = None;
+fn error_notification_clears_active_turn_and_records_terminal_failure() {
+    let mut active_turn_id = Some("turn-auth-failure".to_string());
     let mut turn_tracker = CodexTurnTracker::default();
     let mut text_items = BTreeMap::new();
     let mut tool_items = BTreeMap::new();
@@ -915,6 +987,7 @@ fn error_notification_without_active_turn_records_terminal_failure() {
     );
 
     assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
     assert_eq!(
         terminal_failure.as_deref(),
         Some("unsupported model gpt-5.2-codex")
@@ -923,7 +996,76 @@ fn error_notification_without_active_turn_records_terminal_failure() {
 }
 
 #[test]
-fn completed_turn_backfill_requires_items_or_error_evidence() {
+fn reconnect_progress_keeps_active_turn_running() {
+    let mut active_turn_id = Some("turn-reconnecting".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::Error {
+            message: "Reconnecting... 2/5".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(!prompt_completed);
+    assert_eq!(active_turn_id.as_deref(), Some("turn-reconnecting"));
+    assert!(terminal_failure.is_none());
+    assert_eq!(notices, vec!["Reconnecting... 2/5".to_string()]);
+}
+
+#[test]
+fn malformed_reconnect_error_remains_terminal() {
+    let mut active_turn_id = Some("turn-reconnecting".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::Error {
+            message: "Reconnecting failed".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(terminal_failure.as_deref(), Some("Reconnecting failed"));
+}
+
+#[test]
+fn completed_turn_backfill_requires_final_answer_or_error_evidence() {
     let empty_items = Vec::new();
     assert!(!codex_completed_turn_has_settlement_evidence(
         Some(&empty_items),
@@ -941,7 +1083,23 @@ fn completed_turn_backfill_requires_items_or_error_evidence() {
         Some(&vec![json!({ "type": "agentMessage", "text": "done" })]),
         None
     ));
+    assert!(!codex_completed_turn_has_settlement_evidence(
+        Some(&vec![json!({
+            "type": "agentMessage",
+            "phase": "commentary",
+            "text": "I am still working"
+        })]),
+        None
+    ));
     assert!(codex_completed_turn_has_settlement_evidence(
+        Some(&vec![json!({
+            "type": "agentMessage",
+            "phase": "finalAnswer",
+            "text": "done"
+        })]),
+        None
+    ));
+    assert!(!codex_completed_turn_has_settlement_evidence(
         Some(&vec![json!({
             "type": "commandExecution",
             "status": "completed"

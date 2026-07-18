@@ -14,7 +14,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         provider_run_id: &str,
         message: &str,
-    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+    ) -> Result<Option<bool>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
             .prompt_state_owner
@@ -45,7 +45,22 @@ impl KernelRuntimeOwnedState {
                 );
             }
         }
-        self.complete_local_prompt_without_advance(session_id, agent_id, Some(provider_run_id))
+        let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
+        let completed_at_ms = crate::session::unix_epoch_ms();
+        if !self.prompt_completion_recorded(provider_run_id) {
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!("prompt-cancelled:{}", cancelled.id()),
+                completed_at_ms,
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
+        let released_claim = self.clear_prompt_activity(provider_run_id);
+        let _ = self.session_snapshot(session_id)?;
+        Ok(Some(released_claim))
     }
 
     pub(super) fn complete_local_prompt_without_advance(
@@ -87,6 +102,14 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(session_id, agent_id)
                 .map(|run| run.id().to_string())
         });
+        let settled_at_ms = crate::session::unix_epoch_ms();
+        self.record_completed_prompt_settlement(
+            session_id,
+            agent_id,
+            &completed,
+            completion_provider_run_id.as_deref(),
+            settled_at_ms,
+        );
         let completion_record_key = provider_run_id.unwrap_or(agent_id);
         if !self.prompt_completion_recorded(completion_record_key) {
             let provider_run_id = completion_provider_run_id
@@ -100,7 +123,7 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 recipient_attachment_ids,
                 &format!("prompt-complete:{}", completed.id()),
-                crate::session::unix_epoch_ms(),
+                settled_at_ms,
             );
             self.mark_prompt_completion_recorded(provider_run_id);
         }
@@ -158,6 +181,13 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        self.record_completed_prompt_settlement(
+            session_id,
+            agent_id,
+            &completed,
+            Some(&provider_run_id),
+            crate::session::unix_epoch_ms(),
+        );
         let Some(started_next) = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(
@@ -294,6 +324,48 @@ impl KernelRuntimeOwnedState {
                 steering: false,
             }),
         }))
+    }
+
+    fn record_completed_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        completed_prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        settled_at_ms: u64,
+    ) {
+        let started_at_ms = provider_run_id
+            .and_then(|provider_run_id| {
+                self.active_turns
+                    .get(provider_run_id)
+                    .map(|turn| turn.started_at_ms)
+            })
+            .or(Some(completed_prompt.created_at_ms()));
+        let archive_enabled = self
+            .config_projection
+            .snapshot()
+            .user_config
+            .history
+            .archive
+            .mode
+            == crate::config::HistoryArchiveMode::External;
+        self.operational_history_store.record_prompt_settlement(
+            archive_enabled,
+            session_id,
+            agent_id,
+            completed_prompt.id(),
+            provider_run_id,
+            settled_at_ms,
+            "completed",
+        );
+        self.completed_git_turn_snapshots.record_prompt_settlement(
+            session_id,
+            agent_id,
+            provider_run_id.unwrap_or("provider-run-completed"),
+            completed_prompt,
+            settled_at_ms,
+            started_at_ms,
+        );
     }
 }
 

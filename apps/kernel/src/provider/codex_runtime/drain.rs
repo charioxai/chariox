@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, ProviderNativeInteractionBridge, RuntimeProviderRun};
 
-use super::events::{apply_notification_with_manifest, backfill_external_completed_turn};
+use super::events::{apply_notification_with_manifest, backfill_completed_turn};
 use super::run_config::codex_client_for_run;
 use super::turn::maybe_finalize_terminal_signal;
 use super::{CodexPollResult, CodexRuntimeState};
@@ -72,11 +72,11 @@ pub fn drain_codex_events(
             })
             .is_none();
     }
-    if run.endpoint_mode() == AgentEndpointMode::External
-        && state.active_turn_id.is_some()
-        && !state.turn_tracker.has_pending_terminal()
+    if state.active_turn_id.is_some()
+        && (run.endpoint_mode() == AgentEndpointMode::External
+            || state.turn_tracker.has_pending_terminal())
     {
-        backfill_external_completed_turn(
+        backfill_completed_turn(
             &client,
             state,
             run.remote_extension_manifest(),
@@ -87,7 +87,10 @@ pub fn drain_codex_events(
             &mut terminal_failure,
         )?;
     }
-    if drained_to_quiet {
+    let terminal_waiting_for_backfill = state.active_turn_id.is_some()
+        && state.turn_tracker.has_pending_terminal()
+        && !prompt_completed;
+    if drained_to_quiet && !prompt_completed && !terminal_waiting_for_backfill {
         maybe_finalize_terminal_signal(
             &mut state.active_turn_id,
             &mut state.turn_tracker,

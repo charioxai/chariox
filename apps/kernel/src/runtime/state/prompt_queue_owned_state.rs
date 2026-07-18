@@ -428,6 +428,20 @@ impl KernelRuntimeOwnedState {
         dispatch_locally: bool,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         let target_active_prompt_id = context.active_prompt.id().to_string();
+        let source_attachment_id = self.promoted_prompt_source_attachment_id(
+            session_id,
+            context.queued_prompt.source_attachment_id(),
+        )?;
+        self.append_steering_prompt_history(
+            session_id,
+            &context.provider_run_id,
+            &target_active_prompt_id,
+            &source_attachment_id,
+            agent_id,
+            context.queued_prompt.id(),
+            context.queued_prompt.prompt(),
+            context.queued_prompt.attachments(),
+        )?;
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&context.session, agent_id, prompt_id)
@@ -437,22 +451,10 @@ impl KernelRuntimeOwnedState {
                     "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
                 ),
             })?;
-        let source_attachment_id =
-            self.promoted_prompt_source_attachment_id(session_id, prompt.source_attachment_id())?;
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&context.session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        self.append_steering_prompt_history(
-            session_id,
-            &context.provider_run_id,
-            &target_active_prompt_id,
-            &source_attachment_id,
-            agent_id,
-            prompt.id(),
-            prompt.prompt(),
-            prompt.attachments(),
-        )?;
         self.echo_steering_prompt_to_other_attachments(
             session_id,
             &context.provider_run_id,

@@ -248,7 +248,28 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     );
     assert!(first_envelope.rendered_prompt().is_none());
     assert!(first_envelope.handoff_payloads_json().is_none());
-    assert_eq!(routed.messages().len(), 1);
+    assert_eq!(routed.messages().len(), 2);
+    let invocation_message = routed
+        .messages()
+        .iter()
+        .find(|message| message.message_type() == "invocation")
+        .expect("workflow invocation message should remain durable");
+    assert_eq!(invocation_message.source_node_run_id(), None);
+    assert_eq!(invocation_message.target_node_id(), first_node.id());
+    assert_eq!(
+        invocation_message.consumed_by_node_run_id(),
+        Some(first_run_id.as_str())
+    );
+    let handoff_message = routed
+        .messages()
+        .iter()
+        .find(|message| message.message_type() == "handoff")
+        .expect("downstream handoff message should be recorded");
+    assert_eq!(
+        handoff_message.source_node_run_id(),
+        Some(first_run_id.as_str())
+    );
+    assert_eq!(handoff_message.target_node_id(), second_node.id());
 
     let second_active_prompt = harness.with_app(|app| {
         app.sessions()
@@ -349,7 +370,27 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         second_envelope.state(),
         WorkflowTurnRuntimeState::ValidatedCompleted
     );
-    assert!(completed.messages().is_empty());
+    assert_eq!(completed.messages().len(), 2);
+    assert!(completed
+        .messages()
+        .iter()
+        .all(|message| message.consumed_by_node_run_id().is_some()));
+    assert_eq!(
+        completed
+            .messages()
+            .iter()
+            .find(|message| message.message_type() == "invocation")
+            .and_then(|message| message.consumed_by_node_run_id()),
+        Some(first_run_id.as_str())
+    );
+    assert_eq!(
+        completed
+            .messages()
+            .iter()
+            .find(|message| message.message_type() == "handoff")
+            .and_then(|message| message.consumed_by_node_run_id()),
+        Some(second_run_id.as_str())
+    );
 }
 
 fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_warns_inner() {

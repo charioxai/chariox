@@ -130,6 +130,10 @@ except Exception:
 signin = prefs.setdefault("signin", {})
 signin["allowed"] = False
 prefs.setdefault("sync", {})["requested"] = False
+prefs["credentials_enable_service"] = False
+profile_prefs = prefs.setdefault("profile", {})
+profile_prefs["password_manager_enabled"] = False
+profile_prefs["password_manager_leak_detection"] = False
 
 tmp = f"{path}.tmp"
 with open(tmp, "w", encoding="utf-8") as handle:
@@ -408,51 +412,95 @@ secret_paste_submit_stdin() {
 
 browser_status() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" status
+  run_browser_cdp status
+}
+
+run_browser_cdp() {
+  timeout --kill-after=1s 30s node "$ROOT/browser-cdp.mjs" "$@"
+}
+
+run_browser_cdp_wait() {
+  local requested_ms="$1"
+  shift
+  if [[ ! "$requested_ms" =~ ^[0-9]+$ ]]; then
+    requested_ms=10000
+  fi
+  local deadline_seconds=$(( (requested_ms + 999) / 1000 + 2 ))
+  timeout --kill-after=1s "${deadline_seconds}s" node "$ROOT/browser-cdp.mjs" "$@"
 }
 
 browser_find() {
   require_screen_available
   local query="$1"
   local kind="${2:-any}"
-  node "$ROOT/browser-cdp.mjs" find "$query" "$kind"
+  run_browser_cdp find "$query" "$kind"
 }
 
 browser_fill() {
   require_screen_available
   local selector="$1"
   shift
-  node "$ROOT/browser-cdp.mjs" fill "$selector" "$*"
+  run_browser_cdp fill "$selector" "$*"
 }
 
 browser_click() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" click-selector "$1"
+  run_browser_cdp click-selector "$1"
 }
 
 browser_submit() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" submit "${1:-}"
+  run_browser_cdp submit "${1:-}"
+}
+
+browser_dialog() {
+  require_screen_available
+  local action="$1"
+  local status
+  case "$action" in
+    accept|dismiss) ;;
+    *)
+      printf 'dialog action must be accept or dismiss\n' >&2
+      return 2
+      ;;
+  esac
+  set +e
+  timeout --kill-after=1s 6s node "$ROOT/browser-cdp.mjs" dialog "$action" "${2:-}"
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    return 0
+  fi
+  focus_chromium
+  case "$action" in
+    accept) run_xdotool key --clearmodifiers Return ;;
+    dismiss) run_xdotool key --clearmodifiers Escape ;;
+  esac
+  sleep 0.3
+  printf '{"ok":true,"action":"%s","fallback":"xdotool","cdp_status":%s}' "$action" "$status"
 }
 
 browser_text() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" text
+  run_browser_cdp text
 }
 
 browser_wait_text() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" wait-text "$1" "${2:-10000}"
+  local requested_ms="${2:-10000}"
+  run_browser_cdp_wait "$requested_ms" wait-text "$1" "$requested_ms"
 }
 
 browser_wait_selector() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" wait-selector "$1" "${2:-10000}"
+  local requested_ms="${2:-10000}"
+  run_browser_cdp_wait "$requested_ms" wait-selector "$1" "$requested_ms"
 }
 
 browser_wait_idle() {
   require_screen_available
-  node "$ROOT/browser-cdp.mjs" wait-idle "${1:-10000}"
+  local requested_ms="${1:-10000}"
+  run_browser_cdp_wait "$requested_ms" wait-idle "$requested_ms"
 }
 
 ocr() {
@@ -561,6 +609,7 @@ case "${1:-status}" in
   browser-fill|browser_fill) shift; browser_fill "$@" ;;
   browser-click|browser_click) shift; browser_click "$@" ;;
   browser-submit|browser_submit) shift; browser_submit "$@" ;;
+  browser-dialog|browser_dialog) shift; browser_dialog "$@" ;;
   browser-text|browser_text) browser_text ;;
   browser-wait-text|browser_wait_text) shift; browser_wait_text "$@" ;;
   browser-wait-selector|browser_wait_selector) shift; browser_wait_selector "$@" ;;
@@ -570,7 +619,7 @@ case "${1:-status}" in
   open-url|open_url) shift; open_url "$@" ;;
   *)
     cat >&2 <<EOF
-Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
+Usage: $(basename "$0") start|stop|status|screenshot|click|double-click|drag|move|scroll|type|key|clipboard-get|clipboard-set|clipboard-clear|paste-stdin|secret-paste-stdin|secret-paste-submit-stdin|browser-status|browser-find|browser-fill|browser-click|browser-submit|browser-dialog|browser-text|browser-wait-text|browser-wait-selector|browser-wait-idle|ocr|find-text|open-url
 EOF
     exit 2
     ;;

@@ -84,7 +84,7 @@ impl KernelRuntimeState {
                 // responsive, then drain once more.
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 self.with_app_side_effect(|app| {
-                    app.drain_claude_native_headless_transcripts_for_runtime(
+                    app.finish_deferred_claude_native_headless_stop_for_runtime(
                         session_id,
                         provider_run_id,
                         &provider_run,

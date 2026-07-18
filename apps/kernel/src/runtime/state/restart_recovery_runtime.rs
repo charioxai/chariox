@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Prefix stamped onto the `source_attachment_id` of every kernel-internal
+/// restart-recovery dispatch. It identifies an envelope that carries provider
+/// resume text (not user input) so downstream fanout can suppress it.
+pub(crate) const KERNEL_RECOVERY_ATTACHMENT_PREFIX: &str = "kernel-recovery:";
+
+/// Whether an attachment id belongs to a kernel-internal restart-recovery
+/// dispatch. Kept as a shared helper so every fanout/persistence boundary
+/// checks the same marker.
+pub(crate) fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> bool {
+    attachment_id.starts_with(KERNEL_RECOVERY_ATTACHMENT_PREFIX)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) accepted_local_redispatched: usize,
@@ -20,14 +32,22 @@ enum UncertainLocalRecoveryOutcome {
     TranscriptPending,
 }
 
+type DurableRestartRecoveryTarget = (String, String, String);
+
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) {
+        // Recovery belongs only to work that survived this kernel restart.
+        // Keep that identity set fixed across the retry window so prompts
+        // accepted after startup can never be mistaken for orphaned work.
+        let recovery_targets = self.durable_restart_recovery_targets();
         let state = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
             let summary = loop {
-                let summary = state.recover_durable_runtime_after_restart().await;
+                let summary = state
+                    .recover_durable_runtime_after_restart_targets(&recovery_targets)
+                    .await;
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
                 {
@@ -55,12 +75,51 @@ impl KernelRuntimeState {
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
+        let recovery_targets = self.durable_restart_recovery_targets();
+        self.recover_durable_runtime_after_restart_targets(&recovery_targets)
+            .await
+    }
+
+    fn durable_restart_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .filter_map(|(agent_id, prompt_state)| {
+                        prompt_state.active_prompt().map(|prompt| {
+                            (
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    async fn recover_durable_runtime_after_restart_targets(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
         for session in self.owned.session_store.list_all_sessions() {
             for (agent_id, prompt_state) in session.prompt_states() {
                 let Some(prompt) = prompt_state.active_prompt().cloned() else {
                     continue;
                 };
+                if !recovery_targets.contains(&(
+                    session.id().to_string(),
+                    agent_id.to_string(),
+                    prompt.id().to_string(),
+                )) {
+                    continue;
+                }
                 let delivery_phase = prompt.durable_delivery_phase();
                 let agent = match self.owned.agent_store.get_agent(agent_id) {
                     Ok(agent) => agent,
@@ -330,7 +389,7 @@ impl KernelRuntimeState {
             agent_id: agent.id().to_string(),
             prompt_id: prompt.id().to_string(),
             target_active_prompt_id: None,
-            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
             prompt: continuation,
             hidden_system_context: String::new(),
             attachments: Vec::new(),
@@ -548,6 +607,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_recovery_retry_ignores_prompt_outside_startup_snapshot() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
+
+        let summary = runtime
+            .recover_durable_runtime_after_restart_targets(&BTreeSet::new())
+            .await;
+
+        assert_eq!(summary, DurableRestartRecoverySummary::default());
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("post-startup prompt should remain active");
+        assert_eq!(prompt.id(), prompt_id);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[tokio::test]
     async fn uncertain_dev_stub_prompt_is_redispatched_after_restart() {
         let (runtime, session_id, agent_id, prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
@@ -618,7 +704,7 @@ mod tests {
             agent_id: agent_id.clone(),
             prompt_id,
             target_active_prompt_id: None,
-            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
             prompt: provider_restart_continuation_prompt(operation_id),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
@@ -640,5 +726,68 @@ mod tests {
             .input_records()
             .iter()
             .all(|record| !String::from_utf8_lossy(&record.bytes).contains(operation_id)));
+    }
+
+    #[tokio::test]
+    async fn internal_recovery_prompt_is_not_echoed_to_other_attachments() {
+        // The dispatch fanout is the boundary where a recovery envelope would
+        // become user-visible terminal output on subscribed attachments. The
+        // local dispatch runtime guards its call site, but remote-lease
+        // dispatchers also invoke this helper and any future caller could
+        // regress the invariant. Assert the fanout helper itself refuses to
+        // surface a `kernel-recovery:*` envelope regardless of caller.
+        let (runtime, session_id, agent_id, _prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        let provider_run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("provider run should exist")
+            .id()
+            .to_string();
+        let observer_attachment_id = runtime
+            .with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app)
+                    .attach(AttachRequest::new(
+                        &session_id,
+                        "attachment-restart-recovery-observer",
+                        ClientCapabilityLevel::FullTerminal,
+                    ))
+                    .expect("observer attachment should attach")
+                    .id()
+                    .to_string()
+            })
+            .await;
+        let operation_id = "arroba-recovery:prompt-hidden:1";
+        let recovery_source_attachment =
+            format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}");
+        let recovery_prompt = provider_restart_continuation_prompt(operation_id);
+
+        runtime.owned.echo_prompt_to_other_attachments(
+            &session_id,
+            &provider_run_id,
+            "prompt-hidden",
+            &recovery_source_attachment,
+            &recovery_prompt,
+            &[],
+        );
+
+        let leaked_records: Vec<_> = runtime
+            .owned
+            .terminal_stream
+            .output_records()
+            .into_iter()
+            .filter(|record| {
+                record
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|id| id == &observer_attachment_id)
+                    && String::from_utf8_lossy(&record.bytes).contains(operation_id)
+            })
+            .collect();
+        assert!(
+            leaked_records.is_empty(),
+            "kernel-recovery envelope must never be echoed to other attachments; leaked records = {leaked_records:#?}",
+        );
     }
 }

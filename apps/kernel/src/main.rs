@@ -15,7 +15,7 @@ fn main() -> Result<(), arroba_kernel::DaemonError> {
     arroba_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
+        .thread_stack_size(arroba_kernel::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
         .build()
         .map_err(|error| arroba_kernel::DaemonError::LocalTransport {
             operation: "daemon runtime",

@@ -296,6 +296,22 @@ async fn subscription_ids_are_owned_by_connected_client() {
     }
 
     let _ = client_a.close(None).await;
+    match daemon_socket.next().await {
+        Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+            .expect("disconnect cleanup should decode")
+        {
+            RelayEnvelope::DaemonUnsubscribe {
+                relay_subscription_id,
+                client_public_key,
+                ..
+            } => {
+                assert_eq!(relay_subscription_id, "shared-subscription-id");
+                assert_eq!(client_public_key, "client-a-public");
+            }
+            other => panic!("unexpected disconnect cleanup envelope: {other:?}"),
+        },
+        other => panic!("unexpected disconnect cleanup frame: {other:?}"),
+    }
     let _ = client_b.close(None).await;
     let _ = daemon_socket.close(None).await;
     let _ = shutdown_tx.send(());
@@ -417,6 +433,22 @@ async fn disconnecting_client_drops_pending_requests_before_reconnect() {
         0,
         "disconnecting clients must not leave stale pending relay requests"
     );
+    match daemon_socket.next().await {
+        Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text)
+            .expect("pending disconnect cleanup should decode")
+        {
+            RelayEnvelope::DaemonUnsubscribe {
+                relay_subscription_id,
+                client_public_key,
+                ..
+            } => {
+                assert_eq!(relay_subscription_id, "recoverable-subscription");
+                assert_eq!(client_public_key, "first-client-public");
+            }
+            other => panic!("unexpected pending disconnect cleanup envelope: {other:?}"),
+        },
+        other => panic!("unexpected pending disconnect cleanup frame: {other:?}"),
+    }
     daemon_socket
         .send(Message::Text(
             serde_json::to_string(&RelayEnvelope::DaemonResponse {

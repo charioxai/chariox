@@ -2,6 +2,9 @@
 
 use super::*;
 
+const REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     state: &KernelRuntimeState,
     dispatch: &mut crate::app::KernelRemotePromptDispatch,
@@ -12,7 +15,11 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
 ) -> Result<String, DaemonError> {
     let mut attempt = 0_u32;
+    let transport_retry_started_at = tokio::time::Instant::now();
     loop {
+        if let Some(error) = remote_prompt_dispatch_unavailable_slice_error(state, dispatch) {
+            return Err(error);
+        }
         if attempt > 0 && !remote_prompt_dispatch_is_current(state, dispatch) {
             return Err(DaemonError::NoActivePrompt {
                 session_id: dispatch.session_id.clone(),
@@ -50,6 +57,19 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
         match result {
             Err(error) if remote_prompt_error_should_retry_transport(&error) => {
                 attempt = attempt.saturating_add(1);
+                if remote_prompt_transport_retry_window_expired(
+                    transport_retry_started_at.elapsed(),
+                ) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "submit remote prompt transport retry window",
+                        message: format!(
+                            "worker kernel `{}` remained unreachable for {}s while dispatching prompt `{}`: {error}",
+                            dispatch.worker_kernel_id,
+                            REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW.as_secs(),
+                            dispatch.prompt_id,
+                        ),
+                    });
+                }
                 if attempt == 1 || attempt % 12 == 0 {
                     crate::logging::warn_with_fields(
                         "daemon.remote_prompt_dispatch",
@@ -122,6 +142,63 @@ fn remote_prompt_dispatch_is_current(
 pub(super) fn remote_prompt_transport_retry_delay(attempt: u32) -> std::time::Duration {
     let multiplier = 1_u64 << attempt.saturating_sub(1).min(3);
     std::time::Duration::from_millis(250_u64.saturating_mul(multiplier))
+}
+
+fn remote_prompt_transport_retry_window_expired(elapsed: std::time::Duration) -> bool {
+    elapsed >= REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW
+}
+
+pub(super) fn remote_prompt_unavailable_slice_error(
+    slice_store: &crate::slice::SliceStore,
+    remote_execution: &crate::agent::RemoteAgentBinding,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<DaemonError> {
+    let slice = slice_store
+        .list_by_session(session_id)
+        .into_iter()
+        .find(|slice| {
+            slice
+                .agent_ids
+                .iter()
+                .any(|candidate| candidate == agent_id)
+        })
+        .or_else(|| slice_store.resolve_by_worker_kernel_ref(&remote_execution.worker_kernel_id))
+        .or_else(|| {
+            slice_store.resolve_by_worker_kernel_ref(&remote_execution.worker_machine_id)
+        })?;
+    if remote_prompt_slice_status_allows_transport_retry(&slice.status) {
+        return None;
+    }
+    let status = format!("{:?}", slice.status).to_ascii_lowercase();
+    Some(DaemonError::LocalTransport {
+        operation: "submit remote prompt to unavailable slice",
+        message: format!(
+            "agent `{agent_id}` is deployed in {status} slice `{}`; start the slice before sending a prompt (worker kernel `{}` is unreachable)",
+            slice.name, remote_execution.worker_kernel_id
+        ),
+    })
+}
+
+fn remote_prompt_dispatch_unavailable_slice_error(
+    state: &KernelRuntimeState,
+    dispatch: &crate::app::KernelRemotePromptDispatch,
+) -> Option<DaemonError> {
+    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id).ok()?;
+    let remote_execution = agent.remote_execution()?;
+    remote_prompt_unavailable_slice_error(
+        &state.owned.slice_store,
+        remote_execution,
+        &dispatch.session_id,
+        &dispatch.agent_id,
+    )
+}
+
+fn remote_prompt_slice_status_allows_transport_retry(status: &crate::slice::SliceStatus) -> bool {
+    matches!(
+        status,
+        crate::slice::SliceStatus::Starting | crate::slice::SliceStatus::Running
+    )
 }
 
 async fn submit_remote_prompt_to_worker(
@@ -312,6 +389,35 @@ mod tests {
         };
 
         assert!(remote_prompt_error_should_retry_transport(&error));
+    }
+
+    #[test]
+    fn remote_prompt_transport_retry_window_is_bounded() {
+        assert!(!remote_prompt_transport_retry_window_expired(
+            REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW - std::time::Duration::from_millis(1),
+        ));
+        assert!(remote_prompt_transport_retry_window_expired(
+            REMOTE_PROMPT_TRANSPORT_RETRY_WINDOW,
+        ));
+    }
+
+    #[test]
+    fn remote_prompt_dispatch_does_not_retry_stopped_slice_forever() {
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Stopped,
+        ));
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Stopping,
+        ));
+        assert!(!remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Unhealthy,
+        ));
+        assert!(remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Starting,
+        ));
+        assert!(remote_prompt_slice_status_allows_transport_retry(
+            &crate::slice::SliceStatus::Running,
+        ));
     }
 
     #[test]

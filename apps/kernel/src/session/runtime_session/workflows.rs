@@ -114,6 +114,66 @@ impl RuntimeSession {
             })
             .count();
 
+        let durable_workflow_prompt_targets = self
+            .prompt_runtime
+            .prompt_states()
+            .values()
+            .flat_map(|state| {
+                state
+                    .active_prompt()
+                    .into_iter()
+                    .chain(state.queued_prompts())
+            })
+            .filter_map(|prompt| {
+                Some((
+                    prompt.workflow_run_id()?.to_string(),
+                    prompt.workflow_node_run_id()?.to_string(),
+                ))
+            })
+            .collect::<BTreeSet<_>>();
+        let mut orphaned_prepared_workflow_run_ids = Vec::new();
+        for workflow_run in &mut self.workflow_runs {
+            let Some(active_node_run_id) = workflow_run.active_node_run_id().map(str::to_string)
+            else {
+                continue;
+            };
+            if durable_workflow_prompt_targets
+                .contains(&(workflow_run.id().to_string(), active_node_run_id.clone()))
+            {
+                continue;
+            }
+            let Some(node_run) = workflow_run.node_run_mut(&active_node_run_id) else {
+                continue;
+            };
+            let orphaned_prepared_turn = node_run.status() == WorkflowNodeRunStatus::Ready
+                && node_run.turn_envelope().is_some_and(|envelope| {
+                    envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared
+                });
+            if !orphaned_prepared_turn {
+                continue;
+            }
+            node_run.set_status(WorkflowNodeRunStatus::Stopped);
+            if let Some(envelope) = node_run.turn_envelope_mut() {
+                envelope.mark_cancelled();
+            }
+            workflow_run.clear_active_node_run();
+            workflow_run.add_failure_event(WorkflowFailureEvent::new(
+                WorkflowFailureKind::RunStopped,
+                active_node_run_id,
+                Vec::new(),
+                "prepared workflow turn had no durable active or queued prompt after kernel restart",
+            ));
+            workflow_run.set_status(WorkflowRunStatus::Stopped);
+            orphaned_prepared_workflow_run_ids.push(workflow_run.id().to_string());
+            reconciliation.stopped_workflow_run_count += 1;
+        }
+        for workflow_run_id in orphaned_prepared_workflow_run_ids {
+            self.prompt_runtime.remove_queued_prompts_by_workflow_run(
+                &workflow_run_id,
+                self.focused_agent_id.as_deref(),
+            );
+        }
+
         reconciliation
     }
 

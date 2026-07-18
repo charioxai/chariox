@@ -7,6 +7,22 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    fn persist_workflow_completion_session(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.session_snapshot(session_id)?;
+        self.durable_state_store.append_event(
+            "session.updated",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "session": &session,
+                "reason": "workflow_prompt_completed",
+            }),
+        )?;
+        Ok(session)
+    }
+
     #[allow(dead_code)]
     pub(super) fn workflow_complete_prompt(
         &self,
@@ -31,9 +47,9 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
         );
         if completion_snapshot.is_none() && !has_valid_pending_final_output {
-            let provider_diagnostic =
-                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id));
-            if let Some(diagnostic) = provider_diagnostic {
+            if let Some(provider_diagnostic) =
+                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id))
+            {
                 self.workflow_record_failure(
                     session_id,
                     workflow_run_id,
@@ -41,7 +57,7 @@ impl KernelRuntimeOwnedState {
                         crate::session::WorkflowFailureKind::ProviderFailure,
                         workflow_node_run_id,
                         Vec::new(),
-                        diagnostic.clone(),
+                        provider_diagnostic.clone(),
                     ),
                 );
                 self.session_store.write().fail_workflow_node_run(
@@ -60,11 +76,11 @@ impl KernelRuntimeOwnedState {
                     self.attachment_store
                         .list_session_attachment_ids(session_id),
                     format!(
-                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
                     ),
                 );
                 self.workflow_maybe_start_next_queued_prompt(session_id);
-                let _ = self.session_snapshot(session_id)?;
+                self.persist_workflow_completion_session(session_id)?;
                 return Ok(WorkflowPromptDispatches::default());
             }
         }
@@ -115,7 +131,7 @@ impl KernelRuntimeOwnedState {
                     ),
                 );
                 self.workflow_maybe_start_next_queued_prompt(session_id);
-                let _ = self.session_snapshot(session_id)?;
+                self.persist_workflow_completion_session(session_id)?;
                 return Ok(WorkflowPromptDispatches::default());
             }
             Err(error) => return Err(error),
@@ -318,7 +334,7 @@ impl KernelRuntimeOwnedState {
         ) {
             dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
-        let _ = self.session_snapshot(session_id)?;
+        self.persist_workflow_completion_session(session_id)?;
         Ok(dispatches)
     }
 

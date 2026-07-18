@@ -556,4 +556,126 @@ mod tests {
             WorkflowLaunchOutcome::Enqueued { .. } => panic!("expected queued prompt to start"),
         }
     }
+
+    #[test]
+    fn app_workflow_completion_persists_terminal_session_snapshot() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-durable-workflow-completion",
+                "worktree-durable-workflow-completion",
+            ))
+            .expect("session should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("durable-completion".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        app.sessions_mut()
+            .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+            .expect("workflow node should be allowed to complete the run");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("finish durably".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        let delivery_token = format!("workflow-ack:{node_run_id}");
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                delivery_token.clone(),
+                "complete the workflow".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should be prepared");
+        app.sessions_mut()
+            .start_workflow_node_run(session.id(), workflow_run.id(), &node_run_id)
+            .expect("workflow node run should start");
+        app.sessions_mut()
+            .mark_workflow_turn_dispatched(session.id(), workflow_run.id(), &node_run_id)
+            .expect("workflow turn should dispatch");
+        app.sessions_mut()
+            .ack_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                &delivery_token,
+            )
+            .expect("workflow turn should acknowledge");
+        app.sessions_mut()
+            .submit_workflow_run_final_output(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                crate::session::WorkflowOutputPayload::new(r#"{"summary":"done"}"#, Vec::new()),
+                true,
+                None,
+            )
+            .expect("final output should submit");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-durable-workflow-completion",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "complete the workflow",
+            crate::session::PromptStatus::Completed,
+        )
+        .with_workflow_context(workflow_run.id(), &node_run_id);
+
+        complete_workflow_prompt_from_runtime(&mut app, session.id(), &prompt, None)
+            .expect("workflow prompt should complete");
+
+        let durable_session = app
+            .durable_state_store()
+            .load_events_by_kind("session.updated")
+            .expect("durable session events should load")
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.subject_id.as_deref() == Some(session.id())
+                    && event
+                        .payload
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("workflow_prompt_completed")
+            })
+            .and_then(|event| event.payload.get("session").cloned())
+            .map(serde_json::from_value::<crate::session::RuntimeSession>)
+            .transpose()
+            .expect("durable workflow session should decode")
+            .expect("workflow completion should persist its session");
+        let durable_run = durable_session
+            .workflow_run(workflow_run.id())
+            .expect("durable workflow run should exist");
+        assert_eq!(
+            durable_run.status(),
+            crate::session::WorkflowRunStatus::Completed,
+            "a kernel restart must not restore the completed workflow as running"
+        );
+        assert_eq!(
+            durable_run.node_runs()[0].status(),
+            crate::session::WorkflowNodeRunStatus::Completed
+        );
+        assert!(durable_run.active_node_run_id().is_none());
+    }
 }

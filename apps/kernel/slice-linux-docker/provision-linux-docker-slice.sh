@@ -45,6 +45,7 @@ SLICE_CLAUDE_SETTINGS="${ARROBA_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.js
 SLICE_CLAUDE_STATS="${ARROBA_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
 SLICE_CLAUDE_CREDENTIALS="${ARROBA_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
 SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
+SLICE_GITHUB_HOST="${ARROBA_SLICE_GITHUB_HOST:-github.com}"
 SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
@@ -214,11 +215,17 @@ configure_slice_state_directory() {
 refresh_slice_support_files() {
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
     || log "runtime script overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/arroba-slice/start-providers.sh" \
+    || log "provider server script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
     || log "screen script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/arroba-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/arroba-slice/provider-port-bridge.mjs" \
+    || log "provider bridge overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/arroba-slice/validate-screen.sh" \
+    || log "screen validator overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 
@@ -527,6 +534,7 @@ for (const workspace of new Set(['/workspace', process.env.ARROBA_SLICE_TRUST_WO
   }
 }
 data.projects = projects
+data.hasCompletedOnboarding = true
 fs.writeFileSync(file, JSON.stringify(data, null, 2))
 fs.chmodSync(file, 0o600)
 NODE"
@@ -545,6 +553,7 @@ import_provider_auth() {
       import_codex_auth
       import_opencode_auth
       import_claude_auth
+      import_github_auth
       ;;
     codex)
       import_codex_auth
@@ -554,6 +563,9 @@ import_provider_auth() {
       ;;
     claude)
       import_claude_auth
+      ;;
+    github)
+      import_github_auth
       ;;
     *)
       fail "unsupported provider auth import: $SLICE_AUTH_PROVIDER"
@@ -568,6 +580,7 @@ remove_provider_auth() {
       remove_codex_auth
       remove_opencode_auth
       remove_claude_auth
+      remove_github_auth
       ;;
     codex)
       remove_codex_auth
@@ -577,6 +590,9 @@ remove_provider_auth() {
       ;;
     claude)
       remove_claude_auth
+      ;;
+    github)
+      remove_github_auth
       ;;
     *)
       fail "unsupported provider auth removal: $SLICE_AUTH_PROVIDER"
@@ -632,6 +648,51 @@ remove_claude_auth() {
   log "removed Claude auth from slice"
 }
 
+import_github_auth() {
+  if ! command -v gh >/dev/null 2>&1; then
+    log "GitHub CLI is not installed on the kernel host; skipping GitHub auth import"
+    return 0
+  fi
+
+  local token_tmp
+  token_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-github-token.XXXXXX")"
+  chmod 600 "$token_tmp"
+  if ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
+    rm -f "$token_tmp"
+    log "GitHub auth is not configured on the kernel host; skipping"
+    return 0
+  fi
+
+  if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "command -v gh >/dev/null 2>&1"; then
+    rm -f "$token_tmp"
+    log "GitHub CLI is not installed in the slice image; skipping GitHub auth import"
+    return 0
+  fi
+
+  local import_status=0
+  run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
+    set -euo pipefail
+    gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
+    gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
+  " || import_status=$?
+  rm -f "$token_tmp"
+  if [[ "$import_status" != "0" ]]; then
+    fail "failed to import GitHub auth into slice"
+  fi
+  log "imported GitHub auth from the kernel host"
+}
+
+remove_github_auth() {
+  exec_slice bash -lc "
+    set +e
+    gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
+    exit 0
+  "
+  log "removed GitHub auth from slice"
+}
+
 print_provider_auth_status() {
   if ! exec_slice_with_timeout 30 bash -lc "
     set +e
@@ -667,7 +728,10 @@ provider_login_command() {
       printf '%s\n' "opencode providers login -p openai -m '$SLICE_OPENCODE_LOGIN_METHOD'"
       ;;
     claude|claude:claudeai)
-      printf '%s\n' "claude auth login --claudeai"
+      printf '%s\n' "claude auth login --claudeai && node -e 'const fs=require(\"fs\");const file=\"/home/slice/.claude.json\";let data={};try{data=JSON.parse(fs.readFileSync(file,\"utf8\"))}catch{}data.hasCompletedOnboarding=true;fs.writeFileSync(file,JSON.stringify(data,null,2));fs.chmodSync(file,0o600)'"
+      ;;
+    github)
+      printf '%s\n' "gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"

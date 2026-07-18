@@ -145,6 +145,7 @@ impl<'a> KernelAgentService<'a> {
                         "error": error.to_string(),
                     }),
                 );
+                return self.finalize_active_prompt_cancellation(session_id, agent_id, None);
             }
             Err(error) => return Err(error),
         };
@@ -328,20 +329,48 @@ impl<'a> KernelAgentService<'a> {
         &mut self,
         completion: KernelPromptOwnerCompletion,
     ) -> Result<PromptCompletion, DaemonError> {
-        let remote_provider_run_id = completion
-            .remote_provider_run_id
-            .as_deref()
-            .unwrap_or("remote-provider-run-completed");
+        let remote_provider_run_id = remote_completion_provider_run_id(
+            completion.remote_execution.as_ref(),
+            completion.remote_provider_run_id.as_deref(),
+        );
+        let settled_at_ms = crate::session::unix_epoch_ms();
+        let started_at_ms = self
+            .app
+            .active_turn_store()
+            .get(&remote_provider_run_id)
+            .map(|turn| turn.started_at_ms)
+            .or(Some(completion.completed.created_at_ms()));
+        self.app
+            .operational_history_store()
+            .record_prompt_settlement(
+                self.app.history_archive_enabled(),
+                &completion.session_id,
+                &completion.agent_id,
+                completion.completed.id(),
+                Some(&remote_provider_run_id),
+                settled_at_ms,
+                "completed",
+            );
+        self.app
+            .completed_git_turn_snapshot_store()
+            .record_prompt_settlement(
+                &completion.session_id,
+                &completion.agent_id,
+                &remote_provider_run_id,
+                &completion.completed,
+                settled_at_ms,
+                started_at_ms,
+            );
         let recipient_attachment_ids = self
             .app
             .attachments
             .list_session_attachment_ids(&completion.session_id);
         self.record_assistant_message_completion(
             &completion.session_id,
-            remote_provider_run_id,
+            &remote_provider_run_id,
             recipient_attachment_ids,
             &format!("prompt-complete:{}", completion.completed.id()),
-            crate::session::unix_epoch_ms(),
+            settled_at_ms,
         );
         let started_next = if self
             .app
@@ -511,12 +540,51 @@ impl<'a> KernelAgentService<'a> {
     }
 }
 
+fn remote_completion_provider_run_id(
+    remote_execution: Option<&RemoteAgentBinding>,
+    completed_worker_provider_run_id: Option<&str>,
+) -> String {
+    let Some(remote_execution) = remote_execution else {
+        return completed_worker_provider_run_id
+            .unwrap_or("remote-provider-run-completed")
+            .to_string();
+    };
+    let worker_provider_run_id = completed_worker_provider_run_id
+        .or(remote_execution.active_worker_provider_run_id.as_deref());
+    worker_provider_run_id
+        .map(|worker_provider_run_id| {
+            crate::provider::projected_leased_provider_run_id(
+                &remote_execution.leased_agent_id,
+                worker_provider_run_id,
+            )
+        })
+        .unwrap_or_else(|| "remote-provider-run-completed".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
     use crate::session::{CreateSessionRequest, PromptStatus, PromptSubmissionOutcome};
+
+    #[test]
+    fn remote_completion_uses_the_home_projected_provider_run_id() {
+        let binding = RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "slice:slice-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            active_worker_provider_run_id: Some("worker-run-old".to_string()),
+            relay_url: None,
+            relay_token: None,
+        };
+
+        assert_eq!(
+            remote_completion_provider_run_id(Some(&binding), Some("worker-run-1")),
+            "leased:leased-agent-1:worker-run-1",
+        );
+    }
 
     #[test]
     fn queued_remote_prompt_persists_reserved_home_prompt_after_activation() {
@@ -583,6 +651,23 @@ mod tests {
             )
             .expect("queued prompt should activate with the reserved id");
         let active = active.expect("queued prompt should become active");
+        let expected_merge_key = format!("prompt:{}", active.id());
+        assert_eq!(
+            app.operational_history_store()
+                .load_session_events(session.id(), Some(agent.id()))
+                .expect("operational history should load before delivery finishes")
+                .into_iter()
+                .filter(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_merge_key.as_str())
+                })
+                .count(),
+            0,
+            "activation alone must not persist a prompt that has not finished delivery"
+        );
         let active = KernelAgentService::new(&mut app)
             .finish_promoted_queued_prompt_start(
                 session.id(),
@@ -603,7 +688,6 @@ mod tests {
             .iter()
             .find(|entry| entry.text.contains("second"))
             .expect("promoted prompt should persist in home history");
-        let expected_merge_key = format!("prompt:{}", active.id());
         assert_eq!(entry.source_attachment_id.as_deref(), Some(attachment.id()));
         assert_eq!(
             entry.merge_key.as_deref(),
@@ -612,6 +696,22 @@ mod tests {
         assert_eq!(
             entry.prompt_origin,
             Some(crate::session::PromptOrigin::Arroba)
+        );
+        assert_eq!(
+            app.operational_history_store()
+                .load_session_events(session.id(), Some(agent.id()))
+                .expect("operational history should load after delivery finishes")
+                .into_iter()
+                .filter(|event| {
+                    event
+                        .metadata
+                        .get("merge_key")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_merge_key.as_str())
+                })
+                .count(),
+            1,
+            "successful remote promotion must persist one canonical prompt event"
         );
         assert!(app
             .agents()

@@ -414,6 +414,17 @@ impl<'a> ProviderOutputPumpContext<'a> {
             provider_run_id,
             recipient_attachment_ids.clone(),
         )?);
+        if crate::transport::flow_control::prompt_completion_settlement_pending(
+            self.app,
+            provider_run_id,
+        ) {
+            self.settle_structured_prompt_completion(session_id, provider_run_id, false, false)?;
+            if !self.provider_run_has_active_prompt(session_id, &provider_run)? {
+                self.pending_structured_output_records
+                    .stop_polling(provider_run_id);
+                return Ok(records);
+            }
+        }
         if self
             .pending_structured_output_records
             .poll_due(provider_run_id, crate::session::unix_epoch_ms())
@@ -933,13 +944,13 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn drain_claude_native_headless_transcripts_for_runtime(
+    pub(crate) fn finish_deferred_claude_native_headless_stop_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self).drain_headless_transcripts_for_context(
+        ProviderOutputClaudeNativeBridge::new(self).finish_deferred_headless_stop(
             session_id,
             provider_run_id,
             provider_run,

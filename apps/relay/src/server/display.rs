@@ -23,6 +23,7 @@ const DISPLAY_PEEK_TIMEOUT: Duration = Duration::from_millis(250);
 const DISPLAY_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const DISPLAY_RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(300);
 const DISPLAY_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+const DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT: Option<Duration> = None;
 const DISPLAY_MAX_HEADER_BYTES: usize = 16 * 1024;
 const DISPLAY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const DISPLAY_STREAM_QUEUE_CAPACITY: usize = 128;
@@ -287,9 +288,9 @@ async fn forward_display_websocket_stream(
                     }
                 }
             }
-            event = tokio::time::timeout(DISPLAY_STREAM_IDLE_TIMEOUT, event_rx.recv()) => {
+            event = receive_display_websocket_event(&mut event_rx) => {
                 match event {
-                    Ok(Some(DisplayStreamEvent::Chunk { data, message_kind })) => {
+                    Some(DisplayStreamEvent::Chunk { data, message_kind }) => {
                         let decoded = BASE64_STANDARD
                             .decode(data.as_bytes())
                             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -301,16 +302,38 @@ async fn forward_display_websocket_stream(
                             break;
                         }
                     }
-                    Ok(Some(DisplayStreamEvent::Close { .. })) | Ok(None) | Err(_) => {
+                    Some(DisplayStreamEvent::Close { .. }) | None => {
                         let _ = browser_write.close().await;
                         break;
                     }
-                    Ok(Some(DisplayStreamEvent::ResponseStart { .. })) => {}
+                    Some(DisplayStreamEvent::ResponseStart { .. }) => {}
                 }
             }
         }
     }
     Ok(())
+}
+
+async fn receive_display_websocket_event(
+    event_rx: &mut mpsc::Receiver<DisplayStreamEvent>,
+) -> Option<DisplayStreamEvent> {
+    match DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT {
+        Some(idle_timeout) => tokio::time::timeout(idle_timeout, event_rx.recv())
+            .await
+            .ok()
+            .flatten(),
+        None => event_rx.recv().await,
+    }
+}
+
+#[cfg(test)]
+mod websocket_idle_policy_tests {
+    use super::DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT;
+
+    #[test]
+    fn display_websocket_stays_open_until_an_explicit_close() {
+        assert_eq!(DISPLAY_WEBSOCKET_STREAM_IDLE_TIMEOUT, None);
+    }
 }
 
 fn send_display_client_chunk(

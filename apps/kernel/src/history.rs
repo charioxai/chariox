@@ -36,6 +36,8 @@ pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
 pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
+pub(crate) const PROMPT_SETTLED_AT_MS_METADATA_KEY: &str = "prompt_settled_at_ms";
+pub(crate) const PROMPT_SETTLEMENT_STATUS_METADATA_KEY: &str = "prompt_settlement_status";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
 const OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT: usize = 4096;
@@ -547,6 +549,7 @@ impl Drop for OperationalHistoryWriter {
 pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    legacy_import_lock: Arc<Mutex<()>>,
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
@@ -645,6 +648,7 @@ impl OperationalHistoryStore {
         let store = Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
+            legacy_import_lock: Arc::new(Mutex::new(())),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
@@ -857,6 +861,71 @@ impl OperationalHistoryStore {
         let event = HistoryEvent::operational(sequence, kind, role, content, metadata, context);
         self.append(&event)?;
         Ok(event)
+    }
+
+    pub(crate) fn record_prompt_settlement(
+        &self,
+        archive_enabled: bool,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: Option<&str>,
+        settled_at_ms: u64,
+        status: &str,
+    ) {
+        let metadata = BTreeMap::from([
+            (
+                PROMPT_SETTLED_AT_MS_METADATA_KEY.to_string(),
+                serde_json::Value::Number(settled_at_ms.into()),
+            ),
+            (
+                PROMPT_SETTLEMENT_STATUS_METADATA_KEY.to_string(),
+                serde_json::Value::String(status.to_string()),
+            ),
+        ]);
+        let context = HistoryEventTurnContext {
+            session_id: Some(session_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            turn_id: Some(prompt_id.to_string()),
+            prompt_id: Some(prompt_id.to_string()),
+            provider_run_id: provider_run_id.map(str::to_string),
+            ..HistoryEventTurnContext::default()
+        };
+        match self.append_operational_event(
+            HistoryEventKind::ProviderStatus,
+            Some(HistoryEventRole::System),
+            None,
+            metadata,
+            context,
+        ) {
+            Ok(event) if archive_enabled => {
+                if let Err(error) = self.enqueue_archive_events(std::slice::from_ref(&event)) {
+                    crate::logging::warn_with_fields(
+                        "daemon.history",
+                        "failed to enqueue prompt settlement history event",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "prompt_id": prompt_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to persist prompt settlement history event",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "prompt_id": prompt_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     pub fn append(&self, event: &HistoryEvent) -> Result<(), DaemonError> {

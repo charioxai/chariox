@@ -180,6 +180,25 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::UpdateLeasedAgentProfile {
+            leased_agent_id,
+            provider,
+            model,
+            effort,
+        } => {
+            let updated = router
+                .relay_update_leased_agent_profile(&leased_agent_id, provider, model, effort)
+                .await;
+            match updated {
+                Ok(leased_agent) => RelayPeerResponse::LeasedAgentProfileUpdated { leased_agent },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::UpdateLeasedAgentMetaMode {
             leased_agent_id,
             active,

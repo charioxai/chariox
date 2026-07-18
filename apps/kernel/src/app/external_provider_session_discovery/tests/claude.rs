@@ -24,6 +24,37 @@ fn reads_claude_observed_user_and_assistant_turns() {
 }
 
 #[test]
+fn ignores_claude_internal_resume_pair_in_observed_history() {
+    let temp = temp_dir("claude-observed-internal-resume-pair");
+    let root = temp.path();
+    let session_dir = root.join("projects").join("-repo");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(
+        session_dir.join("session-resume.jsonl"),
+        concat!(
+            "{\"type\":\"user\",\"uuid\":\"synthetic-user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Continue from where you left off.\"}]},\"sessionId\":\"session-resume\",\"timestamp\":\"2026-02-01T00:00:01.000Z\"}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"synthetic-assistant\",\"parentUuid\":\"synthetic-user\",\"message\":{\"id\":\"synthetic-message\",\"model\":\"<synthetic>\",\"role\":\"assistant\",\"stop_reason\":\"stop_sequence\",\"content\":[{\"type\":\"text\",\"text\":\"No response requested.\"}]},\"sessionId\":\"session-resume\",\"timestamp\":\"2026-02-01T00:00:01.001Z\"}\n",
+            "{\"type\":\"user\",\"uuid\":\"real-user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Explain authoritative completion.\"}]},\"sessionId\":\"session-resume\",\"timestamp\":\"2026-02-01T00:00:02.000Z\"}\n",
+            "{\"type\":\"assistant\",\"uuid\":\"real-assistant\",\"message\":{\"id\":\"real-message\",\"model\":\"claude-opus-4-7\",\"role\":\"assistant\",\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"Only the real response settles the turn.\"}]},\"sessionId\":\"session-resume\",\"timestamp\":\"2026-02-01T00:00:03.000Z\"}\n"
+        ),
+    )
+    .unwrap();
+
+    let turns = read_claude_observed_turns(root, "session-resume");
+
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].text, "Explain authoritative completion.");
+    assert_eq!(turns[1].text, "Only the real response settles the turn.");
+    assert!(turns[2].text.starts_with("claude message completed"));
+    assert!(turns
+        .iter()
+        .all(|turn| !turn.text.contains("Continue from where you left off")));
+    assert!(turns
+        .iter()
+        .all(|turn| !turn.text.contains("No response requested")));
+}
+
+#[test]
 fn reads_claude_observed_turns_preserves_latest_user_before_recent_jsonl_window() {
     let temp = temp_dir("claude-observed-window-user");
     let root = temp.path();

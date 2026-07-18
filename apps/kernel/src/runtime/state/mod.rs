@@ -68,6 +68,7 @@ struct KernelRuntimeOwnedState {
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
+    transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -188,6 +189,7 @@ mod remote_prompt_lifecycle_runtime;
 mod remote_prompt_owned_state;
 mod remote_prompt_worker_submission_runtime;
 mod restart_recovery_runtime;
+pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod runtime_interaction_owned_state;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
@@ -391,6 +393,7 @@ impl KernelRuntimeState {
                 provider_process_projection,
                 history_store,
                 operational_history_store,
+                transcript_history_append_lock: Arc::new(std::sync::Mutex::new(())),
                 durable_state_store,
                 prompt_state_owner,
                 active_turns,

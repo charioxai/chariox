@@ -121,6 +121,22 @@ impl RelayClientState {
             .cloned()
     }
 
+    pub(crate) fn display_tunnel_for_slice(
+        &self,
+        slice_id: &str,
+        local_base_url: &str,
+    ) -> Option<RelayDisplayTunnelTarget> {
+        self.display_tunnels
+            .values()
+            .find(|target| target.slice_id == slice_id && target.local_base_url == local_base_url)
+            .cloned()
+    }
+
+    pub(crate) fn display_tunnel_registration_pending(&self, tunnel_id: &str) -> bool {
+        self.pending_display_tunnel_registrations
+            .contains_key(tunnel_id)
+    }
+
     pub(crate) fn prune_expired_display_tunnels(&mut self, now_ms: u64) {
         self.display_tunnels
             .retain(|_, target| target.expires_at_ms > now_ms);

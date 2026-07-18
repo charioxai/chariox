@@ -157,6 +157,19 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
         RuntimeToolSpec {
+            name: SLICE_BROWSER_DIALOG_TOOL.to_string(),
+            description: "Accept or dismiss the currently open native JavaScript alert, confirm, or prompt in the Arroba slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["accept", "dismiss"]},
+                    "prompt_text": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: SLICE_BROWSER_TEXT_TOOL.to_string(),
             description: "Return the current slice browser document body text.".to_string(),
             input_schema: serde_json::json!({
@@ -226,6 +239,7 @@ fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         SLICE_BROWSER_FILL_TOOL => SLICE_BROWSER_FILL_TOOL_ALIAS,
         SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
         SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
+        SLICE_BROWSER_DIALOG_TOOL => SLICE_BROWSER_DIALOG_TOOL_ALIAS,
         SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
         SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS,
         SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS,
@@ -304,6 +318,11 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
         | "arroba_slice_browser_submit"
         | "mcp__arroba__slice_browser_submit"
         | "mcp__arroba__arroba_slice_browser_submit" => Some(SLICE_BROWSER_SUBMIT_TOOL),
+        SLICE_BROWSER_DIALOG_TOOL
+        | SLICE_BROWSER_DIALOG_TOOL_ALIAS
+        | "arroba_slice_browser_dialog"
+        | "mcp__arroba__slice_browser_dialog"
+        | "mcp__arroba__arroba_slice_browser_dialog" => Some(SLICE_BROWSER_DIALOG_TOOL),
         SLICE_BROWSER_TEXT_TOOL
         | SLICE_BROWSER_TEXT_TOOL_ALIAS
         | "arroba_slice_browser_text"

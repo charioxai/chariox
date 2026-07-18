@@ -1,6 +1,50 @@
 use super::*;
 
 #[tokio::test]
+async fn started_prompt_history_preserves_prompt_acceptance_timestamp() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-prompt-timestamp",
+            "worktree-prompt-timestamp",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-prompt-timestamp",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-accepted-before-dispatch",
+        attachment.id(),
+        agent.id(),
+        "preserve my acceptance time",
+        crate::session::PromptStatus::Running,
+    );
+    let accepted_at_ms = prompt.created_at_ms();
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let recorded_at_ms = runtime
+        .owned
+        .record_started_user_prompt(session.id(), attachment.id(), &prompt)
+        .expect("started prompt should be recorded");
+
+    assert_eq!(recorded_at_ms, accepted_at_ms);
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("canonical prompt history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].timestamp_ms, accepted_at_ms);
+}
+
+#[tokio::test]
 async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
@@ -129,6 +173,7 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
             Some("prompt-owned-archive"),
             None,
             None,
+            None,
         )
         .expect("owned prompt history should append");
 
@@ -183,6 +228,7 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
             Some("prompt-owned-legacy-history-fail"),
             None,
             None,
+            None,
         )
         .expect("owned prompt history should append");
 
@@ -227,6 +273,7 @@ async fn owned_user_prompt_history_preserves_external_prompt_origin() {
             &[],
             crate::session::PromptOrigin::External,
             Some("prompt-external-user-history"),
+            None,
             None,
             None,
         )

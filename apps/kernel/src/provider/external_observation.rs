@@ -139,7 +139,7 @@ pub(crate) fn text_from_content(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn clean_provider_prompt(prompt: String) -> Option<String> {
-    let prompt = prompt.trim();
+    let prompt = strip_observed_generated_prompt_context(prompt.trim()).trim();
     if prompt.is_empty()
         || prompt.starts_with("# AGENTS.md instructions")
         || prompt.starts_with("<environment_context>")
@@ -372,11 +372,18 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let normalized = strip_observed_attachment_markup(text)
+    let without_attachments = strip_observed_attachment_markup(text);
+    let normalized = strip_observed_generated_prompt_context(&without_attachments)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn strip_observed_generated_prompt_context(text: &str) -> &str {
+    text.find("<runtime-instructions>")
+        .map(|index| &text[..index])
+        .unwrap_or(text)
 }
 
 fn strip_observed_attachment_markup(text: &str) -> String {

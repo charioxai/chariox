@@ -11,21 +11,19 @@ pub(super) fn reconcile_slice_status_after_kernel_restart(
         SliceStatus::Starting | SliceStatus::Stopping => SliceStatus::Unhealthy,
         SliceStatus::Running => match host_runtime {
             SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
-            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
-                SliceStatus::Unhealthy
-            }
+            SliceHostRuntimeState::Running => SliceStatus::Running,
+            SliceHostRuntimeState::Unknown => SliceStatus::Unhealthy,
         },
         SliceStatus::Stopped => match host_runtime {
-            SliceHostRuntimeState::Running => SliceStatus::Unhealthy,
+            SliceHostRuntimeState::Running => SliceStatus::Running,
             SliceHostRuntimeState::Stopped
             | SliceHostRuntimeState::Missing
             | SliceHostRuntimeState::Unknown => SliceStatus::Stopped,
         },
         SliceStatus::Unhealthy => match host_runtime {
             SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing => SliceStatus::Stopped,
-            SliceHostRuntimeState::Running | SliceHostRuntimeState::Unknown => {
-                SliceStatus::Unhealthy
-            }
+            SliceHostRuntimeState::Running => SliceStatus::Running,
+            SliceHostRuntimeState::Unknown => SliceStatus::Unhealthy,
         },
     }
 }

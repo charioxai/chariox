@@ -1,4 +1,42 @@
 use super::*;
+use crate::provider::codex_runtime::transcript::{append_text_delta, sync_completed_text_item};
+
+#[test]
+fn completed_text_backfill_deduplicates_alternate_item_ids() {
+    let mut text_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    append_text_delta(
+        &mut text_items,
+        "msg-live",
+        "codex-agent-message",
+        TerminalOutputKind::ProviderOutput,
+        "DO",
+        &mut chunks,
+    );
+
+    let backfill = sync_completed_text_item(
+        &mut text_items,
+        &json!({
+            "type": "agentMessage",
+            "id": "item-summary",
+            "phase": "final_answer",
+            "text": "DONE"
+        }),
+    )
+    .expect("backfill should append only the missing suffix");
+    assert_eq!(backfill.merge_key.as_deref(), Some("msg-live"));
+    assert_eq!(backfill.bytes, b"NE");
+    assert!(sync_completed_text_item(
+        &mut text_items,
+        &json!({
+            "type": "agentMessage",
+            "id": "item-summary",
+            "phase": "final_answer",
+            "text": "DONE"
+        }),
+    )
+    .is_none());
+}
 
 #[test]
 fn reasoning_and_agent_deltas_preserve_item_merge_keys() {

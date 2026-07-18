@@ -47,6 +47,19 @@ pub(super) fn send_outgoing_envelope(
     })
 }
 
+pub(super) async fn send_outgoing_event_envelope(
+    outgoing_tx: &RelayOutgoingSender,
+    envelope: RelayEnvelope,
+) -> Result<(), DaemonError> {
+    outgoing_tx
+        .send_event(envelope)
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "send relay event envelope",
+            message: "relay connection writer is closed".to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +127,47 @@ mod tests {
         assert!(matches!(
             event_rx.try_recv(),
             Ok(RelayEnvelope::DaemonEvent { event_id: 7, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn subscription_event_send_waits_for_event_lane_capacity() {
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "subscription-1".to_string(),
+                event_id: 7,
+                encrypted_event: encrypted_payload_for_test(),
+            },
+        )
+        .expect("first event should fill the event lane");
+
+        let second_send = send_outgoing_event_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonEvent {
+                subscription_id: "subscription-1".to_string(),
+                event_id: 8,
+                encrypted_event: encrypted_payload_for_test(),
+            },
+        );
+        tokio::pin!(second_send);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut second_send)
+                .await
+                .is_err()
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonEvent { event_id: 7, .. })
+        ));
+        second_send
+            .await
+            .expect("second event should enqueue after capacity frees");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonEvent { event_id: 8, .. })
         ));
     }
 

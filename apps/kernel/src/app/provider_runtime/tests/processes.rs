@@ -467,10 +467,11 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
             Vec::new(),
         )
         .expect("second prompt should queue");
-    assert!(
-        matches!(queued, PromptSubmissionOutcome::Queued { .. }),
-        "second prompt should queue: {queued:?}"
-    );
+    let queued_created_at_ms = match &queued {
+        PromptSubmissionOutcome::Queued { prompt } => prompt.created_at_ms(),
+        PromptSubmissionOutcome::Started { .. } => panic!("second prompt should queue: {queued:?}"),
+    };
+    std::thread::sleep(std::time::Duration::from_millis(10));
 
     crate::app::KernelSessionService::new(&mut app)
         .detach(original_attachment.id())
@@ -490,6 +491,11 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         .started_next
         .expect("queued prompt should become active");
     assert_eq!(started_next.prompt(), "queued prompt\n");
+    assert_eq!(
+        started_next.created_at_ms(),
+        queued_created_at_ms,
+        "promoting a queued prompt must retain its original acceptance timestamp"
+    );
 
     let input_records = app.terminal().input_records();
     assert!(
@@ -498,6 +504,46 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
                 && String::from_utf8_lossy(&record.bytes).contains("queued prompt")
         }),
         "promoted queued prompt should be delivered through the replacement attachment: {input_records:?}"
+    );
+
+    let expected_merge_key = format!("prompt:{}", started_next.id());
+    let operational_prompts = app
+        .operational_history_store()
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("operational prompt history should load")
+        .into_iter()
+        .filter(|event| {
+            event
+                .metadata
+                .get("merge_key")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_merge_key.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        operational_prompts.len(),
+        1,
+        "promoted queued prompt must have one canonical operational history event"
+    );
+    assert_eq!(
+        operational_prompts[0].timestamp_ms, queued_created_at_ms,
+        "promoted prompt history must include time spent waiting in the queue"
+    );
+
+    let legacy_prompts = std::fs::read_to_string(app.history_store().path_for_session(&session))
+        .expect("legacy prompt history should load")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<crate::history::SessionHistoryEntry>(line).ok())
+        .filter(|entry| entry.merge_key.as_deref() == Some(expected_merge_key.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        legacy_prompts.len(),
+        1,
+        "promoted queued prompt must be written once to legacy compatibility history"
+    );
+    assert_eq!(
+        legacy_prompts[0].timestamp_ms, queued_created_at_ms,
+        "legacy compatibility history must retain the queued acceptance timestamp"
     );
 }
 

@@ -1,3 +1,4 @@
+use super::persisted_daemon::load_persisted_daemon_config;
 use super::*;
 
 #[test]
@@ -138,7 +139,16 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
     )
     .expect("daemon config should write");
 
-    let config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env();
+    config
+        .persist_relay_config()
+        .expect("local relay config should persist");
+    let persisted_after_local_override = load_persisted_daemon_config();
+    assert!(persisted_after_local_override.cloud_relay.is_some());
+    config
+        .persist_cloud_relay_profile(None)
+        .expect("explicit Cloud sign-out should persist");
+    assert!(load_persisted_daemon_config().cloud_relay.is_none());
 
     unsafe {
         restore_env_var("HOME", old_home);

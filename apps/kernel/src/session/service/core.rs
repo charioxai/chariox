@@ -84,6 +84,10 @@ impl SessionService {
         self.ephemeral_session_ids.contains(session_id)
     }
 
+    pub(crate) fn has_session(&self, session_id: &str) -> bool {
+        self.store.get(session_id).is_some()
+    }
+
     pub(crate) fn durable_sessions(&self) -> Vec<RuntimeSession> {
         self.store
             .list()

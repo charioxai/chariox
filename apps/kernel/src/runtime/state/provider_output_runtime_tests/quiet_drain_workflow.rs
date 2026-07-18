@@ -73,6 +73,7 @@ async fn provider_message_completion_without_prompt_completed_settles_after_quie
         "completion with fresh output should wait for a quiet drain"
     );
 
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
@@ -274,7 +275,7 @@ async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
 }
 
 #[tokio::test]
-async fn workflow_prompt_settles_after_structured_message_completion_drain() {
+async fn workflow_prompt_waits_for_late_structured_output_after_completion_signal() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -380,21 +381,20 @@ async fn workflow_prompt_settles_after_structured_message_completion_drain() {
                 chunks: vec![crate::provider::ProviderPromptChunk {
                     kind: crate::terminal::TerminalOutputKind::ProviderOutput,
                     merge_key: Some("assistant-final".to_string()),
-                    bytes: br#"```json
-{"summary":"sent","output":{"message":"{\"value\":1842}"}}
-```"#
-                        .to_vec(),
+                    bytes: b"```".to_vec(),
                 }],
                 completions: vec![crate::provider::ProviderAssistantCompletion {
                     message_id: "assistant-final".to_string(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
                 }],
-                prompt_completed: false,
+                prompt_completed: true,
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
         )
         .await
-        .expect("structured output should be accepted");
+        .expect("partial structured output should be accepted");
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
@@ -403,7 +403,64 @@ async fn workflow_prompt_settles_after_structured_message_completion_drain() {
             crate::provider::ProviderPromptSignalBatch::default(),
         )
         .await
-        .expect("quiet poll should settle a drained completed workflow prompt");
+        .expect("quiet poll should keep waiting for late structured output");
+
+    let partial_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("partial session snapshot should exist");
+    assert!(
+        partial_session
+            .active_prompt_for_agent(first_agent.id())
+            .is_some(),
+        "a partial structured block must not fail or settle the workflow prompt"
+    );
+
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("assistant-final".to_string()),
+                    bytes: br#"json
+{"summary":"sent","output":{"message":"{\"value\":1842}"}}
+```"#
+                        .to_vec(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("late structured output should be accepted");
+    let provider_output = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(first_agent.id()))
+        .expect("workflow output history should load")
+        .into_iter()
+        .filter(|entry| {
+            entry.provider_run_id.as_deref() == Some(run.id())
+                && entry.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
+        })
+        .map(|entry| entry.text)
+        .collect::<String>();
+    assert_eq!(
+        provider_output,
+        "```json\n{\"summary\":\"sent\",\"output\":{\"message\":\"{\\\"value\\\":1842}\"}}\n```"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .expect("quiet poll should settle the complete workflow output");
 
     let session_state = runtime
         .owned
@@ -418,13 +475,47 @@ async fn workflow_prompt_settles_after_structured_message_completion_drain() {
     let resolved_run = session_state
         .workflow_run(workflow_run.id())
         .expect("workflow run should exist");
-    assert_eq!(resolved_run.node_runs().len(), 2);
     assert_eq!(
         resolved_run.node_runs()[0].status(),
         crate::session::WorkflowNodeRunStatus::Completed
     );
+    assert_eq!(resolved_run.node_runs().len(), 2);
     assert_eq!(
         resolved_run.node_runs()[1].status(),
+        crate::session::WorkflowNodeRunStatus::Ready
+    );
+
+    let durable_session = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("durable session events should load")
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event.subject_id.as_deref() == Some(session.id())
+                && event
+                    .payload
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("workflow_prompt_completed")
+        })
+        .and_then(|event| event.payload.get("session").cloned())
+        .map(serde_json::from_value::<crate::session::RuntimeSession>)
+        .transpose()
+        .expect("durable workflow session should decode")
+        .expect("workflow completion should persist its session");
+    let durable_run = durable_session
+        .workflow_run(workflow_run.id())
+        .expect("durable workflow run should exist");
+    assert_eq!(
+        durable_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Completed,
+        "a kernel restart must not restore the completed node as running"
+    );
+    assert_eq!(durable_run.node_runs().len(), 2);
+    assert_eq!(
+        durable_run.node_runs()[1].status(),
         crate::session::WorkflowNodeRunStatus::Ready
     );
 }
@@ -532,6 +623,10 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
         )
         .await
         .expect("plain completion should be accepted while output drains");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
     runtime
         .apply_owned_structured_output_batch(
             session.id(),

@@ -21,6 +21,13 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        let prompt_already_cancelling = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &owned.session_store.get_session(session_id)?,
+                target_agent_id,
+            )
+            .is_some_and(|prompt| prompt.status() == crate::session::PromptStatus::Cancelling);
         let cancellation_response = self
             .with_app_side_effect(|app| {
                 let relay_config = app.relay_config_for_remote_execution(&remote_execution);
@@ -40,11 +47,21 @@ impl KernelRuntimeState {
             .await;
         match cancellation_response {
             Ok(RelayPeerResponse::LeasedPromptCancelled { .. }) => {
-                Ok(Some(owned.begin_remote_prompt_cancellation(
-                    session_id,
-                    target_agent_id,
-                    attachment_id,
-                )?))
+                if prompt_already_cancelling {
+                    Ok(Some(
+                        owned.finalize_remote_prompt_cancellation_after_worker_settled(
+                            session_id,
+                            target_agent_id,
+                            attachment_id,
+                        )?,
+                    ))
+                } else {
+                    Ok(Some(owned.begin_remote_prompt_cancellation(
+                        session_id,
+                        target_agent_id,
+                        attachment_id,
+                    )?))
+                }
             }
             Ok(other) => Err(DaemonError::LocalTransport {
                 operation: "cancel remote prompt",
@@ -62,11 +79,13 @@ impl KernelRuntimeState {
                         "error": error.to_string(),
                     }),
                 );
-                Ok(Some(owned.begin_remote_prompt_cancellation(
-                    session_id,
-                    target_agent_id,
-                    attachment_id,
-                )?))
+                Ok(Some(
+                    owned.finalize_remote_prompt_cancellation_after_worker_settled(
+                        session_id,
+                        target_agent_id,
+                        attachment_id,
+                    )?,
+                ))
             }
             Err(error) => Err(error),
         }

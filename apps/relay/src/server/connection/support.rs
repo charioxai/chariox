@@ -48,17 +48,17 @@ pub(super) async fn handle_client_packet_route_envelope(
             encrypted_request,
         } => {
             let Some((realm_id, connected_daemon_key)) =
-                connected_client_binding(&registry, peer_addr).await
+                connected_client_binding(registry, peer_addr).await
             else {
                 send_close(
-                    &outgoing_tx,
+                    outgoing_tx,
                     "client must connect before sending requests".to_string(),
                 );
                 return Ok(ConnectionAction::Break);
             };
-            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute).await {
+            if !peer_allows_action(registry, peer_addr, RelayAction::PacketRoute).await {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -73,7 +73,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("request_id", &request_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -82,18 +82,12 @@ pub(super) async fn handle_client_packet_route_envelope(
                 )?;
                 return Ok(ConnectionAction::Continue);
             }
-            let Some(daemon_key) = resolve_target_daemon_key(&registry, &realm_id, &target).await
+            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
             else {
-                log_target_not_connected(
-                    "client_request",
-                    &registry,
-                    peer_addr,
-                    &realm_id,
-                    &target,
-                )
-                .await;
+                log_target_not_connected("client_request", registry, peer_addr, &realm_id, &target)
+                    .await;
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -108,7 +102,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             };
             if daemon_key != connected_daemon_key {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -139,14 +133,14 @@ pub(super) async fn handle_client_packet_route_envelope(
                 routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_request",
-                    &registry,
+                    registry,
                     peer_addr,
                     &daemon_key,
                     &relay_request_id,
                 )
                 .await;
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -163,15 +157,15 @@ pub(super) async fn handle_client_packet_route_envelope(
                 &daemon_sender,
                 &RelayEnvelope::DaemonRequest {
                     relay_request_id: relay_request_id.clone(),
-                    caller_identity: peer_identity(&registry, peer_addr).await,
+                    caller_identity: peer_identity(registry, peer_addr).await,
                     encrypted_request,
                 },
             )
             .is_err()
             {
                 reject_client_pending_on_target_backpressure(
-                    &registry,
-                    &outgoing_tx,
+                    registry,
+                    outgoing_tx,
                     &relay_request_id,
                     request_id,
                 )
@@ -189,17 +183,17 @@ pub(super) async fn handle_client_packet_route_envelope(
             resume_from_event_id,
         } => {
             let Some((realm_id, connected_daemon_key)) =
-                connected_client_binding(&registry, peer_addr).await
+                connected_client_binding(registry, peer_addr).await
             else {
                 send_close(
-                    &outgoing_tx,
+                    outgoing_tx,
                     "client must connect before subscribing".to_string(),
                 );
                 return Ok(ConnectionAction::Break);
             };
-            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute).await {
+            if !peer_allows_action(registry, peer_addr, RelayAction::PacketRoute).await {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -214,7 +208,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("request_id", &request_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -225,7 +219,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("subscription_id", &subscription_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -236,7 +230,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("session_id", &session_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -247,7 +241,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("attachment_id", &attachment_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -259,7 +253,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             if let Some(error) = invalid_runtime_identifier("client_public_key", &client_public_key)
             {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -283,18 +277,18 @@ pub(super) async fn handle_client_packet_route_envelope(
                     "resume_from_event_id": resume_from_event_id,
                 }),
             );
-            let Some(daemon_key) = resolve_target_daemon_key(&registry, &realm_id, &target).await
+            let Some(daemon_key) = resolve_target_daemon_key(registry, &realm_id, &target).await
             else {
                 log_target_not_connected(
                     "client_subscribe",
-                    &registry,
+                    registry,
                     peer_addr,
                     &realm_id,
                     &target,
                 )
                 .await;
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -309,7 +303,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             };
             if daemon_key != connected_daemon_key {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -354,6 +348,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                             daemon_key: daemon_key.clone(),
                             kind: PendingRequestKind::Subscribe {
                                 subscription_id: subscription_id.clone(),
+                                client_public_key: client_public_key.clone(),
                             },
                         },
                     );
@@ -362,7 +357,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             };
             if subscription_conflict {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -379,14 +374,14 @@ pub(super) async fn handle_client_packet_route_envelope(
                 routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_subscribe",
-                    &registry,
+                    registry,
                     peer_addr,
                     &daemon_key,
                     &relay_request_id,
                 )
                 .await;
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -418,7 +413,7 @@ pub(super) async fn handle_client_packet_route_envelope(
                 &RelayEnvelope::DaemonSubscribe {
                     relay_request_id: relay_request_id.clone(),
                     relay_subscription_id: subscription_id.clone(),
-                    caller_identity: peer_identity(&registry, peer_addr).await,
+                    caller_identity: peer_identity(registry, peer_addr).await,
                     session_id,
                     attachment_id,
                     client_public_key,
@@ -429,8 +424,8 @@ pub(super) async fn handle_client_packet_route_envelope(
             .is_err()
             {
                 reject_client_pending_on_target_backpressure(
-                    &registry,
-                    &outgoing_tx,
+                    registry,
+                    outgoing_tx,
                     &relay_request_id,
                     request_id,
                 )
@@ -442,19 +437,19 @@ pub(super) async fn handle_client_packet_route_envelope(
             subscription_id,
             client_public_key,
         } => {
-            if connected_client_binding(&registry, peer_addr)
+            if connected_client_binding(registry, peer_addr)
                 .await
                 .is_none()
             {
                 send_close(
-                    &outgoing_tx,
+                    outgoing_tx,
                     "client must connect before unsubscribing".to_string(),
                 );
                 return Ok(ConnectionAction::Break);
             }
-            if !peer_allows_action(&registry, peer_addr, RelayAction::PacketRoute).await {
+            if !peer_allows_action(registry, peer_addr, RelayAction::PacketRoute).await {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -469,7 +464,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("request_id", &request_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -480,7 +475,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             }
             if let Some(error) = invalid_runtime_identifier("subscription_id", &subscription_id) {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -492,7 +487,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             if let Some(error) = invalid_runtime_identifier("client_public_key", &client_public_key)
             {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -511,7 +506,7 @@ pub(super) async fn handle_client_packet_route_envelope(
             };
             let Some(active) = active.filter(|active| active.client_addr == peer_addr) else {
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -541,14 +536,14 @@ pub(super) async fn handle_client_packet_route_envelope(
                 routes.remove_pending_client(&relay_request_id);
                 log_daemon_sender_missing(
                     "client_unsubscribe",
-                    &registry,
+                    registry,
                     peer_addr,
                     &daemon_key,
                     &relay_request_id,
                 )
                 .await;
                 send_envelope(
-                    &outgoing_tx,
+                    outgoing_tx,
                     &RelayEnvelope::ClientResponse {
                         request_id,
                         encrypted_response: None,
@@ -566,15 +561,15 @@ pub(super) async fn handle_client_packet_route_envelope(
                 &RelayEnvelope::DaemonUnsubscribe {
                     relay_request_id: relay_request_id.clone(),
                     relay_subscription_id: subscription_id,
-                    caller_identity: peer_identity(&registry, peer_addr).await,
+                    caller_identity: peer_identity(registry, peer_addr).await,
                     client_public_key,
                 },
             )
             .is_err()
             {
                 reject_client_pending_on_target_backpressure(
-                    &registry,
-                    &outgoing_tx,
+                    registry,
+                    outgoing_tx,
                     &relay_request_id,
                     request_id,
                 )
@@ -594,7 +589,7 @@ pub(super) async fn resolve_target_daemon_key(
     let guard = registry.read().await;
     if let Some(daemon_id) = target.daemon_id.as_ref() {
         let key = DaemonKey::new(realm_id.to_string(), daemon_id.clone());
-        return guard.daemons.get(&key).map(|_| key);
+        return guard.live_daemon_sender(&key).map(|_| key);
     }
     let alias = target.daemon_alias.as_ref()?;
     let mut matches = guard
@@ -604,6 +599,7 @@ pub(super) async fn resolve_target_daemon_key(
             key.realm_id == realm_id
                 && registration.daemon_alias.as_ref() == Some(alias)
                 && crate::registry::daemon_registration_is_kernel_target(registration)
+                && guard.live_daemon_sender(key).is_some()
         })
         .map(|(key, _)| key.clone());
     let daemon_key = matches.next()?;
@@ -697,8 +693,9 @@ pub(super) async fn close_slow_subscription(
     routes: &Arc<crate::registry::RelayRouteIndex>,
     subscription_id: &str,
     daemon_key: &DaemonKey,
+    relay_request_counter: &AtomicU64,
 ) {
-    let sender = {
+    let removed = {
         let mut guard = registry.write().await;
         let active = guard
             .subscriptions
@@ -708,14 +705,27 @@ pub(super) async fn close_slow_subscription(
         if let Some(active) = active {
             guard.subscriptions.remove(subscription_id);
             routes.remove_subscription(subscription_id);
-            routes.client_sender(&active.client_addr)
+            Some((
+                routes.client_sender(&active.client_addr),
+                active.client_public_key,
+            ))
         } else {
             None
         }
     };
-    if let Some(sender) = sender {
-        send_close(&sender, "relay event consumer is too slow".to_string());
-        let _ = sender.try_send(Message::Close(None));
+    if let Some((client_sender, client_public_key)) = removed {
+        if let Some(daemon_sender) = routes.daemon_sender(daemon_key) {
+            let _ = send_daemon_subscription_cleanup(
+                &daemon_sender,
+                relay_request_counter,
+                subscription_id.to_string(),
+                client_public_key,
+            );
+        }
+        if let Some(sender) = client_sender {
+            send_close(&sender, "relay event consumer is too slow".to_string());
+            let _ = sender.try_send(Message::Close(None));
+        }
         registry.write().await.record_slow_subscription_close();
     }
 }
@@ -736,6 +746,7 @@ fn subscription_owned_by_other_client(
                     &pending.kind,
                     PendingRequestKind::Subscribe {
                         subscription_id: pending_subscription_id,
+                        ..
                     } if pending_subscription_id == subscription_id
                 )
         })
@@ -872,6 +883,27 @@ pub(super) fn send_envelope(
     sender
         .try_send(Message::Text(payload.into()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+pub(super) fn send_daemon_subscription_cleanup(
+    sender: &RelaySender,
+    relay_request_counter: &AtomicU64,
+    relay_subscription_id: String,
+    client_public_key: String,
+) -> Result<(), std::io::Error> {
+    let relay_request_id = format!(
+        "relay-request-{}",
+        relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    send_envelope(
+        sender,
+        &RelayEnvelope::DaemonUnsubscribe {
+            relay_request_id,
+            relay_subscription_id,
+            caller_identity: None,
+            client_public_key,
+        },
+    )
 }
 
 pub(super) fn send_close(sender: &RelaySender, reason: String) {

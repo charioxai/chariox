@@ -888,7 +888,11 @@ mod tests {
                 "turn": {
                     "id": "turn-1",
                     "status": "completed",
-                    "items": []
+                    "items": [{
+                        "type": "agentMessage",
+                        "id": "message-1",
+                        "text": "done"
+                    }]
                 }
             })),
             result: None,
@@ -900,6 +904,11 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 status: "completed".to_string(),
                 error_message: None,
+                items: vec![json!({
+                    "type": "agentMessage",
+                    "id": "message-1",
+                    "text": "done"
+                })],
             })
         );
 

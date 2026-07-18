@@ -10,7 +10,7 @@ use crate::history::{
     HistoryAttributionConfidence, HistoryEvent, HistoryEventKind, HistoryEventRole,
     HistoryEventTurnContext, OperationalHistoryStore,
 };
-use crate::session::PromptOrigin;
+use crate::session::{PromptOrigin, PromptQueueItem};
 use crate::transport::relay_peer::RemoteGitObservation;
 pub use crate::workspace_live_sync_journal::{
     WorkspaceLiveSyncApplyStatus, WorkspaceLiveSyncPathApplyResult, WorkspaceLiveSyncTargetResult,
@@ -129,6 +129,7 @@ pub struct CompletedGitTurnActionProjection {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CompletedGitTurnSnapshotStore {
     inner: Arc<Mutex<BTreeMap<String, VecDeque<CompletedGitTurnSnapshot>>>>,
+    settled_turns: Arc<Mutex<BTreeMap<String, CompletedGitTurnActionProjection>>>,
 }
 
 impl CompletedGitTurnSnapshotStore {
@@ -145,6 +146,47 @@ impl CompletedGitTurnSnapshotStore {
         turns.push_back(snapshot);
         while turns.len() > Self::MAX_TURNS_PER_AGENT {
             turns.pop_front();
+        }
+    }
+
+    pub(crate) fn record_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt: &PromptQueueItem,
+        completed_at_ms: u64,
+        started_at_ms: Option<u64>,
+    ) {
+        let projection = CompletedGitTurnActionProjection {
+            turn_id: prompt.id().to_string(),
+            prompt_id: prompt.id().to_string(),
+            provider_run_id: provider_run_id.to_string(),
+            agent_id: agent_id.to_string(),
+            source_attachment_id: Some(prompt.source_attachment_id().to_string()),
+            prompt_origin: Some(prompt.prompt_origin()),
+            external_provider: prompt.external_provider().map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+            completed_at_ms,
+            duration_ms: started_at_ms
+                .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms)),
+            changed_paths: Vec::new(),
+            undo_available: false,
+            undo_unavailable_reason: Some(
+                "workspace change observation is not available for this turn".to_string(),
+            ),
+        };
+        let key = completed_turn_agent_key(session_id, agent_id);
+        let mut settled_turns = self
+            .settled_turns
+            .lock()
+            .expect("settled prompt turn mutex poisoned");
+        let replace = settled_turns
+            .get(&key)
+            .is_none_or(|existing| completed_turn_projection_is_newer(&projection, existing));
+        if replace {
+            settled_turns.insert(key, projection);
         }
     }
 
@@ -203,9 +245,48 @@ impl CompletedGitTurnSnapshotStore {
         session_id: &str,
         agent_id: &str,
     ) -> Option<CompletedGitTurnActionProjection> {
-        self.latest_for_agent(session_id, agent_id)
-            .map(|turn| turn.action_projection())
+        let observed = self
+            .latest_for_agent(session_id, agent_id)
+            .map(|turn| turn.action_projection());
+        let settled = self
+            .settled_turns
+            .lock()
+            .expect("settled prompt turn mutex poisoned")
+            .get(&completed_turn_agent_key(session_id, agent_id))
+            .cloned();
+        match (observed, settled) {
+            (Some(observed), Some(settled)) if observed.turn_id == settled.turn_id => {
+                Some(observed)
+            }
+            (Some(observed), Some(settled)) => {
+                Some(if completed_turn_projection_is_newer(&settled, &observed) {
+                    settled
+                } else {
+                    observed
+                })
+            }
+            (Some(observed), None) => Some(observed),
+            (None, Some(settled)) => Some(settled),
+            (None, None) => None,
+        }
     }
+}
+
+fn completed_turn_projection_is_newer(
+    incoming: &CompletedGitTurnActionProjection,
+    existing: &CompletedGitTurnActionProjection,
+) -> bool {
+    let incoming_started_at_ms = incoming
+        .duration_ms
+        .map(|duration_ms| incoming.completed_at_ms.saturating_sub(duration_ms))
+        .unwrap_or(incoming.completed_at_ms);
+    let existing_started_at_ms = existing
+        .duration_ms
+        .map(|duration_ms| existing.completed_at_ms.saturating_sub(duration_ms))
+        .unwrap_or(existing.completed_at_ms);
+    incoming_started_at_ms > existing_started_at_ms
+        || (incoming_started_at_ms == existing_started_at_ms
+            && incoming.completed_at_ms >= existing.completed_at_ms)
 }
 
 impl CompletedGitTurnSnapshot {

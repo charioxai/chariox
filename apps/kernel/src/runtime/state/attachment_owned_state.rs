@@ -132,21 +132,51 @@ impl KernelRuntimeOwnedState {
                 .active_provider_run_id()
                 .map(str::to_string)
             {
-                let run = self.provider_store.get_run(&active_provider_run_id)?;
-                if run.state() != crate::provider::ProviderRunState::Ended {
-                    let outcome = self
-                        .provider_store
-                        .park_run_provider_only(attachment.session_id(), &active_provider_run_id)?;
-                    if self
-                        .session_store
-                        .get_session(attachment.session_id())?
-                        .active_provider_run_id()
-                        == Some(outcome.run().id())
-                    {
-                        self.session_store
-                            .set_active_provider_run(attachment.session_id(), None)?;
+                let active_run_is_remote = self
+                    .agent_store
+                    .get_session_agents(attachment.session_id())
+                    .into_iter()
+                    .filter_map(|agent| agent.remote_execution().cloned())
+                    .filter_map(|remote| {
+                        remote.active_worker_provider_run_id.map(|worker_run_id| {
+                            crate::provider::projected_leased_provider_run_id(
+                                &remote.leased_agent_id,
+                                &worker_run_id,
+                            )
+                        })
+                    })
+                    .any(|projected_run_id| projected_run_id == active_provider_run_id);
+                if !active_run_is_remote {
+                    match self.provider_store.get_run(&active_provider_run_id) {
+                        Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {
+                            let outcome = self.provider_store.park_run_provider_only(
+                                attachment.session_id(),
+                                &active_provider_run_id,
+                            )?;
+                            if self
+                                .session_store
+                                .get_session(attachment.session_id())?
+                                .active_provider_run_id()
+                                == Some(outcome.run().id())
+                            {
+                                self.session_store
+                                    .set_active_provider_run(attachment.session_id(), None)?;
+                            }
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
+                        Ok(_) => {}
+                        Err(DaemonError::ProviderRunNotFound { .. }) => {
+                            if let Some(mut projected) =
+                                self.provider_run_projection.get(&active_provider_run_id)
+                            {
+                                projected.mark_ended();
+                                self.provider_run_projection.update(projected);
+                            }
+                            self.session_store
+                                .set_active_provider_run(attachment.session_id(), None)?;
+                        }
+                        Err(error) => return Err(error),
                     }
-                    self.provider_run_projection.update(outcome.into_run());
                 }
             }
             for run in self.provider_store.list_runs() {

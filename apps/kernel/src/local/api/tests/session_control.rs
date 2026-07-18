@@ -57,6 +57,63 @@ fn local_request_api_supports_session_attach_and_end() {
 }
 
 #[test]
+fn session_attach_clears_a_missing_active_provider_run() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-stale-run", "worktree-stale-run"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-after-worker-settlement".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("initial attachment should succeed");
+    harness.with_app_mut(|app| {
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some("provider-run-missing".to_string()))
+            .expect("stale pointer should be installed");
+        let stale = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available");
+        assert_eq!(stale.active_provider_run_id(), Some("provider-run-missing"));
+    });
+
+    harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-after-worker-settlement".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should recover from a stale provider-run pointer");
+
+    let attached = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(attached.active_provider_run_id(), None);
+}
+
+#[test]
 fn local_request_api_resolves_and_deletes_sessions_by_ref() {
     let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness

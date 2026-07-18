@@ -5,6 +5,8 @@
 
 use super::*;
 
+const PROMPT_SETTLEMENT_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl KernelRuntimeOwnedState {
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
@@ -368,9 +370,7 @@ impl KernelRuntimeOwnedState {
             .write()
             .entry(provider_run_id.to_string())
             .and_modify(|state| {
-                state.last_output_at = Some(Instant::now());
-                state.saw_response_content = true;
-                state.settlement_requested = true;
+                state.request_settlement();
             })
             .or_insert(crate::app::ActivePromptState {
                 last_output_at: Some(Instant::now()),
@@ -378,7 +378,7 @@ impl KernelRuntimeOwnedState {
                 completion_recorded: false,
                 settlement_requested: true,
             });
-        self.schedule_provider_output_timeout(provider_run_id);
+        self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }
 
     pub(super) fn schedule_provider_output_check_after(
@@ -390,6 +390,21 @@ impl KernelRuntimeOwnedState {
             provider_run_id,
             crate::session::unix_epoch_ms().saturating_add(delay.as_millis() as u64),
         );
+    }
+
+    pub(super) fn schedule_provider_output_check_when_quiet(
+        &self,
+        provider_run_id: &str,
+        quiet_for: std::time::Duration,
+    ) {
+        let delay = self
+            .prompt_activity
+            .read()
+            .get(provider_run_id)
+            .and_then(|state| state.last_output_at)
+            .map(|last_output_at| quiet_for.saturating_sub(last_output_at.elapsed()))
+            .unwrap_or(quiet_for);
+        self.schedule_provider_output_check_after(provider_run_id, delay);
     }
 
     pub(super) fn ensure_provider_output_timeout_scheduled(&self, provider_run_id: &str) {

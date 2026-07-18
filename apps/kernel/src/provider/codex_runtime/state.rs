@@ -37,6 +37,7 @@ pub struct CodexRuntimeState {
     thread_ready: bool,
     developer_instructions_fingerprint: Option<String>,
     context_hot_reload_enabled: bool,
+    turn_input_includes_hidden_context: bool,
     pub(super) socket: CodexSocket,
     pub(super) next_request_id: u64,
     pub(super) buffered_notifications: Vec<CodexNotification>,
@@ -59,6 +60,10 @@ impl std::fmt::Debug for CodexRuntimeState {
             .field(
                 "context_hot_reload_enabled",
                 &self.context_hot_reload_enabled,
+            )
+            .field(
+                "turn_input_includes_hidden_context",
+                &self.turn_input_includes_hidden_context,
             )
             .field("next_request_id", &self.next_request_id)
             .field("buffered_notifications", &self.buffered_notifications)
@@ -83,6 +88,7 @@ impl CodexRuntimeState {
             thread_ready: true,
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: false,
+            turn_input_includes_hidden_context: true,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -99,12 +105,14 @@ impl CodexRuntimeState {
         socket: CodexSocket,
         next_request_id: u64,
     ) -> Self {
+        let turn_input_includes_hidden_context = thread_id.is_some();
         Self {
             endpoint,
             thread_id: thread_id.unwrap_or_default(),
             thread_ready: false,
             developer_instructions_fingerprint: None,
             context_hot_reload_enabled: true,
+            turn_input_includes_hidden_context,
             socket,
             next_request_id,
             buffered_notifications: Vec::new(),
@@ -139,6 +147,10 @@ impl CodexRuntimeState {
         self.context_hot_reload_enabled
     }
 
+    pub(super) fn turn_input_includes_hidden_context(&self) -> bool {
+        self.turn_input_includes_hidden_context
+    }
+
     pub(super) fn mark_thread_ready(
         &mut self,
         thread_id: impl Into<String>,
@@ -157,6 +169,7 @@ impl CodexRuntimeState {
         self.thread_id = thread_id.into();
         self.thread_ready = true;
         self.developer_instructions_fingerprint = developer_instructions_fingerprint;
+        self.turn_input_includes_hidden_context = false;
         self.buffered_notifications.clear();
         self.active_turn_id = None;
         self.turn_tracker = CodexTurnTracker::default();

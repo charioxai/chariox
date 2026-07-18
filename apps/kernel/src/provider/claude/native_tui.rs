@@ -39,7 +39,9 @@ impl ClaudeNativeTuiFiles {
     }
 }
 
-pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, DaemonError> {
+pub(super) fn prepare_claude_native_tui_files(
+    request: &LaunchProviderRequest,
+) -> Result<ClaudeNativeTuiFiles, DaemonError> {
     let root = create_claude_runtime_files_root()?;
     let events_file = root.path().join("events.jsonl");
     let context_file = root.path().join("hidden-context.txt");
@@ -69,11 +71,16 @@ pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, 
             message: error.to_string(),
         }
     })?;
-    let hook_command = format!(
-        "node {}",
-        serde_json::to_string(&hook_handler_file.display().to_string()).unwrap()
+    let hook_command = claude_native_hook_command(
+        &hook_handler_file,
+        &events_file,
+        &context_file,
+        &context_response_dir,
+        &permission_response_dir,
     );
     let settings = serde_json::json!({
+        "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
+            == AgentPermissionLevel::Yolo,
         "hooks": {
             "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -100,6 +107,27 @@ pub(super) fn prepare_claude_native_tui_files() -> Result<ClaudeNativeTuiFiles, 
         settings_file,
         mcp_config_file: None,
     })
+}
+
+fn claude_native_hook_command(
+    hook_handler_file: &Path,
+    events_file: &Path,
+    context_file: &Path,
+    context_response_dir: &Path,
+    permission_response_dir: &Path,
+) -> String {
+    let quoted = |path: &Path| {
+        serde_json::to_string(&path.display().to_string())
+            .expect("serializing a filesystem path should not fail")
+    };
+    format!(
+        "ARROBA_CLAUDE_NATIVE_EVENTS={} ARROBA_CLAUDE_NATIVE_CONTEXT={} ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES={} ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES={} node {}",
+        quoted(events_file),
+        quoted(context_file),
+        quoted(context_response_dir),
+        quoted(permission_response_dir),
+        quoted(hook_handler_file),
+    )
 }
 
 fn claude_native_hook_handler() -> &'static str {
@@ -285,11 +313,14 @@ pub(super) fn claude_native_tui_args(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Write;
     use std::path::Path;
     use std::process::{Command, Stdio};
 
-    use crate::provider::{LaunchProviderRequest, ProviderResumeState, RuntimeMcpBinding};
+    use crate::provider::{
+        AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState, RuntimeMcpBinding,
+    };
 
     use super::{
         claude_native_hook_handler, claude_native_tui_args, prepare_claude_native_tui_files,
@@ -310,8 +341,6 @@ mod tests {
         if Command::new("node").arg("--version").output().is_err() {
             return;
         }
-        let mut native =
-            prepare_claude_native_tui_files().expect("native files should be prepared");
         let request = LaunchProviderRequest::new(
             "session-1",
             "claude",
@@ -323,6 +352,8 @@ mod tests {
             "http://127.0.0.1:43120/mcp",
             "private-token",
         ));
+        let mut native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
         native
             .materialize_mcp_config(&request)
             .expect("MCP config should materialize");
@@ -384,5 +415,46 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--resume", "claude-session-1"]));
+    }
+
+    #[test]
+    fn native_settings_accept_dangerous_mode_only_for_yolo_agents() {
+        let yolo = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        )
+        .with_permission_level(AgentPermissionLevel::Yolo);
+        let required = LaunchProviderRequest::new(
+            "session-2",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        )
+        .with_permission_level(AgentPermissionLevel::Required);
+
+        let yolo_files = prepare_claude_native_tui_files(&yolo).unwrap();
+        let required_files = prepare_claude_native_tui_files(&required).unwrap();
+        let yolo_settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(yolo_files.settings_file).unwrap()).unwrap();
+        let required_settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(required_files.settings_file).unwrap())
+                .unwrap();
+
+        assert_eq!(yolo_settings["skipDangerousModePermissionPrompt"], true);
+        assert_eq!(
+            required_settings["skipDangerousModePermissionPrompt"],
+            false
+        );
+        let yolo_hook = yolo_settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_EVENTS="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES="));
+        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES="));
     }
 }

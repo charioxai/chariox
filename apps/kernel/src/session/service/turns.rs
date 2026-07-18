@@ -341,9 +341,6 @@ impl SessionService {
         }
         envelope.mark_validated_completed();
         envelope.clear_transient_inputs();
-        workflow_run.retain_messages(|message| {
-            message.consumed_by_node_run_id() != Some(workflow_node_run_id)
-        });
         Ok(workflow_run.clone())
     }
 
@@ -574,7 +571,7 @@ impl SessionService {
                 node_run.set_status(WorkflowNodeRunStatus::Stopped);
             }
         }
-        workflow_run.retain_messages(|_| false);
+        workflow_run.discard_unconsumed_messages();
         workflow_run.set_status(WorkflowRunStatus::Stopped);
         Ok(workflow_run.clone())
     }

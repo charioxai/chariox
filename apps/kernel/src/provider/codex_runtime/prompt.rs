@@ -42,7 +42,12 @@ pub fn submit_codex_prompt(
         });
         return Ok(());
     }
-    let input = codex_input(&envelope.visible_user_prompt, &envelope.attachments);
+    let turn_input_prompt = codex_turn_input_prompt(
+        &envelope.visible_user_prompt,
+        &envelope.hidden_system_context,
+        state.turn_input_includes_hidden_context(),
+    );
+    let input = codex_input(&turn_input_prompt, &envelope.attachments);
     let thread_id = state.thread_id().to_string();
     let response = match client.turn_start(
         &mut state.socket,
@@ -207,6 +212,24 @@ fn hidden_context_for_provider(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+fn codex_turn_input_prompt(
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    include_hidden_context: bool,
+) -> String {
+    if !include_hidden_context || hidden_system_context.trim().is_empty() {
+        return visible_user_prompt.to_string();
+    }
+    match (hidden_system_context.trim(), visible_user_prompt.trim()) {
+        ("", visible) => visible.to_string(),
+        (hidden, "") => hidden.to_string(),
+        // Provider-native and resumed threads cannot reliably retrofit developer
+        // instructions. Keep the handoff first and the workflow contract last so
+        // the raw payload does not become the turn's final instruction.
+        (hidden, visible) => format!("{visible}\n\n{hidden}"),
+    }
+}
+
 fn is_codex_mcp_handshake_timeout(error: &DaemonError) -> bool {
     let DaemonError::ProviderProtocol {
         operation, message, ..
@@ -246,4 +269,30 @@ pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<Stri
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_turn_input_prompt;
+
+    #[test]
+    fn attached_or_resumed_codex_thread_receives_hidden_context_in_turn_input() {
+        let prompt = codex_turn_input_prompt(
+            "<workflow-handoff-payloads>20</workflow-handoff-payloads>",
+            "<node-level-prompt>subtract 9</node-level-prompt>",
+            true,
+        );
+
+        assert_eq!(
+            prompt,
+            "<workflow-handoff-payloads>20</workflow-handoff-payloads>\n\n<node-level-prompt>subtract 9</node-level-prompt>"
+        );
+    }
+
+    #[test]
+    fn new_managed_codex_thread_keeps_hidden_context_in_developer_instructions() {
+        let prompt = codex_turn_input_prompt("visible handoff", "hidden instructions", false);
+
+        assert_eq!(prompt, "visible handoff");
+    }
 }

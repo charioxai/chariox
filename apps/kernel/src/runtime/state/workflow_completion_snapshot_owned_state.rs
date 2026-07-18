@@ -26,7 +26,10 @@ impl KernelRuntimeOwnedState {
             .map(str::trim)
             .filter(|value| !value.is_empty())?;
         let session = self.session_store.get_session(session_id).ok()?;
-        let history = match self.history_store.load(&session) {
+        let history = match self
+            .operational_history_store
+            .load_session_history_entries(session_id, None)
+        {
             Ok(history) => history,
             Err(error) => {
                 crate::logging::warn_with_fields(

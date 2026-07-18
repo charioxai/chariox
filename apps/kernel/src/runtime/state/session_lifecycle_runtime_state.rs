@@ -272,30 +272,42 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let mut session = self.owned.session_store.get_session(session_id)?;
-        let collaboration_level = session
-            .collaboration_level_for_user(caller_user_id)
-            .unwrap_or(crate::session::CollaborationLevel::Private);
-        if agent.owner_user_id() != caller_user_id && !collaboration_level.can_view_agent_trace() {
-            return Err(DaemonError::OwnershipAccessDenied {
-                user_id: caller_user_id.to_string(),
-                owner_user_id: agent.owner_user_id().to_string(),
-                resource: agent_id.to_string(),
-                operation: "acknowledge agent output",
-            });
-        }
-        let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+        let (session, changed) = {
+            // Read, mutate, and replace while holding one write guard. The previous
+            // clone -> durable append -> restore sequence could overwrite a provider
+            // or workflow transition that landed while the large session snapshot
+            // was being serialized.
+            let mut sessions = self.owned.session_store.write();
+            let mut session = sessions.get_session(session_id)?;
+            let collaboration_level = session
+                .collaboration_level_for_user(caller_user_id)
+                .unwrap_or(crate::session::CollaborationLevel::Private);
+            if agent.owner_user_id() != caller_user_id
+                && !collaboration_level.can_view_agent_trace()
+            {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id.to_string(),
+                    owner_user_id: agent.owner_user_id().to_string(),
+                    resource: agent_id.to_string(),
+                    operation: "acknowledge agent output",
+                });
+            }
+            let changed = session.acknowledge_agent_output_seen(caller_user_id, agent_id);
+            if changed {
+                session.touch();
+                sessions.restore_session(session.clone());
+            }
+            (session, changed)
+        };
         if !changed {
             return Ok(AgentOutputSeenAck { session, changed });
         }
-        session.touch();
         self.append_session_durable_event(
             "session.updated",
             &session,
             "agent_output_seen_acknowledged",
         )
         .await?;
-        self.owned.session_store.restore_session(session);
         Ok(AgentOutputSeenAck {
             session: self.owned.session_snapshot(session_id)?,
             changed,
@@ -576,25 +588,32 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
-        let slice_ref = agent
-            .remote_execution()
-            .and_then(|remote| {
-                self.owned
-                    .slice_store
-                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
-            })
-            .map(|slice| slice.id);
+        // Slice membership is the durable attachment authority. A worker kernel id can
+        // legitimately be stale after a slice or home-kernel restart, so inferring the
+        // attachment from remote execution would leave a deleted agent pinned to its
+        // slice forever.
+        let slice_refs = self
+            .owned
+            .slice_store
+            .list()
+            .into_iter()
+            .filter(|slice| slice.agent_ids.iter().any(|value| value == agent_id))
+            .map(|slice| slice.id)
+            .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         let destroyed = if agent.remote_execution().is_none() {
             self.owned.destroy_agent(agent_id, caller_user_id)?
         } else {
-            self.with_app_side_effect(|app| {
-                crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-            })
-            .await?
+            let destroyed = self
+                .with_app_side_effect(|app| {
+                    crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
+                })
+                .await?;
+            self.owned.destroy_agent(agent_id, caller_user_id)?;
+            destroyed
         };
-        if let Some(slice_ref) = slice_ref {
+        for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
                 destroyed.id(),
