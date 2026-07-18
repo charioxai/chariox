@@ -44,10 +44,7 @@ pub(super) fn relay_subscription_task_key(
     relay_subscription_id: &str,
 ) -> String {
     let scope = subscription_scope.unwrap_or("session");
-    if scope == WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE {
-        return format!("{scope}\u{1f}{relay_subscription_id}");
-    }
-    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}")
+    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
 }
 
 pub(super) async fn handle_relay_subscribe(
@@ -977,13 +974,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_subscription_tasks_are_owned_by_logical_attachment_subscription() {
+    async fn relay_subscription_tasks_with_one_attachment_can_coexist() {
         let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
         let first_key =
             relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-1");
         let second_key =
             relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-2");
-        assert_eq!(first_key, second_key);
+        assert_ne!(first_key, second_key);
 
         let first_handle = tokio::spawn(async {
             sleep(Duration::from_secs(60)).await;
@@ -1000,9 +997,6 @@ mod tests {
         let second_handle = tokio::spawn(async {
             sleep(Duration::from_secs(60)).await;
         });
-        if let Some(existing) = tasks.lock().await.remove(&second_key) {
-            existing.handle.abort();
-        }
         tasks.lock().await.insert(
             second_key,
             RelaySubscriptionTask {
@@ -1011,12 +1005,21 @@ mod tests {
                 handle: second_handle,
             },
         );
-        assert_eq!(tasks.lock().await.len(), 1);
+        assert_eq!(tasks.lock().await.len(), 2);
 
         let removed =
             remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
         assert!(removed.is_some());
-        assert!(tasks.lock().await.is_empty());
+        assert_eq!(tasks.lock().await.len(), 1);
+        assert_eq!(
+            tasks
+                .lock()
+                .await
+                .get(&first_key)
+                .map(|task| task.relay_subscription_id.as_str()),
+            Some("relay-subscription-1")
+        );
+        tasks.lock().await.get(&first_key).unwrap().handle.abort();
     }
 
     #[test]
