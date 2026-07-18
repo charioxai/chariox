@@ -805,10 +805,10 @@
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, WorkOS-backed identity, enterprise handoff, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
-        <span>OSS branch: codex/deployed-workflows-platform</span>
-        <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Integration baseline: OSS main 424288d40 / feature 395cfeeb4; Cloud main ee1600df / feature 54f89e77</span>
-        <span>Status: feature implementation is preserved and validated on dedicated branches; main-first integration, the dedicated Deployed route, and the guided deployment wizard remain the next release increment, followed by the selected WorkOS identity migration</span>
+        <span>OSS branch: codex/deployed-workflows-console-wizard-workos</span>
+        <span>Cloud branch: codex/deployed-workflows-console-wizard-workos</span>
+        <span>Integrated mains: OSS f63226b6f; Cloud 6bc2aabfa</span>
+        <span>Status: the deployment foundation is merged, validated, and pushed to both mains; the dedicated Deployed route, guided deployment wizard, direct local-ingress binding, and selected WorkOS migration are in progress from those exact mains</span>
       </div>
     </header>
 
@@ -890,12 +890,12 @@
 
         <section id="baseline">
           <p class="eyebrow">02 / Current baseline</p>
-          <h2>The feature path is preserved; integration and product-surface completion remain.</h2>
-          <p>The dedicated <code>codex/deployed-workflows-platform</code> branches currently end at OSS <code>395cfeeb409100f4737f25ee089f218508acb683</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code>. Their prior technical acceptance remains provenance-bound evidence for those revisions. Current main is newer at OSS <code>424288d4064a226c811d37fdab35c4f2a0eb0d10</code> and Cloud <code>ee1600df1bfdc430205a4b190c08c07d449dd1e9</code>, with additional reliability, history, prompt-draft, and terminal-projection behavior that must remain authoritative. Integration acceptance must therefore be rerun on the final merged revision pair; prior evidence cannot certify conflict resolutions or the new wizard.</p>
+          <h2>The deployment foundation is on main; product-surface completion remains.</h2>
+          <p>The preserved <code>codex/deployed-workflows-platform</code> feature lines were adapted around newer main reliability, history, prompt-draft, provider-settlement, and terminal-projection behavior, then merged and pushed without rewriting either source branch. Canonical main now ends at OSS <code>f63226b6fb3968bb1d9fb62e72e89e8b1b3dd3d1</code> and Cloud <code>6bc2aabfa8c920b1b20eaf9671927273d459d4b3</code>. The reused paired worktrees continue from those exact commits on <code>codex/deployed-workflows-console-wizard-workos</code>; all route, wizard, local-ingress, and identity evidence must be bound to subsequent exact revision pairs.</p>
 
           <div class="callout info">
-            <strong>Main-first integration snapshot / 2026-07-18</strong>
-            <p>At this snapshot both feature worktrees and both canonical main worktrees are clean and pushed, but another agent may still advance the feature branches. Divergence is 12 main-only versus 99 feature-only commits in OSS and 13 main-only versus 261 feature-only commits in Cloud. A dry merge reports 16 OSS conflicts concentrated in provider settlement, remote-lease/history, scheduler, and local-slice runtime code, plus 6 Cloud conflicts in terminal service, route composition, and output/turn projection. Recalculate all heads, dirtiness, divergence, and conflicts after the active agent's final checkpoint; these counts are planning evidence, not a frozen merge input.</p>
+            <strong>Main-first integration completed / 2026-07-18</strong>
+            <p>OSS merge commit <code>f63226b6f</code> and Cloud merge commit <code>6bc2aabfa</code> preserve current-main behavior while retaining the deployment platform. Both exact trees passed diff hygiene and repository builds. OSS passed lint, the complete TypeScript suite, all Rust workspace/protocol suites, builds, and the relay performance drill. Cloud passed lint and build; shared package tests; API <code>283/283</code>, web <code>3586/3586</code>, worker <code>168/168</code>; and the Cloud validation suite <code>431/431</code>. Both canonical mains and feature branches were pushed, and the next paired branches were created directly from those mains.</p>
           </div>
 
           <div class="table-wrap">
@@ -1852,8 +1852,8 @@ publication container (no direct public route)</pre>
               <div class="phase-body">
                 <h4>Deliver</h4>
                 <ul class="checklist">
-                  <li>Freeze exact clean feature heads after the active agent checkpoints and pushes every intended dirty or untracked source change; preserve those source branches unchanged.</li>
-                  <li>Create fresh OSS and Cloud integration worktrees from then-current <code>origin/main</code>, merge the frozen feature heads without rebasing, and manually reconcile conflicts so newer main reliability/history/terminal semantics remain authoritative.</li>
+                  <li data-status="done">Freeze exact clean feature heads after the active agent checkpoints and pushes every intended dirty or untracked source change; preserve those source branches unchanged. Completed at OSS <code>f63226b6f</code> and Cloud <code>6bc2aabfa</code>.</li>
+                  <li data-status="done">Create fresh OSS and Cloud integration worktrees from then-current <code>origin/main</code>, merge the frozen feature heads without rebasing, and manually reconcile conflicts so newer main reliability/history/terminal semantics remain authoritative. Both validated integration commits are now canonical main.</li>
                   <li>Add the compact searchable Deployed sidebar and dedicated <code>/deployed</code> portfolio/detail route on one shared state/service projection.</li>
                   <li>Replace the draft deploy modal with the conditional wizard and expose the same wizard from Published Workflows, backed by a durable idempotent deployment setup state machine.</li>
                   <li>Complete local ingress deployment binding so selecting ingress-only local runtime starts or materializes the approved release from web/TUI and binds it to the Cloud environment without requiring an undocumented manual <code>arroba serve</code> step.</li>
@@ -2082,20 +2082,20 @@ publication container (no direct public route)</pre>
           <p class="eyebrow">16 / Delivery discipline</p>
           <h2>Keep both repositories reviewable and continuously recoverable.</h2>
           <div class="review-gate">
-            <strong>Source worktrees are evidence, not the merge base</strong>
-            <p>Keep the existing <code>codex/deployed-workflows-platform</code> worktrees and branches intact as preserved feature sources. Do not rebase, force-push, reset, or resolve integration conflicts inside them. Create one fresh integration worktree per repository from current <code>origin/main</code>; main is the immutable behavioral truth onto which feature intent is adapted.</p>
+            <strong>Source worktrees are preserved evidence</strong>
+            <p>The existing <code>codex/deployed-workflows-platform</code> branches remain pushed and unchanged as feature provenance. Main stayed the immutable behavioral truth during adaptation. The reused paired worktrees now run the new <code>codex/deployed-workflows-console-wizard-workos</code> branches from the exact pushed main commits.</p>
           </div>
           <div class="review-gate">
-            <strong>Active-agent freeze and dirty-file capture</strong>
-            <p>Do not freeze or merge while another agent may still write. Ask that agent to stop at a meaningful checkpoint, then inspect tracked modifications, staged changes, untracked files, and ignored drill output in both feature worktrees. Review every intended source/doc/test change, commit it in focused commits, and push it to the feature branch. Classify generated artifacts separately and clean or preserve only required evidence according to repository policy. Do not hide work in a stash or copy an unexplained dirty tree into integration. Record the final feature SHA, <code>git status --short</code>, upstream status, and artifact disposition for each repository.</p>
+            <strong>Feature freeze completed</strong>
+            <p>Both feature worktrees were inspected after all other agents stopped. Intended tracked and untracked source changes were reviewed, committed, pushed, and carried into the integration; no stash or unexplained dirty tree was used. Generated evidence remained source-controlled only where it was already part of the accepted feature history.</p>
           </div>
           <div class="review-gate">
-            <strong>Main-first merge procedure</strong>
-            <p>Fetch immediately before integration; create <code>codex/deployed-workflows-main-integration</code> from the exact current <code>origin/main</code> in each fresh worktree; record main and feature SHAs; and merge the frozen feature SHA with <code>--no-ff --no-commit</code>. Resolve each conflict semantically from the merge base, main, and feature versions. Preserve main's newer runtime reliability, history, prompt-draft, and terminal-projection behavior, then port the deployment capability around it. Never use blanket <code>ours</code> or <code>theirs</code> resolution.</p>
+            <strong>Main-first merge completed</strong>
+            <p>The frozen feature tips were merged without rebasing and every conflict was resolved semantically from the merge base, current main, and feature intent. Newer runtime reliability, history, prompt-draft, provider-settlement, CSP, relay-token, and terminal-projection behavior remained authoritative. The validated tips were fast-forwarded to canonical main and pushed without force.</p>
           </div>
           <div class="review-gate">
-            <strong>Integration completeness audit</strong>
-            <p>After conflict resolution, compare merge-base-to-feature intent with the integrated tree, inventory feature-only migrations/protocol changes/routes/tests/docs, and confirm no accepted capability disappeared. Recalculate schema and protocol compatibility, generated clients, snapshots, and minimum-version gates. Before final merge, fetch main again, integrate any new main commits, rerun affected validation, and record the exact tested pair.</p>
+            <strong>Integration completeness audit passed</strong>
+            <p>Merge-base-to-feature intent, migrations, protocol changes, routes, tests, documentation, generated contracts, and compatibility gates were checked on the integrated trees. Full OSS and Cloud validation passed at <code>f63226b6f</code> and <code>6bc2aabfa</code>; the remote mains were fetched again immediately before the clean fast-forward and push.</p>
           </div>
           <div class="review-gate">
             <strong>Identity work starts after deployment integration</strong>
