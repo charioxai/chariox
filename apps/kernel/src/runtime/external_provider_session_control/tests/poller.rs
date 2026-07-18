@@ -172,6 +172,61 @@ fn attached_resume_state_is_observed() {
 }
 
 #[test]
+fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    app.agents()
+        .set_agent_runtime_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-test".to_string()),
+            None,
+            ProviderResumeState::from_codex_thread_id("thread-on-worker"),
+        )
+        .expect("agent runtime profile should update");
+    app.agents()
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("worker-provider-run".to_string()),
+                relay_url: Some("ws://127.0.0.1:47000".to_string()),
+                relay_token: Some("test-token".to_string()),
+            },
+        )
+        .expect("agent should bind to worker");
+    attach_test_session(&app, session.id());
+    app.providers_mut().insert_run_for_test(test_codex_run(
+        session.id(),
+        agent.id(),
+        "home-mirror-run",
+        "thread-on-worker",
+    ));
+
+    assert!(
+        attached_external_observer_targets(&app).is_empty(),
+        "the home kernel must receive remote-agent history from the worker, not scan local provider transcripts"
+    );
+
+    let store = app.external_provider_session_index_store();
+    store.upsert(record("codex", "thread-on-worker", "/tmp/thread-on-worker"));
+    store.mark_attached("codex:thread-on-worker", session.id(), agent.id());
+    mark_attached_external_provider_sessions(&app, None, &store);
+    assert!(
+        !store
+            .get("codex:thread-on-worker")
+            .expect("record should remain indexed")
+            .is_attached_to_arroba(),
+        "remote provider sessions must not be marked as locally attached"
+    );
+}
+
+#[test]
 fn session_bounded_refresh_imports_history_without_runtime_activity() {
     let _guard = crate::env_lock::lock();
     let codex_home = temp_root("codex-attach-catchup");

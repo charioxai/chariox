@@ -8,7 +8,7 @@ pub(super) fn attached_external_observer_targets(
     let mut targets = BTreeMap::<String, AttachedExternalObserverTarget>::new();
     for agent in app.agents().list_agents() {
         let session_id = agent.session_id();
-        if !session_store.has_session(session_id) {
+        if !session_store.has_session(session_id) || agent.remote_execution().is_some() {
             continue;
         }
         let latest_run = app
@@ -45,8 +45,10 @@ pub(super) fn attached_external_observer_targets(
         let Some(agent_id) = run.agent_instance_id() else {
             continue;
         };
-        if !session_store.has_session(run.session_id()) || app.agents().get_agent(agent_id).is_err()
-        {
+        let Ok(agent) = app.agents().get_agent(agent_id) else {
+            continue;
+        };
+        if !session_store.has_session(run.session_id()) || agent.remote_execution().is_some() {
             continue;
         }
         if !session_has_live_attachment(app, run.session_id()) && !provider_run_is_running(&run) {
@@ -139,7 +141,7 @@ pub(super) fn attached_external_provider_session_refs(
     let mut attached = BTreeSet::new();
     for agent in app.agents().list_agents() {
         let session_id = agent.session_id();
-        if !session_store.has_session(session_id) {
+        if !session_store.has_session(session_id) || agent.remote_execution().is_some() {
             continue;
         }
         let latest_run = app
@@ -165,6 +167,9 @@ pub(super) fn attached_external_provider_session_refs(
         );
     }
     for run in app.providers().list_runs() {
+        if provider_run_targets_remote_agent(app, &run) {
+            continue;
+        }
         if !session_has_live_attachment(app, run.session_id()) && !provider_run_is_running(&run) {
             continue;
         }
@@ -172,12 +177,21 @@ pub(super) fn attached_external_provider_session_refs(
     }
     if let Some(runtime_state) = runtime_state {
         for run in runtime_state.provider_runs_for_external_session_attachment() {
+            if provider_run_targets_remote_agent(app, &run) {
+                continue;
+            }
             if provider_run_is_running(&run) {
                 push_provider_run_attachment(&mut attached, &run);
             }
         }
     }
     attached
+}
+
+pub(super) fn provider_run_targets_remote_agent(app: &DaemonApp, run: &RuntimeProviderRun) -> bool {
+    run.agent_instance_id()
+        .and_then(|agent_id| app.agents().get_agent(agent_id).ok())
+        .is_some_and(|agent| agent.remote_execution().is_some())
 }
 
 pub(super) fn push_provider_run_attachment(
