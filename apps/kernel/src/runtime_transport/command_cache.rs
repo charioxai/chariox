@@ -98,13 +98,10 @@ pub(crate) enum CommandReservation {
     Conflict,
 }
 
-pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
-    !matches!(
-        request,
-        LocalDaemonRequest::RespondToInteraction(_)
-            | LocalDaemonRequest::RequestNativeProviderInteraction(_)
-            | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
-    )
+pub(crate) fn request_is_cacheable(_request: &LocalDaemonRequest) -> bool {
+    // Every command needs in-memory deduplication so a transport replay cannot execute it twice.
+    // Sensitive interaction results are excluded from disk persistence separately below.
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -754,7 +751,10 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "external_provider_session.list"
+        "credential_enrollment.interaction.request"
+            | "external_provider_session.list"
+            | "interaction.respond"
+            | "native_provider.interaction.request"
             | "provider.catalog.get"
             | "session.state.get"
             | "slice.list"

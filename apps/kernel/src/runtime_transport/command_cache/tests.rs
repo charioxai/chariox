@@ -1,6 +1,7 @@
 use super::*;
 use crate::local::{
-    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest, RespondToInteractionRequest,
+    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest,
+    RequestNativeProviderInteractionRequest, RespondToInteractionRequest,
 };
 
 #[test]
@@ -16,7 +17,7 @@ fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
 }
 
 #[test]
-fn credential_interaction_requests_bypass_the_command_result_cache() {
+fn interaction_requests_use_volatile_command_deduplication() {
     let helper_request = LocalDaemonRequest::RequestCredentialEnrollmentInteraction(
         RequestCredentialEnrollmentInteractionRequest {
             session_id: "session-1".to_string(),
@@ -29,6 +30,16 @@ fn credential_interaction_requests_bypass_the_command_result_cache() {
             timeout_sec: Some(30),
         },
     );
+    let native_request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            "session-1",
+            "agent-1",
+            "interaction-1",
+            Some("Approve?".to_string()),
+            "Approve?".to_string(),
+            Some(30),
+        ),
+    );
     let response_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
         session_id: "session-1".to_string(),
         interaction_id: "interaction-1".to_string(),
@@ -36,11 +47,76 @@ fn credential_interaction_requests_bypass_the_command_result_cache() {
         custom_reply: Some("secret-callback".to_string()),
     });
 
-    assert!(!request_is_cacheable(&helper_request));
-    assert!(!request_is_cacheable(&response_request));
+    for request in [&helper_request, &native_request, &response_request] {
+        assert!(request_is_cacheable(request));
+        assert!(!should_persist_completed_result(
+            &CommandResultCache::fingerprint_for_test(request),
+        ));
+    }
     assert!(request_is_cacheable(&LocalDaemonRequest::ListSessions(
         ListSessionsRequest,
     )));
+}
+
+#[tokio::test]
+async fn pending_interaction_replay_waits_for_one_volatile_result() {
+    let path = temp_cache_path("pending-interaction-replay");
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            "session-1",
+            "agent-1",
+            "interaction-1",
+            Some("Approve?".to_string()),
+            "Approve?".to_string(),
+            Some(30),
+        ),
+    );
+    let fingerprint = CommandResultCache::fingerprint_for_test(&request);
+
+    assert!(matches!(
+        cache.reserve("interaction-command", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    let replay = match cache.reserve("interaction-command", &fingerprint).await {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("transport replay should wait for the original interaction"),
+    };
+    let response = serde_json::json!({
+        "NativeProviderInteractionResolved": {
+            "resolution": {
+                "status": "resolved",
+                "choice_id": "allow_once",
+                "reply": "allow"
+            }
+        }
+    });
+    let frame = KernelOutgoingFrame::Response {
+        request_id: "interaction-attempt-1".to_string(),
+        response: Box::new(Some(response.clone())),
+        error: None,
+    };
+
+    cache
+        .complete(
+            "interaction-command".to_string(),
+            fingerprint.clone(),
+            &frame,
+        )
+        .await;
+    let replayed = replay.await.expect("interaction replay should resolve");
+    assert_eq!(*replayed.response, Some(response));
+    assert!(fs::read_to_string(&path).unwrap_or_default().is_empty());
+
+    let restored = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should reload");
+    assert!(matches!(
+        restored.reserve("interaction-command", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
