@@ -719,6 +719,13 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) {
+        // Kernel-internal recovery envelopes carry provider resume text, not
+        // user input. The local dispatch runtime guards its own call site, but
+        // remote-lease dispatchers reach this helper too; centralize the
+        // guard so no caller can leak the envelope into prompt-echo output.
+        if crate::runtime::state::is_internal_recovery_prompt_attachment(source_attachment_id) {
+            return;
+        }
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id)

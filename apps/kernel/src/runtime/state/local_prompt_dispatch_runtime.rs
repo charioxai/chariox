@@ -998,9 +998,7 @@ fn join_hidden_context(first: &str, second: &str) -> String {
     }
 }
 
-fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> bool {
-    attachment_id.starts_with("kernel-recovery:")
-}
+use super::restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 
 enum PromptAbortDispatchOutcome {
     Done,
