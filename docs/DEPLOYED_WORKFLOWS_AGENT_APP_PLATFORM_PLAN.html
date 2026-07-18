@@ -792,13 +792,14 @@
     <div id="scroll-progress" aria-hidden="true"></div>
 
     <header class="masthead">
-      <p class="eyebrow">Cross-repository implementation and validation plan / updated 2026-07-18</p>
+      <p class="eyebrow">Cross-repository implementation and validation plan / revised 2026-07-18</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
       <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-platform</span>
         <span>Cloud branch: codex/deployed-workflows-platform</span>
-        <span>Status: implementation and technical acceptance complete; first external production launch awaits operator approval and configuration of the production credential-storage and service-registration choices below</span>
+        <span>Integration baseline: OSS main 424288d40 / feature 395cfeeb4; Cloud main ee1600df / feature 54f89e77</span>
+        <span>Status: feature implementation is preserved and validated on dedicated branches; main-first integration, the dedicated Deployed route, and the guided deployment wizard are the next release increment</span>
       </div>
     </header>
 
@@ -879,8 +880,13 @@
 
         <section id="baseline">
           <p class="eyebrow">02 / Current baseline</p>
-          <h2>The product path and technical acceptance exist; production service onboarding is now the boundary.</h2>
-          <p>This checkpoint covers the dedicated <code>codex/deployed-workflows-platform</code> branches at implementation heads OSS <code>41bded5580bdbe176be68b9877a6442e4b5a6392</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code> on 2026-07-18. The kernel remains runtime authority, Cloud remains the control plane, and the hosted runner materializes immutable releases. Acceptance is compositional and provenance-bound: earlier clean heads prove live providers, remote-machine execution, collaborator handoff, and hosted faults; the exact implementation heads revalidate the changed remote-lease, command-cache, terminal-projection, and managed-slice seams in both terminal directions. No claim is made that one all-eight-cell command ran at one revision pair.</p>
+          <h2>The feature path is preserved; integration and product-surface completion remain.</h2>
+          <p>The dedicated <code>codex/deployed-workflows-platform</code> branches currently end at OSS <code>395cfeeb409100f4737f25ee089f218508acb683</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code>. Their prior technical acceptance remains provenance-bound evidence for those revisions. Current main is newer at OSS <code>424288d4064a226c811d37fdab35c4f2a0eb0d10</code> and Cloud <code>ee1600df1bfdc430205a4b190c08c07d449dd1e9</code>, with additional reliability, history, prompt-draft, and terminal-projection behavior that must remain authoritative. Integration acceptance must therefore be rerun on the final merged revision pair; prior evidence cannot certify conflict resolutions or the new wizard.</p>
+
+          <div class="callout info">
+            <strong>Main-first integration snapshot / 2026-07-18</strong>
+            <p>At this snapshot both feature worktrees and both canonical main worktrees are clean and pushed, but another agent may still advance the feature branches. Divergence is 12 main-only versus 99 feature-only commits in OSS and 13 main-only versus 261 feature-only commits in Cloud. A dry merge reports 16 OSS conflicts concentrated in provider settlement, remote-lease/history, scheduler, and local-slice runtime code, plus 6 Cloud conflicts in terminal service, route composition, and output/turn projection. Recalculate all heads, dirtiness, divergence, and conflicts after the active agent's final checkpoint; these counts are planning evidence, not a frozen merge input.</p>
+          </div>
 
           <div class="table-wrap">
             <table>
@@ -913,9 +919,15 @@
                 </tr>
                 <tr>
                   <td>Web UI</td>
-                  <td><span class="status have">Landed</span> Global Deployed portfolio and detail operations cover release, runtime, access, credentials, domains, observability and handoff with matching TUI commands.</td>
-                  <td><span class="status have">Accepted</span> Desktop/mobile, error, collaborator, remote, and exact-head managed-slice evidence passed; representative source, access, domain, and handoff screenshots were inspected.</td>
+                  <td><span class="status have">Partial</span> The feature branch has a substantial Deployed sidebar/detail workspace and matching TUI commands. Current main also has a dedicated Published Workflows route and browser controls that directly start, stop, restart, and inspect local publication runtimes.</td>
+                  <td>Add a compact searchable Deployed sidebar with safe quick actions plus a dedicated <code>/deployed</code> portfolio/detail route. Reuse one service/state authority across sidebar, route, web terminal, and TUI.</td>
                   <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Deployment initiation</td>
+                  <td><span class="status have">Partial</span> Draft workflows have a single deploy modal that internally publishes and deploys one selected endpoint. Published workflows expose runtime controls, but there is no shared guided, resumable deployment setup flow.</td>
+                  <td>Provide one conditional wizard from both draft and published workflow surfaces. Draft origin includes publication configuration; published origin starts at release/deployment configuration. Both converge on the same durable deployment setup state machine.</td>
+                  <td>Both</td>
                 </tr>
                 <tr>
                   <td>Credentials</td>
@@ -955,7 +967,9 @@
             <li>Contract and activation admission: <code>arroba-cloud/apps/api/src/publication/deployment-runtime-compatibility.ts</code> and <code>arroba-cloud/apps/api/src/publication/publication-egress-policy.ts</code>.</li>
             <li>Credential callback claim binding: <code>arroba-cloud/apps/api/src/publication/deployment-credential-callback-channel-repository.ts</code>.</li>
             <li>Runner: <code>arroba-cloud/apps/worker/src/publication-runner.ts</code>.</li>
-            <li>Current web mount: <code>arroba-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
+            <li>Current Deployed web mount: <code>arroba-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
+            <li>Current draft deploy modal: <code>arroba-cloud/apps/web/src/react/workflows/WorkflowActionButtonsMount.tsx</code>; current publication form: <code>WorkflowEndpointPublicationInspector.tsx</code>.</li>
+            <li>Current dedicated route pattern and local runtime controls: <code>PublishedWorkflowsRouteMount.tsx</code>, <code>PublishedWorkflowsSidebarPanelMount.tsx</code>, and <code>terminal-browser-publication-controller.ts</code>.</li>
           </ul>
         </section>
 
@@ -1360,6 +1374,56 @@ credential:  disconnected -> connecting -> ready -> expiring -> expired | revoke
           <h2>Build a global operating surface with a guided setup path.</h2>
           <p>Keep workflow drafting and publication near the canvas, but make deployed products available from a global primary navigation tab. The deployment must remain operable after the source session disappears or the builder loses access.</p>
 
+          <h3>Sidebar and dedicated route</h3>
+          <p>Use the same pattern as History and Published Workflows: the terminal sidebar is a compact operating summary, while <code>/deployed</code> is the durable management destination. The sidebar shows search, attention filters, concise status/readiness, and safe quick actions such as open, copy URL, start, stop, restart, and inspect. Selecting a row or the linked title opens <code>/deployed?project=&lt;id&gt;&amp;environment=&lt;id&gt;&amp;section=&lt;section&gt;</code>. Promotion, rollback, transfer, credential revocation, access changes, and deletion remain confirmed detail-route actions.</p>
+          <p>The sidebar, full route, terminal commands, and TUI must consume one normalized deployment projection and issue the same idempotent service commands. Do not build a second fetch loop or client-owned deployment authority for the route.</p>
+
+          <h3>One wizard, two valid origins</h3>
+          <div class="decision">
+            <strong>Product rule</strong>
+            <p><strong>Deploy from draft</strong> means "publish an immutable snapshot, then deploy it". <strong>Deploy from publication</strong> means "deploy this existing immutable publication". The UI may make the draft path feel like one operation, but the persisted publication/release boundary must stay explicit for provenance, retry, promotion, and rollback.</p>
+          </div>
+          <ul>
+            <li><strong>Draft entry:</strong> the workflow canvas Deploy action opens the wizard with source workflow, selected endpoint, queue, and current revision prefilled. Publication steps are editable.</li>
+            <li><strong>Published entry:</strong> each Published Workflows row/detail exposes Deploy. The wizard displays the immutable source summary and begins at deployment target/configuration; publication fields are read-only and are not recreated.</li>
+            <li><strong>Deployed entry:</strong> the Deployed route may offer New deployment, requiring selection of a publication before entering the shared deployment steps.</li>
+            <li><strong>Endpoint scope:</strong> the first integrated increment preserves the current deployable unit of one publication endpoint per release. The wizard selects and configures that endpoint; it does not silently edit the workflow graph. Multi-endpoint application bundles require an explicit route-set contract, conflict rules, shared-version semantics, and atomic rollback before they are presented as one deployment.</li>
+          </ul>
+
+          <h3>Conditional wizard steps</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Step</th>
+                  <th>Draft origin</th>
+                  <th>Published origin</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>1. Source</td><td>Workflow revision, change summary, endpoint readiness, unresolved validation, and snapshot intent.</td><td>Publication identity, digest, provenance, source revision, compatibility, and revocation state.</td></tr>
+                <tr><td>2. Interface</td><td>Select endpoint and queue; configure HTTP, API SSE JSON, WebSocket JSON, MCP, or schedule-only transport; route, methods, parser, response mode, input schema, trace exposure, timeout, and polling.</td><td>Read-only summary of the publication contract. Return to the draft to change interface semantics; create a new publication rather than mutating this one.</td></tr>
+                <tr><td>3. Release</td><td>Review provider bundles, extension and credential slots, Agent App assets, resource/network ceilings, package digest, and compatibility preflight before publication.</td><td>Verify the existing package and deployment contract; select an existing Cloud release when already imported, otherwise import it once by digest.</td></tr>
+                <tr><td>4. Target</td><td colspan="2">Choose hosted Arroba container or ingress-only local runtime, organization/project, environment, region, size, replicas, concurrency, schedule behavior, and update strategy.</td></tr>
+                <tr><td>5. Ownership and access</td><td colspan="2">Choose internal, customer-owned, or builder-managed ownership; configure public, invitation/allowlist, verified domain/organization, external identity, or machine access and route-role mapping.</td></tr>
+                <tr><td>6. Credentials</td><td colspan="2">Show declared provider/integration slots; bind destination-owned profiles, start enrollment, or leave activation explicitly blocked until the owner completes setup. Never copy builder credential bytes.</td></tr>
+                <tr><td>7. Network and URL</td><td colspan="2">Choose default URL or custom domain setup, canonical host, declared egress policy, budgets, rate/concurrency limits, retention, and alerts.</td></tr>
+                <tr><td>8. Review and deploy</td><td colspan="2">Show every object and side effect that will be created, validation warnings, estimated resource/cost envelope, ownership, access, and credential readiness. Require explicit activation confirmation.</td></tr>
+                <tr><td>9. Progress</td><td colspan="2">Stream publication, package verification, release import, environment reconciliation, private smoke test, ingress/domain, and activation progress. Provide a durable link to the resulting Deployed detail route.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Durable orchestration and recovery</h3>
+          <ul>
+            <li>Persist a deployment setup/intention record with origin, source IDs and digests, chosen options, completed stages, idempotency key, actor, account, and terminal-visible status. The browser must not be the coordinator.</li>
+            <li>For a draft, the kernel validates and snapshots the workflow, creates the publication, and exports package v3. Cloud verifies/imports that package, creates or reuses the release by digest, then creates project/environment configuration and reconciles desired runtime state.</li>
+            <li>For a publication, skip snapshot/publication creation and begin with package verification/import. Never generate a duplicate publication merely because the wizard or network retried.</li>
+            <li>Make every stage idempotent and resumable after browser refresh, terminal detach, relay/API/kernel restart, timeout, or worker failure. Preserve a valid publication/release when a later deployment stage fails; resume from the failed stage or let the user abandon and garbage-collect only incomplete deployment records.</li>
+            <li>Project progress, validation failures, credential/permission interactions, and final IDs to both web and TUI. A second attached client must observe transitions with bounded delay and may safely continue the setup when authorized.</li>
+            <li>Use a private smoke test before public activation. Separate "configuration saved", "preflight passed", "runtime ready", and "production active" so a partial setup is never reported as deployed.</li>
+          </ul>
+
           <h3>Portfolio view</h3>
           <p>Show app/deployment, kind, customer owner, environment, desired/observed status, health, active release, access mode, URL/domain, credential readiness, current usage/cost and last change. Support filters for owner, kind, environment, health, provider and attention required.</p>
 
@@ -1623,6 +1687,23 @@ publication container (no direct public route)</pre>
             </details>
 
             <details class="phase" open>
+              <summary><span class="phase-id">Phase 2A</span><span class="phase-title">Main-first integration, full route, and deployment wizard</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul>
+                  <li>Freeze exact clean feature heads after the active agent checkpoints and pushes every intended dirty or untracked source change; preserve those source branches unchanged.</li>
+                  <li>Create fresh OSS and Cloud integration worktrees from then-current <code>origin/main</code>, merge the frozen feature heads without rebasing, and manually reconcile conflicts so newer main reliability/history/terminal semantics remain authoritative.</li>
+                  <li>Add the compact searchable Deployed sidebar and dedicated <code>/deployed</code> portfolio/detail route on one shared state/service projection.</li>
+                  <li>Replace the draft deploy modal with the conditional wizard and expose the same wizard from Published Workflows, backed by a durable idempotent deployment setup state machine.</li>
+                  <li>Complete local ingress deployment binding so selecting ingress-only local runtime starts or materializes the approved release from web/TUI and binds it to the Cloud environment without requiring an undocumented manual <code>arroba serve</code> step.</li>
+                  <li>Add protocol/version/snapshot updates where serialized kernel contracts change, migration/compatibility tests, focused route/wizard tests, and interruption/retry drills.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>From both a mutable draft and an existing publication, a user completes hosted-container and ingress-only local deployment through web, observes and continues the same setup through TUI, reaches the dedicated Deployed route, and can safely resume every intermediate failure without duplicate publications, releases, projects, or environments. All newer main behavior and feature acceptance suites pass at the exact integrated revision pair, both integration worktrees are clean and pushed, and no source feature branch was rewritten.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
               <summary><span class="phase-id">Phase 3</span><span class="phase-title">Customer claim, team, and audience access</span></summary>
               <div class="phase-body">
                 <h4>Deliver</h4>
@@ -1702,7 +1783,7 @@ publication container (no direct public route)</pre>
           </div>
 
           <div class="callout info">
-            <strong>Final implementation and technical acceptance checkpoint / 2026-07-18</strong>
+            <strong>Preserved feature-branch technical acceptance checkpoint / 2026-07-18</strong>
             <ul>
               <li>Working vertical paths cover immutable releases, project/environment promotion and rollback, the Deployed web surface and TUI commands, customer handoff and revocable builder access, audience policy, credential lifecycle, domains, HTTP/SSE/WebSocket/MCP, Agent App invocation identity, usage/limits, operations detail, audit and reconciliation.</li>
               <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Refreshed Claude credentials now pass both live terminal directions locally.</li>
@@ -1725,7 +1806,7 @@ publication container (no direct public route)</pre>
               <li>Final repository gates pass at the implementation heads: OSS validation is <code>644/644</code>; Cloud validation is <code>431/431</code>; Cloud recursive build/lint exits zero. The removed hard line-cap gate was not reintroduced. Both worktrees were clean before this documentation update.</li>
               <li>Implementation used dedicated relays, kernels, Cloud servers/APIs, ingress processes, probed unused ports, run-owned state, and the designated Hetzner host. Work proceeded serially after the resource-pressure request, compared existing drills whenever technical issues appeared, and committed and pushed every meaningful green increment. Temporary credentials, roots, processes, ports, containers, images, networks, volumes, Caddy changes, and tunnels were ownership-scoped and cleaned.</li>
             </ul>
-            <p><strong>Acceptance disposition:</strong> <span class="status have">Technical acceptance complete</span> for this implementation goal. The evidence is intentionally compositional across clean, pinned increments and the final exact-head managed-slice revalidation; it does not mislabel the selected two-cell report as a single full eight-cell run. The only remaining production launch gates are operator acceptance and configuration of the credential-storage, invitation, durability, billing, observability, and optional managed-domain services described in the external-services section. Those choices do not block the implemented product or its completed local/Hetzner validation.</p>
+            <p><strong>Acceptance disposition:</strong> <span class="status have">Preserved historical evidence</span> for the feature revisions named above. The evidence is intentionally compositional across clean, pinned increments and the exact-head managed-slice revalidation; it does not mislabel the selected two-cell report as a single full eight-cell run. It does not certify the main-first conflict resolutions, dedicated Deployed route, deployment wizard, or direct local-ingress binding in Phase 2A. Those changes require new exact-pair acceptance before production service onboarding becomes the only remaining launch boundary.</p>
           </div>
         </section>
 
@@ -1755,14 +1836,15 @@ publication container (no direct public route)</pre>
               </thead>
               <tbody>
                 <tr><td>Surface</td><td>Every scenario through web terminal and TUI terminal end to end; repeat remote cases through remote TUI/CLI where applicable.</td></tr>
+                <tr><td>Deployment origin</td><td>Mutable draft with unpublished changes, draft matching an existing publication, existing healthy publication, revoked/incompatible publication, and publication already imported as a Cloud release.</td></tr>
                 <tr><td>Actor</td><td>Builder, customer owner, maintainer, operator, invited end user, denied user, machine caller, revoked builder.</td></tr>
                 <tr><td>Runtime</td><td>Local runtime, hosted Hetzner container, remote machine/slice where applicable.</td></tr>
                 <tr><td>Provider</td><td>Codex, Claude, OpenCode, plus deterministic test adapter for failure injection.</td></tr>
                 <tr><td>Transport</td><td>Human HTTP, API SSE JSON, WebSocket JSON, MCP and schedule-only.</td></tr>
                 <tr><td>Egress</td><td>Empty policy, one/multiple exact hosts, mixed public/private DNS answers, alternate ports, SNI mismatch, gateway loss, direct-route probe and legacy unrestricted denial.</td></tr>
                 <tr><td>Access</td><td>Public, invited email, email domain, organization, API key/JWT, webhook signature and denied/expired/revoked credentials.</td></tr>
-                <tr><td>Lifecycle</td><td>Create, invite, claim, configure, preview, activate, propose update, promote, rollback, stop, restart, transfer, revoke, export and delete.</td></tr>
-                <tr><td>Disruption</td><td>Browser reconnect, relay restart, ingress restart, Cloud API restart, runner restart, kernel/container drop, provider crash, network partition and credential expiry.</td></tr>
+                <tr><td>Lifecycle</td><td>Save/resume/abandon setup; publish/import/create/configure/preflight/activate; invite, claim, propose update, promote, rollback, stop, restart, transfer, revoke, export and delete.</td></tr>
+                <tr><td>Disruption</td><td>Refresh/detach at every wizard boundary, duplicate submit, browser reconnect, relay restart, ingress restart, Cloud API restart, runner restart, kernel/container drop, provider crash, network partition and credential expiry.</td></tr>
                 <tr><td>Domain</td><td>Default host, valid custom host, invalid ownership, DNS drift, TLS pending/failure, canonical switch and removal.</td></tr>
                 <tr><td>Load</td><td>Single caller, multiple callers, queue saturation, per-caller ordering, rate limit, budget limit and large/slow request.</td></tr>
               </tbody>
@@ -1772,6 +1854,9 @@ publication container (no direct public route)</pre>
           <h3>End-to-end drills</h3>
           <p>Execute every drill below once with the web terminal as the initiating surface and once with the TUI terminal as the initiating surface. Keep the second client attached during each run and assert that state, prompts, permissions, requests, logs, health, and lifecycle transitions converge in both directions.</p>
           <ol>
+            <li><strong>Draft-to-hosted wizard:</strong> start with an unpublished workflow, select endpoint/queue/transport and publication options, review the package contract, configure hosted runtime/access/credentials/domain/limits, deploy, and prove exactly one immutable publication and release were created.</li>
+            <li><strong>Publication-to-local-ingress wizard:</strong> deploy an existing publication without recreating it, start or materialize its local runtime directly from an authorized web/TUI action, bind global ingress, interrupt each stage in separate cases, and resume to the same project/environment IDs.</li>
+            <li><strong>Wizard concurrency and recovery:</strong> keep web and TUI attached, alternate edits and continuation between them, submit duplicate commands, disconnect each client, restart coordinator components, reject stale conflicting edits, and verify one authoritative setup state with no duplicate side effects.</li>
             <li><strong>Agency handoff:</strong> builder publishes and sends claim; customer claims in another account, connects dependencies, invites users, activates, then revokes builder while calls continue.</li>
             <li><strong>Credential independence:</strong> verify builder credentials never appear in package/Cloud/runtime; customer connects each provider; rotate and revoke one binding while unrelated deployments continue.</li>
             <li><strong>Release safety:</strong> propose a changed release, show contract/config diff, reject an incompatible release, promote compatible release, force health failure and automatically retain/restore prior healthy version.</li>
@@ -1788,7 +1873,7 @@ publication container (no direct public route)</pre>
             <li><strong>Contract:</strong> OSS package fixtures consumed by Cloud; protocol snapshots and version gates; signed invocation envelope fixtures.</li>
             <li><strong>Integration:</strong> authenticated API with real Postgres schema, runner reconciliation, package store, Caddy routing and provider setup adapter.</li>
             <li><strong>Security:</strong> cross-account/cross-caller probes, forged headers/tokens, CSRF, replay, host confusion, path encoding, SSRF/egress, log/secret scans.</li>
-            <li><strong>Visual:</strong> desktop and mobile screenshots for portfolio, setup, claim, credentials, access, release diff, domain states, observability and error/recovery states.</li>
+            <li><strong>Visual:</strong> desktop and mobile screenshots for the compact Deployed sidebar, dedicated portfolio/detail route, every conditional wizard step, resume/error/progress states, claim, credentials, access, release diff, domains, and observability.</li>
             <li><strong>Parity:</strong> drive the complete journey and every recovery case from web terminal and TUI terminal, not only matching read checks; compare normalized status, interactions, errors, recovery, and low-delay updates.</li>
           </ul>
 
@@ -1808,16 +1893,28 @@ publication container (no direct public route)</pre>
           <p class="eyebrow">16 / Delivery discipline</p>
           <h2>Keep both repositories reviewable and continuously recoverable.</h2>
           <div class="review-gate">
-            <strong>Worktrees</strong>
-            <p>Implement only in the dedicated `codex/deployed-workflows-platform` worktrees. Start every phase by fetching and reconciling current `main` without overwriting unrelated user work.</p>
+            <strong>Source worktrees are evidence, not the merge base</strong>
+            <p>Keep the existing <code>codex/deployed-workflows-platform</code> worktrees and branches intact as preserved feature sources. Do not rebase, force-push, reset, or resolve integration conflicts inside them. Create one fresh integration worktree per repository from current <code>origin/main</code>; main is the immutable behavioral truth onto which feature intent is adapted.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Active-agent freeze and dirty-file capture</strong>
+            <p>Do not freeze or merge while another agent may still write. Ask that agent to stop at a meaningful checkpoint, then inspect tracked modifications, staged changes, untracked files, and ignored drill output in both feature worktrees. Review every intended source/doc/test change, commit it in focused commits, and push it to the feature branch. Classify generated artifacts separately and clean or preserve only required evidence according to repository policy. Do not hide work in a stash or copy an unexplained dirty tree into integration. Record the final feature SHA, <code>git status --short</code>, upstream status, and artifact disposition for each repository.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Main-first merge procedure</strong>
+            <p>Fetch immediately before integration; create <code>codex/deployed-workflows-main-integration</code> from the exact current <code>origin/main</code> in each fresh worktree; record main and feature SHAs; and merge the frozen feature SHA with <code>--no-ff --no-commit</code>. Resolve each conflict semantically from the merge base, main, and feature versions. Preserve main's newer runtime reliability, history, prompt-draft, and terminal-projection behavior, then port the deployment capability around it. Never use blanket <code>ours</code> or <code>theirs</code> resolution.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Integration completeness audit</strong>
+            <p>After conflict resolution, compare merge-base-to-feature intent with the integrated tree, inventory feature-only migrations/protocol changes/routes/tests/docs, and confirm no accepted capability disappeared. Recalculate schema and protocol compatibility, generated clients, snapshots, and minimum-version gates. Before final merge, fetch main again, integrate any new main commits, rerun affected validation, and record the exact tested pair.</p>
           </div>
           <div class="review-gate">
             <strong>Commit and push</strong>
-            <p>Commit and push every meaningful green increment in each affected repository. Use focused commits such as contract, migration, service, UI, drill, and docs. Do not accumulate a cross-repository implementation in one final commit.</p>
+            <p>Commit and push every meaningful green increment in each affected repository, including the feature checkpoint, main adaptation, conflict-resolution groups, route, wizard orchestration, UI, tests, drills, and docs. Do not accumulate integration in one opaque commit, and do not push a partially resolved merge as if it were validated.</p>
           </div>
           <div class="review-gate">
             <strong>Cross-repo order</strong>
-            <p>When the serialized runtime contract changes: land OSS contract/version/tests first, update Cloud compatibility and fixtures second, then run mixed-version rejection/compatibility drills. Do not merge one side while the other depends on unpushed local state.</p>
+            <p>Build and validate both integration branches together. When the serialized runtime contract changes, merge OSS contract/version/tests to main first; rebase is still forbidden, so merge the resulting OSS main into the OSS integration line if needed and update Cloud compatibility/fixtures against that landed SHA. Then merge Cloud. Run mixed-version rejection/compatibility drills and do not leave either main depending on unpushed local state.</p>
           </div>
           <div class="review-gate">
             <strong>Progress record</strong>
@@ -1837,6 +1934,9 @@ publication container (no direct public route)</pre>
           <p class="eyebrow">17 / Launch gate</p>
           <h2>Do not call it managed hosting until these statements are true.</h2>
           <ul class="checklist">
+            <li>The compact Deployed sidebar and dedicated <code>/deployed</code> route expose the same authoritative portfolio/detail state and safe lifecycle commands as the TUI.</li>
+            <li>Draft-origin and publication-origin wizard paths are resumable and idempotent, clearly preserve the immutable publication boundary, and cannot create duplicate publications, releases, projects, environments, or activations after retries.</li>
+            <li>Ingress-only local deployment can be started/materialized and globally bound through supported web and TUI actions without an undocumented manual runtime command.</li>
             <li>Every managed hosted release is an immutable verified package v3 contract admitted only to a compatible immutable runtime image; legacy packages cannot activate hosted.</li>
             <li>The production runtime image pins and verifies supported official provider CLI bundles, and activation rejects undeclared, unsupported or substituted bundle references.</li>
             <li>A customer can claim and operate a deployment without source-workflow or builder-account dependency.</li>
