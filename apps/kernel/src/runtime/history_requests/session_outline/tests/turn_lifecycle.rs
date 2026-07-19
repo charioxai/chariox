@@ -248,6 +248,218 @@ fn outline_completed_turn_never_settles_before_its_final_output() {
 }
 
 #[test]
+fn outline_completed_turn_ignores_late_notice_without_a_settlement_marker() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "first prompt"),
+        context.clone(),
+    );
+    prompt.timestamp_ms = 1_000;
+    let mut output = HistoryEvent::transcript(
+        11,
+        &SessionHistoryEntry::provider_output(
+            "session-1",
+            "run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            "finished response",
+        ),
+        context.clone(),
+    );
+    output.timestamp_ms = 2_000;
+    let mut queued = HistoryEvent::transcript(
+        12,
+        &SessionHistoryEntry::notice(
+            "session-1",
+            Some("run-1"),
+            Some("agent-1"),
+            "Attachment `attachment-2` queued prompt `pending-2` for agent `agent-1`.",
+        ),
+        context,
+    );
+    queued.timestamp_ms = 100_000;
+
+    let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), output, queued], true)
+        .expect("completed turn should be outlined");
+
+    assert_eq!(
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Completed
+    );
+    assert_eq!(turn.completed_at_ms, Some(2_000));
+}
+
+#[test]
+fn agent_outline_uses_suppressed_observer_settlements_for_arroba_owned_turns() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-observer-settlement-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut events = Vec::new();
+    let mut sequence = 10;
+
+    for (index, base_ms) in [(1, 1_000_u64), (2, 100_000_u64)] {
+        let prompt_text = format!("workflow prompt {index}");
+        let attachment_id = format!("workflow-run:{index}");
+        let mut prompt = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                &attachment_id,
+                "agent-1",
+                prompt_text.clone(),
+            ),
+            context.clone(),
+        );
+        prompt.timestamp_ms = base_ms;
+        events.push(prompt);
+        sequence += 1;
+
+        let mut output = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some(format!("owned-output-{index}")),
+                format!("owned response {index}"),
+            )
+            .with_source_attachment_id(Some(attachment_id.clone())),
+            context.clone(),
+        );
+        output.timestamp_ms = base_ms + 1_000;
+        events.push(output);
+        sequence += 1;
+
+        let observed_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            prompt_text,
+            "codex",
+            "thread-1",
+            Some(format!("observed-user-{index}")),
+            Some(base_ms + 100),
+        );
+        let mut observed_prompt_event =
+            HistoryEvent::transcript(sequence, &observed_prompt, context.clone());
+        observed_prompt_event.timestamp_ms = base_ms + 100;
+        events.push(observed_prompt_event);
+        sequence += 1;
+
+        let observed_output = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderOutput,
+            format!("observed response {index}"),
+            "codex",
+            "thread-1",
+            Some(format!("observed-user-{index}")),
+            Some(base_ms + 900),
+        );
+        let mut observed_output_event =
+            HistoryEvent::transcript(sequence, &observed_output, context.clone());
+        observed_output_event.timestamp_ms = base_ms + 900;
+        events.push(observed_output_event);
+        sequence += 1;
+
+        let mut settlement = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::ProviderStatus,
+            "codex task_complete",
+            "codex",
+            "thread-1",
+            Some(format!("observed-user-{index}")),
+            Some(base_ms + 1_100),
+        );
+        settlement.external_observation = Some(crate::history::SessionHistoryExternalObservation {
+            settles_active_prompt: true,
+            passive_telemetry: false,
+        });
+        let mut settlement_event = HistoryEvent::transcript(sequence, &settlement, context.clone());
+        settlement_event.timestamp_ms = base_ms + 1_100;
+        events.push(settlement_event);
+        sequence += 1;
+
+        if index == 1 {
+            let mut queued = HistoryEvent::transcript(
+                sequence,
+                &SessionHistoryEntry::notice(
+                    "session-1",
+                    Some("run-1"),
+                    Some("agent-1"),
+                    "Attachment `workflow-run:2` queued prompt `pending-2` for agent `agent-1`.",
+                ),
+                context.clone(),
+            );
+            queued.timestamp_ms = 99_900;
+            events.push(queued);
+            sequence += 1;
+        }
+    }
+
+    store
+        .append_many(&events)
+        .expect("workflow transcript should append");
+
+    let outline = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+        .expect("agent outline should load");
+
+    assert_eq!(outline.turns.len(), 2);
+    assert_eq!(outline.turns[0].completed_at_ms, Some(2_100));
+    assert_eq!(outline.turns[1].completed_at_ms, Some(101_100));
+    assert!(outline
+        .turns
+        .iter()
+        .all(|turn| turn.lifecycle == SessionHistoryOutlineTurnLifecycle::Completed));
+    assert!(outline
+        .turns
+        .iter()
+        .all(|turn| turn.external_provider.is_none()));
+    assert_eq!(
+        outline.turns[0]
+            .summary
+            .as_ref()
+            .map(|entry| entry.entry.text.as_str()),
+        Some("owned response 1")
+    );
+    assert_eq!(
+        outline.turns[1]
+            .summary
+            .as_ref()
+            .map(|entry| entry.entry.text.as_str()),
+        Some("owned response 2")
+    );
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn agent_outline_joins_prompt_settlement_that_persisted_before_prompt_history() {
     let path = std::env::temp_dir().join(format!(
         "arroba-out-of-order-settlement-outline-{}-{}.db",

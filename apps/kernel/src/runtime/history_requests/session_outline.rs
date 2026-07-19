@@ -207,13 +207,18 @@ fn load_scoped_agent_outline(
                 }
             }
         }
-        let events = scoped_history_events(events, agent_import);
+        let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba {
-            suppress_external_observed_events_from_arroba_turn(events)
+            suppress_external_observed_events_from_arroba_turn(lifecycle_events.clone())
         } else {
-            events
+            lifecycle_events.clone()
         };
-        if let Some(mut turn) = outline_turn_from_events(prompt, events, has_newer_prompt) {
+        if let Some(mut turn) = outline_turn_from_events_with_lifecycle(
+            prompt,
+            events,
+            &lifecycle_events,
+            has_newer_prompt,
+        ) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
         }
@@ -491,12 +496,22 @@ fn outline_turn_from_events(
     events: Vec<HistoryEvent>,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
+    let lifecycle_events = events.clone();
+    outline_turn_from_events_with_lifecycle(prompt, events, &lifecycle_events, has_newer_prompt)
+}
+
+fn outline_turn_from_events_with_lifecycle(
+    prompt: &HistoryEvent,
+    events: Vec<HistoryEvent>,
+    lifecycle_events: &[HistoryEvent],
+    has_newer_prompt: bool,
+) -> Option<SessionHistoryOutlineTurn> {
     let events = suppress_sparse_legacy_transcript_duplicates(events);
     let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let completed_at_ms =
-        outline_turn_completed_at_ms(prompt, &events, prompt_origin, has_newer_prompt);
+        outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms);
     let summary_index = events
         .iter()
@@ -671,7 +686,7 @@ fn outline_turn_completed_at_ms(
     Some(
         events
             .iter()
-            .filter(|event| has_content(event))
+            .filter(|event| outline_turn_completion_content_is_visible(event))
             .map(|event| event.timestamp_ms)
             .max()
             .unwrap_or(prompt.timestamp_ms),
@@ -679,7 +694,15 @@ fn outline_turn_completed_at_ms(
 }
 
 fn outline_turn_completion_content_is_visible(event: &HistoryEvent) -> bool {
-    if !has_content(event) {
+    if !matches!(
+        event.kind,
+        HistoryEventKind::ProviderOutput
+            | HistoryEventKind::ProviderReasoning
+            | HistoryEventKind::ProviderTool
+            | HistoryEventKind::ProviderError
+            | HistoryEventKind::ProviderStatus
+    ) || !has_content(event)
+    {
         return false;
     }
     let Some(entry) = event.to_session_history_entry() else {
