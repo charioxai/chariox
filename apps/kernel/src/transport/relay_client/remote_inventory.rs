@@ -130,6 +130,9 @@ async fn validate_live_relay_kernels(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS);
     for kernel in kernels {
+        if kernel.kernel_id == config.daemon_id {
+            continue;
+        }
         if !known_kernel_ids.contains(&kernel.kernel_id) {
             validated.push(kernel);
             continue;

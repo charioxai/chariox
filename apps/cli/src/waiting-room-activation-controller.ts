@@ -64,6 +64,7 @@ export type WaitingRoomActivationControllerDeps = {
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   updateSlices?: (slice: SliceRecord) => void
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
@@ -190,6 +191,7 @@ export function createWaitingRoomActivationController(
       return
     }
     if (decision.action === "join") {
+      await deps.prepareExistingSessionClient?.(decision.session)
       await deps.attachBinding(decision.session, false, decision.launch)
       deps.flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
       return

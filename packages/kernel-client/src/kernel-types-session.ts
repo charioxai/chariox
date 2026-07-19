@@ -114,6 +114,10 @@ export type SessionAgentDefaults = {
 
 export type WaitingRoomPublicSessionSummary = {
   id: string
+  kernel_id?: string | null
+  kernel_alias?: string | null
+  machine_id?: string | null
+  machine_alias?: string | null
   alias?: string | null
   workspace_id: string
   worktree_id: string

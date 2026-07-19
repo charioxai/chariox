@@ -18,7 +18,14 @@ export type RemoteMachineView = WaitingRoomRemoteMachineView
 export type RemoteKernelView = WaitingRoomRemoteKernelView
 
 export type WaitingRoomInventory = {
+  schemaVersion: number
   inventoryVersion: string
+  structuralVersion: string
+  activityRevision: string
+  kernelId: string
+  kernelAlias?: string | null
+  machineId: string
+  machineAlias?: string | null
   sessions: WaitingRoomPublicSessionSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
@@ -42,8 +49,21 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     ...(payload.external_provider_sessions_next_cursor !== undefined ? { next_cursor: payload.external_provider_sessions_next_cursor } : {}),
   })
   return {
+    schemaVersion: payload.schema_version,
     inventoryVersion: payload.inventory_version,
-    sessions: (payload.sessions ?? []).slice().sort((left, right) => right.created_at_ms - left.created_at_ms),
+    structuralVersion: payload.structural_version,
+    activityRevision: payload.activity_revision,
+    kernelId: payload.relay_status.daemon_id,
+    kernelAlias: payload.relay_status.daemon_alias,
+    machineId: payload.relay_status.machine_id,
+    machineAlias: payload.relay_status.machine_alias,
+    sessions: (payload.sessions ?? []).map((session) => ({
+      ...session,
+      kernel_id: payload.relay_status.daemon_id,
+      kernel_alias: payload.relay_status.daemon_alias,
+      machine_id: payload.relay_status.machine_id,
+      machine_alias: payload.relay_status.machine_alias,
+    })).sort((left, right) => right.created_at_ms - left.created_at_ms),
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines ?? [],
     remoteKernels: payload.remote_kernels ?? [],

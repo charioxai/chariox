@@ -39,6 +39,9 @@ export type SessionListEntry = {
   host_machine_id?: string | null
   host_daemon_id?: string | null
   kernel_id?: string | null
+  machine_id?: string | null
+  kernel_alias?: string | null
+  machine_alias?: string | null
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null

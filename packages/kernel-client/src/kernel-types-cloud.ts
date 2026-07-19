@@ -308,6 +308,8 @@ export type ProviderAccountSummary = {
 
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
+  structural_version: string
+  activity_revision: string
   sessions: WaitingRoomPublicSessionSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]

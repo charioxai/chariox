@@ -283,6 +283,8 @@ export function createKernelEventDispatchController(
     }
     await deps.applyWaitingRoomRowsChanged({
       inventoryVersion: event.inventory_version,
+      structuralVersion: event.structural_version,
+      activityRevision: event.activity_revision,
       sessions: event.sessions as unknown as WaitingRoomPublicSessionSummary[],
       removedSessionIds: event.removed_session_ids,
     })

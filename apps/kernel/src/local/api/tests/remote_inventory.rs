@@ -157,3 +157,55 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
     assert_eq!(connection.kernel_id.as_deref(), Some("daemon-1"));
     assert_eq!(connection.token_expires_at, None);
 }
+
+#[test]
+fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
+    let config = DaemonConfig::for_tests();
+    let host_machine_id = config.host_machine_id.clone();
+    let harness = LocalRouterTestHarness::with_config(config);
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::provider_requests::remote_machine_records(
+                vec![RelayMachinePresence {
+                    machine_id: host_machine_id.clone(),
+                    machine_alias: Some("laptop".to_string()),
+                    kernel_count: 2,
+                    available_providers: Vec::new(),
+                    provider_accounts: Vec::new(),
+                }],
+                &host_machine_id,
+            ),
+            vec![RelayKernelPresence {
+                kernel_id: "sibling-kernel".to_string(),
+                machine_id: host_machine_id.clone(),
+                machine_alias: Some("laptop".to_string()),
+                relay_alias: None,
+                kernel_alias: Some("experiments".to_string()),
+                available_providers: Vec::new(),
+                provider_accounts: Vec::new(),
+                capabilities: vec!["kernel_ws".to_string()],
+                accepting_remote_leases: true,
+                leased_agent_count: 0,
+                local_session_count: 1,
+                public_key: "sibling-public-key".to_string(),
+            }],
+        );
+    });
+
+    let machines = match harness
+        .dispatch(LocalDaemonRequest::ListRemoteMachines(
+            ListRemoteMachinesRequest,
+        ))
+        .expect("same-machine inventory should succeed")
+    {
+        LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let machine = machines
+        .iter()
+        .find(|machine| machine.machine_id == host_machine_id)
+        .expect("local machine with sibling kernels should be listed");
+    assert_eq!(machine.trust_status, RemoteMachineTrustStatus::Approved);
+    assert!(!machine.pending);
+    assert_eq!(machine.kernel_count, 2);
+}

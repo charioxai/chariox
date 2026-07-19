@@ -695,11 +695,11 @@ test("gateway requires a valid deployment contract for package v3", async () => 
     const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
     assert.equal(config.publication_id, "pub-1")
 
-    deploymentContract.compatibility.minimum_local_daemon_protocol_version = 242
+    deploymentContract.compatibility.minimum_local_daemon_protocol_version = 243
     await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
     await assert.rejects(
       loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
-      /requires local daemon protocol version 242, but target runtime supports 241/,
+      /requires local daemon protocol version 243, but target runtime supports 242/,
     )
   } finally {
     await rm(root, { recursive: true, force: true })

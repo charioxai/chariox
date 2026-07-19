@@ -32,6 +32,8 @@ use crate::transport::kernel_protocol::{
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
+mod local_presence;
+
 pub(crate) mod command_cache;
 mod outgoing;
 mod subscriptions;
@@ -429,6 +431,7 @@ where
             "bind_port": bind_port,
         }),
     );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
     run_kernel_websocket_server_with_bound_listener(
         router,
         listener,
@@ -463,6 +466,7 @@ where
             "bind_port": bind_port,
         }),
     );
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
     run_kernel_websocket_server_with_bound_listener(
         router,
         listener,

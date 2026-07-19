@@ -54,4 +54,4 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 242;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 243;
