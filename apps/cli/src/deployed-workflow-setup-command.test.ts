@@ -70,6 +70,34 @@ test("TUI deployment setup deploys an immutable publication to a hosted containe
   }
 })
 
+test("TUI deployment setup persists and applies verified-domain access", async () => {
+  const fixture = await setupFixture({ mode: "hosted_container" })
+  try {
+    const output = await executeDeploymentSetupCommand(profile, [
+      "publication", "published-demo",
+      "--slug", "domain-hosted",
+      "--mode", "hosted-container",
+      "--access", "verified-domain",
+      "--access-subject", "@Example.COM",
+    ], fixture.runtime)
+
+    assert.equal(output.footer, "deployment domain-hosted ready")
+    assert.match(output.notice, /access verified-domain:example\.com/)
+    assert.deepEqual(fixture.cloud.setup?.configuration.access, {
+      kind: "email_domain",
+      subject: "example.com",
+    })
+    assert.deepEqual(fixture.cloud.audienceMutations, [{
+      kind: "email_domain",
+      subject: "example.com",
+      roles: ["public"],
+      status: "active",
+    }])
+  } finally {
+    await fixture.cleanup()
+  }
+})
+
 test("TUI deployment setup pauses for credentials and resumes without re-exporting", async () => {
   const fixture = await setupFixture({ mode: "hosted_container", credentialsReady: false })
   try {
@@ -217,6 +245,32 @@ class FakeDeploymentCloud {
   credentialsReady: boolean
   readonly checkpoints: DeploymentSetupCheckpoint[] = []
   readonly promotionKeys: string[] = []
+  readonly audienceMutations: Record<string, unknown>[] = []
+  private audience = {
+    mode: "restricted" as "public" | "restricted",
+    defaultRoles: [] as string[],
+    routes: [] as unknown[],
+    grants: [{
+      id: "owner-grant",
+      policyId: "audience-environment-1",
+      kind: "account" as const,
+      subject: "account-1",
+      roles: ["public"],
+      status: "active" as const,
+      revokedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }] as Array<Record<string, unknown>>,
+    apiKeys: [] as unknown[],
+    jwtIssuers: [] as unknown[],
+    webhookKeys: [] as unknown[],
+    id: "audience-environment-1",
+    accountId: "account-1",
+    projectId: "project-1",
+    environmentId: "environment-1",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
 
   constructor(
     private readonly mode: "local_runtime" | "hosted_container",
@@ -262,6 +316,38 @@ class FakeDeploymentCloud {
     }
     if (url.pathname === "/deployment-projects" && method === "POST") {
       return jsonResponse({ state: projectState(this.requiredSetup()) }, 201)
+    }
+    if (url.pathname.endsWith("/audience") && method === "GET") {
+      return jsonResponse({ audience: this.audience })
+    }
+    if (url.pathname.endsWith("/audience/policy") && method === "POST") {
+      this.audience = {
+        ...this.audience,
+        mode: body?.mode as "public" | "restricted",
+        defaultRoles: body?.defaultRoles as string[],
+      }
+      return jsonResponse({ audience: this.audience })
+    }
+    if (url.pathname.endsWith("/audience/grants") && method === "POST") {
+      const mutation = {
+        kind: body?.kind,
+        subject: body?.subject,
+        roles: body?.roles,
+        status: body?.status,
+      }
+      this.audienceMutations.push(mutation)
+      this.audience = {
+        ...this.audience,
+        grants: [...this.audience.grants, {
+          id: `grant-${this.audience.grants.length + 1}`,
+          policyId: this.audience.id,
+          ...mutation,
+          revokedAt: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        }],
+      }
+      return jsonResponse({ audience: this.audience }, 201)
     }
     if (url.pathname.endsWith("/releases") && method === "POST") {
       return jsonResponse({ release: {

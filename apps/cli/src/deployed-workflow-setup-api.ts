@@ -14,8 +14,15 @@ export type DeploymentSetupStage =
 
 export type DeploymentSetupRuntimeMode = "local_runtime" | "hosted_container"
 
+export type DeploymentSetupInitialAccess =
+  | { readonly kind: "current_account" }
+  | { readonly kind: "email"; readonly subject: string }
+  | { readonly kind: "email_domain"; readonly subject: string }
+  | { readonly kind: "public" }
+
 export interface DeploymentSetupConfiguration {
   readonly endpointId: string
+  readonly access?: DeploymentSetupInitialAccess
   readonly publication: {
     readonly alias: string
     readonly kind: string

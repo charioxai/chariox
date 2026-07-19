@@ -15,10 +15,13 @@ import {
 import {
   createDeploymentProject,
   createDeploymentRelease,
+  getDeploymentAudience,
   getDeploymentEnvironmentCredentials,
   getDeploymentProject,
   listDeploymentProjects,
   promoteDeploymentRelease,
+  setDeploymentAudiencePolicy,
+  upsertDeploymentAudienceGrant,
 } from "./deployed-workflow-api.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import { publicationTransportKind } from "./deployed-workflow-setup-options.js"
@@ -57,7 +60,11 @@ export async function runDeploymentSetupRuntime(
         const prepared = await exportPreparedPackage(setup)
         return { packageId: prepared.packageId, packageDigest: prepared.packageDigest }
       },
-      resolveProject: (setup) => resolveSetupProject(profile, setup),
+      resolveProject: async (setup) => {
+        const project = await resolveSetupProject(profile, setup)
+        await applySetupAccess(profile, setup, project)
+        return project
+      },
       verifyRelease: async (setup) => {
         const prepared = await exportPreparedPackage(setup)
         const result = await createDeploymentRelease(
@@ -216,6 +223,49 @@ async function resolveSetupProject(
     throw new Error(`deployment ${state.project.slug} uses another runtime mode; choose another slug`)
   }
   return { projectId: state.project.id, environmentId: environment.id }
+}
+
+async function applySetupAccess(
+  profile: RelayCloudProfile,
+  setup: DeploymentSetup,
+  project: { readonly projectId: string; readonly environmentId: string },
+): Promise<void> {
+  const access = setup.configuration.access ?? { kind: "current_account" }
+  let audience = (await getDeploymentAudience(profile, project.projectId, project.environmentId)).audience
+  const targetMode = access.kind === "public" ? "public" : "restricted"
+  const targetDefaultRoles = access.kind === "public" ? ["public"] : []
+  if (audience.mode !== targetMode || !sameRoles(audience.defaultRoles, targetDefaultRoles)) {
+    audience = (await setDeploymentAudiencePolicy(profile, {
+      projectId: project.projectId,
+      environmentId: project.environmentId,
+      mode: targetMode,
+      defaultRoles: targetDefaultRoles,
+    })).audience
+  }
+  if (access.kind !== "email" && access.kind !== "email_domain") return
+  const grantExists = audience.grants.some((grant) => (
+    grant.kind === access.kind
+    && grant.subject === access.subject
+    && grant.status === "active"
+    && !grant.revokedAt
+    && grant.roles.includes("public")
+  ))
+  if (grantExists) return
+  await upsertDeploymentAudienceGrant(profile, {
+    projectId: project.projectId,
+    environmentId: project.environmentId,
+    kind: access.kind,
+    subject: access.subject,
+    roles: ["public"],
+    status: "active",
+  })
+}
+
+function sameRoles(left: readonly string[], right: readonly string[]): boolean {
+  const normalizedLeft = [...left].sort()
+  const normalizedRight = [...right].sort()
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((role, index) => role === normalizedRight[index])
 }
 
 async function bindSetupRuntime(

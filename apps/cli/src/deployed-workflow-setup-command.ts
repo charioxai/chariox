@@ -173,9 +173,16 @@ export function formatDeploymentSetup(setup: DeploymentSetup): string {
     `deployment ${setup.operationalDeploymentId ?? "pending"}`,
     `mode ${setup.configuration.deployment.runtimeMode}`,
     `slug ${setup.configuration.deployment.slug}`,
+    `access ${formatSetupAccess(setup.configuration.access)}`,
     ...(setup.failureCode ? [`failure ${setup.failureCode}: ${setup.failureMessage ?? "unknown"}`] : []),
     `updated ${setup.updatedAt}`,
   ].join("\n")
+}
+
+function formatSetupAccess(access: DeploymentSetup["configuration"]["access"]): string {
+  if (!access || access.kind === "current_account") return "current-account"
+  if (access.kind === "public") return "public"
+  return `${access.kind === "email_domain" ? "verified-domain" : "email"}:${access.subject}`
 }
 
 function formatDeploymentSetupListItem(setup: DeploymentSetup): string {

@@ -2,6 +2,7 @@ import type { WorkflowPublicationDefinition } from "@arroba/kernel-client"
 
 import type {
   DeploymentSetupConfiguration,
+  DeploymentSetupInitialAccess,
   DeploymentSetupRuntimeMode,
 } from "./deployed-workflow-setup-api.js"
 
@@ -15,6 +16,7 @@ export interface ParsedSetupOptions {
   readonly transport?: PublicationTransport
   readonly region: "eu-central"
   readonly clientRequestId?: string
+  readonly access: DeploymentSetupInitialAccess
   readonly agentApp: boolean
   readonly agentAppAssets?: string
   readonly appRoute: string
@@ -28,6 +30,7 @@ export const deploymentSetupUsage = [
   "       deployments setup resume <setup-id> [--agent-app-assets path]",
   "       deployments setup draft <workflow-ref> <endpoint-ref> --slug value --transport human-http|api-sse-json|websocket-json|mcp --mode local-runtime|hosted-container [agent-app options]",
   "       deployments setup publication <publication-ref> --slug value --mode local-runtime|hosted-container [agent-app options]",
+  "       access options: [--access current-account|email|verified-domain|public] [--access-subject value]",
 ].join("\n")
 
 export function parseSetupOptions(
@@ -39,6 +42,8 @@ export function parseSetupOptions(
   let mode: DeploymentSetupRuntimeMode | undefined
   let transport: PublicationTransport | undefined
   let clientRequestId: string | undefined
+  let accessKind: DeploymentSetupInitialAccess["kind"] = "current_account"
+  let accessSubject: string | undefined
   let agentApp = false
   let agentAppAssets: string | undefined
   let appRoute = "/app/*"
@@ -61,6 +66,8 @@ export function parseSetupOptions(
         if (value !== "eu-central") throw new Error("deployment region must be eu-central")
         break
       case "--client-request-id": clientRequestId = value; break
+      case "--access": accessKind = parseAccessKind(value); break
+      case "--access-subject": accessSubject = value; break
       case "--agent-app-assets": agentApp = true; agentAppAssets = value; break
       case "--app-route": agentApp = true; appRoute = value; break
       case "--manipulation-level": agentApp = true; manipulationLevel = parseManipulationLevel(value); break
@@ -83,6 +90,7 @@ export function parseSetupOptions(
     ...(transport ? { transport } : {}),
     region: "eu-central",
     ...(clientRequestId ? { clientRequestId } : {}),
+    access: deploymentInitialAccess(accessKind, accessSubject),
     agentApp,
     ...(agentAppAssets ? { agentAppAssets } : {}),
     appRoute,
@@ -101,6 +109,7 @@ export function draftConfiguration(
   const transport = requiredTransport(options.transport)
   return {
     endpointId,
+    access: options.access,
     publication: publicationConfiguration(transport, slug, revision),
     deployment: deploymentConfiguration(slug, mode, options),
     agentApp: agentAppConfiguration(options),
@@ -116,6 +125,7 @@ export function publishedConfiguration(
   publicationTransportKind(publication.transport)
   return {
     endpointId: publication.endpoint_id,
+    access: options.access,
     publication: {
       alias: publication.alias?.trim() || publication.id,
       kind: publication.kind?.trim() || "ingress",
@@ -236,6 +246,39 @@ function parseManipulationLevel(value: string): AgentAppManipulationLevel {
     return value
   }
   throw new Error("Agent App manipulation level must be none, state, overlay, state_and_overlay, or full_ephemeral")
+}
+
+function parseAccessKind(value: string): DeploymentSetupInitialAccess["kind"] {
+  const normalized = value.trim().toLowerCase().replaceAll("-", "_")
+  if (normalized === "current_account" || normalized === "private") return "current_account"
+  if (normalized === "email") return "email"
+  if (normalized === "verified_domain" || normalized === "email_domain" || normalized === "domain") {
+    return "email_domain"
+  }
+  if (normalized === "public") return "public"
+  throw new Error("deployment access must be current-account, email, verified-domain, or public")
+}
+
+function deploymentInitialAccess(
+  kind: DeploymentSetupInitialAccess["kind"],
+  subject: string | undefined,
+): DeploymentSetupInitialAccess {
+  if (kind === "current_account" || kind === "public") {
+    if (subject?.trim()) throw new Error(`deployment access ${kind.replaceAll("_", "-")} does not use --access-subject`)
+    return { kind }
+  }
+  const normalized = requiredText(subject, "deployment access subject").toLowerCase()
+  if (kind === "email") {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(normalized)) {
+      throw new Error("deployment access email is invalid")
+    }
+    return { kind, subject: normalized }
+  }
+  const domain = normalized.replace(/^@/, "")
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)) {
+    throw new Error("deployment access domain is invalid")
+  }
+  return { kind, subject: domain }
 }
 
 function parseReplicas(value: string): number {
