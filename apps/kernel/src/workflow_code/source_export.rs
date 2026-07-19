@@ -318,7 +318,12 @@ pub(super) fn workflow_code_definition_from_session_workflow(
                     .get(endpoint.entry_node_id())
                     .cloned()
                     .unwrap_or_else(|| endpoint.entry_node_id().to_string()),
-                alias: endpoint.alias().map(str::to_string),
+                // Design operations historically allowed aliases that the canonical
+                // workflow API rejects (for example `entry-1.1`). Reuse the unique,
+                // normalized export handle so legacy canvases remain exportable.
+                alias: endpoint
+                    .alias()
+                    .and_then(|_| endpoint_handles.get(endpoint.id()).cloned()),
                 canvas: canvas
                     .and_then(|layout| layout.endpoints.get(endpoint.id()))
                     .map(workflow_code_canvas_point_from_layout),
@@ -370,13 +375,21 @@ fn workflow_code_export_handle(
     used: &mut BTreeSet<String>,
 ) -> String {
     if let Some(preferred) = preferred {
-        let normalized = preferred.trim().to_lowercase();
-        if !normalized.is_empty()
-            && normalized.chars().all(|char| {
-                char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_'
+        let normalized = preferred
+            .trim()
+            .to_lowercase()
+            .chars()
+            .map(|char| {
+                if char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' || char == '_'
+                {
+                    char
+                } else {
+                    '-'
+                }
             })
-            && used.insert(normalized.clone())
-        {
+            .collect::<String>();
+        let normalized = normalized.trim_matches('-').to_string();
+        if !normalized.is_empty() && used.insert(normalized.clone()) {
             return normalized;
         }
     }
@@ -765,5 +778,24 @@ fn sanitize_export_stem(value: &str) -> String {
         "schema".to_string()
     } else {
         out.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_handles_normalize_legacy_alias_characters_and_remain_unique() {
+        let mut used = BTreeSet::new();
+
+        assert_eq!(
+            workflow_code_export_handle(Some("entry-1.1"), "endpoint-1", &mut used),
+            "entry-1-1"
+        );
+        assert_eq!(
+            workflow_code_export_handle(Some("entry-1-1"), "endpoint-2", &mut used),
+            "endpoint-2"
+        );
     }
 }
