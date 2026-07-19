@@ -157,7 +157,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
         kind: first_entry.kind,
-        title: format!("{} trace entries", events.len()),
+        title: grouped_blob_title(first_entry.kind, events.len()),
         summary: format!("{} entries, {} chars", events.len(), total_chars),
         sequence_start,
         sequence_end,
@@ -165,6 +165,21 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         total_chars,
         timestamp_ms,
     })
+}
+
+fn grouped_blob_title(kind: SessionHistoryEntryKind, entry_count: usize) -> String {
+    match kind {
+        SessionHistoryEntryKind::ProviderTool => format!(
+            "{entry_count} {} called",
+            if entry_count == 1 { "tool" } else { "tools" },
+        ),
+        SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
+        SessionHistoryEntryKind::ProviderError => "error".to_string(),
+        SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
+        SessionHistoryEntryKind::Notice => "note".to_string(),
+        SessionHistoryEntryKind::ProviderOutput => "assistant output".to_string(),
+        SessionHistoryEntryKind::UserPrompt => "prompt".to_string(),
+    }
 }
 
 pub(super) fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
@@ -352,5 +367,26 @@ fn truncate_single_line(line: &str) -> String {
         format!("{truncated}...")
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grouped_blob_titles_are_user_facing() {
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderTool, 2),
+            "2 tools called"
+        );
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderTool, 1),
+            "1 tool called"
+        );
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderOutput, 4),
+            "assistant output"
+        );
     }
 }
