@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFile as execFileWithCallback } from "node:child_process"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
@@ -8,6 +8,7 @@ import { promisify } from "node:util"
 
 import {
   remoteHomeExtensionHetznerPreflightCommand,
+  remoteHomeExtensionHetznerWorkerLaunchCommand,
 } from "./remote-home-extension-hetzner-helpers.mjs"
 
 const execFile = promisify(execFileWithCallback)
@@ -60,3 +61,43 @@ test("remote Hetzner preflight reports insufficient remote filesystem capacity",
   }
 })
 
+test("remote Hetzner preflight verifies an explicit run-owned worker kernel", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-hetzner-preflight-"))
+  try {
+    const workerKernelBinary = path.join(rootDir, "runtime", "arroba-kernel")
+    await mkdir(path.dirname(workerKernelBinary), { recursive: true })
+    await writeFile(workerKernelBinary, "kernel")
+    await chmod(workerKernelBinary, 0o755)
+    const command = remoteHomeExtensionHetznerPreflightCommand({
+      hetznerRepo: rootDir,
+      remoteRoot: path.join(rootDir, "remote-root"),
+      workerWorktree: path.join(rootDir, "remote-root", "workspace"),
+      workerKernelBinary,
+      minFreeKb: 0,
+    })
+
+    await execFile("bash", ["-lc", command])
+    await rm(workerKernelBinary)
+    await assert.rejects(
+      execFile("bash", ["-lc", command]),
+      (error) => {
+        assert.equal(error.code, 20)
+        assert.match(error.stderr, /run-owned worker kernel .* is not executable/)
+        return true
+      },
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("remote worker launch uses the explicit run-owned kernel", () => {
+  const command = remoteHomeExtensionHetznerWorkerLaunchCommand({
+    remoteRoot: "/tmp/arroba-worker-root",
+    workerWorktree: "/tmp/arroba-worker-root/workspace",
+    workerKernelBinary: "/tmp/hosted-runtime/arroba-kernel",
+  })
+
+  assert.match(command, /exec '\/tmp\/hosted-runtime\/arroba-kernel'$/)
+  assert.doesNotMatch(command, /apps\/kernel\/target\/debug\/arroba-kernel/)
+})

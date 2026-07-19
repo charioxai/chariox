@@ -62,6 +62,11 @@ fn external_provider_discovery_poller_is_not_demand_gated() {
             >= 2,
         "discovery poller should refresh before the loop and on interval ticks"
     );
+    assert!(
+        poller_source.contains("EXTERNAL_PROVIDER_ATTACHED_HISTORY_REFRESH_INTERVAL")
+            && poller_source.contains("refresh_attached_external_provider_histories_matching"),
+        "attached history catch-up should retain its own responsive cadence"
+    );
 }
 
 #[test]
@@ -167,6 +172,61 @@ fn attached_resume_state_is_observed() {
 }
 
 #[test]
+fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    app.agents()
+        .set_agent_runtime_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-test".to_string()),
+            None,
+            ProviderResumeState::from_codex_thread_id("thread-on-worker"),
+        )
+        .expect("agent runtime profile should update");
+    app.agents()
+        .bind_remote_execution(
+            agent.id(),
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-1".to_string(),
+                leased_agent_id: "leased-agent-1".to_string(),
+                active_worker_provider_run_id: Some("worker-provider-run".to_string()),
+                relay_url: Some("ws://127.0.0.1:47000".to_string()),
+                relay_token: Some("test-token".to_string()),
+            },
+        )
+        .expect("agent should bind to worker");
+    attach_test_session(&app, session.id());
+    app.providers_mut().insert_run_for_test(test_codex_run(
+        session.id(),
+        agent.id(),
+        "home-mirror-run",
+        "thread-on-worker",
+    ));
+
+    assert!(
+        attached_external_observer_targets(&app).is_empty(),
+        "the home kernel must receive remote-agent history from the worker, not scan local provider transcripts"
+    );
+
+    let store = app.external_provider_session_index_store();
+    store.upsert(record("codex", "thread-on-worker", "/tmp/thread-on-worker"));
+    store.mark_attached("codex:thread-on-worker", session.id(), agent.id());
+    mark_attached_external_provider_sessions(&app, None, &store);
+    assert!(
+        !store
+            .get("codex:thread-on-worker")
+            .expect("record should remain indexed")
+            .is_attached_to_arroba(),
+        "remote provider sessions must not be marked as locally attached"
+    );
+}
+
+#[test]
 fn session_bounded_refresh_imports_history_without_runtime_activity() {
     let _guard = crate::env_lock::lock();
     let codex_home = temp_root("codex-attach-catchup");
@@ -174,8 +234,9 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
     env::set_var("CODEX_HOME", &codex_home);
     let session_dir = codex_home.join("sessions");
     fs::create_dir_all(&session_dir).expect("codex session dir should create");
+    let transcript = session_dir.join("attach-catchup.jsonl");
     fs::write(
-            session_dir.join("attach-catchup.jsonl"),
+            &transcript,
             concat!(
                 "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-attach-catchup\",\"cwd\":\"/tmp/attach-catchup\",\"model_provider\":\"openai\"}}\n",
                 "{\"timestamp\":\"2026-01-01T00:00:01.000Z\",\"type\":\"response_item\",\"payload\":{\"id\":\"u1\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"catch up this attached thread\"}]}}\n",
@@ -212,6 +273,36 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
         };
 
         refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+        assert!(
+            !crate::app::external_provider_session_transcript_needs_refresh(
+                "codex",
+                "thread-attach-catchup",
+            ),
+            "the observed transcript fingerprint should be current after catch-up",
+        );
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .expect("codex transcript should open");
+        writeln!(
+            file,
+            "{{\"timestamp\":\"2026-01-01T00:00:03.000Z\",\"type\":\"response_item\",\"payload\":{{\"id\":\"a2\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"caught up after attach reload\"}}]}}}}"
+        )
+        .expect("codex transcript update should write");
+        assert!(crate::app::external_provider_session_transcript_needs_refresh(
+            "codex",
+            "thread-attach-catchup",
+        ));
+
+        refresh_attached_external_provider_histories_for_session(&app, None, &session_id).await;
+        assert!(
+            !crate::app::external_provider_session_transcript_needs_refresh(
+                "codex",
+                "thread-attach-catchup",
+            ),
+            "session-bounded catch-up should reread a changed transcript",
+        );
 
         let app = crate::runtime::app_lock::lock_app_instrumented(
             &app,
@@ -229,6 +320,9 @@ fn session_bounded_refresh_imports_history_without_runtime_activity() {
             .iter()
             .any(|entry| entry.text == "catch up this attached thread"));
         assert!(entries.iter().any(|entry| entry.text == "caught up"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry.text == "caught up after attach reload"));
         let agent = app
             .agents()
             .get_agent(&agent_id)

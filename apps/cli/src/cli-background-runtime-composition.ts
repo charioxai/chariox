@@ -103,6 +103,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   logProviderRunDebug: AnyFn
   setProviderRunState: AnyFn
   refreshAgentPanes: AnyFn
+  refreshAgentHistories: AnyFn
   attachmentState: AnyFn
   catchUpAttachedSession: AnyFn
   getSessionState: AnyFn
@@ -118,6 +119,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   syncKernelEventSubscription: AnyFn
   transitionToNoSession: AnyFn
   queueTerminalOutputRecords: AnyFn
+  drainTerminalOutputRecords: AnyFn
   scheduleSharedPromptInputHistoryRefresh: AnyFn
   handleWaitingRoomRefresh: AnyFn
   applyWaitingRoomRowsChanged: AnyFn
@@ -223,6 +225,29 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     updateSessionChrome: deps.updateSessionChrome,
   })
   const recordDaemonActivity = daemonActivityController.record
+
+  const refreshAssistantMessageHistory = (agentId: string) => {
+    if (!deps.isAttached()) {
+      return
+    }
+    const session = deps.sessionState()
+    void deps.refreshAgentHistories(session, [agentId]).then(() => {
+      if (!deps.isAttached() || deps.sessionState().id !== session.id) {
+        return
+      }
+      deps.syncVisibleTranscriptPreview()
+      deps.appLogger?.debug?.("refreshed completed assistant history", {
+        session_id: session.id,
+        agent_id: agentId,
+      })
+    }).catch((error: unknown) => {
+      deps.appLogger?.warn?.("failed to refresh completed assistant history", {
+        session_id: session.id,
+        agent_id: agentId,
+        error: deps.formatError(error),
+      })
+    })
+  }
 
   const kernelEventController = createKernelEventController({
     recordDaemonActivity,
@@ -480,8 +505,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const kernelEventDispatchController = createKernelEventDispatchController({
     recordDaemonActivity,
     queueTerminalOutputRecords: deps.queueTerminalOutputRecords,
+    drainTerminalOutputRecords: deps.drainTerminalOutputRecords,
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
+    refreshAssistantMessageHistory,
     applyKernelSessionSnapshot,
     applyAgentActivityChanged,
     applyProviderRunChanged,

@@ -293,6 +293,15 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 
 #[test]
 fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude-headless");
+}
+
+#[test]
+fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude");
+}
+
+fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -333,7 +342,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-sonnet",
     )
@@ -388,14 +397,14 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
         .process(session.id(), run.id(), &run, None)
         .expect("Stop event should be processed");
 
-    assert!(outcome.needs_deferred_headless_drain);
+    assert!(outcome.needs_deferred_transcript_drain);
     assert!(app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
         .expect("active prompt should load")
         .is_some());
     assert!(claude_native_marker(&context_file)
         .as_deref()
-        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)));
+        .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
     fs::write(
         &transcript_file,
@@ -413,7 +422,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     .expect("late transcript output should be written");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
-        .finish_deferred_headless_stop(session.id(), run.id(), &run)
+        .finish_deferred_stop(session.id(), run.id(), &run)
         .expect("deferred transcript drain should finish");
 
     assert!(app
@@ -985,6 +994,83 @@ fn claude_transcript_drain_skips_content_before_active_prompt() {
 }
 
 #[test]
+fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-resume-pair-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        [
+            serde_json::json!({
+                "type": "user",
+                "uuid": "synthetic-user",
+                "isMeta": true,
+                "sessionId": "claude-session-1",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "Continue from where you left off." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "synthetic-assistant",
+                "parentUuid": "synthetic-user",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "id": "synthetic-message",
+                    "model": "<synthetic>",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "No response requested." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "user",
+                "uuid": "real-user",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "Explain authoritative completion." }]
+                }
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "real-assistant",
+                "sessionId": "claude-session-1",
+                "message": {
+                    "id": "real-message",
+                    "model": "claude-opus-4-7",
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": "Only the real response settles the turn." }]
+                }
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.session_id.as_deref(), Some("claude-session-1"));
+    assert_eq!(drain.model.as_deref(), Some("claude/claude-opus-4-7"));
+    assert_eq!(drain.assistant_message_ids, vec!["real-message"]);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(
+        drain.chunks[0].text,
+        "Only the real response settles the turn."
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
 fn claude_transcript_drain_exposes_queue_enqueues_without_rendering_them() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
@@ -1107,4 +1193,37 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
         &format!("{rendered} Gitifying... esc to interrupt"),
         prompt,
     ));
+}
+
+#[test]
+fn claude_headless_bypass_confirmation_detects_clipped_rendered_choice() {
+    let rendered = "WARNING:Claude CoderunninginBypassPermissionsmode \
+        Byproceeding,youacceptallresponsibilityforactionstaken \
+        >1.No,exit 2. Yes, I accep Entertoconfirm-Esc to cancel";
+
+    assert!(claude_headless_bypass_confirmation_visible(rendered));
+    assert!(!claude_headless_bypass_confirmation_visible(
+        "Bypass permissions on - for shortcuts",
+    ));
+}
+
+#[test]
+fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-bypass-selection-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+
+    assert!(!claude_headless_bypass_selection_pending(&context_file));
+    write_claude_headless_bypass_selection_marker(&context_file);
+    assert!(claude_headless_bypass_selection_pending(&context_file));
+    write_claude_headless_startup_wait_marker(&context_file);
+    assert!(!claude_headless_bypass_selection_pending(&context_file));
+
+    let _ = fs::remove_dir_all(root);
 }

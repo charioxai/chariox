@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
@@ -13,6 +13,12 @@ import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
 } from "@arroba/kernel-client/kernel-types"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@arroba/kernel-client/kernel-types"
+import {
+  assertWorkflowPublicationDeploymentRuntimeCompatibility,
+  resolveWorkflowPublicationDeploymentContract,
+  workflowPublicationDeploymentContractPath,
+} from "@arroba/kernel-client/workflow-publication-deployment-contract"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
@@ -75,12 +81,23 @@ export async function loadPublicationPackageConfig(
     validateRequirements?: boolean
     validateProviderBindings?: boolean
     promptProviderModelReplacement?: ProviderModelBindingPrompt | false
+    runtimeWorkspace?: string
     client?: KernelLookupClient
   } = {},
 ): Promise<WorkflowPublicationConfig> {
   const packagePath = path.endsWith(".json") ? path : join(path, "publication.json")
   const root = dirname(resolve(packagePath))
   const publicationPackage = JSON.parse(await readFile(packagePath, "utf8")) as WorkflowPublicationPackage
+  const deploymentContractPath = workflowPublicationDeploymentContractPath(publicationPackage)
+  const deploymentContractValue = deploymentContractPath
+    ? JSON.parse(await readFile(join(root, deploymentContractPath), "utf8")) as unknown
+    : undefined
+  const deploymentContract = resolveWorkflowPublicationDeploymentContract(publicationPackage, deploymentContractValue)
+  if (deploymentContract.kind === "native") {
+    assertWorkflowPublicationDeploymentRuntimeCompatibility(deploymentContract.contract, {
+      targetLocalDaemonProtocolVersion: LOCAL_DAEMON_PROTOCOL_VERSION,
+    })
+  }
   const snapshotPath = join(root, "workflow.snapshot.json")
   const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as WorkflowPublicationSnapshot
   const config = publicationConfigFromPackage(
@@ -96,7 +113,11 @@ export async function loadPublicationPackageConfig(
   const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     let materializationSnapshot = clonePublicationSnapshot(snapshot)
-    materializationSnapshot = normalizePortableWorkspacePaths(materializationSnapshot, root)
+    materializationSnapshot = normalizePortableWorkspacePaths(
+      materializationSnapshot,
+      root,
+      options.runtimeWorkspace,
+    )
     if (options.validateProviderBindings !== false) {
       const bindingsPath = join(root, publicationPackage.default_bindings_path ?? "bindings.local.json")
       const bindingOptions: { promptReplacement?: ProviderModelBindingPrompt | false } = {}
@@ -107,7 +128,11 @@ export async function loadPublicationPackageConfig(
       materializationSnapshot = resolved.snapshot
     }
     if (options.validateRequirements !== false) {
-      await validatePublicationRequirements(requirements, ownedClient, snapshot.source_session?.workspace_id)
+      await validatePublicationRequirements(
+        requirements,
+        ownedClient,
+        materializationSnapshot.source_session?.workspace_id,
+      )
     }
     const replicaCount = publicationPackage.agent_app?.enabled
       ? normalizedReplicaCount(publicationPackage.agent_app.replicas?.count)
@@ -144,30 +169,27 @@ function clonePublicationSnapshot(snapshot: WorkflowPublicationSnapshot): Workfl
 function normalizePortableWorkspacePaths(
   snapshot: WorkflowPublicationSnapshot,
   packageRoot: string,
+  configuredRuntimeWorkspace?: string,
 ): WorkflowPublicationSnapshot {
-  const mappedSourceWorkspace = remapPortableWorkspacePath(snapshot.source_session?.workspace_id, packageRoot)
-  const mappedSourceWorktree = remapPortableWorkspacePath(snapshot.source_session?.worktree_id, packageRoot)
-  if (snapshot.source_session && (mappedSourceWorkspace || mappedSourceWorktree)) {
-    if (mappedSourceWorkspace) snapshot.source_session.workspace_id = mappedSourceWorkspace
-    if (mappedSourceWorktree) snapshot.source_session.worktree_id = mappedSourceWorktree
+  const explicitRuntimeWorkspace = configuredRuntimeWorkspace?.trim()
+  const runtimeWorkspace = explicitRuntimeWorkspace
+    ? resolve(explicitRuntimeWorkspace)
+    : existsSync(PUBLICATION_WORKSPACE_ROOT)
+      ? PUBLICATION_WORKSPACE_ROOT
+      : `${packageRoot}.runtime-${process.pid}`
+  mkdirSync(runtimeWorkspace, { recursive: true })
+  if (snapshot.source_session) {
+    snapshot.source_session.workspace_id = runtimeWorkspace
+    snapshot.source_session.worktree_id = runtimeWorkspace
   }
   for (const agent of snapshot.agents ?? []) {
-    const mappedWorkspace = remapPortableWorkspacePath(agent.workspace_id, packageRoot)
-    const mappedWorktree = remapPortableWorkspacePath(agent.worktree_id, packageRoot)
-    if (mappedWorkspace) agent.workspace_id = mappedWorkspace
-    if (mappedWorktree) agent.worktree_id = mappedWorktree
+    agent.workspace_id = runtimeWorkspace
+    agent.worktree_id = runtimeWorkspace
   }
   return snapshot
 }
 
-function remapPortableWorkspacePath(value: unknown, packageRoot: string): string | null {
-  if (typeof value !== "string") return null
-  if (!value.startsWith("/workspace")) return null
-  if (existsSync("/workspace")) return null
-  if (value === "/workspace") return packageRoot
-  if (value.startsWith("/workspace/")) return resolve(packageRoot, value.slice("/workspace/".length))
-  return null
-}
+const PUBLICATION_WORKSPACE_ROOT = "/workspace"
 
 async function loadPublicationRequirements(root: string) {
   try {
@@ -306,11 +328,14 @@ export function publicationConfigFromKernelRecord(
 
 export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
   if (process.env.ARROBA_PUBLICATION_PACKAGE) {
-    const packageOptions: { kernelEndpoint?: string; hookId?: string } = {
+    const packageOptions: { kernelEndpoint?: string; hookId?: string; runtimeWorkspace?: string } = {
       kernelEndpoint: defaultKernelEndpoint(),
     }
     if (process.env.ARROBA_PUBLICATION_HOOK_ID) {
       packageOptions.hookId = process.env.ARROBA_PUBLICATION_HOOK_ID
+    }
+    if (process.env.ARROBA_PUBLICATION_RUNTIME_WORKSPACE) {
+      packageOptions.runtimeWorkspace = process.env.ARROBA_PUBLICATION_RUNTIME_WORKSPACE
     }
     return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.ARROBA_PUBLICATION_PACKAGE, {
       ...packageOptions,

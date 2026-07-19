@@ -23,11 +23,23 @@ test("publication deployment API reads package metadata", async () => {
     assert.equal(metadata.transport, "human_http")
     assert.equal(metadata.route, "/final/*")
     assert.equal(metadata.packageUri, `file://${root}`)
+    assert.equal(metadata.packageVersion, 3)
+    assert.equal(metadata.deploymentContract?.source.publication_id, "pub-1")
     assert.deepEqual(metadata.agentApp, {
       enabled: true,
       routes: [{ path: "/add/*", prompt_source: "path_tail" }],
       replicas: { count: 2 },
     })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication deployment API leaves target protocol admission to Cloud runners", async () => {
+  const root = await publicationPackageFixture(undefined, 241)
+  try {
+    const metadata = await readPublicationPackageMetadata(root)
+    assert.equal(metadata.deploymentContract?.compatibility.minimum_local_daemon_protocol_version, 241)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -68,6 +80,7 @@ test("publication deployment API creates, uploads, and starts hosted deployments
       ["POST", "/publication-deployments/deployment-1/package"],
       ["POST", "/publication-deployments/deployment-1/start"],
     ])
+    assert.equal("createdByUserId" in (calls[0]?.body as Record<string, unknown>), false)
     assert.equal((calls[0]?.body as Record<string, unknown>).credentialProfile, "miguel_staging")
     assert.equal((calls[0]?.body as Record<string, unknown>).route, "/final/*")
     assert.deepEqual((calls[0]?.body as Record<string, unknown>).agentApp, {
@@ -118,11 +131,55 @@ test("publication deployment API reuploads package archives", async () => {
   }
 })
 
-async function publicationPackageFixture(): Promise<string> {
+test("managed Cloud deployment rejects persistent patch packages before network access", async () => {
+  const root = await publicationPackageFixture({
+    enabled: true,
+    persistent_patch: { enabled: true },
+    routes: [{ path: "/admin/*", manipulation: { level: "persistent_patch", scope: "persistent" } }],
+  })
+  const previousFetch = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async () => {
+    fetchCalls += 1
+    throw new Error("unexpected fetch")
+  }) as typeof fetch
+
+  try {
+    await assert.rejects(
+      createPublicationDeploymentFromPackage({
+        profile: profile(),
+        packagePath: root,
+        mode: "hosted_container",
+      }),
+      /Persistent patches are not available for managed Cloud deployments/,
+    )
+    await assert.rejects(
+      reuploadPublicationDeploymentPackage({
+        profile: profile(),
+        deploymentId: "deployment-1",
+        packagePath: root,
+      }),
+      /Persistent patches are not available for managed Cloud deployments/,
+    )
+    assert.equal(fetchCalls, 0)
+  } finally {
+    globalThis.fetch = previousFetch
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+async function publicationPackageFixture(
+  agentApp: unknown = {
+    enabled: true,
+    routes: [{ path: "/add/*", prompt_source: "path_tail" }],
+    replicas: { count: 2 },
+  },
+  minimumLocalDaemonProtocolVersion = 240,
+): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
-    package_version: 1,
+    package_version: 3,
     publication_id: "pub-1",
     alias: "Public Demo",
     workflow_id: "workflow-1",
@@ -132,13 +189,48 @@ async function publicationPackageFixture(): Promise<string> {
       transport: "human_http",
       route: "/final/*",
     }],
-    agent_app: {
-      enabled: true,
-      routes: [{ path: "/add/*", prompt_source: "path_tail" }],
-      replicas: { count: 2 },
-    },
+    agent_app: agentApp,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
   }, null, 2))
+  await writeFile(
+    join(root, "deployment-contract.json"),
+    JSON.stringify(deploymentContractFixture(minimumLocalDaemonProtocolVersion), null, 2),
+  )
   return root
+}
+
+function deploymentContractFixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {
+  const digest = `sha256:${"a".repeat(64)}`
+  return {
+    schema_version: 1,
+    package_id: digest,
+    artifact: {
+      content_digest: digest,
+      digest_algorithm: "sha256",
+      digest_scope: "package_files_excluding_deployment_contract",
+    },
+    source: {
+      publication_id: "pub-1",
+      session_id: "session-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      creator_user_id: "user-1",
+      captured_at_ms: 1,
+    },
+    compatibility: {
+      package_version: 3,
+      minimum_kernel_version: "0.1.0",
+      minimum_local_daemon_protocol_version: minimumLocalDaemonProtocolVersion,
+    },
+    routes: [{ id: "hook-1" }],
+    provider_requirements: [],
+    credential_slots: [],
+    configuration: [],
+    capabilities: {},
+    resources: {},
+    presentation: {},
+    signatures: [],
+  }
 }
 
 function profile(): RelayCloudProfile {

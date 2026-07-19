@@ -324,14 +324,20 @@ pub(crate) struct PendingDaemonPeerRequest {
 #[derive(Debug, Clone)]
 pub(crate) enum PendingRequestKind {
     Request,
-    Subscribe { subscription_id: String },
-    Unsubscribe { subscription_id: String },
+    Subscribe {
+        subscription_id: String,
+        client_public_key: String,
+    },
+    Unsubscribe {
+        subscription_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveSubscription {
     pub(crate) client_addr: SocketAddr,
     pub(crate) daemon_key: DaemonKey,
+    pub(crate) client_public_key: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -556,6 +562,11 @@ impl RelayRegistry {
         }
     }
 
+    pub(crate) fn live_daemon_sender(&self, daemon_key: &DaemonKey) -> Option<RelaySender> {
+        self.resolve_daemon_sender(daemon_key)?;
+        self.routes.daemon_sender(daemon_key)
+    }
+
     pub(crate) fn insert_pending_display_stream(
         &mut self,
         stream_id: String,
@@ -708,7 +719,9 @@ impl RelayRegistry {
     ) -> impl Iterator<Item = &'a DaemonRegistration> + 'a {
         self.daemons
             .iter()
-            .filter(move |(key, _)| key.realm_id == realm_id)
+            .filter(move |(key, _)| {
+                key.realm_id == realm_id && self.live_daemon_sender(key).is_some()
+            })
             .map(|(_, registration)| registration)
             .filter(|registration| daemon_registration_is_kernel_target(registration))
     }

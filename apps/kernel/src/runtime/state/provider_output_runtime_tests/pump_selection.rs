@@ -77,6 +77,49 @@ async fn provider_output_pump_ignores_projected_remote_active_run() {
 }
 
 #[tokio::test]
+async fn provider_output_pump_treats_unregistered_starting_pty_as_launch_in_progress() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-starting-provider-pump",
+            "worktree-starting-provider-pump",
+        ))
+        .expect("session should be created");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let started = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider launch should enter starting state");
+
+    let records = runtime
+        .pump_owned_provider_output(session.id(), started.run.id(), Vec::new(), false)
+        .await
+        .expect("a detached launch may be pumped before its PTY is registered");
+
+    assert!(records.is_empty());
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(started.run.id())
+            .expect("starting provider run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Starting,
+    );
+}
+
+#[tokio::test]
 async fn local_provider_launch_preserves_and_restores_projected_remote_predecessor() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

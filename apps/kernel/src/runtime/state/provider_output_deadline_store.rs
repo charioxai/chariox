@@ -32,6 +32,26 @@ impl ProviderOutputDeadlineStore {
         )));
     }
 
+    pub(super) fn schedule_if_absent(&self, provider_run_id: &str, due_at_ms: u64) {
+        let mut state = self
+            .inner
+            .lock()
+            .expect("provider output deadline store poisoned");
+        if state.current.contains_key(provider_run_id) {
+            return;
+        }
+        state.next_generation = state.next_generation.saturating_add(1);
+        let generation = state.next_generation;
+        state
+            .current
+            .insert(provider_run_id.to_string(), (due_at_ms, generation));
+        state.deadlines.push(Reverse((
+            due_at_ms,
+            generation,
+            provider_run_id.to_string(),
+        )));
+    }
+
     pub(super) fn clear(&self, provider_run_id: &str) {
         self.inner
             .lock()
@@ -99,5 +119,21 @@ mod tests {
         assert_eq!(store.next_due_at_ms(), Some(2_000));
         store.clear("run-1");
         assert_eq!(store.next_due_at_ms(), None);
+    }
+
+    #[test]
+    fn schedule_if_absent_preserves_an_earlier_runtime_check() {
+        let store = ProviderOutputDeadlineStore::default();
+        store.schedule("run-1", 1_000);
+        store.schedule_if_absent("run-1", 2_000);
+
+        assert_eq!(store.next_due_at_ms(), Some(1_000));
+        assert_eq!(
+            store.take_due_provider_run_ids(1_000),
+            ["run-1".to_string()].into_iter().collect()
+        );
+
+        store.schedule_if_absent("run-1", 2_000);
+        assert_eq!(store.next_due_at_ms(), Some(2_000));
     }
 }

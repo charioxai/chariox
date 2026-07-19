@@ -3,14 +3,15 @@ import { resolve as resolvePath } from "node:path"
 import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
+  WorkflowPublicationPackageFile,
 } from "./kernel-types.js"
 import {
   type CreateWorkflowPublicationOptions,
   createWorkflowPublicationRequest,
   disableWorkflowPublicationRequest,
+  exportWorkflowPublicationPackageRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
-  getSessionStateRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -64,20 +65,44 @@ export async function executeWorkflowPublicationCommand(
   if (action === "export") {
     const [publicationRef, outputDirectory, ...optionArgs] = rest
     if (!publicationRef || !outputDirectory) {
-      return { ok: false, message: "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>]" }
+      return { ok: false, message: workflowPublicationExportUsage() }
     }
     const options = parseWorkflowPublicationExportOptions(optionArgs)
     if (!options.ok) return { ok: false, message: options.message }
-    const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
-    const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
-    const sessionResponse = await deps.client.send(getSessionStateRequest(sessionId))
-    const session = expectVariant<{ session: RuntimeSession }>(sessionResponse, "SessionState").session
+    const response = await deps.client.send(exportWorkflowPublicationPackageRequest(
+      sessionId,
+      publicationRef,
+      {
+        ...(options.kernelUrl ? { kernelUrl: options.kernelUrl } : {}),
+        ...(options.agentApp ? { agentApp: options.agentApp } : {}),
+        ...(options.agentAppAssetsDir
+          ? {
+              agentAppAssetsDir: resolvePath(
+                context.worktree ?? context.workspace ?? process.cwd(),
+                options.agentAppAssetsDir,
+              ),
+            }
+          : {}),
+      },
+    ))
+    const exported = expectVariant<{
+      publication: WorkflowPublicationDefinition
+      package_version: number
+      package_digest: string
+      package_files: WorkflowPublicationPackageFile[]
+    }>(response, "WorkflowPublicationPackageExported")
     const outputRoot = resolvePath(context.worktree ?? context.workspace ?? process.cwd(), outputDirectory)
-    const packageFiles = await writeWorkflowPublicationExportPackage(publication, session, outputRoot, options.kernelUrl)
+    const packageFiles = await writeWorkflowPublicationExportPackage(outputRoot, exported.package_files)
     return {
       ok: true,
-      message: `exported workflow publication ${formatWorkflowPublicationLabel(publication)} to ${outputRoot}`,
-      data: { publication, outputRoot, files: packageFiles },
+      message: `exported workflow publication ${formatWorkflowPublicationLabel(exported.publication)} package v${exported.package_version} ${exported.package_digest} to ${outputRoot}`,
+      data: {
+        publication: exported.publication,
+        outputRoot,
+        files: packageFiles,
+        packageVersion: exported.package_version,
+        packageDigest: exported.package_digest,
+      },
     }
   }
 
@@ -238,19 +263,43 @@ function parseWorkflowPublicationCreateOptions(
 
 function parseWorkflowPublicationExportOptions(
   args: string[],
-): { ok: true; kernelUrl?: string | undefined } | { ok: false; message: string } {
+):
+  | {
+      ok: true
+      kernelUrl?: string | undefined
+      agentApp?: Record<string, unknown> | undefined
+      agentAppAssetsDir?: string | undefined
+    }
+  | { ok: false; message: string } {
   let kernelUrl: string | undefined
+  let agentApp: Record<string, unknown> | undefined
+  let agentAppAssetsDir: string | undefined
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index]
     if (arg === "--kernel-url") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>]" }
+      if (!value) return { ok: false, message: workflowPublicationExportUsage() }
       kernelUrl = value
+    } else if (arg === "--agent-app-json") {
+      const parsed = parseJsonOption(args[++index], "--agent-app-json")
+      if (!parsed.ok) return parsed
+      if (!parsed.value || typeof parsed.value !== "object" || Array.isArray(parsed.value)) {
+        return { ok: false, message: "--agent-app-json requires a JSON object" }
+      }
+      agentApp = parsed.value as Record<string, unknown>
+    } else if (arg === "--agent-app-assets-dir") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: workflowPublicationExportUsage() }
+      agentAppAssetsDir = value
     } else {
       return { ok: false, message: `unknown publication export option: ${arg ?? ""}` }
     }
   }
-  return { ok: true, kernelUrl }
+  return { ok: true, kernelUrl, agentApp, agentAppAssetsDir }
+}
+
+function workflowPublicationExportUsage(): string {
+  return "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>] [--agent-app-json <json>] [--agent-app-assets-dir <directory>]"
 }
 
 function parseJsonOption(

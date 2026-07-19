@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use futures_util::{Sink, SinkExt, StreamExt};
@@ -12,8 +12,12 @@ use tokio::sync::{mpsc, Mutex, OwnedSemaphorePermit, Semaphore, TryAcquireError}
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tokio_tungstenite::{
-    accept_async,
-    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
+    accept_async, accept_hdr_async,
+    tungstenite::{
+        handshake::server::ErrorResponse,
+        http::StatusCode,
+        protocol::{frame::coding::CloseCode, CloseFrame, Message},
+    },
 };
 
 use crate::app::DaemonApp;
@@ -33,7 +37,9 @@ mod outgoing;
 mod subscriptions;
 
 pub(crate) use command_cache::COMMAND_RESULT_CACHE_LIMIT;
-use command_cache::{CommandFingerprint, CommandReservation, CommandResultCache};
+use command_cache::{
+    request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
+};
 use outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
 use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
@@ -50,6 +56,10 @@ const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 150;
 const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
 const DURABLE_SNAPSHOT_POLL_INTERVAL_MS: u64 = 5_000;
 const WEBSOCKET_PING_INTERVAL_MS: u64 = 5_000;
+const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES: u64 = 8 * 1024;
+pub const KERNEL_LOCAL_AUTH_TOKEN_ENV: &str = "ARROBA_KERNEL_LOCAL_AUTH_TOKEN";
+pub const KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV: &str = "ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE";
+pub const KERNEL_RUNTIME_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 pub(crate) const RECENT_EVENT_LIMIT: usize = 256;
 const BACKPRESSURE_CLOSE_REASON: &str = "kernel transport overloaded; reconnecting";
 pub const CONNECTION_INBOUND_REQUEST_LIMIT: usize = 32;
@@ -57,6 +67,207 @@ const MIN_PROCESS_INBOUND_REQUEST_LIMIT: usize = 32;
 const MAX_PROCESS_INBOUND_REQUEST_LIMIT: usize = 256;
 const PROCESS_INBOUND_REQUESTS_PER_CPU: usize = 8;
 const RESERVED_INTERACTIVE_REQUESTS: usize = 8;
+static KERNEL_LOCAL_AUTH_TOKEN: OnceLock<Option<Arc<str>>> = OnceLock::new();
+
+pub fn initialize_kernel_local_auth_from_env() -> Result<(), DaemonError> {
+    if KERNEL_LOCAL_AUTH_TOKEN.get().is_some() {
+        std::env::remove_var(KERNEL_LOCAL_AUTH_TOKEN_ENV);
+        std::env::remove_var(KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV);
+        return Ok(());
+    }
+    let environment_token = match std::env::var(KERNEL_LOCAL_AUTH_TOKEN_ENV) {
+        Ok(value) if value.trim().is_empty() => {
+            return Err(DaemonError::LocalTransport {
+                operation: "configure kernel websocket auth",
+                message: format!("{KERNEL_LOCAL_AUTH_TOKEN_ENV} must not be empty"),
+            });
+        }
+        Ok(value) => Some(value.trim().to_string()),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "configure kernel websocket auth",
+                message: format!("{KERNEL_LOCAL_AUTH_TOKEN_ENV} must be valid UTF-8"),
+            });
+        }
+    };
+    let token_file = match std::env::var(KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV) {
+        Ok(value) if value.trim().is_empty() => {
+            return Err(DaemonError::LocalTransport {
+                operation: "configure kernel websocket auth",
+                message: format!("{KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV} must not be empty"),
+            });
+        }
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "configure kernel websocket auth",
+                message: format!("{KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV} must be valid UTF-8"),
+            });
+        }
+    };
+    std::env::remove_var(KERNEL_LOCAL_AUTH_TOKEN_ENV);
+    std::env::remove_var(KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV);
+    if environment_token.is_some() && token_file.is_some() {
+        return Err(DaemonError::LocalTransport {
+            operation: "configure kernel websocket auth",
+            message: format!(
+                "{KERNEL_LOCAL_AUTH_TOKEN_ENV} and {KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV} cannot both be set"
+            ),
+        });
+    }
+    let token = match (environment_token, token_file) {
+        (Some(value), None) => Some(Arc::<str>::from(value)),
+        (None, Some(path)) => Some(Arc::<str>::from(read_kernel_local_auth_token_file(&path)?)),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!(),
+    };
+    if token.is_some() {
+        disable_kernel_process_dumpability()?;
+    }
+    let _ = KERNEL_LOCAL_AUTH_TOKEN.set(token);
+    Ok(())
+}
+
+fn read_kernel_local_auth_token_file(path: &str) -> Result<String, DaemonError> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read kernel websocket auth file",
+            message: error.to_string(),
+        })?;
+    read_opened_kernel_local_auth_token_file(&mut file, path)
+}
+
+fn read_opened_kernel_local_auth_token_file(
+    file: &mut std::fs::File,
+    path: &str,
+) -> Result<String, DaemonError> {
+    use std::io::Read;
+
+    let metadata = file
+        .metadata()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read kernel websocket auth file",
+            message: error.to_string(),
+        })?;
+    if !metadata.file_type().is_file() {
+        return Err(DaemonError::LocalTransport {
+            operation: "read kernel websocket auth file",
+            message: "auth file must be a regular file".to_string(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.permissions().mode() & 0o077 != 0
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.nlink() != 1
+            || metadata.len() > MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "read kernel websocket auth file",
+                message:
+                    "auth file must be a bounded, single-link file owned by the kernel user with mode 0600"
+                        .to_string(),
+            });
+        }
+    }
+    let mut value = String::new();
+    let read_result = file.read_to_string(&mut value);
+    consume_opened_kernel_local_auth_token_path(path, &metadata)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let remaining_links = file
+            .metadata()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "consume kernel websocket auth file",
+                message: error.to_string(),
+            })?
+            .nlink();
+        if remaining_links != 0 {
+            return Err(DaemonError::LocalTransport {
+                operation: "consume kernel websocket auth file",
+                message: "auth file was not consumed from its validated descriptor".to_string(),
+            });
+        }
+    }
+    read_result.map_err(|error| DaemonError::LocalTransport {
+        operation: "read kernel websocket auth file",
+        message: error.to_string(),
+    })?;
+    let token = value.trim();
+    if token.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "configure kernel websocket auth",
+            message: format!("{KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV} must not contain an empty token"),
+        });
+    }
+    Ok(token.to_string())
+}
+
+fn consume_opened_kernel_local_auth_token_path(
+    path: &str,
+    opened_metadata: &std::fs::Metadata,
+) -> Result<(), DaemonError> {
+    let path_metadata =
+        std::fs::symlink_metadata(path).map_err(|error| DaemonError::LocalTransport {
+            operation: "consume kernel websocket auth file",
+            message: error.to_string(),
+        })?;
+    if !path_metadata.file_type().is_file() || path_metadata.file_type().is_symlink() {
+        return Err(DaemonError::LocalTransport {
+            operation: "consume kernel websocket auth file",
+            message: "auth file changed while it was being consumed".to_string(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != opened_metadata.dev()
+            || path_metadata.ino() != opened_metadata.ino()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "consume kernel websocket auth file",
+                message: "auth file changed while it was being consumed".to_string(),
+            });
+        }
+    }
+    std::fs::remove_file(path).map_err(|error| DaemonError::LocalTransport {
+        operation: "consume kernel websocket auth file",
+        message: error.to_string(),
+    })
+}
+
+fn configured_kernel_local_auth_token() -> Option<Arc<str>> {
+    KERNEL_LOCAL_AUTH_TOKEN.get().cloned().flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn disable_kernel_process_dumpability() -> Result<(), DaemonError> {
+    let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+    if result == 0 {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "harden kernel websocket auth",
+        message: std::io::Error::last_os_error().to_string(),
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn disable_kernel_process_dumpability() -> Result<(), DaemonError> {
+    Ok(())
+}
 
 pub(crate) fn process_inbound_request_limit() -> usize {
     std::thread::available_parallelism()
@@ -196,6 +407,7 @@ pub async fn run_kernel_websocket_server<F>(
 where
     F: Future<Output = ()>,
 {
+    initialize_kernel_local_auth_from_env()?;
     let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app),
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
@@ -217,7 +429,13 @@ where
             "bind_port": bind_port,
         }),
     );
-    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
+    run_kernel_websocket_server_with_bound_listener(
+        router,
+        listener,
+        configured_kernel_local_auth_token(),
+        shutdown,
+    )
+    .await
 }
 
 pub(crate) async fn run_kernel_websocket_server_with_router<F>(
@@ -227,6 +445,7 @@ pub(crate) async fn run_kernel_websocket_server_with_router<F>(
 where
     F: Future<Output = ()>,
 {
+    initialize_kernel_local_auth_from_env()?;
     let (bind_host, bind_port) = router.kernel_websocket_bind_address();
     let bind_started = Instant::now();
     let listener = TcpListener::bind((bind_host.as_str(), bind_port))
@@ -244,12 +463,37 @@ where
             "bind_port": bind_port,
         }),
     );
-    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
+    run_kernel_websocket_server_with_bound_listener(
+        router,
+        listener,
+        configured_kernel_local_auth_token(),
+        shutdown,
+    )
+    .await
 }
 
 pub async fn run_kernel_websocket_server_on_listener<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    initialize_kernel_local_auth_from_env()?;
+    run_kernel_websocket_server_on_listener_with_auth(
+        app,
+        listener,
+        configured_kernel_local_auth_token(),
+        shutdown,
+    )
+    .await
+}
+
+async fn run_kernel_websocket_server_on_listener_with_auth<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    listener: StdTcpListener,
+    local_auth_token: Option<Arc<str>>,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -270,12 +514,14 @@ where
         app,
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
     ));
-    run_kernel_websocket_server_with_bound_listener(router, listener, shutdown).await
+    run_kernel_websocket_server_with_bound_listener(router, listener, local_auth_token, shutdown)
+        .await
 }
 
 async fn run_kernel_websocket_server_with_bound_listener<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
+    local_auth_token: Option<Arc<str>>,
     shutdown: F,
 ) -> Result<(), DaemonError>
 where
@@ -296,6 +542,7 @@ where
         "kernel ready for local command",
         serde_json::json!({
             "kernel_websocket_addr": local_addr,
+            "kernel_local_auth_required": local_auth_token.is_some(),
             "recent_event_limit": RECENT_EVENT_LIMIT,
             "process_inbound_request_limit": process_inbound_request_limit,
             "connection_inbound_request_limit": CONNECTION_INBOUND_REQUEST_LIMIT,
@@ -354,11 +601,13 @@ where
                 let runtime = Arc::clone(&runtime);
                 let router = Arc::clone(&router);
                 let inbound_request_admission = inbound_request_admission.clone();
+                let local_auth_token = local_auth_token.clone();
                 tokio::spawn(async move {
                     let _ = handle_kernel_connection(
                         runtime,
                         router,
                         inbound_request_admission,
+                        local_auth_token,
                         stream,
                     )
                     .await;
@@ -408,18 +657,53 @@ impl<T> EventWriteCoalescer<T> {
     }
 }
 
+fn kernel_local_authorization_matches(value: Option<&str>, expected_token: &str) -> bool {
+    let Some(token) = value.and_then(|value| value.strip_prefix("Bearer ")) else {
+        return false;
+    };
+    let expected = expected_token.as_bytes();
+    let supplied = token.as_bytes();
+    let mut difference = expected.len() ^ supplied.len();
+    for (index, byte) in expected.iter().enumerate() {
+        difference |= usize::from(*byte ^ supplied.get(index).copied().unwrap_or_default());
+    }
+    difference == 0
+}
+
 async fn handle_kernel_connection(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
     inbound_request_admission: InboundRequestAdmission,
+    local_auth_token: Option<Arc<str>>,
     stream: tokio::net::TcpStream,
 ) -> Result<(), DaemonError> {
-    let socket = accept_async(stream)
+    let socket = if let Some(expected_token) = local_auth_token {
+        accept_hdr_async(
+            stream,
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  response| {
+                if kernel_local_authorization_matches(
+                    request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    &expected_token,
+                ) {
+                    return Ok(response);
+                }
+                let mut error = ErrorResponse::new(Some("Unauthorized".to_string()));
+                *error.status_mut() = StatusCode::UNAUTHORIZED;
+                Err(error)
+            },
+        )
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "accept kernel websocket handshake",
-            message: error.to_string(),
-        })?;
+    } else {
+        accept_async(stream).await
+    }
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "accept kernel websocket handshake",
+        message: error.to_string(),
+    })?;
     runtime.transport_health.record_connection_opened();
     let _connection_guard = TransportConnectionGuard {
         transport_health: runtime.transport_health.clone(),
@@ -736,21 +1020,44 @@ async fn handle_incoming_payload(
                 causation_id.clone(),
                 &request,
             );
-            let fingerprint = CommandFingerprint::from_command_and_request(&command, &request);
-            match runtime
-                .command_result_cache
-                .reserve(&command.command_id, &fingerprint)
-                .await
-            {
-                CommandReservation::Wait(wait_rx) => {
-                    let outgoing_tx = outgoing_tx.clone();
-                    let close_tx = close_tx.clone();
-                    let close_requested = Arc::clone(close_requested);
-                    let transport_health = runtime.transport_health.clone();
-                    let session_id = command.session_id.clone();
-                    let attachment_id = command.attachment_id.clone();
-                    tokio::spawn(async move {
-                        let Ok(cached) = wait_rx.await else {
+            let fingerprint = request_is_cacheable(&request)
+                .then(|| CommandFingerprint::from_command_and_request(&command, &request));
+            if let Some(fingerprint) = fingerprint.as_ref() {
+                match runtime
+                    .command_result_cache
+                    .reserve(&command.command_id, fingerprint)
+                    .await
+                {
+                    CommandReservation::Wait(wait_rx) => {
+                        let outgoing_tx = outgoing_tx.clone();
+                        let close_tx = close_tx.clone();
+                        let close_requested = Arc::clone(close_requested);
+                        let transport_health = runtime.transport_health.clone();
+                        let session_id = command.session_id.clone();
+                        let attachment_id = command.attachment_id.clone();
+                        tokio::spawn(async move {
+                            let Ok(cached) = wait_rx.await else {
+                                let _ = try_send_outgoing_frame(
+                                    &outgoing_tx,
+                                    &close_tx,
+                                    &close_requested,
+                                    &transport_health,
+                                    KernelOutgoingFrame::Response {
+                                        request_id,
+                                        response: Box::new(None),
+                                        error: Some(KernelTransportError {
+                                            code: "duplicate_command_unavailable".to_string(),
+                                            message:
+                                                "original duplicate command result was unavailable"
+                                                    .to_string(),
+                                            retryable: true,
+                                        }),
+                                    },
+                                    session_id.as_deref(),
+                                    attachment_id.as_deref(),
+                                );
+                                return;
+                            };
                             let _ = try_send_outgoing_frame(
                                 &outgoing_tx,
                                 &close_tx,
@@ -758,71 +1065,53 @@ async fn handle_incoming_payload(
                                 &transport_health,
                                 KernelOutgoingFrame::Response {
                                     request_id,
-                                    response: Box::new(None),
-                                    error: Some(KernelTransportError {
-                                        code: "duplicate_command_unavailable".to_string(),
-                                        message:
-                                            "original duplicate command result was unavailable"
-                                                .to_string(),
-                                        retryable: true,
-                                    }),
+                                    response: cached.response,
+                                    error: cached.error,
                                 },
                                 session_id.as_deref(),
                                 attachment_id.as_deref(),
                             );
-                            return;
-                        };
+                        });
+                        return;
+                    }
+                    CommandReservation::Conflict => {
+                        runtime.transport_health.record_duplicate_command_conflict();
                         let _ = try_send_outgoing_frame(
-                            &outgoing_tx,
-                            &close_tx,
-                            &close_requested,
-                            &transport_health,
+                            outgoing_tx,
+                            close_tx,
+                            close_requested,
+                            &runtime.transport_health,
                             KernelOutgoingFrame::Response {
                                 request_id,
-                                response: cached.response,
-                                error: cached.error,
+                                response: Box::new(None),
+                                error: Some(KernelTransportError {
+                                    code: "duplicate_command_conflict".to_string(),
+                                    message: format!(
+                                        "command_id `{}` was already used for a different request",
+                                        command.command_id
+                                    ),
+                                    retryable: false,
+                                }),
                             },
-                            session_id.as_deref(),
-                            attachment_id.as_deref(),
+                            command.session_id.as_deref(),
+                            command.attachment_id.as_deref(),
                         );
-                    });
-                    return;
+                        return;
+                    }
+                    CommandReservation::Dispatch => {}
                 }
-                CommandReservation::Conflict => {
-                    runtime.transport_health.record_duplicate_command_conflict();
-                    let _ = try_send_outgoing_frame(
-                        outgoing_tx,
-                        close_tx,
-                        close_requested,
-                        &runtime.transport_health,
-                        KernelOutgoingFrame::Response {
-                            request_id,
-                            response: Box::new(None),
-                            error: Some(KernelTransportError {
-                                code: "duplicate_command_conflict".to_string(),
-                                message: format!(
-                                    "command_id `{}` was already used for a different request",
-                                    command.command_id
-                                ),
-                                retryable: false,
-                            }),
-                        },
-                        command.session_id.as_deref(),
-                        command.attachment_id.as_deref(),
-                    );
-                    return;
-                }
-                CommandReservation::Dispatch => {}
-            };
+            }
             let permit = match inbound_request_admission
                 .try_acquire(connection_inbound_request_permits, &command.priority)
             {
                 Ok(permit) => permit,
                 Err(error) => {
-                    runtime
-                        .command_result_cache
-                        .forget_pending(&command.command_id)
-                        .await;
+                    if fingerprint.is_some() {
+                        runtime
+                            .command_result_cache
+                            .forget_pending(&command.command_id)
+                            .await;
+                    }
                     runtime.transport_health.record_inbound_overload_rejection();
                     let _ = try_send_outgoing_frame(
                         outgoing_tx,
@@ -889,10 +1178,12 @@ async fn handle_incoming_payload(
                         error: Some(map_kernel_error(&error)),
                     },
                 };
-                runtime
-                    .command_result_cache
-                    .complete(command_id, fingerprint, &outgoing)
-                    .await;
+                if let Some(fingerprint) = fingerprint {
+                    runtime
+                        .command_result_cache
+                        .complete(command_id, fingerprint, &outgoing)
+                        .await;
+                }
                 let _ = try_send_outgoing_frame(
                     &outgoing_tx,
                     &close_tx,

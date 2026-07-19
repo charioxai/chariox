@@ -202,6 +202,8 @@ impl DaemonApp {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entry(&entry);
         if let Err(error) = self.history.append(&session, &entry) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -212,7 +214,6 @@ impl DaemonApp {
                 }),
             );
         }
-        self.append_operational_history_entry(&entry);
     }
 
     pub(crate) fn replace_history_entry_by_merge_key_or_append(
@@ -420,6 +421,13 @@ impl DaemonApp {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) {
+        // Kernel-internal recovery envelopes carry provider resume text, not
+        // user input. The local dispatch runtime guards its call site, but
+        // remote-lease dispatchers reach this helper too; centralize the
+        // guard so no caller can leak the envelope into prompt-echo output.
+        if crate::runtime::state::is_internal_recovery_prompt_attachment(source_attachment_id) {
+            return;
+        }
         let recipient_attachment_ids = self.other_attachment_ids(session_id, source_attachment_id);
         self.echo_prompt_to_attachments(
             session_id,

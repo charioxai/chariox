@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  formatAgentExtensionCatalog,
   formatRemoteExtensionSyncStatus,
   formatRemoteExtensionSyncStatusLine,
   remoteExtensionSyncNextAction,
@@ -12,6 +13,29 @@ import {
   homeExtensionAuditRecoveryAction,
   remoteExtensionAggregateNextAction,
 } from "./home-extension-audit-policy.js"
+
+test("Home-only extension catalogs do not claim the Worker is unavailable", () => {
+  const output = formatAgentExtensionCatalog({
+    agent_id: "agent-1",
+    home_kernel_id: "home-kernel",
+    worker_kernel_id: "worker-kernel",
+    worker_available: false,
+    worker_error: null,
+    entries: [{
+      source: "home",
+      resolved_kernel_id: "home-kernel",
+      kind: "mcp",
+      name: "browser",
+      environments: [],
+      credentials: [],
+      credential_required: false,
+      max_safety: [],
+    }],
+  })
+
+  assert.match(output, /home kernel: home-kernel/)
+  assert.doesNotMatch(output, /worker kernel:.*unavailable/)
+})
 
 test("remote extension sync formatter renders status and recovery consistently", () => {
   assert.equal(

@@ -165,8 +165,10 @@ export function formatAgentExtensionCatalog(catalog: AgentExtensionCatalog): str
   const lines = [
     `extension catalog for ${catalog.agent_id}`,
     `home kernel: ${catalog.home_kernel_id}`,
-    `worker kernel: ${catalog.worker_kernel_id ?? "none"} (${catalog.worker_available ? "available" : "unavailable"})`,
   ]
+  if (catalog.worker_available || catalog.worker_error) {
+    lines.push(`worker kernel: ${catalog.worker_kernel_id ?? "none"} (${catalog.worker_available ? "available" : "unavailable"})`)
+  }
   if (catalog.worker_error) lines.push(`worker error: ${catalog.worker_error}`)
   if (catalog.entries.length === 0) {
     lines.push("no extensions available")

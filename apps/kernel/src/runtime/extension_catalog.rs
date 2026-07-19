@@ -152,7 +152,7 @@ pub(crate) async fn list_agent_extension_catalog(
             if let (Some(relay_url), Some(relay_token)) =
                 (remote.relay_url.clone(), remote.relay_token.clone())
             {
-                relay_config.apply_remote_relay_override(relay_url, relay_token);
+                relay_config.apply_missing_remote_relay_override(relay_url, relay_token);
             }
             let response =
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(

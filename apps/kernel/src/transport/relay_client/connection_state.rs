@@ -10,8 +10,9 @@ use tokio::time::timeout;
 
 use crate::runtime::router::CommandRouter;
 
-use arroba_relay::protocol::RelayDisplayTunnelStreamChunk;
-use arroba_relay::protocol::RelayError;
+use arroba_relay::protocol::{
+    RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
+};
 
 use super::peer_client::RelayPeerResponseEnvelope;
 use super::request_errors::relay_error;
@@ -178,6 +179,17 @@ pub(crate) struct RelayDisplayTunnelTarget {
     pub(crate) slice_id: String,
     pub(crate) local_base_url: String,
     pub(crate) expires_at_ms: u64,
+    pub(crate) capabilities: Vec<String>,
+}
+
+impl RelayDisplayTunnelTarget {
+    fn registration(&self) -> RelayDisplayTunnelRegistration {
+        RelayDisplayTunnelRegistration {
+            tunnel_id: self.tunnel_id.clone(),
+            expires_at_ms: self.expires_at_ms,
+            capabilities: self.capabilities.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,11 +218,32 @@ pub(super) async fn set_connected(
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: RelayOutgoingSender,
     relay_url: String,
-) {
-    let mut guard = state.write().await;
-    guard.connected = true;
-    guard.connected_relay_url = Some(relay_url);
-    guard.outgoing_tx = Some(outgoing_tx);
+) -> Result<usize, String> {
+    let registrations = {
+        let mut guard = state.write().await;
+        guard.connected = true;
+        guard.connected_relay_url = Some(relay_url);
+        guard.outgoing_tx = Some(outgoing_tx.clone());
+        guard.prune_expired_display_tunnels(crate::session::unix_epoch_ms());
+        guard
+            .display_tunnels
+            .values()
+            .map(RelayDisplayTunnelTarget::registration)
+            .collect::<Vec<_>>()
+    };
+    for registration in &registrations {
+        outgoing_tx
+            .try_send(RelayEnvelope::DaemonDisplayTunnelRegister {
+                registration: registration.clone(),
+            })
+            .map_err(|error| {
+                format!(
+                    "failed to replay display tunnel {} after relay reconnect: {error}",
+                    registration.tunnel_id
+                )
+            })?;
+    }
+    Ok(registrations.len())
 }
 
 pub(super) async fn publish_cloud_presence(
@@ -300,7 +333,6 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         guard.connected_relay_url = None;
         guard.outgoing_tx = None;
         guard.peer_public_keys.clear();
-        guard.display_tunnels.clear();
         guard.display_streams.clear();
         (
             std::mem::take(&mut guard.pending_peer_requests),
@@ -341,5 +373,79 @@ mod tests {
         set_disconnected(&state).await;
 
         assert!(state.read().await.peer_public_key("worker-1").is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_preserves_live_display_tunnels_for_reconnect_replay() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .upsert_display_tunnel(RelayDisplayTunnelTarget {
+                tunnel_id: "publication-live".to_string(),
+                slice_id: "publication:session-1:public-api".to_string(),
+                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                expires_at_ms: u64::MAX,
+                capabilities: vec!["http".to_string(), "publication".to_string()],
+            });
+
+        set_disconnected(&state).await;
+
+        assert_eq!(
+            state
+                .read()
+                .await
+                .display_tunnel("publication-live", 1)
+                .map(|target| target.local_base_url),
+            Some("http://127.0.0.1:43100/".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_replays_live_display_tunnels_with_original_capabilities() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        state
+            .write()
+            .await
+            .upsert_display_tunnel(RelayDisplayTunnelTarget {
+                tunnel_id: "publication-live".to_string(),
+                slice_id: "publication:session-1:public-api".to_string(),
+                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                expires_at_ms: u64::MAX,
+                capabilities: vec!["http".to_string(), "publication".to_string()],
+            });
+        state
+            .write()
+            .await
+            .upsert_display_tunnel(RelayDisplayTunnelTarget {
+                tunnel_id: "publication-expired".to_string(),
+                slice_id: "publication:session-1:expired".to_string(),
+                local_base_url: "http://127.0.0.1:43101/".to_string(),
+                expires_at_ms: 1,
+                capabilities: vec!["http".to_string(), "publication".to_string()],
+            });
+        let (outgoing_tx, mut priority_rx, _event_rx) = RelayOutgoingSender::channel(4);
+
+        assert_eq!(
+            set_connected(&state, outgoing_tx, "wss://relay.example.test".to_string())
+                .await
+                .expect("display tunnel replay should queue"),
+            1
+        );
+        assert_eq!(
+            priority_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelRegister {
+                registration: RelayDisplayTunnelRegistration {
+                    tunnel_id: "publication-live".to_string(),
+                    expires_at_ms: u64::MAX,
+                    capabilities: vec!["http".to_string(), "publication".to_string()],
+                },
+            })
+        );
+        assert!(state
+            .read()
+            .await
+            .display_tunnel("publication-expired", 0)
+            .is_none());
     }
 }

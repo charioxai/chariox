@@ -107,6 +107,87 @@ test("GET /health reports package materialization and provider readiness", async
   }
 })
 
+test("GET /health treats the explicitly enabled development provider stub as internally ready", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-dev-stub-health-"))
+  const previousDevStub = process.env.ARROBA_PROVIDER_DEV_STUB
+  await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
+  await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+    schema_version: 1,
+    source_session: { id: "source-session-1" },
+    workflow: { id: "workflow-1", nodes: [] },
+    endpoint: { id: "endpoint-1" },
+    agents: [{ id: "agent-1", provider: "dev-stub", model: "default" }],
+  }))
+  await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+  setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", "1")
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json().provider_readiness, [{
+      provider: "dev-stub",
+      status: "provider_ready",
+      ready: true,
+      cli: { available: true, command: "internal:dev-stub", version: null },
+      auth: { status: "provider_ready", account_profile: "development-stub" },
+    }])
+  } finally {
+    await app.close()
+    setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", previousDevStub)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("GET /health collapses provider runtime aliases before readiness probing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-provider-alias-health-"))
+  const previousClaudeBin = process.env.ARROBA_CLAUDE_BIN
+  await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
+  await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+    schema_version: 1,
+    source_session: { id: "source-session-1" },
+    workflow: { id: "workflow-1", nodes: [] },
+    endpoint: { id: "endpoint-1" },
+    agents: [
+      { id: "agent-1", provider: "claude-headless", model: "claude-sonnet-4-6" },
+      { id: "agent-2", provider: "claude-p", model: "claude-sonnet-4-6" },
+    ],
+  }))
+  await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+  const missingClaudeBin = join(root, "missing-claude")
+  setOptionalEnv("ARROBA_CLAUDE_BIN", missingClaudeBin)
+  const { app } = buildServer({
+    ...baseConfig,
+    package_root: root,
+  }, {
+    invokeWorkflow: async () => ({ accepted: true }),
+  })
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/health" })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(response.json().provider_readiness, [{
+      provider: "claude",
+      status: "provider_cli_missing",
+      ready: false,
+      cli: { available: false, command: missingClaudeBin, version: null },
+      auth: { status: "provider_auth_unknown" },
+      error: "claude CLI was not found",
+    }])
+  } finally {
+    await app.close()
+    setOptionalEnv("ARROBA_CLAUDE_BIN", previousClaudeBin)
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("GET publication status reports runtime binding", async () => {
   const { app } = buildServer({
     ...baseConfig,
@@ -418,7 +499,7 @@ test("gateway can load publication config from kernel lookup", async () => {
     {
       AttachToSession: {
         session_id: "session-1",
-        client_id: `arroba-publication-gateway-${process.pid}-pub-1`,
+        client_id: `arroba-publication-gateway-${process.pid}-pub-1-session-1`,
         capability_level: "FullTerminal",
       },
     },
@@ -540,6 +621,86 @@ test("gateway loads publication package directories", async () => {
     assert.equal(config.workflow_ref, "workflow-1")
     assert.equal(config.endpoint_ref, "endpoint-1")
     assert.equal(config.kernel_endpoint, "ws://kernel")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("gateway requires a valid deployment contract for package v3", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-contract-"))
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 3,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+      }],
+    }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: { id: "session-1", workspace_id: "/repo", worktree_id: "/repo" },
+      workflow: {
+        id: "workflow-1",
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [],
+    }))
+
+    await assert.rejects(
+      loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
+      /deployment-contract\.json/,
+    )
+    const digest = `sha256:${"a".repeat(64)}`
+    const deploymentContract = {
+      schema_version: 1,
+      package_id: digest,
+      artifact: {
+        content_digest: digest,
+        digest_algorithm: "sha256",
+        digest_scope: "package_files_excluding_deployment_contract",
+      },
+      source: {
+        publication_id: "pub-1",
+        session_id: "session-1",
+        workflow_id: "workflow-1",
+        endpoint_id: "endpoint-1",
+        creator_user_id: "user-1",
+        captured_at_ms: 1,
+      },
+      compatibility: {
+        package_version: 3,
+        minimum_kernel_version: "0.1.0",
+        minimum_local_daemon_protocol_version: 240,
+      },
+      routes: [{ id: "hook-1" }],
+      provider_requirements: [],
+      credential_slots: [],
+      configuration: [],
+      capabilities: {},
+      resources: {},
+      presentation: {},
+      signatures: [],
+    }
+    await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
+
+    const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
+    assert.equal(config.publication_id, "pub-1")
+
+    deploymentContract.compatibility.minimum_local_daemon_protocol_version = 242
+    await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
+    await assert.rejects(
+      loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
+      /requires local daemon protocol version 242, but target runtime supports 241/,
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }

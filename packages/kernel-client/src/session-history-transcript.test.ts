@@ -488,6 +488,87 @@ test("session history outline hydration carries prompt identity into entries and
   assert.equal(placeholder?.externalProviderTurnId, "user-1")
 })
 
+test("session history outline hydration coalesces adjacent keyed provider output chunks", () => {
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      lifecycle: "completed",
+      completed_at_ms: 2,
+      user_prompt: pageEntry(0, "user_prompt", "reply exactly\n"),
+      entries: [
+        pageEntry(1, "provider_output", "LOCAL_DEPLOYED", {
+          provider_run_id: "run-1",
+          merge_key: "assistant-part-1",
+        }),
+        pageEntry(2, "provider_output", "_WORKFLOW_COMPLETED", {
+          provider_run_id: "run-1",
+          merge_key: "assistant-part-1",
+        }),
+      ],
+      summary: null,
+      blobs: [],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const assistantEntries = entries.filter((entry) => entry.role === "assistant")
+  assert.equal(assistantEntries.length, 1)
+  assert.equal(assistantEntries[0]?.text, "LOCAL_DEPLOYED_WORKFLOW_COMPLETED")
+  assert.equal(assistantEntries[0]?.providerRunId, "run-1")
+})
+
+test("session history outline hydration preserves repeated substring deltas", () => {
+  const response = "LOCAL_DEPLOYED_WORKFLOW_SOURCE_39669-1784318586221_COMPLETED"
+  const chunks = [
+    "LOCAL",
+    "_DEP",
+    "LOY",
+    "ED",
+    "_WORK",
+    "FLOW",
+    "_SOURCE",
+    "_",
+    "396",
+    "69",
+    "-",
+    "178",
+    "431",
+    "858",
+    "622",
+    "1",
+    "_COMPLE",
+    "TED",
+  ]
+  const entries = hydrateSessionHistoryOutlineAgentEntries({
+    agent_id: "agent-1",
+    turns: [{
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      started_at_ms: 1,
+      lifecycle: "completed",
+      completed_at_ms: 2,
+      user_prompt: pageEntry(0, "user_prompt", "reply exactly\n"),
+      entries: chunks.slice(0, -1).map((text, index) => pageEntry(index + 1, "provider_output", text, {
+        provider_run_id: "run-1",
+        merge_key: "assistant-part-1",
+      })),
+      summary: pageEntry(chunks.length, "provider_output", chunks.at(-1) ?? "", {
+        provider_run_id: "run-1",
+        merge_key: "assistant-part-1",
+      }),
+      blobs: [],
+    }],
+    next_cursor: null,
+  } satisfies SessionHistoryOutlineAgent)
+
+  const assistantEntries = entries.filter((entry) => entry.role === "assistant")
+  assert.equal(assistantEntries.length, 1)
+  assert.equal(assistantEntries[0]?.text, response)
+})
+
 test("session history outline hydration maps blob kinds to stable transcript roles", () => {
   const entries = hydrateSessionHistoryOutlineAgentEntries({
     agent_id: "agent-1",

@@ -1,6 +1,85 @@
 use super::*;
 
 #[test]
+fn leased_projection_emits_source_proof_output_once() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-1",
+            "agent-home-1",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("workflow-intermediate-node".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let marker = "REMOTE_DEPLOYED_WORKFLOW_SOURCE_REGRESSION_COMPLETED";
+    let prompt = format!(
+        "Reply with exactly {marker} and no other text. The machine-readable drill token is arroba-source-proof:{marker}.\n"
+    );
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt(&leased_agent.id, &prompt, Vec::new())
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut projected_output = String::new();
+    let mut completed = false;
+    let mut completion_observed_at = None;
+    while std::time::Instant::now() < deadline {
+        if let Some((
+            _target,
+            RelayPeerEvent::LeasedRuntimeProjection {
+                output_chunks,
+                completions,
+                ..
+            },
+        )) = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, true)
+            .expect("leased projection should drain")
+        {
+            for chunk in output_chunks {
+                projected_output.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            }
+            completed |= !completions.is_empty();
+            if completed && completion_observed_at.is_none() {
+                completion_observed_at = Some(std::time::Instant::now());
+            }
+        }
+        if completion_observed_at
+            .is_some_and(|observed_at| observed_at.elapsed() >= Duration::from_millis(500))
+        {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    RemoteLeaseRuntime::new(&mut app)
+        .destroy_leased_agent(&leased_agent.id)
+        .expect("leased agent should be destroyed");
+    assert!(completed, "leased source-proof prompt did not complete");
+    assert_eq!(
+        projected_output.matches(marker).count(),
+        1,
+        "leased source-proof output must be projected exactly once: {projected_output:?}"
+    );
+}
+
+#[test]
 fn leased_projection_history_completion_is_not_blocked_by_notice() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -60,7 +139,7 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
         TerminalOutputKind::ProviderOutput,
         Some("assistant-1".to_string()),
         vec![leased_agent.backing_attachment_id.clone()],
-        b"remote output",
+        b"remote output\n",
     );
 
     let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
@@ -329,6 +408,42 @@ fn leased_projection_recovers_history_output_when_tool_chunks_are_drained() {
     assert!(output_chunks.iter().any(|chunk| {
         chunk.kind == TerminalOutputKind::ProviderOutput
             && chunk.bytes == b"remote assistant output"
+    }));
+
+    app.terminal_mut().fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote tool output",
+    );
+    let duplicate = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("duplicate tool snapshot drain should succeed");
+    assert!(
+        duplicate.is_none(),
+        "an unchanged cumulative provider-tool snapshot must not be relayed again"
+    );
+
+    app.terminal_mut().fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote tool output updated",
+    );
+    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("updated tool snapshot drain should succeed")
+        .expect("updated tool snapshot should be projected");
+    let RelayPeerEvent::LeasedRuntimeProjection { output_chunks, .. } = event;
+    assert!(output_chunks.iter().any(|chunk| {
+        chunk.kind == TerminalOutputKind::ProviderTool
+            && chunk.bytes == b"remote tool output updated"
     }));
 }
 

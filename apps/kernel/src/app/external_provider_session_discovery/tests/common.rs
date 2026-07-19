@@ -295,6 +295,53 @@ fn discovers_opencode_sqlite_sessions() {
 }
 
 #[test]
+fn discovery_signature_reports_only_changed_candidate_providers() {
+    let left = ExternalProviderSessionDiscoverySignature {
+        files: vec![
+            ExternalProviderSessionFileSignature {
+                provider: "claude".to_string(),
+                path: PathBuf::from("claude-a.jsonl"),
+                len: 1,
+                modified_at_ms: 1,
+            },
+            ExternalProviderSessionFileSignature {
+                provider: "codex".to_string(),
+                path: PathBuf::from("codex-a.jsonl"),
+                len: 1,
+                modified_at_ms: 1,
+            },
+        ],
+    };
+    let right = ExternalProviderSessionDiscoverySignature {
+        files: vec![
+            ExternalProviderSessionFileSignature {
+                provider: "claude".to_string(),
+                path: PathBuf::from("claude-a.jsonl"),
+                len: 2,
+                modified_at_ms: 2,
+            },
+            ExternalProviderSessionFileSignature {
+                provider: "codex".to_string(),
+                path: PathBuf::from("codex-b.jsonl"),
+                len: 1,
+                modified_at_ms: 1,
+            },
+            ExternalProviderSessionFileSignature {
+                provider: "opencode".to_string(),
+                path: PathBuf::from("opencode.db"),
+                len: 1,
+                modified_at_ms: 1,
+            },
+        ],
+    };
+
+    assert_eq!(
+        left.providers_with_changed_candidate_files(&right),
+        BTreeSet::from(["codex".to_string(), "opencode".to_string()])
+    );
+}
+
+#[test]
 fn prompt_recovery_match_prefers_exact_worktree_and_tracks_recovery_anchor() {
     let sessions = vec![
         recovery_session("thread-other", "/repo/other", 30),

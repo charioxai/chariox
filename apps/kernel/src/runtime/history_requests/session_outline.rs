@@ -3,10 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::DaemonError;
-use crate::history::{
-    HistoryEvent, HistoryEventKind, HistoryEventTurnContext, OperationalHistoryStore,
-    SessionHistoryEntry, SessionHistoryEntryKind,
-};
+use crate::history::{HistoryEvent, HistoryEventKind, OperationalHistoryStore};
 use crate::local::{
     GetSessionHistoryBlobContentRequest, GetSessionHistoryOutlineRequest, LocalDaemonResponse,
     SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
@@ -19,6 +16,9 @@ use crate::session::PromptOrigin;
 mod projection;
 
 #[cfg(test)]
+#[allow(unused_imports)]
+use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
+#[cfg(test)]
 use projection::{blob_id, MAX_OUTLINE_EVENTS_PER_BLOB, MAX_OUTLINE_INLINE_CHARS};
 use projection::{
     event_needs_outline_blob, event_projects_as_outline_entry, has_content,
@@ -28,7 +28,6 @@ use projection::{
 
 const DEFAULT_LATEST_PROMPT_COUNT: usize = 4;
 const MAX_LATEST_PROMPT_COUNT: usize = 20;
-const PROMPTLESS_TEXT: &str = "(no recorded prompt; showing recent agent activity)";
 const EXTERNAL_OPEN_OBSERVATION_GRACE_MS: u64 = 5 * 60 * 1_000;
 
 pub(crate) async fn execute_session_history_outline_request(
@@ -159,7 +158,9 @@ fn load_scoped_agent_outline(
         outline_prompt_candidate_limit(latest_prompt_count, agent_import),
         agent_import,
     )?;
-    prompts.retain(|prompt| !external_observed_tool_call_prompt(prompt));
+    prompts.retain(|prompt| {
+        !external_observed_tool_call_prompt(prompt) && !external_recovery_envelope_prompt(prompt)
+    });
     suppress_arroba_owned_external_prompt_echoes(
         &mut prompts,
         operational_history,
@@ -172,14 +173,11 @@ fn load_scoped_agent_outline(
         prompts.drain(0..remove_count);
     }
     if prompts.is_empty() {
-        return load_promptless_agent_outline(
-            operational_history,
-            session_id,
-            agent_id,
-            latest_prompt_count,
-            before_sequence,
-            agent_import,
-        );
+        return Ok(SessionHistoryOutlineAgent {
+            agent_id: agent_id.to_string(),
+            turns: Vec::new(),
+            next_cursor: None,
+        });
     }
     let mut turns = Vec::new();
     let mut seen_turn_ids = BTreeSet::new();
@@ -209,13 +207,18 @@ fn load_scoped_agent_outline(
                 }
             }
         }
-        let events = scoped_history_events(events, agent_import);
+        let lifecycle_events = scoped_history_events(events, agent_import);
         let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba {
-            suppress_external_observed_events_from_arroba_turn(events)
+            suppress_external_observed_events_from_arroba_turn(lifecycle_events.clone())
         } else {
-            events
+            lifecycle_events.clone()
         };
-        if let Some(mut turn) = outline_turn_from_events(prompt, events, has_newer_prompt) {
+        if let Some(mut turn) = outline_turn_from_events_with_lifecycle(
+            prompt,
+            events,
+            &lifecycle_events,
+            has_newer_prompt,
+        ) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
             turns.push(turn);
         }
@@ -350,54 +353,17 @@ fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
     text.starts_with("Called the ") && text.contains(" tool with the following input:")
 }
 
-fn load_promptless_agent_outline(
-    operational_history: &OperationalHistoryStore,
-    session_id: &str,
-    agent_id: &str,
-    latest_prompt_count: usize,
-    before_sequence: Option<u64>,
-    agent_import: Option<&ExternalProviderImportMetadata>,
-) -> Result<SessionHistoryOutlineAgent, DaemonError> {
-    let events = operational_history
-        .load_session_events(session_id, Some(agent_id))?
-        .into_iter()
-        .filter(|event| before_sequence.is_none_or(|sequence| event.sequence < sequence))
-        .filter(|event| event_belongs_to_external_import(agent_import, event))
-        .collect::<Vec<_>>();
-    let mut groups = promptless_turn_groups(events);
-    let has_more = groups.len() > latest_prompt_count;
-    if has_more {
-        groups = groups.split_off(groups.len().saturating_sub(latest_prompt_count));
-    }
-    if groups.is_empty() {
-        return Ok(SessionHistoryOutlineAgent {
-            agent_id: agent_id.to_string(),
-            turns: Vec::new(),
-            next_cursor: None,
-        });
-    }
-    let mut turns = Vec::new();
-    let mut seen_turn_ids = BTreeSet::new();
-    for (latest_key, turn_events) in &groups {
-        if let Some(mut turn) =
-            promptless_outline_turn(session_id, agent_id, latest_key, turn_events)
-        {
-            ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
-            turns.push(turn);
-        }
-    }
-    let next_cursor = has_more
-        .then(|| groups.first())
-        .flatten()
-        .and_then(|(_, events)| events.first())
-        .map(|event| SessionHistoryOutlineCursor {
-            before_sequence: event.sequence,
-        });
-    Ok(SessionHistoryOutlineAgent {
-        agent_id: agent_id.to_string(),
-        turns,
-        next_cursor,
-    })
+fn external_recovery_envelope_prompt(prompt: &HistoryEvent) -> bool {
+    const RECOVERY_OPERATION_PREFIX: &str = "[Arroba recovery operation arroba-recovery:";
+
+    prompt.kind == HistoryEventKind::UserPrompt
+        && prompt.to_session_history_entry().is_some_and(|entry| {
+            entry.is_external_provider_observed()
+                && entry
+                    .text
+                    .trim_start()
+                    .starts_with(RECOVERY_OPERATION_PREFIX)
+        })
 }
 
 fn load_latest_scoped_user_prompt_events(
@@ -500,88 +466,6 @@ fn non_blank_trimmed(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn promptless_turn_groups(events: Vec<HistoryEvent>) -> Vec<(String, Vec<HistoryEvent>)> {
-    let mut groups = Vec::<(String, Vec<HistoryEvent>)>::new();
-    for event in events {
-        let key = promptless_turn_group_key(&event);
-        if let Some((_, events)) = groups.iter_mut().find(|(candidate, _)| candidate == &key) {
-            events.push(event);
-        } else {
-            groups.push((key, vec![event]));
-        }
-    }
-    groups
-}
-
-fn promptless_outline_turn(
-    session_id: &str,
-    agent_id: &str,
-    latest_key: &str,
-    turn_events: &[HistoryEvent],
-) -> Option<SessionHistoryOutlineTurn> {
-    let first_event = turn_events.first()?;
-    let synthetic_prompt_entry =
-        promptless_synthetic_prompt_entry(session_id, agent_id, turn_events);
-    let synthetic_prompt = HistoryEvent::transcript(
-        first_event.sequence.saturating_sub(1),
-        &synthetic_prompt_entry,
-        HistoryEventTurnContext {
-            session_id: Some(session_id.to_string()),
-            agent_id: Some(agent_id.to_string()),
-            turn_id: Some(latest_key.to_string()),
-            provider_run_id: first_event.provider_run_id.clone(),
-            provider_session_id: first_event.provider_session_id.clone(),
-            provider: first_event.provider.clone(),
-            model: first_event.model.clone(),
-            workflow_id: first_event.workflow_id.clone(),
-            workflow_run_id: first_event.workflow_run_id.clone(),
-            workflow_node_id: first_event.workflow_node_id.clone(),
-            worktree_path: first_event.worktree_path.clone(),
-            ..HistoryEventTurnContext::default()
-        },
-    );
-    let mut events_with_prompt = Vec::with_capacity(turn_events.len() + 1);
-    events_with_prompt.push(synthetic_prompt.clone());
-    events_with_prompt.extend(turn_events.iter().cloned());
-    outline_turn_from_events(&synthetic_prompt, events_with_prompt, false)
-}
-
-fn promptless_synthetic_prompt_entry(
-    session_id: &str,
-    agent_id: &str,
-    events: &[HistoryEvent],
-) -> SessionHistoryEntry {
-    let timestamp_ms = events
-        .iter()
-        .filter_map(|event| external_observed_at_ms(event).or(Some(event.timestamp_ms)))
-        .min();
-    let mut entry = if let Some(identity) = outline_turn_external_identity(events) {
-        SessionHistoryEntry::external_provider_observed(
-            session_id,
-            events
-                .iter()
-                .find_map(|event| event.provider_run_id.as_deref()),
-            agent_id,
-            SessionHistoryEntryKind::UserPrompt,
-            PROMPTLESS_TEXT,
-            &identity.provider,
-            &identity.provider_session_id,
-            Some(identity.provider_turn_id),
-            events
-                .iter()
-                .filter_map(|event| event.to_session_history_entry())
-                .filter_map(|entry| entry.observed_at_ms)
-                .min(),
-        )
-    } else {
-        SessionHistoryEntry::user_prompt(session_id, "arroba-history", agent_id, PROMPTLESS_TEXT)
-    };
-    if let Some(timestamp_ms) = timestamp_ms {
-        entry.timestamp_ms = timestamp_ms;
-    }
-    entry
-}
-
 fn ensure_unique_outline_turn_id(
     turn: &mut SessionHistoryOutlineTurn,
     seen_turn_ids: &mut BTreeSet<String>,
@@ -607,25 +491,27 @@ fn ensure_unique_outline_turn_id(
     }
 }
 
-fn promptless_turn_group_key(event: &HistoryEvent) -> String {
-    event
-        .turn_id
-        .clone()
-        .or_else(|| event.prompt_id.clone())
-        .or_else(|| event.provider_run_id.clone())
-        .unwrap_or_else(|| event.event_id.clone())
-}
-
 fn outline_turn_from_events(
     prompt: &HistoryEvent,
     events: Vec<HistoryEvent>,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
+    let lifecycle_events = events.clone();
+    outline_turn_from_events_with_lifecycle(prompt, events, &lifecycle_events, has_newer_prompt)
+}
+
+fn outline_turn_from_events_with_lifecycle(
+    prompt: &HistoryEvent,
+    events: Vec<HistoryEvent>,
+    lifecycle_events: &[HistoryEvent],
+    has_newer_prompt: bool,
+) -> Option<SessionHistoryOutlineTurn> {
+    let events = suppress_sparse_legacy_transcript_duplicates(events);
     let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
     let completed_at_ms =
-        outline_turn_completed_at_ms(prompt, &events, prompt_origin, has_newer_prompt);
+        outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms);
     let summary_index = events
         .iter()
@@ -724,6 +610,47 @@ fn history_event_merge_key(event: &HistoryEvent) -> Option<&str> {
         .and_then(|value| value.as_str())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LegacyTranscriptDuplicateKey {
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    provider_run_id: Option<String>,
+    kind: String,
+    timestamp_ms: u64,
+    merge_key: String,
+    content: String,
+}
+
+fn suppress_sparse_legacy_transcript_duplicates(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+    let attributed_keys = events
+        .iter()
+        .filter(|event| event.prompt_id.is_some() || event.turn_id.is_some())
+        .filter_map(legacy_transcript_duplicate_key)
+        .collect::<BTreeSet<_>>();
+    events
+        .into_iter()
+        .filter(|event| {
+            event.prompt_id.is_some()
+                || event.turn_id.is_some()
+                || legacy_transcript_duplicate_key(event)
+                    .is_none_or(|key| !attributed_keys.contains(&key))
+        })
+        .collect()
+}
+
+fn legacy_transcript_duplicate_key(event: &HistoryEvent) -> Option<LegacyTranscriptDuplicateKey> {
+    let merge_key = history_event_merge_key(event)?;
+    Some(LegacyTranscriptDuplicateKey {
+        session_id: event.session_id.clone(),
+        agent_id: event.agent_id.clone(),
+        provider_run_id: event.provider_run_id.clone(),
+        kind: format!("{:?}", event.kind),
+        timestamp_ms: event.timestamp_ms,
+        merge_key: merge_key.to_string(),
+        content: event.content.clone()?,
+    })
+}
+
 fn outline_turn_lifecycle(completed_at_ms: Option<u64>) -> SessionHistoryOutlineTurnLifecycle {
     if completed_at_ms.is_some() {
         SessionHistoryOutlineTurnLifecycle::Completed
@@ -739,17 +666,19 @@ fn outline_turn_completed_at_ms(
     has_newer_prompt: bool,
 ) -> Option<u64> {
     if let Some(settled_at_ms) = outline_turn_settlement_observed_at_ms(events) {
-        return Some(settled_at_ms);
+        let latest_content_at_ms = events
+            .iter()
+            .filter(|event| outline_turn_completion_content_is_visible(event))
+            .map(|event| event.timestamp_ms)
+            .max()
+            .unwrap_or(prompt.timestamp_ms);
+        return Some(settled_at_ms.max(latest_content_at_ms));
     }
-    if prompt_origin == PromptOrigin::Arroba
-        && !has_newer_prompt
-        && !is_promptless_synthetic_prompt(prompt)
-    {
+    if prompt_origin == PromptOrigin::Arroba && !has_newer_prompt {
         return None;
     }
     if prompt_origin == PromptOrigin::External
         && !has_newer_prompt
-        && !is_promptless_synthetic_prompt(prompt)
         && !external_turn_observation_is_stale(prompt, events)
     {
         return None;
@@ -757,11 +686,37 @@ fn outline_turn_completed_at_ms(
     Some(
         events
             .iter()
-            .filter(|event| has_content(event))
+            .filter(|event| outline_turn_completion_content_is_visible(event))
             .map(|event| event.timestamp_ms)
             .max()
             .unwrap_or(prompt.timestamp_ms),
     )
+}
+
+fn outline_turn_completion_content_is_visible(event: &HistoryEvent) -> bool {
+    if !matches!(
+        event.kind,
+        HistoryEventKind::ProviderOutput
+            | HistoryEventKind::ProviderReasoning
+            | HistoryEventKind::ProviderTool
+            | HistoryEventKind::ProviderError
+            | HistoryEventKind::ProviderStatus
+    ) || !has_content(event)
+    {
+        return false;
+    }
+    let Some(entry) = event.to_session_history_entry() else {
+        return false;
+    };
+    if entry.is_external_provider_observed_state_signal()
+        || entry
+            .external_observation
+            .as_ref()
+            .is_some_and(|observation| observation.passive_telemetry)
+    {
+        return false;
+    }
+    event.kind != HistoryEventKind::ProviderStatus || event_projects_as_outline_entry(event)
 }
 
 fn external_turn_observation_is_stale(prompt: &HistoryEvent, events: &[HistoryEvent]) -> bool {
@@ -804,13 +759,6 @@ fn persisted_prompt_settlement_at_ms(event: &HistoryEvent) -> Option<u64> {
         .metadata
         .get(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
         .and_then(serde_json::Value::as_u64)
-}
-
-fn is_promptless_synthetic_prompt(prompt: &HistoryEvent) -> bool {
-    prompt.kind == HistoryEventKind::UserPrompt
-        && prompt
-            .to_session_history_entry()
-            .is_some_and(|entry| entry.text == PROMPTLESS_TEXT)
 }
 
 fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {

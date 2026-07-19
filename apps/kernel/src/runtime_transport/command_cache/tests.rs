@@ -1,5 +1,8 @@
 use super::*;
-use crate::local::ListSessionsRequest;
+use crate::local::{
+    ListSessionsRequest, RequestCredentialEnrollmentInteractionRequest,
+    RequestNativeProviderInteractionRequest, RespondToInteractionRequest,
+};
 
 #[test]
 fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
@@ -11,6 +14,109 @@ fn command_cache_estimates_json_byte_arrays_by_heap_footprint() {
         estimated >= (byte_count * std::mem::size_of::<Value>()) as u64,
         "JSON byte arrays must be charged for each heap-resident Value: {estimated}"
     );
+}
+
+#[test]
+fn interaction_requests_use_volatile_command_deduplication() {
+    let helper_request = LocalDaemonRequest::RequestCredentialEnrollmentInteraction(
+        RequestCredentialEnrollmentInteractionRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            enrollment_id: "enrollment-1".to_string(),
+            profile_id: "profile-1".to_string(),
+            target_version: 1,
+            provider_authorization_url: "https://claude.com/oauth/authorize?state=opaque"
+                .to_string(),
+            timeout_sec: Some(30),
+        },
+    );
+    let native_request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            "session-1",
+            "agent-1",
+            "interaction-1",
+            Some("Approve?".to_string()),
+            "Approve?".to_string(),
+            Some(30),
+        ),
+    );
+    let response_request = LocalDaemonRequest::RespondToInteraction(RespondToInteractionRequest {
+        session_id: "session-1".to_string(),
+        interaction_id: "interaction-1".to_string(),
+        choice_id: "submit_callback".to_string(),
+        custom_reply: Some("secret-callback".to_string()),
+    });
+
+    for request in [&helper_request, &native_request, &response_request] {
+        assert!(request_is_cacheable(request));
+        assert!(!should_persist_completed_result(
+            &CommandResultCache::fingerprint_for_test(request),
+        ));
+    }
+    assert!(request_is_cacheable(&LocalDaemonRequest::ListSessions(
+        ListSessionsRequest,
+    )));
+}
+
+#[tokio::test]
+async fn pending_interaction_replay_waits_for_one_volatile_result() {
+    let path = temp_cache_path("pending-interaction-replay");
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    let request = LocalDaemonRequest::RequestNativeProviderInteraction(
+        RequestNativeProviderInteractionRequest::allow_deny(
+            "session-1",
+            "agent-1",
+            "interaction-1",
+            Some("Approve?".to_string()),
+            "Approve?".to_string(),
+            Some(30),
+        ),
+    );
+    let fingerprint = CommandResultCache::fingerprint_for_test(&request);
+
+    assert!(matches!(
+        cache.reserve("interaction-command", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    let replay = match cache.reserve("interaction-command", &fingerprint).await {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("transport replay should wait for the original interaction"),
+    };
+    let response = serde_json::json!({
+        "NativeProviderInteractionResolved": {
+            "resolution": {
+                "status": "resolved",
+                "choice_id": "allow_once",
+                "reply": "allow"
+            }
+        }
+    });
+    let frame = KernelOutgoingFrame::Response {
+        request_id: "interaction-attempt-1".to_string(),
+        response: Box::new(Some(response.clone())),
+        error: None,
+    };
+
+    cache
+        .complete(
+            "interaction-command".to_string(),
+            fingerprint.clone(),
+            &frame,
+        )
+        .await;
+    let replayed = replay.await.expect("interaction replay should resolve");
+    assert_eq!(*replayed.response, Some(response));
+    assert!(fs::read_to_string(&path).unwrap_or_default().is_empty());
+
+    let restored = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should reload");
+    assert!(matches!(
+        restored.reserve("interaction-command", &fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+
+    let _ = fs::remove_file(path);
 }
 
 #[tokio::test]
@@ -98,6 +204,34 @@ async fn persistent_command_cache_compacts_to_retention_limit() {
         restored.reserve("command-8", &retained_fingerprint).await,
         CommandReservation::Wait(_)
     ));
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn persistent_command_cache_defers_disk_compaction_after_memory_eviction() {
+    let path = temp_cache_path("defer-eviction-compaction");
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    let completed = COMMAND_RESULT_CACHE_LIMIT + 8;
+    for index in 0..completed {
+        cache
+            .insert_completed_for_test(
+                format!("command-{index}"),
+                CommandResultCache::fingerprint_from_bytes_for_test(
+                    format!("request-{index}").as_bytes(),
+                ),
+                Some(serde_json::json!({ "index": index })),
+            )
+            .await;
+    }
+
+    let persisted = fs::read_to_string(&path).expect("persistent cache should exist");
+    assert_eq!(
+        persisted.lines().count(),
+        completed,
+        "memory eviction must not rewrite the full disk snapshot on every completion"
+    );
 
     let _ = fs::remove_file(path);
 }
@@ -378,8 +512,12 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
     let noisy_command_types = [
         "external_provider_session.list",
         "provider.catalog.get",
+        "prompt_input_history.get",
         "session.state.get",
+        "session.history.blob",
+        "session.history.outline",
         "slice.list",
+        "terminal.command_catalog.get",
         "waiting_room.inventory.get",
         "waiting_room.public_snapshot.get",
     ];
@@ -418,6 +556,48 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
             CommandReservation::Dispatch
         ));
     }
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn persistent_command_cache_removes_read_only_history_records_on_load() {
+    let path = temp_cache_path("drop-persisted-history-reads");
+    let history_fingerprint =
+        CommandResultCache::fingerprint_for_command_type_test("session.history.outline");
+    let mutation_fingerprint =
+        CommandResultCache::fingerprint_for_command_type_test("prompt.submit");
+    let history = persistent_result_for_test(
+        "command-history",
+        history_fingerprint.clone(),
+        crate::session::unix_epoch_ms(),
+        Some(serde_json::json!({ "history": "large paged response" })),
+    );
+    let mutation = persistent_result_for_test(
+        "command-mutation",
+        mutation_fingerprint.clone(),
+        crate::session::unix_epoch_ms(),
+        Some(serde_json::json!({ "submitted": true })),
+    );
+    rewrite_persistent_results(&path, &[history, mutation]).expect("cache fixture should write");
+
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should reload");
+
+    assert!(matches!(
+        cache.reserve("command-history", &history_fingerprint).await,
+        CommandReservation::Dispatch
+    ));
+    cache.forget_pending("command-history").await;
+    assert!(matches!(
+        cache
+            .reserve("command-mutation", &mutation_fingerprint)
+            .await,
+        CommandReservation::Wait(_)
+    ));
+    let stored = fs::read_to_string(&path).expect("compacted cache should exist");
+    assert!(!stored.contains("command-history"));
+    assert!(stored.contains("command-mutation"));
 
     let _ = fs::remove_file(path);
 }

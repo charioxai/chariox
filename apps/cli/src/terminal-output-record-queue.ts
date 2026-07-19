@@ -9,6 +9,7 @@ type TerminalOutputRecordQueueOptions<TimerHandle, RecordValue> = {
 export type TerminalOutputRecordQueue<RecordValue> = {
   queue(records: RecordValue[]): void
   flush(): void
+  drain(): void
   clearTimer(): void
   pendingCount(): number
   hasPendingFlush(): boolean
@@ -41,6 +42,15 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
     }
   }
 
+  const drain = () => {
+    clearPendingTimer()
+    while (pendingRecords.length > 0) {
+      const records = pendingRecords.splice(0, maxRecordsPerFlush)
+      options.processRecords(records)
+      clearPendingTimer()
+    }
+  }
+
   const scheduleFlush = () => {
     if (pendingTimer !== undefined) {
       return
@@ -60,6 +70,7 @@ export function createTerminalOutputRecordQueue<TimerHandle, RecordValue>(
       scheduleFlush()
     },
     flush,
+    drain,
     clearTimer() {
       clearPendingTimer()
     },

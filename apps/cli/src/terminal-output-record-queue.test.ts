@@ -126,3 +126,15 @@ test("terminal output record queue limits each flush and reschedules overflow", 
   assert.equal(queue.pendingCount(), 0)
   assert.equal(queue.hasPendingFlush(), false)
 })
+
+test("terminal output record queue drains every budgeted batch synchronously", () => {
+  const { processed, queue, timers } = createBudgetedHarness()
+
+  queue.queue([1, 2, 3, 4, 5])
+  queue.drain()
+
+  assert.equal(timers[0]?.cleared, true)
+  assert.deepEqual(processed, [[1, 2], [3, 4], [5]])
+  assert.equal(queue.pendingCount(), 0)
+  assert.equal(queue.hasPendingFlush(), false)
+})

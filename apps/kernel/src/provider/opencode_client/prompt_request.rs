@@ -48,7 +48,15 @@ impl OpenCodeClient {
         {
             body["system"] = json!(system);
         }
-        if let Some((provider_id, model_id)) = parse_model(model) {
+        let parsed_model = parse_model(model).map_err(|model| {
+            self.protocol_error(
+                "opencode_prompt_model",
+                format!(
+                    "OpenCode model `{model}` must be provider-qualified as `<provider>/<model>`"
+                ),
+            )
+        })?;
+        if let Some((provider_id, model_id)) = parsed_model {
             body["model"] = json!({
                 "providerID": provider_id,
                 "modelID": model_id,
@@ -85,10 +93,16 @@ fn opencode_agent_for_execution_mode(execution_mode: AgentExecutionMode) -> &'st
     }
 }
 
-pub(super) fn parse_model(model: Option<&str>) -> Option<(&str, &str)> {
-    let value = model?.trim();
+pub(super) fn parse_model(model: Option<&str>) -> Result<Option<(&str, &str)>, &str> {
+    let Some(value) = model.map(str::trim) else {
+        return Ok(None);
+    };
     if value.is_empty() || value == "default" {
-        return None;
+        return Ok(None);
     }
-    value.split_once('/')
+    let (provider_id, model_id) = value.split_once('/').unwrap_or(("opencode", value));
+    if provider_id.is_empty() || model_id.is_empty() {
+        return Err(value);
+    }
+    Ok(Some((provider_id, model_id)))
 }

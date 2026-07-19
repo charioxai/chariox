@@ -215,11 +215,17 @@ configure_slice_state_directory() {
 refresh_slice_support_files() {
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
     || log "runtime script overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/arroba-slice/start-providers.sh" \
+    || log "provider server script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
     || log "screen script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/arroba-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/arroba-slice/provider-port-bridge.mjs" \
+    || log "provider bridge overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/arroba-slice/validate-screen.sh" \
+    || log "screen validator overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 

@@ -7,6 +7,62 @@ use super::owned::OwnedPromptCompletion;
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn settle_failed_local_prompt_without_advance(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        message: &str,
+    ) -> Result<Option<bool>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(active_prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        if active_prompt.id() != prompt_id {
+            return Ok(None);
+        }
+        if active_prompt.workflow_run_id().is_some() {
+            if let Err(error) = self.workflow_fail_provider_prompt(
+                session_id,
+                &active_prompt,
+                Some(provider_run_id),
+                message,
+            ) {
+                crate::logging::warn_with_fields(
+                    "daemon.prompt_delivery",
+                    "failed to settle workflow after prompt dispatch failure",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "prompt_id": active_prompt.id(),
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+        let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
+        let completed_at_ms = crate::session::unix_epoch_ms();
+        if !self.prompt_completion_recorded(provider_run_id) {
+            self.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                &format!("prompt-cancelled:{}", cancelled.id()),
+                completed_at_ms,
+            );
+            self.mark_prompt_completion_recorded(provider_run_id);
+        }
+        let released_claim = self.clear_prompt_activity(provider_run_id);
+        let _ = self.session_snapshot(session_id)?;
+        Ok(Some(released_claim))
+    }
+
     pub(super) fn complete_local_prompt_without_advance(
         &self,
         session_id: &str,

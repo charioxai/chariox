@@ -68,7 +68,7 @@ export async function runHumanHttpBrowserDrill({ url, root, timeoutMs = 30_000 }
         throw new Error(`browser did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}`)
       }
     }
-    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    const screenshot = await captureBrowserScreenshot(cdp, 'browser final screenshot')
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error('browser screenshot was empty')
     }
@@ -208,6 +208,15 @@ export async function captureTraceLevelScreenshot(cdp, root, visualArtifactPrefi
 }
 
 export async function captureBrowserScreenshot(cdp, label) {
+  await withTimeout(cdp.send('Runtime.evaluate', {
+    awaitPromise: true,
+    returnByValue: true,
+    expression: `(async () => {
+      if (document.fonts?.ready) await document.fonts.ready;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return true;
+    })()`,
+  }), 3_000, `${label} paint`)
   return await withTimeout(
     cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true }),
     10_000,
@@ -301,7 +310,14 @@ export async function waitForBrowserHtmlFinalOutput(
       })()`,
     }), 3_000, 'browser HTML final Runtime.evaluate')
     lastState = evaluated.result?.value ?? null
-    if (lastState?.ok) return lastState
+    if (lastState?.ok) {
+      const renderedFrame = await waitForBrowserHtmlFrameRendered(cdp, {
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        expectedHtmlText,
+        requiredHtmlSnippets,
+      })
+      return { ...lastState, renderedFrame }
+    }
     if (
       lastState?.status === 'Completed'
       && lastState?.htmlOk
@@ -314,6 +330,74 @@ export async function waitForBrowserHtmlFinalOutput(
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
   throw new Error(`browser did not render HTML final workflow output: ${JSON.stringify(lastState)}`)
+}
+
+export async function waitForBrowserHtmlFrameRendered(
+  cdp,
+  {
+    timeoutMs = 30_000,
+    expectedHtmlText = 'Vibrant Workflow Dashboard',
+    requiredHtmlSnippets = [],
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs
+  let lastState = null
+  let lastError = null
+  while (Date.now() < deadline) {
+    let frameCdp = null
+    try {
+      frameCdp = await withTimeout(cdp.connectChildTarget({ type: 'iframe', url: 'about:srcdoc' }), 3_000, 'browser HTML child target')
+      if (!frameCdp) throw new Error('sandboxed HTML frame target is not registered')
+      await withTimeout(frameCdp.send('Runtime.enable'), 3_000, 'browser HTML frame Runtime.enable')
+      const evaluated = await withTimeout(frameCdp.send('Runtime.evaluate', {
+        returnByValue: true,
+        expression: `(() => {
+          const root = document.documentElement;
+          const body = document.body;
+          const rect = root?.getBoundingClientRect();
+          return {
+            readyState: document.readyState,
+            text: body?.innerText || '',
+            outerHtml: root?.outerHTML || '',
+            width: rect?.width || 0,
+            height: Math.max(rect?.height || 0, body?.scrollHeight || 0),
+          };
+        })()`,
+      }), 3_000, 'browser HTML frame Runtime.evaluate')
+      lastState = evaluated.result?.value ?? null
+      const markupOk = requiredHtmlSnippets.every((snippet) => lastState?.outerHtml?.includes(snippet))
+      if (
+        lastState?.readyState === 'complete'
+        && lastState.text.includes(expectedHtmlText)
+        && markupOk
+        && lastState.width > 0
+        && lastState.height > 0
+      ) {
+        await withTimeout(frameCdp.send('Runtime.evaluate', {
+          awaitPromise: true,
+          returnByValue: true,
+          expression: `(async () => {
+            if (document.fonts?.ready) await document.fonts.ready;
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            return true;
+          })()`,
+        }), 3_000, 'browser HTML frame paint')
+        return {
+          readyState: lastState.readyState,
+          text: lastState.text,
+          htmlLength: lastState.outerHtml.length,
+          width: lastState.width,
+          height: lastState.height,
+        }
+      }
+    } catch (error) {
+      lastError = error
+    } finally {
+      await frameCdp?.close?.().catch(() => {})
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`browser HTML frame did not finish rendering: ${JSON.stringify(lastState)}${lastError ? `; ${lastError.message}` : ''}`)
 }
 
 export async function runHumanHttpRootFormBrowserDrill({ baseUrl, root, timeoutMs = 30_000 }) {
@@ -393,7 +477,7 @@ export async function runHumanHttpRootFormBrowserDrill({ baseUrl, root, timeoutM
         throw new Error(`browser root form did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}, state=${JSON.stringify(finalState)}`)
       }
     }
-    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    const screenshot = await captureBrowserScreenshot(cdp, 'browser root form screenshot')
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error('browser root form screenshot was empty')
     }
@@ -471,7 +555,7 @@ export async function runSharedViewerBrowserDrill({ baseUrl, root, label, prompt
         throw new Error(`${label} browser viewer did not observe ${expectedValue} output; outputs=${JSON.stringify(outputs)}, state=${JSON.stringify(finalState)}`)
       }
     }
-    const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+    const screenshot = await captureBrowserScreenshot(cdp, `${label} browser viewer screenshot`)
     if (typeof screenshot.data !== 'string' || screenshot.data.length < 1000) {
       throw new Error(`${label} browser viewer screenshot was empty`)
     }
@@ -553,7 +637,8 @@ export async function connectChromeTarget(webSocketUrl) {
     for (const waiter of pending.values()) waiter.reject(error)
     pending.clear()
   })
-  return {
+  const connection = {
+    webSocketUrl,
     send(method, params = {}) {
       const id = nextId++
       return new Promise((resolve, reject) => {
@@ -568,7 +653,26 @@ export async function connectChromeTarget(webSocketUrl) {
         socket.close()
       })
     },
+    async connectChildTarget({ type, url }) {
+      const endpoint = new URL(webSocketUrl)
+      endpoint.protocol = endpoint.protocol === 'wss:' ? 'https:' : 'http:'
+      endpoint.pathname = '/json/list'
+      endpoint.search = ''
+      endpoint.hash = ''
+      const response = await fetch(endpoint)
+      if (!response.ok) throw new Error(`Chrome target list returned HTTP ${response.status}`)
+      const targets = await response.json()
+      const parentId = new URL(webSocketUrl).pathname.split('/').filter(Boolean).at(-1)
+      const target = targets.find((candidate) => (
+        candidate.parentId === parentId
+        && candidate.type === type
+        && candidate.url === url
+        && typeof candidate.webSocketDebuggerUrl === 'string'
+      ))
+      return target ? connectChromeTarget(target.webSocketDebuggerUrl) : null
+    },
   }
+  return connection
 }
 
 export async function waitForBrowserFinalOutput(cdp, timeoutMs = 30_000) {
@@ -658,8 +762,11 @@ export function browserStatusRecorderScript() {
       const install = () => {
         record();
         const statusEl = document.querySelector('#status');
-        if (statusEl) {
-          new MutationObserver(record).observe(statusEl, { childList: true, subtree: true, characterData: true });
+        const outputEl = document.querySelector('#output');
+        if (statusEl || outputEl) {
+          const observer = new MutationObserver(record);
+          if (statusEl) observer.observe(statusEl, { childList: true, subtree: true, characterData: true });
+          if (outputEl) observer.observe(outputEl, { childList: true, subtree: true, characterData: true });
         }
       };
       if (document.readyState === 'loading') {

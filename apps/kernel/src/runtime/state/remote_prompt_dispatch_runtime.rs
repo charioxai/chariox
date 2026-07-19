@@ -1247,6 +1247,36 @@ mod tests {
             .expect("failed agent should remain available");
         assert_eq!(failed_agent.state(), crate::agent::AgentState::Error);
         assert!(!failed_agent.is_processing());
+        {
+            let mut sessions = runtime.owned.session_store.write();
+            runtime
+                .owned
+                .agent_store
+                .focus_agent(session.id(), agent.id(), &mut sessions)
+                .expect("failed agent should remain focusable");
+        }
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(agent.id())
+                .expect("focused failed agent should remain available")
+                .state(),
+            crate::agent::AgentState::Error,
+            "focusing or restoring a failed pane must not erase its error badge",
+        );
+        let snapshot = runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("failed session should remain projectable");
+        assert_eq!(
+            runtime
+                .agent_activity_for_session(&snapshot)
+                .get(agent.id())
+                .expect("failed agent activity should remain projected")
+                .status,
+            crate::runtime::projection::AgentRuntimeStatus::Error,
+        );
         assert!(runtime
             .owned
             .prompt_state_owner

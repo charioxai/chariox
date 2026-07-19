@@ -306,7 +306,7 @@ export async function handleWorkflowSlashCommand(
   }
 
   if (subcommand === "node") {
-    await handleWorkflowNodeCommand(deps, context, args)
+    await handleWorkflowNodeCommand(deps, context, args, command.raw)
     return
   }
 

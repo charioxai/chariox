@@ -1,48 +1,87 @@
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
 use crate::protocol::RelayConnectionRole;
 use crate::registry::{
-    DaemonKey, DisplayStreamSender, RelayRegistry, RelayRouteIndex, RelaySender,
+    DaemonKey, DisplayStreamSender, PendingRequestKind, RelayRegistry, RelayRouteIndex, RelaySender,
 };
+
+use super::send_daemon_subscription_cleanup;
 
 pub(in crate::server::connection) async fn remove_peer(
     registry: &Arc<RwLock<RelayRegistry>>,
     routes: &Arc<RelayRouteIndex>,
     peer_addr: SocketAddr,
     daemon_key: Option<&DaemonKey>,
+    relay_request_counter: &AtomicU64,
 ) -> (
     Vec<(RelaySender, String)>,
     Vec<(RelaySender, String, String)>,
     Vec<RelaySender>,
     Vec<DisplayStreamSender>,
     usize,
+    usize,
 ) {
     let mut guard = registry.write().await;
     let removed_peer = guard.peers.remove(&peer_addr);
-    let client_subscription_ids = guard
+    let active_client_subscriptions = guard
         .subscriptions
         .iter()
         .filter(|(_, active)| active.client_addr == peer_addr)
-        .map(|(subscription_id, _)| subscription_id.clone())
+        .map(|(subscription_id, active)| {
+            (
+                subscription_id.clone(),
+                active.daemon_key.clone(),
+                active.client_public_key.clone(),
+            )
+        })
         .collect::<Vec<_>>();
-    for subscription_id in client_subscription_ids {
-        guard.subscriptions.remove(&subscription_id);
-        routes.remove_subscription(&subscription_id);
+    for (subscription_id, _, _) in &active_client_subscriptions {
+        guard.subscriptions.remove(subscription_id);
+        routes.remove_subscription(subscription_id);
     }
     routes.remove_client_sender(&peer_addr);
-    let dropped_client_pending_requests = if removed_peer
+    let dropped_client_pending = if removed_peer
         .as_ref()
         .is_some_and(|peer| peer.role == RelayConnectionRole::Client)
     {
-        routes
-            .drain_pending_clients_where(|pending| pending.client_addr == peer_addr)
-            .len()
+        routes.drain_pending_clients_where(|pending| pending.client_addr == peer_addr)
     } else {
-        0
+        Vec::new()
     };
+    let dropped_client_pending_requests = dropped_client_pending.len();
+    let mut abandoned_subscriptions = active_client_subscriptions;
+    abandoned_subscriptions.extend(dropped_client_pending.iter().filter_map(|pending| {
+        let PendingRequestKind::Subscribe {
+            subscription_id,
+            client_public_key,
+        } = &pending.kind
+        else {
+            return None;
+        };
+        Some((
+            subscription_id.clone(),
+            pending.daemon_key.clone(),
+            client_public_key.clone(),
+        ))
+    }));
+    let daemon_subscription_cleanups = abandoned_subscriptions
+        .into_iter()
+        .filter(|(subscription_id, daemon_key, client_public_key)| {
+            routes.daemon_sender(daemon_key).is_some_and(|sender| {
+                send_daemon_subscription_cleanup(
+                    &sender,
+                    relay_request_counter,
+                    subscription_id.clone(),
+                    client_public_key.clone(),
+                )
+                .is_ok()
+            })
+        })
+        .count();
     if let Some(daemon_key) = daemon_key {
         let removed_current_daemon = removed_peer.as_ref().is_some_and(|peer| {
             peer.role == RelayConnectionRole::Daemon
@@ -59,6 +98,7 @@ pub(in crate::server::connection) async fn remove_peer(
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
+                daemon_subscription_cleanups,
                 dropped_client_pending_requests,
             );
         }
@@ -121,6 +161,7 @@ pub(in crate::server::connection) async fn remove_peer(
             daemon_errors,
             subscription_client_senders,
             display_stream_senders,
+            daemon_subscription_cleanups,
             dropped_client_pending_requests,
         );
     }
@@ -129,6 +170,7 @@ pub(in crate::server::connection) async fn remove_peer(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        daemon_subscription_cleanups,
         dropped_client_pending_requests,
     )
 }

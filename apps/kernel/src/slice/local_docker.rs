@@ -49,6 +49,7 @@ pub struct LocalDockerSliceOptions {
 
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
+const SLICE_DOCKER_PROVISIONER_ENV: &str = "ARROBA_SLICE_DOCKER_PROVISIONER";
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {

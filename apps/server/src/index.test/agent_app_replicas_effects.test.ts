@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 import {
   acquireAgentAppReplica,
   appendCloudPublicationDeploymentLogs,
@@ -10,6 +12,8 @@ import {
   createPublicationTraceStreamState,
   createServer,
   createWebSocketReader,
+  enqueueAgentAppReplicaDispatch,
+  ensurePublicationRuntimeAttached,
   findWorkflowRunByInvocationRequestId,
   firstSetCookieValue,
   invokePublicationInput,
@@ -41,9 +45,17 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import {
+  configurePublicationCallerClaimsRuntimeForTests,
+  readPrivatePublicationCallerClaimsConfigFile,
+} from "../publication-caller-claims.js"
+import {
+  agentAppCallerSession,
+} from "../publication-agent-app-replicas.js"
 
 test("agent app replica selection preserves caller affinity across hidden sessions", async () => {
   const selectedReplicas: unknown[] = []
+  const selectedRequestIds: string[] = []
   const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replicas-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
@@ -67,6 +79,7 @@ test("agent app replica selection preserves caller affinity across hidden sessio
   }, {
     invokeWorkflow: async (invocation) => {
       selectedReplicas.push((invocation.caller.proof as Record<string, unknown>).replica_session_id)
+      selectedRequestIds.push(invocation.request_id)
       return {
         accepted: true,
         workflow_run: { id: `run-${selectedReplicas.length}`, status: "Running" },
@@ -75,14 +88,394 @@ test("agent app replica selection preserves caller affinity across hidden sessio
   })
 
   try {
-    await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    const callerA = await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html" } })
+    const callerACookie = firstSetCookieValue(callerA.headers["set-cookie"])
     await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
-    await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
+    const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", cookie: callerACookie } })
+    assert.match(queued.body, /agent_app_pool_queued/)
+    assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2"])
+
+    releaseAgentAppReplicaInvocation(baseConfig, selectedRequestIds[0])
+    await waitForCondition(
+      () => selectedReplicas.length === 3,
+      "same caller should resume after its affinity replica is released",
+    )
     assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2", "replica-session-1"])
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })
   }
+})
+
+test("agent app caller affinity ignores the legacy caller header outside managed Cloud", () => {
+  configurePublicationCallerClaimsRuntimeForTests(null)
+  try {
+    const caller = agentAppCallerSession({
+      "x-arroba-agent-app-caller": "forged-caller",
+      "x-arroba-caller-roles": "admin",
+      "x-arroba-caller-subject": "forged-subject",
+    }, () => "generated-session")
+    assert.equal(caller.callerKey, "generated-session")
+    assert.match(caller.setCookie ?? "", /arroba_agent_app_session=generated-session/)
+  } finally {
+    configurePublicationCallerClaimsRuntimeForTests(undefined)
+  }
+})
+
+test("managed agent app runtime verifies caller claims before affinity and role selection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-caller-claims-"))
+  await mkdir(join(root, "app"), { recursive: true })
+  await writeFile(join(root, "app", "index.html"), "<!doctype html><main>secure app</main>")
+  await writeFile(join(root, "publication.json"), JSON.stringify({
+    schema_version: 1,
+    package_version: 3,
+    publication_id: "pub-caller-claims",
+    source_session_id: "session-1",
+    workflow_id: "workflow-1",
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }))
+  await writeFile(join(root, "deployment-contract.json"), JSON.stringify({
+    schema_version: 1,
+    package_id: `sha256:${"3".repeat(64)}`,
+    artifact: {
+      content_digest: `sha256:${"4".repeat(64)}`,
+      digest_algorithm: "sha256",
+      digest_scope: "package_files_excluding_deployment_contract",
+    },
+    source: {
+      publication_id: "pub-caller-claims",
+      session_id: "session-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      creator_user_id: "user-1",
+      captured_at_ms: 1,
+    },
+    compatibility: {
+      package_version: 3,
+      minimum_kernel_version: "0.1.0",
+      minimum_local_daemon_protocol_version: 1,
+    },
+    routes: [{ id: "secure-hook", path: "/secure/*", required_roles: ["member"] }],
+    provider_requirements: [],
+    credential_slots: [],
+    configuration: [],
+    capabilities: {},
+    resources: {},
+    presentation: {},
+    signatures: [],
+  }))
+  const callerSessions: unknown[] = []
+  const invocationCallers: unknown[] = []
+  configurePublicationCallerClaimsRuntimeForTests({
+    deploymentId: "deployment-1",
+    environmentId: "environment-1",
+    secret: CALLER_CLAIMS_SECRET,
+    now: () => new Date(CALLER_CLAIMS_NOW_SECONDS * 1_000),
+  })
+  const { app } = buildServer({
+    ...baseConfig,
+    publication_id: "pub-caller-claims",
+    hook_id: "secure-hook",
+    transport: "human_http",
+    package_root: root,
+    agent_app: {
+      enabled: true,
+      assets: { public_dir: "app", index: "index.html" },
+      routes: [{
+        path: "/secure/*",
+        hook_id: "secure-hook",
+        prompt_source: "path_tail",
+        response: "streaming_shell",
+        required_role: "public",
+      }],
+    },
+  }, {
+    invokeWorkflow: async (invocation) => {
+      callerSessions.push((invocation.caller.proof as Record<string, unknown>).agent_app_session)
+      invocationCallers.push(invocation.caller)
+      return {
+        accepted: true,
+        workflow_run: { id: `run-${callerSessions.length}`, status: "Running" },
+      }
+    },
+  })
+
+  try {
+    const asset = await app.inject({
+      method: "GET",
+      url: "/",
+      headers: signedCallerClaimsHeaders({
+        invocationId: "invocation-asset",
+        nonce: "nonce-asset",
+        subject: "user:trusted-user",
+        roles: ["member"],
+      }),
+    })
+    assert.equal(asset.statusCode, 200)
+    assert.deepEqual(callerSessions, [])
+
+    const validHeaders = signedCallerClaimsHeaders({
+      invocationId: "invocation-valid",
+      nonce: "nonce-valid",
+      subject: "user:trusted-user",
+      roles: ["member"],
+    })
+    const valid = await app.inject({
+      method: "GET",
+      url: "/secure/report",
+      headers: {
+        accept: "text/html",
+        ...validHeaders,
+        "x-arroba-agent-app-caller": "forged-affinity",
+        "x-arroba-caller-subject": "forged-subject",
+        "x-arroba-caller-roles": "admin",
+      },
+    })
+    assert.equal(valid.statusCode, 200)
+    assert.deepEqual(callerSessions, ["user:trusted-user"])
+    assert.deepEqual(invocationCallers, [{
+      type: "authenticated",
+      proof: {
+        transport: "agent_app_human_http",
+        route: "/secure/*",
+        agent_app_session: "user:trusted-user",
+        agent_app_request_id: (invocationCallers[0] as { proof: { agent_app_request_id: string } }).proof.agent_app_request_id,
+        replica_session_id: "session-1",
+        agent_app_actions: {},
+        agent_app_audit: undefined,
+        publication_caller: {
+          account_id: "account-1",
+          deployment_id: "deployment-1",
+          environment_id: "environment-1",
+          invocation_id: "invocation-valid",
+          roles: ["member"],
+          subject: "user:trusted-user",
+        },
+      },
+    }])
+    assert.equal(valid.headers["set-cookie"], undefined)
+
+    const replay = await app.inject({ method: "GET", url: "/secure/replay", headers: validHeaders })
+    assert.equal(replay.statusCode, 401)
+    assert.equal(replay.json().error.code, "caller_claims_invalid")
+
+    const rejectedRequests: Array<{
+      readonly label: string
+      readonly headers: Record<string, string>
+      readonly statusCode: 401 | 403
+    }> = [
+      {
+        label: "missing claims",
+        headers: {
+          "x-arroba-agent-app-caller": "forged-affinity",
+        },
+        statusCode: 401,
+      },
+      {
+        label: "malformed claims",
+        headers: {
+          "x-arroba-caller-claims": "not-a-token",
+          "x-arroba-invocation-id": "invocation-malformed",
+        },
+        statusCode: 401,
+      },
+      {
+        label: "forged signature",
+        headers: signedCallerClaimsHeaders({
+          invocationId: "invocation-forged",
+          nonce: "nonce-forged",
+          secret: "forged-secret-that-is-at-least-32-bytes",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "wrong deployment",
+        headers: signedCallerClaimsHeaders({
+          deploymentId: "deployment-2",
+          invocationId: "invocation-deployment",
+          nonce: "nonce-deployment",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "wrong environment",
+        headers: signedCallerClaimsHeaders({
+          environmentId: "environment-2",
+          invocationId: "invocation-environment",
+          nonce: "nonce-environment",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "expired claims",
+        headers: signedCallerClaimsHeaders({
+          issuedAtSeconds: CALLER_CLAIMS_NOW_SECONDS - 120,
+          expiresAtSeconds: CALLER_CLAIMS_NOW_SECONDS - 60,
+          invocationId: "invocation-expired",
+          nonce: "nonce-expired",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "wrong role",
+        headers: signedCallerClaimsHeaders({
+          invocationId: "invocation-role",
+          nonce: "nonce-role",
+          roles: ["public"],
+        }),
+        statusCode: 403,
+      },
+      {
+        label: "wrong invocation projection",
+        headers: signedCallerClaimsHeaders({
+          invocationId: "invocation-claim",
+          invocationHeader: "invocation-header",
+          nonce: "nonce-invocation",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "replayed nonce",
+        headers: signedCallerClaimsHeaders({
+          invocationId: "invocation-replayed-nonce",
+          nonce: "nonce-asset",
+        }),
+        statusCode: 401,
+      },
+      {
+        label: "replayed invocation id",
+        headers: signedCallerClaimsHeaders({
+          invocationId: "invocation-asset",
+          nonce: "nonce-replayed-invocation",
+        }),
+        statusCode: 401,
+      },
+    ]
+    for (const rejected of rejectedRequests) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/secure/${encodeURIComponent(rejected.label)}`,
+        headers: { accept: "text/html", ...rejected.headers },
+      })
+      assert.equal(response.statusCode, rejected.statusCode, rejected.label)
+      const body = response.json() as { error: { code: string; message: string } }
+      if (rejected.statusCode === 403) {
+        assert.equal(body.error.code, "caller_role_denied", rejected.label)
+        assert.equal(body.error.message, "Publication caller does not have the required role", rejected.label)
+      } else {
+        assert.ok(
+          body.error.code === "caller_authentication_required" || body.error.code === "caller_claims_invalid",
+          rejected.label,
+        )
+        assert.equal(body.error.message, "Publication caller authentication is required", rejected.label)
+      }
+      assert.equal(response.headers["cache-control"], "no-store", rejected.label)
+    }
+    assert.deepEqual(callerSessions, ["user:trusted-user"])
+  } finally {
+    await app.close()
+    configurePublicationCallerClaimsRuntimeForTests(undefined)
+    clearAgentAppReplicaPoolsForTests()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication caller claims config file is private and consumed once", async () => {
+  const root = await mkdtemp(join(tmpdir(), "arroba-server-caller-claims-config-"))
+  const configPath = join(root, "caller-claims.json")
+  const insecureConfigPath = join(root, "caller-claims-insecure.json")
+  try {
+    await writeFile(configPath, JSON.stringify({
+      schema_version: 1,
+      deployment_id: "deployment-1",
+      environment_id: "environment-1",
+      secret: CALLER_CLAIMS_SECRET,
+    }), { mode: 0o600 })
+    assert.deepEqual(readPrivatePublicationCallerClaimsConfigFile(configPath), {
+      deploymentId: "deployment-1",
+      environmentId: "environment-1",
+      secret: CALLER_CLAIMS_SECRET,
+    })
+    await assert.rejects(readFile(configPath, "utf8"), /ENOENT/)
+
+    await writeFile(insecureConfigPath, JSON.stringify({
+      schema_version: 1,
+      deployment_id: "deployment-1",
+      environment_id: "environment-1",
+      secret: CALLER_CLAIMS_SECRET,
+    }), { mode: 0o640 })
+    assert.throws(
+      () => readPrivatePublicationCallerClaimsConfigFile(insecureConfigPath),
+      /owned regular file with mode 0600/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("agent app replica scheduler preserves caller order without blocking other callers", async () => {
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-replica-caller-order",
+    replica_session_ids: ["replica-session-1", "replica-session-2"],
+    agent_app: {
+      enabled: true,
+      replicas: { count: 2, per_caller_ordering: true, max_queue_depth: 4 },
+      routes: [],
+    },
+  }
+  const callerA = acquireAgentAppReplica(publication, "caller-a")
+  const callerB = acquireAgentAppReplica(publication, "caller-b")
+  assert.equal(callerA?.publication.session_id, "replica-session-1")
+  assert.equal(callerB?.publication.session_id, "replica-session-2")
+  assert.equal(acquireAgentAppReplica(publication, "caller-a"), null)
+
+  const dispatched: string[] = []
+  assert.equal(enqueueAgentAppReplicaDispatch(publication, "caller-a", async (lease) => {
+    dispatched.push(`caller-a:${lease.publication.session_id}`)
+    lease.release()
+  }), true)
+  assert.equal(enqueueAgentAppReplicaDispatch(publication, "caller-c", async (lease) => {
+    dispatched.push(`caller-c:${lease.publication.session_id}`)
+    lease.release()
+  }), true)
+
+  callerB?.release()
+  await waitForCondition(
+    () => dispatched.length === 1,
+    "an eligible caller should use the idle replica",
+  )
+  assert.deepEqual(dispatched, ["caller-c:replica-session-2"])
+
+  callerA?.release()
+  await waitForCondition(
+    () => dispatched.length === 2,
+    "the queued affinity caller should resume in order",
+  )
+  assert.deepEqual(dispatched, [
+    "caller-c:replica-session-2",
+    "caller-a:replica-session-1",
+  ])
+})
+
+test("agent app single-replica configuration admits only one invocation at a time", () => {
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    publication_id: "pub-single-replica-capacity",
+    replica_session_ids: ["replica-session-1"],
+    agent_app: {
+      enabled: true,
+      replicas: { count: 1, per_caller_ordering: true },
+      routes: [],
+    },
+  }
+  const first = acquireAgentAppReplica(publication, "caller-a")
+  assert.equal(first?.publication.session_id, "replica-session-1")
+  assert.equal(acquireAgentAppReplica(publication, "caller-b"), null)
+  first?.release()
+  const second = acquireAgentAppReplica(publication, "caller-b")
+  assert.equal(second?.publication.session_id, "replica-session-1")
+  second?.release()
 })
 
 test("agent app replica caller affinity survives gateway restart with runtime storage", async () => {
@@ -163,9 +556,10 @@ test("agent app replica scheduler queues different callers until a replica is id
   })
 
   try {
-    await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-a" } })
-    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
+    await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html" } })
+    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html" } })
     const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-c" } })
+    const queuedCookie = firstSetCookieValue(queued.headers["set-cookie"])
 
     assert.equal(queued.statusCode, 200)
     assert.match(queued.body, /agent_app_pool_queued/)
@@ -187,7 +581,7 @@ test("agent app replica scheduler queues different callers until a replica is id
       () => invocations.length === 3,
       "queued caller should dispatch after a replica is released",
     )
-    assert.equal(invocations[2]?.caller, "caller-c")
+    assert.equal(invocations[2]?.caller, agentAppSessionId(queuedCookie))
     assert.equal(invocations[2]?.replica, "replica-session-1")
     const drainedStatus = await app.inject({ method: "GET", url: "/.well-known/arroba/agent-app/status" })
     assert.equal(drainedStatus.statusCode, 200)
@@ -231,6 +625,30 @@ test("agent app invocation event streams resolve the selected replica session", 
 
   assert.equal(publicationForAgentAppInvocation(publication, "request-1").session_id, "replica-session-2")
   assert.equal(publicationForAgentAppInvocation(publication, "missing-request").session_id, "base-session")
+})
+
+test("agent app replica sessions use distinct kernel attachment clients", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    async send(request: Record<string, unknown>) {
+      requests.push(request)
+      return { SessionAttached: { attachment: { id: `attachment-${requests.length}` } } }
+    },
+  }
+  const publication = {
+    ...baseConfig,
+    publication_id: "pub-replica-runtime-attachments",
+  }
+
+  await ensurePublicationRuntimeAttached(client, { ...publication, session_id: "replica-session-1" })
+  await ensurePublicationRuntimeAttached(client, { ...publication, session_id: "replica-session-2" })
+
+  const attachments = requests.map((request) => request.AttachToSession as {
+    readonly client_id: string
+    readonly session_id: string
+  })
+  assert.deepEqual(attachments.map(({ session_id }) => session_id), ["replica-session-1", "replica-session-2"])
+  assert.equal(new Set(attachments.map(({ client_id }) => client_id)).size, 2)
 })
 
 test("agent app overlay effects cannot write protected paths", async () => {
@@ -573,7 +991,22 @@ test("agent app persistent patch effects survive gateway restart", async () => {
 
 test("agent app action proxy only exposes route-allowed manifest actions", async () => {
   const actionCalls: unknown[] = []
+  const actionPaths: string[] = []
   const actionServer = createServer((request, response) => {
+    actionPaths.push(request.url ?? "")
+    if (request.url === "/redirect") {
+      response.writeHead(302, { location: "/redirect-target" })
+      response.end()
+      return
+    }
+    if (request.url === "/large") {
+      response.writeHead(200, {
+        "content-type": "text/plain",
+        "content-length": String(1_048_577),
+      })
+      response.end("x".repeat(1_048_577))
+      return
+    }
     const chunks: Buffer[] = []
     request.on("data", (chunk) => chunks.push(Buffer.from(chunk)))
     request.on("end", () => {
@@ -604,7 +1037,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
         required_role: "public",
         manipulation: {
           level: "state_and_overlay",
-          allowed_actions: ["cart.add"],
+          allowed_actions: ["cart.add", "cart.redirect", "cart.large"],
         },
       }],
       actions: {
@@ -618,6 +1051,12 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
         },
         "cart.admin": {
           transport: { kind: "http", method: "POST", url: actionUrl },
+        },
+        "cart.redirect": {
+          transport: { kind: "http", method: "POST", url: `http://127.0.0.1:${address.port}/redirect` },
+        },
+        "cart.large": {
+          transport: { kind: "http", method: "POST", url: `http://127.0.0.1:${address.port}/large` },
         },
       },
     },
@@ -649,9 +1088,72 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
     })
     assert.equal(forbidden.statusCode, 403)
     assert.equal(actionCalls.length, 1)
+
+    const redirect = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.redirect",
+      payload: {},
+    })
+    assert.equal(redirect.statusCode, 400)
+    assert.match(redirect.json().error, /redirects are forbidden/)
+    assert.equal(actionPaths.includes("/redirect-target"), false)
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/.well-known/arroba/agent-app/actions/cart.large",
+      payload: {},
+    })
+    assert.equal(oversized.statusCode, 400)
+    assert.match(oversized.json().error, /exceeds the byte limit/)
   } finally {
     await app.close()
     await rm(root, { recursive: true, force: true })
     await new Promise<void>((resolve) => actionServer.close(() => resolve()))
   }
 })
+
+const CALLER_CLAIMS_SECRET = "caller-claims-runtime-secret-0123456789"
+const CALLER_CLAIMS_NOW_SECONDS = Math.floor(Date.parse("2026-07-15T12:00:00.000Z") / 1_000)
+
+function signedCallerClaimsHeaders(options: {
+  readonly deploymentId?: string
+  readonly environmentId?: string
+  readonly expiresAtSeconds?: number
+  readonly invocationHeader?: string
+  readonly invocationId: string
+  readonly issuedAtSeconds?: number
+  readonly nonce: string
+  readonly roles?: readonly string[]
+  readonly secret?: string
+  readonly subject?: string
+}): Record<string, string> {
+  const deploymentId = options.deploymentId ?? "deployment-1"
+  const invocationId = options.invocationId
+  const encodedHeader = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
+  const encodedPayload = Buffer.from(JSON.stringify({
+    iss: "arroba-cloud",
+    aud: deploymentId,
+    sub: options.subject ?? "user:user-1",
+    org: "account-1",
+    roles: options.roles ?? ["member"],
+    deployment_id: deploymentId,
+    environment_id: options.environmentId ?? "environment-1",
+    invocation_id: invocationId,
+    nonce: options.nonce,
+    iat: options.issuedAtSeconds ?? CALLER_CLAIMS_NOW_SECONDS,
+    exp: options.expiresAtSeconds ?? CALLER_CLAIMS_NOW_SECONDS + 60,
+  })).toString("base64url")
+  const unsigned = `${encodedHeader}.${encodedPayload}`
+  const token = `${unsigned}.${createHmac("sha256", options.secret ?? CALLER_CLAIMS_SECRET)
+    .update(unsigned)
+    .digest("base64url")}`
+  return {
+    "x-arroba-caller-claims": token,
+    "x-arroba-invocation-id": options.invocationHeader ?? invocationId,
+  }
+}
+
+function agentAppSessionId(cookie: string): string {
+  const value = cookie.split("=").slice(1).join("=")
+  return decodeURIComponent(value)
+}

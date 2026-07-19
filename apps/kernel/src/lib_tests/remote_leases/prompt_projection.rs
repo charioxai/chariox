@@ -812,6 +812,15 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
         &leased_agent.backing_session_id,
         &provider_run_id,
         Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::PromptEcho,
+        None,
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote leased prompt\n",
+    );
+    app.terminal_mut().fan_out_output(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
         crate::terminal::TerminalOutputKind::ProviderOutput,
         Some("assistant-output".to_string()),
         vec![leased_agent.backing_attachment_id.clone()],
@@ -833,6 +842,11 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
         "home-origin prompt must not be reflected"
     );
     assert_eq!(output_chunks.len(), 1);
+    assert_eq!(
+        output_chunks[0].kind,
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        "home-origin prompt echo must not be reflected as an output chunk"
+    );
     assert_eq!(
         completions.len(),
         1,

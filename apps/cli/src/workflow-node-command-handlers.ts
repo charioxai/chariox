@@ -6,6 +6,7 @@ import type {
   WorkflowNodeDefinition,
 } from "./cli-types.js"
 import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import { homeProxyGrantConfirmation } from "@arroba/kernel-client/extension-home-proxy-confirmation"
 import {
   handleWorkflowNodeInstructionsCommand,
   type WorkflowNodeInstructionsCommandContext,
@@ -95,6 +96,7 @@ export async function handleWorkflowNodeCommand(
   deps: WorkflowNodeCommandDeps,
   context: WorkflowNodeCommandContext,
   args: readonly string[],
+  rawCommand = `/workflow ${args.join(" ")}`,
 ): Promise<void> {
   const action = args[1]
   if (action === "add") {
@@ -155,7 +157,7 @@ export async function handleWorkflowNodeCommand(
     return
   }
   if (action === "extension") {
-    await handleWorkflowNodeExtensionCommand(deps, context, args)
+    await handleWorkflowNodeExtensionCommand(deps, context, args, rawCommand)
     return
   }
   deps.flashFooter(
@@ -345,6 +347,7 @@ async function handleWorkflowNodeExtensionCommand(
   deps: WorkflowNodeCommandDeps,
   context: Pick<WorkflowNodeCommandContext, "workflowRefOrSelected">,
   args: readonly string[],
+  rawCommand: string,
 ): Promise<void> {
   const action = args[2]
   const positional = args.slice(0, args.findIndex((arg) => arg.startsWith("--")) === -1 ? args.length : args.findIndex((arg) => arg.startsWith("--")))
@@ -355,12 +358,26 @@ async function handleWorkflowNodeExtensionCommand(
   const name = hasExplicitWorkflow ? positional[6] : positional[5]
   const source = readExtensionSource(args)
   if ((action !== "grant" && action !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive]", "error")
+    deps.flashFooter("usage: /workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive] [--confirm-home-proxy]", "error")
     return
   }
   if (!source) return deps.flashFooter("workflow extension source must be home or worker", "error")
   const { node, agent } = await resolveWorkflowNodeAgent(deps, workflowRef, nodeId)
   if (!node || !agent) return
+  const confirmation = homeProxyGrantConfirmation({
+    action,
+    kind,
+    name,
+    source,
+    agent,
+    command: rawCommand,
+    confirmed: args.includes("--confirm-home-proxy"),
+  })
+  if (confirmation) {
+    deps.appendNotice?.(confirmation)
+    deps.flashFooter("confirmation required for home-proxy grant", "error")
+    return
+  }
   const updated = action === "grant"
     ? await grantNodeExtension(deps, agent.agent_ref, kind, name, source, args)
     : await revokeNodeExtension(deps, agent.agent_ref, kind, name, source)

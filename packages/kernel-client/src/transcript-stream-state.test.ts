@@ -154,6 +154,87 @@ test("transcript stream state merges adjacent assistant chunks", () => {
   assert.equal(result.entries[0]?.text, "hello")
 })
 
+test("transcript stream state ignores a late live chunk already covered by hydrated history", () => {
+  const history = entry(1, "assistant", "complete response", {
+    mergeKey: "reply-1",
+    historyEntryIndex: 4,
+  })
+  const result = applyTranscriptProviderChunk([history], {
+    role: "assistant",
+    chunk: "complete response",
+    mergeKey: "reply-1",
+  })
+
+  assert.equal(result.kind, "noop")
+  assert.deepEqual(result.entries, [history])
+})
+
+test("transcript stream state ignores a late live chunk covered by outline history", () => {
+  const history = {
+    ...entry(1, "assistant", "complete response\n", {
+      turnId: 2,
+      promptId: "prompt-1",
+    }),
+    historyTurnLifecycle: "completed" as const,
+  }
+  const result = applyTranscriptProviderChunk([history], {
+    role: "assistant",
+    chunk: "complete response\r\n",
+    metadata: {
+      promptId: "prompt-1",
+    },
+  })
+
+  assert.equal(result.kind, "noop")
+  assert.deepEqual(result.entries, [history])
+})
+
+test("transcript stream state replaces a cumulative live snapshot after hydrated history", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "partial", {
+      mergeKey: "reply-1",
+      historyEntryIndex: 4,
+    }),
+  ], {
+    role: "assistant",
+    chunk: "partial response",
+    mergeKey: "reply-1",
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.entries[0]?.text, "partial response")
+})
+
+test("transcript stream state preserves repeated ordered history deltas", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "LOCAL_DEPLOYED_WORKFLOW_SOURCE", {
+      mergeKey: "reply-1",
+      historyEntryIndex: 4,
+    }),
+  ], {
+    role: "assistant",
+    chunk: "_",
+    mergeKey: "reply-1",
+    historyEntryIndex: 5,
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.entries[0]?.text, "LOCAL_DEPLOYED_WORKFLOW_SOURCE_")
+})
+
+test("transcript stream state keeps ordinary live chunks append-only", () => {
+  const result = applyTranscriptProviderChunk([
+    entry(1, "assistant", "same", { mergeKey: "reply-1" }),
+  ], {
+    role: "assistant",
+    chunk: "same",
+    mergeKey: "reply-1",
+  })
+
+  assert.equal(result.kind, "merged")
+  assert.equal(result.entries[0]?.text, "samesame")
+})
+
 test("transcript stream state preserves prompt identity while merging chunks", () => {
   const first = applyTranscriptProviderChunk<TranscriptStreamEntry>([], {
     role: "assistant",

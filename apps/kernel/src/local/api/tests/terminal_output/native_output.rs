@@ -73,6 +73,16 @@ fn append_native_provider_output_fans_out_and_records_history() {
 
 #[test]
 fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
+    std::thread::Builder::new()
+        .name("stale-terminal-sweep-test".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(stale_terminal_sweep_removes_dead_attachment_before_fanout_inner)
+        .expect("stale terminal sweep test thread should spawn")
+        .join()
+        .expect("stale terminal sweep test thread should not panic");
+}
+
+fn stale_terminal_sweep_removes_dead_attachment_before_fanout_inner() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(

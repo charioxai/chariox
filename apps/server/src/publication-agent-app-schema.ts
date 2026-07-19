@@ -1,4 +1,5 @@
 import { existsSync, statSync } from "node:fs"
+import { isIP } from "node:net"
 import { join, normalize, sep } from "node:path"
 
 import type {
@@ -38,7 +39,47 @@ export function validateAgentAppConfig(
     if (action.transport?.url !== undefined) validateActionUrl(actionId, action.transport.url)
   }
   for (const route of agentApp.routes ?? []) validateRoute(route, actionIds)
+  validateNetwork(agentApp)
   validateReplicas(agentApp.replicas?.count)
+}
+
+function validateNetwork(agentApp: AgentAppConfig): void {
+  const destinations = agentApp.network?.destinations ?? []
+  if (!Array.isArray(destinations) || destinations.length > 256) {
+    throw new Error("Agent App network destinations must contain at most 256 entries")
+  }
+  const ids = new Set<string>()
+  const hosts = new Set<string>()
+  for (const destination of destinations) {
+    if (!/^[a-z][a-z0-9:_-]{0,127}$/.test(destination.id) || ids.has(destination.id)) {
+      throw new Error(`Agent App network destination id ${String(destination.id)} is invalid or duplicated`)
+    }
+    ids.add(destination.id)
+    validateNetworkHost(destination.id, destination.host)
+    if (hosts.has(destination.host)) {
+      throw new Error(`Agent App network destination host ${destination.host} is duplicated`)
+    }
+    hosts.add(destination.host)
+    const slotIds = destination.credential_slot_ids ?? []
+    if (!Array.isArray(slotIds)
+      || new Set(slotIds).size !== slotIds.length
+      || slotIds.some((slotId) => !/^(provider|integration):[a-z0-9-]+$/.test(slotId))) {
+      throw new Error(`Agent App network destination ${destination.id} has invalid credential slot IDs`)
+    }
+  }
+}
+
+function validateNetworkHost(destinationId: string, host: string): void {
+  const labels = typeof host === "string" ? host.split(".") : []
+  const valid = typeof host === "string"
+    && host.length <= 253
+    && host === host.toLowerCase()
+    && !host.endsWith(".")
+    && !host.includes("*")
+    && !isIP(host)
+    && labels.length >= 2
+    && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+  if (!valid) throw new Error(`Agent App network destination ${destinationId} must use an exact canonical DNS host`)
 }
 
 function validateAssets(agentApp: AgentAppConfig, packageRoot: string | undefined): void {
@@ -102,11 +143,14 @@ function validateReplicas(count: unknown): void {
 function validateActionUrl(actionId: string, url: string): void {
   try {
     const parsed = new URL(url)
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error("unsupported protocol")
+    if (parsed.protocol !== "http:") throw new Error("unsupported protocol")
+    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "[::1]") {
+      throw new Error("action server is not loopback")
     }
+    if (!parsed.port) throw new Error("action server port is required")
+    if (parsed.username || parsed.password || parsed.hash) throw new Error("URL credentials and fragments are forbidden")
   } catch {
-    throw new Error(`Agent App action ${actionId} has an invalid URL`)
+    throw new Error(`Agent App action ${actionId} must use an explicit loopback HTTP action-server URL`)
   }
 }
 

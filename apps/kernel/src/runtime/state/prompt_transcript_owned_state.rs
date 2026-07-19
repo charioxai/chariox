@@ -98,24 +98,35 @@ impl KernelRuntimeOwnedState {
                     )
                 })
                 .clone();
-            let scoped_recipient_attachment_ids = recipient_scope_cache
-                .entry(agent_id.clone())
-                .or_insert_with(|| {
-                    let mut scoped_recipient_attachment_ids = self
-                        .private_recipient_attachment_ids(
+            let provider_terminal =
+                output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
+            let scoped_recipient_attachment_ids = if provider_terminal {
+                std::sync::Arc::from(self.private_recipient_attachment_ids(
+                    agent_id.as_deref(),
+                    recipient_attachment_ids.clone(),
+                ))
+            } else {
+                recipient_scope_cache
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| {
+                        let mut scoped_recipient_attachment_ids = self
+                            .private_recipient_attachment_ids(
+                                agent_id.as_deref(),
+                                recipient_attachment_ids.clone(),
+                            );
+                        scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+                            session_id,
                             agent_id.as_deref(),
-                            recipient_attachment_ids.clone(),
+                            scoped_recipient_attachment_ids,
                         );
-                    scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-                        session_id,
-                        agent_id.as_deref(),
-                        scoped_recipient_attachment_ids,
-                    );
-                    std::sync::Arc::from(scoped_recipient_attachment_ids)
-                })
-                .clone();
-            if let Some(agent_id) = agent_id.as_deref() {
-                trace_agent_ids.insert(agent_id.to_string());
+                        std::sync::Arc::from(scoped_recipient_attachment_ids)
+                    })
+                    .clone()
+            };
+            if !provider_terminal {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    trace_agent_ids.insert(agent_id.to_string());
+                }
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
@@ -168,11 +179,16 @@ impl KernelRuntimeOwnedState {
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-            session_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-        );
+        let recipient_attachment_ids =
+            if kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
+                recipient_attachment_ids
+            } else {
+                self.with_metaagent_trace_recipient_ids(
+                    session_id,
+                    agent_id.as_deref(),
+                    recipient_attachment_ids,
+                )
+            };
         let record = self.terminal_stream.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
@@ -184,8 +200,12 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             bytes,
         );
-        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
-        if kind != crate::terminal::TerminalOutputKind::PromptEcho {
+        if kind != crate::terminal::TerminalOutputKind::ProviderTerminal {
+            self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
+        }
+        if kind != crate::terminal::TerminalOutputKind::PromptEcho
+            && kind != crate::terminal::TerminalOutputKind::ProviderTerminal
+        {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
@@ -278,6 +298,7 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
+        let _append_guard = self.transcript_history_append_guard();
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -292,6 +313,8 @@ impl KernelRuntimeOwnedState {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entry_unlocked(&entry, None, None, None);
         if let Err(error) = self.history_store.append(&session, &entry) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -302,7 +325,6 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entry(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -313,6 +335,7 @@ impl KernelRuntimeOwnedState {
         if entries.is_empty() {
             return;
         }
+        let _append_guard = self.transcript_history_append_guard();
         let session = match self.session_store.get_session(session_id) {
             Ok(session) => session,
             Err(error) => {
@@ -328,6 +351,8 @@ impl KernelRuntimeOwnedState {
                 return;
             }
         };
+        // Make authoritative history visible before readers can import the legacy copy.
+        self.append_operational_history_entries(&entries);
         if let Err(error) = self.history_store.append_many(&session, &entries) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -339,10 +364,25 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entries(&entries);
     }
 
     pub(super) fn append_operational_history_entry(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        prompt_id_override: Option<&str>,
+        workflow_run_id_override: Option<&str>,
+        workflow_node_run_id_override: Option<&str>,
+    ) {
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(
+            entry,
+            prompt_id_override,
+            workflow_run_id_override,
+            workflow_node_run_id_override,
+        );
+    }
+
+    fn append_operational_history_entry_unlocked(
         &self,
         entry: &crate::history::SessionHistoryEntry,
         prompt_id_override: Option<&str>,
@@ -534,6 +574,7 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: Option<&str>,
         timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
+        let _append_guard = self.transcript_history_append_guard();
         let session = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
@@ -559,7 +600,7 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
-        self.append_operational_history_entry(
+        self.append_operational_history_entry_unlocked(
             &entry,
             prompt_id,
             workflow_run_id,
@@ -609,6 +650,7 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) -> Result<(), DaemonError> {
+        let _append_guard = self.transcript_history_append_guard();
         let agent = self.agent_store.get_agent(agent_id)?;
         let (history_provider_run_id, provider_run) =
             if let Some(remote_execution) = agent.remote_execution() {
@@ -710,6 +752,12 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    fn transcript_history_append_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.transcript_history_append_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(super) fn echo_prompt_to_other_attachments(
         &self,
         session_id: &str,
@@ -719,6 +767,13 @@ impl KernelRuntimeOwnedState {
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
     ) {
+        // Kernel-internal recovery envelopes carry provider resume text, not
+        // user input. The local dispatch runtime guards its own call site, but
+        // remote-lease dispatchers reach this helper too; centralize the
+        // guard so no caller can leak the envelope into prompt-echo output.
+        if crate::runtime::state::is_internal_recovery_prompt_attachment(source_attachment_id) {
+            return;
+        }
         let recipient_attachment_ids = self
             .attachment_store
             .list_session_attachment_ids(session_id)

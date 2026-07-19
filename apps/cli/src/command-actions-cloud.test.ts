@@ -668,3 +668,63 @@ test("cloud invite accept accepts cloud token and joins local session when URL c
 
   assert.equal(flashed.at(-1), "joined cloud session as peer-1")
 })
+
+test("cloud deployments command projects the linked account portfolio", async () => {
+  const originalFetch = globalThis.fetch
+  const notices: string[] = []
+  const flashed: string[] = []
+  let requestedUrl = ""
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input)
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer session-token")
+    return new Response(JSON.stringify({
+      projects: [],
+      portfolio: [{
+        project: {
+          id: "project-1",
+          accountId: "account-1",
+          name: "Support app",
+          slug: "support-app",
+          kind: "agent_app",
+          origin: "native",
+          defaultEnvironmentSlug: "production",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        defaultEnvironment: null,
+        latestRelease: null,
+        latestPromotion: null,
+        needsAttention: false,
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "owner@example.com",
+      accountId: "account-1",
+      userId: "owner-1",
+      accountSlug: "owner",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+      cloudSessionToken: "session-token",
+    }),
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashed.push(message) },
+  }))
+
+  try {
+    await handlers.handleCloudCommand({
+      kind: "cloud",
+      raw: "/cloud deployments list",
+      args: ["deployments", "list"],
+    })
+
+    assert.equal(new URL(requestedUrl).searchParams.get("accountId"), "account-1")
+    assert.match(notices.at(-1) ?? "", /project-1\tSupport app\tagent_app/)
+    assert.equal(flashed.at(-1), "1 deployed workflow")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

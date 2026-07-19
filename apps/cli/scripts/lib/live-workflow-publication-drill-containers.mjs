@@ -2,7 +2,7 @@ import path from 'node:path'
 import { writeFile } from 'node:fs/promises'
 const { createDefaultShellContext, parseShellCommand } = await import('../../../../packages/kernel-client/dist/shell-core.js')
 const { executeShellCommand } = await import('../../../../packages/kernel-client/dist/shell-executor.js')
-import { buildPublicationContainerImage, createContainerPortablePackage, freePort, logStep, removeDockerContainer, sseEventNames, startPublicationContainer, stopProcess, waitForProcessExit } from './live-workflow-publication-drill-runtime.mjs'
+import { buildPublicationContainerImage, createContainerPortablePackage, freePort, logStep, publicationStatusWatchdogCount, publicationStatusWatchdogs, removeDockerContainer, sseEventNames, startPublicationContainer, stopProcess, waitForProcessExit } from './live-workflow-publication-drill-runtime.mjs'
 import { invokePublicationWebSocket } from './live-workflow-publication-drill-runtime.mjs'
 import { runHumanHttpBrowserDrill, runHumanHttpRootFormBrowserDrill } from './live-workflow-publication-drill-browser.mjs'
 import { assertGatewayDoesNotListen, waitForContainerGateway, waitForPublicationStatusLatestOutput } from './live-workflow-publication-drill-waiters.mjs'
@@ -344,11 +344,12 @@ export async function runContainerPublicationValidation({
       await waitForContainerGateway(containerScheduleUrl, containerProcess, 60_000)
       const containerScheduleStatusResponse = await fetch(`${containerScheduleUrl}/.well-known/arroba/publication/status`)
       const containerScheduleStatusBody = await containerScheduleStatusResponse.json()
+      const containerScheduleWatchdogs = publicationStatusWatchdogs(containerScheduleStatusBody)
       if (
         containerScheduleStatusResponse.status !== 200
         || typeof containerScheduleStatusBody.runtime_session_id !== 'string'
-        || containerScheduleStatusBody.schedule_count !== 1
-        || containerScheduleStatusBody.schedules?.[0]?.id !== schedule.id
+        || publicationStatusWatchdogCount(containerScheduleStatusBody) !== 1
+        || containerScheduleWatchdogs[0]?.id !== schedule.id
       ) {
         throw new Error(`expected container schedule status with runtime session and schedule, got ${containerScheduleStatusResponse.status}: ${JSON.stringify(containerScheduleStatusBody)}`)
       }

@@ -204,7 +204,9 @@ pub(super) fn codex_user_prompt(value: &Value) -> Option<String> {
 }
 
 pub(super) fn claude_user_prompt(value: &Value) -> Option<String> {
-    if value.get("type").and_then(Value::as_str) != Some("user") {
+    if value.get("type").and_then(Value::as_str) != Some("user")
+        || value.get("isMeta").and_then(Value::as_bool) == Some(true)
+    {
         return None;
     }
     let message = value.get("message")?;

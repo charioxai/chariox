@@ -79,10 +79,14 @@ mod tests {
     fn parses_provider_model_ids() {
         assert_eq!(
             parse_model(Some("anthropic/claude-sonnet-4")),
-            Some(("anthropic", "claude-sonnet-4"))
+            Ok(Some(("anthropic", "claude-sonnet-4")))
         );
-        assert_eq!(parse_model(Some("default")), None);
-        assert_eq!(parse_model(None), None);
+        assert_eq!(
+            parse_model(Some("gpt-5.4")),
+            Ok(Some(("opencode", "gpt-5.4")))
+        );
+        assert_eq!(parse_model(Some("default")), Ok(None));
+        assert_eq!(parse_model(None), Ok(None));
     }
 
     #[test]

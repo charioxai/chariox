@@ -181,7 +181,60 @@ impl DaemonApp {
         }
         self.restore_remote_binding_cleanup_intents()?;
         self.restore_local_kernel_external_provider_attachments();
+        self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        Ok(())
+    }
+
+    fn reconcile_restored_slice_agent_attachments(&self) -> Result<(), DaemonError> {
+        let slices = self
+            .slices
+            .list()
+            .into_iter()
+            .map(|slice| (slice.id.clone(), slice))
+            .collect::<BTreeMap<_, _>>();
+        let attachments = self
+            .agents
+            .list_agents()
+            .into_iter()
+            .filter_map(|agent| {
+                let remote = agent.remote_execution()?;
+                let slice_id = remote.worker_machine_id.strip_prefix("slice:")?.trim();
+                let slice = slices.get(slice_id)?;
+                let session_missing = !slice
+                    .session_ids
+                    .iter()
+                    .any(|session_id| session_id == agent.session_id());
+                let agent_missing = !slice
+                    .agent_ids
+                    .iter()
+                    .any(|agent_id| agent_id == agent.id());
+                (session_missing || agent_missing).then(|| crate::slice::SliceAgentAttachment {
+                    slice_ref: slice.id.clone(),
+                    session_id: agent.session_id().to_string(),
+                    agent_id: agent.id().to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        for slice in self
+            .slices
+            .attach_agents(attachments, crate::session::unix_epoch_ms())?
+        {
+            self.durable_state.append_event(
+                "slice.updated",
+                Some(slice.id.clone()),
+                serde_json::json!({ "slice": &slice }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "restored missing slice agent attachment",
+                serde_json::json!({
+                    "slice_id": slice.id,
+                    "session_ids": slice.session_ids,
+                    "agent_ids": slice.agent_ids,
+                }),
+            );
+        }
         Ok(())
     }
 
@@ -802,5 +855,67 @@ impl DaemonApp {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_reconciliation_restores_missing_slice_agent_ids_from_worker_placement() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "restored-slice".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("slice should create");
+        app.agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: format!("slice:{}", slice.id),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to slice worker");
+
+        app.reconcile_restored_slice_agent_attachments()
+            .expect("restart reconciliation should succeed");
+
+        let restored = app
+            .slices()
+            .resolve(&slice.id)
+            .expect("slice should remain available");
+        assert_eq!(restored.session_ids, vec![session.id().to_string()]);
+        assert_eq!(restored.agent_ids, vec![agent.id().to_string()]);
     }
 }

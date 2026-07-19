@@ -21,6 +21,33 @@ struct QueuedPromptSteerContext {
 }
 
 impl KernelRuntimeOwnedState {
+    fn ensure_queued_prompt_manually_mutable(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        operation: &'static str,
+        action: &str,
+    ) -> Result<(), DaemonError> {
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(session, agent_id);
+        let prompt = queued_prompts
+            .iter()
+            .find(|prompt| prompt.id() == prompt_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation,
+                message: format!(
+                    "queued prompt `{prompt_id}` was not found for agent `{agent_id}`"
+                ),
+            })?;
+        if prompt.workflow_run_id().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: format!("workflow queued prompts cannot be {action} manually"),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn promoted_prompt_source_attachment_id(
         &self,
         session_id: &str,
@@ -575,6 +602,13 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
+        self.ensure_queued_prompt_manually_mutable(
+            &session,
+            agent_id,
+            prompt_id,
+            "cancel queued prompt",
+            "cancelled",
+        )?;
         let mut prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&session, agent_id, prompt_id)
@@ -620,6 +654,13 @@ impl KernelRuntimeOwnedState {
             });
         }
         let session = self.session_store.get_session(session_id)?;
+        self.ensure_queued_prompt_manually_mutable(
+            &session,
+            agent_id,
+            prompt_id,
+            "update queued prompt",
+            "updated",
+        )?;
         let prompt = self
             .prompt_state_owner
             .update_queued_prompt(&session, agent_id, prompt_id, prompt_text)

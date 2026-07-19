@@ -446,12 +446,12 @@ pub(super) fn discover_opencode_sqlite_sessions(root: &Path) -> Vec<ExternalProv
     let mut statement = match connection.prepare(
         "select s.id, s.title, s.directory, s.time_created, s.time_updated, \
             (select p.data \
-               from part p \
-               join message m on m.id = p.message_id \
-              where p.session_id = s.id \
+               from message m \
+               join part p on p.message_id = m.id \
+              where m.session_id = s.id \
                 and json_extract(m.data, '$.role') = 'user' \
                 and json_extract(p.data, '$.type') = 'text' \
-              order by p.time_created asc, p.id asc \
+              order by m.time_created asc, m.id asc, p.time_created asc, p.id asc \
               limit 1) as first_user_part \
            from session s \
           order by s.time_updated desc, s.id asc \
@@ -516,6 +516,13 @@ pub(super) fn read_opencode_sqlite_observed_turns(
     let Some(connection) = open_opencode_sqlite(&db_path) else {
         return Vec::new();
     };
+    let fingerprint =
+        opencode_sqlite_session_fingerprint_with_connection(&connection, provider_session_id);
+    if let Some(cached) = fingerprint.and_then(|fingerprint| {
+        cached_provider_observed_turns("opencode", provider_session_id, &db_path, fingerprint)
+    }) {
+        return cached;
+    }
     let mut statement = match connection.prepare(
         "select message_id, role, message_data, part_id, part_type, part_data, time_created, time_updated \
            from ( \
@@ -596,7 +603,64 @@ pub(super) fn read_opencode_sqlite_observed_turns(
         }
     }
     turns.extend(status_turns);
+    if let Some(fingerprint) = fingerprint {
+        remember_provider_observed_turns(
+            "opencode",
+            provider_session_id,
+            &db_path,
+            fingerprint,
+            turns.clone(),
+        );
+    }
     turns
+}
+
+pub(super) fn opencode_sqlite_session_fingerprint(
+    path: &Path,
+    provider_session_id: &str,
+) -> Option<ProviderTranscriptFileFingerprint> {
+    let connection = open_opencode_sqlite(path)?;
+    opencode_sqlite_session_fingerprint_with_connection(&connection, provider_session_id)
+}
+
+fn opencode_sqlite_session_fingerprint_with_connection(
+    connection: &Connection,
+    provider_session_id: &str,
+) -> Option<ProviderTranscriptFileFingerprint> {
+    connection
+        .query_row(
+            "select s.time_updated, \
+                    (select count(*) from message m where m.session_id = s.id), \
+                    (select max(m.time_updated) from message m where m.session_id = s.id), \
+                    (select count(*) from part p where p.session_id = s.id), \
+                    (select max(p.time_updated) from part p where p.session_id = s.id) \
+               from session s \
+              where s.id = ?1",
+            [provider_session_id],
+            |row| {
+                let session_updated_at_ms =
+                    signed_millis_to_u64(row.get::<_, i64>(0)?).unwrap_or_default();
+                let message_count = u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default();
+                let message_updated_at_ms =
+                    row.get::<_, Option<i64>>(2)?.and_then(signed_millis_to_u64);
+                let part_count = u64::try_from(row.get::<_, i64>(3)?).unwrap_or_default();
+                let part_updated_at_ms =
+                    row.get::<_, Option<i64>>(4)?.and_then(signed_millis_to_u64);
+                Ok(ProviderTranscriptFileFingerprint {
+                    len: message_count.rotate_left(32) ^ part_count,
+                    modified_at_ms: [
+                        Some(session_updated_at_ms),
+                        message_updated_at_ms,
+                        part_updated_at_ms,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .max()
+                    .unwrap_or_default(),
+                })
+            },
+        )
+        .ok()
 }
 
 pub(super) fn latest_observed_turns(

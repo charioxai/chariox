@@ -226,25 +226,35 @@ fn spawn_cloud_token_refresh(router: Arc<CommandRouter>, relay_url: String) -> J
 
 fn spawn_leased_projection_pump(
     router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
     outgoing_tx: RelayOutgoingSender,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if timeout(
-            RELAY_HEARTBEAT_APP_WORK_TIMEOUT,
-            pump_leased_projection_events(&router, &outgoing_tx),
+        await_leased_projection_pump(
+            pump_leased_projection_events(&router, &state, &outgoing_tx),
+            RELAY_HEARTBEAT_APP_WORK_SLOW_THRESHOLD,
         )
-        .await
-        .is_err()
-        {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "leased projection pump timed out",
-                serde_json::json!({
-                    "timeout_ms": RELAY_HEARTBEAT_APP_WORK_TIMEOUT.as_millis(),
-                }),
-            );
-        }
+        .await;
     })
+}
+
+async fn await_leased_projection_pump<F>(pump: F, slow_threshold: Duration)
+where
+    F: Future<Output = ()>,
+{
+    let started = Instant::now();
+    pump.await;
+    let elapsed = started.elapsed();
+    if elapsed >= slow_threshold {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "leased projection pump completed slowly",
+            serde_json::json!({
+                "elapsed_ms": elapsed.as_millis(),
+                "slow_threshold_ms": slow_threshold.as_millis(),
+            }),
+        );
+    }
 }
 
 async fn disconnect_relay(
@@ -607,10 +617,35 @@ async fn run_daemon_relay_connector_inner(
                         "connect_to_registration_ms": connect_started.elapsed().as_millis(),
                     }),
                 );
-                set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await;
+                let replayed_display_tunnel_count =
+                    match set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await {
+                        Ok(count) => count,
+                        Err(error) => {
+                            writer_task.abort();
+                            clear_remote_inventory_projection(&router);
+                            disconnect_relay(&router, &state, &error, static_relay.is_none()).await;
+                            let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
+                            record_relay_reconnect(&router, &relay_url, &error, delay);
+                            reconnect_attempt = reconnect_attempt.saturating_add(1);
+                            if wait_for_reconnect_delay(shutdown, delay).await {
+                                return;
+                            }
+                            continue;
+                        }
+                    };
                 router
                     .transport_health_store()
                     .record_relay_connected(&relay_url);
+                if replayed_display_tunnel_count > 0 {
+                    crate::logging::info_with_fields(
+                        "daemon.relay_client",
+                        "replayed display tunnels after relay reconnect",
+                        serde_json::json!({
+                            "relay_url": relay_url,
+                            "display_tunnel_count": replayed_display_tunnel_count,
+                        }),
+                    );
+                }
                 reconnect_attempt = 0;
                 let mut cloud_presence_task = None;
                 if static_relay.is_none() {
@@ -856,6 +891,7 @@ async fn run_daemon_relay_connector_inner(
                             ) {
                                 leased_projection_pump_task = Some(spawn_leased_projection_pump(
                                     Arc::clone(&router),
+                                    Arc::clone(&state),
                                     outgoing_tx.clone(),
                                 ));
                             }

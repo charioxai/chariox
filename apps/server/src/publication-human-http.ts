@@ -3,6 +3,11 @@ import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
+  authorizePublicationCallerRequest,
+  PublicationCallerClaimsError,
+  publicationCallerAuthorizationFailure,
+} from "./publication-caller-claims.js"
+import {
   publicationForAgentAppInvocation,
   registerAgentAppWorkflowRunEffects,
 } from "./publication-agent-app-effects.js"
@@ -32,11 +37,24 @@ import {
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 type HumanHttpApp = {
-  get: (path: string, handler: (request: { params?: unknown }, reply: HumanHttpReply) => unknown) => unknown
+  addHook: (
+    name: "preHandler",
+    handler: (request: HumanHttpRequest, reply: HumanHttpReply) => unknown,
+  ) => unknown
+  get: (path: string, handler: (request: HumanHttpRequest, reply: HumanHttpReply) => unknown) => unknown
+}
+
+type HumanHttpRequest = {
+  readonly headers: Record<string, string | string[] | undefined>
+  readonly method: string
+  readonly params?: unknown
+  readonly url: string
 }
 
 type HumanHttpReply = {
   code: (code: number) => HumanHttpReply
+  headers: (headers: Record<string, string>) => HumanHttpReply
+  send: (payload: unknown) => unknown
   type: (contentType: string) => HumanHttpReply
   hijack: () => void
   raw: {
@@ -55,6 +73,23 @@ type HumanHttpStreamState = {
 export const HUMAN_HTTP_FORM_INVOKE_PATH = PUBLICATION_VIEWER_FORM_INVOKE_PATH
 
 export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowPublicationConfig) {
+  app.addHook("preHandler", async (request, reply) => {
+    if (isPublicationControlRequest(request)) return
+    try {
+      authorizePublicationCallerRequest(request, publication)
+    } catch (error) {
+      if (!(error instanceof PublicationCallerClaimsError)) throw error
+      const failure = publicationCallerAuthorizationFailure(error)
+      return reply
+        .code(failure.statusCode)
+        .headers({
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+        })
+        .send(failure.body)
+    }
+  })
+
   app.get("/.well-known/arroba/publication/runs/:workflowRunId/events", async (request, reply) => {
     const params = request.params as { workflowRunId?: string }
     const workflowRunId = params.workflowRunId
@@ -74,6 +109,14 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
     }
     await streamInvocationEvents(reply, publication, requestId)
   })
+}
+
+function isPublicationControlRequest(request: HumanHttpRequest): boolean {
+  const pathname = new URL(request.url, "http://publication.local").pathname
+  return pathname === "/health"
+    || pathname === "/.well-known/arroba/publication/status"
+    || pathname === "/.well-known/arroba/agent-app/status"
+    || pathname === "/.well-known/arroba/agent-app/audit-log"
 }
 
 export function shouldReturnHumanHtml(

@@ -8,6 +8,7 @@ use crate::history::SessionHistoryStore;
 use crate::provider::ProviderRunOperationLanes;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::capability_executor::{CapabilityExecutorHealthStore, CapabilityRuntimeStore};
+use crate::runtime::credential_enrollment_control::CredentialEnrollmentControl;
 use crate::runtime::projection::{
     AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
     ProviderProcessProjectionStore, ProviderRunProjectionStore,
@@ -55,6 +56,7 @@ pub(crate) struct CommandRouter {
     provider_catalog_projection: ProviderCatalogProjectionStore,
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
+    credential_enrollment_control: CredentialEnrollmentControl,
     #[allow(dead_code)]
     active_turns: crate::app::ActiveTurnStore,
     config_projection: DaemonConfigProjectionStore,
@@ -173,6 +175,7 @@ mod tests {
             .expect("focus should succeed");
     }
 
+    mod credential_enrollment;
     mod interactive_command_admission;
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;

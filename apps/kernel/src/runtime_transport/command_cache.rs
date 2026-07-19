@@ -98,6 +98,12 @@ pub(crate) enum CommandReservation {
     Conflict,
 }
 
+pub(crate) fn request_is_cacheable(_request: &LocalDaemonRequest) -> bool {
+    // Every command needs in-memory deduplication so a transport replay cannot execute it twice.
+    // Sensitive interaction results are excluded from disk persistence separately below.
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistentCommandResult {
     command_id: String,
@@ -289,31 +295,29 @@ impl CommandResultCache {
     }
 
     async fn record_completed_order(&self, command_id: String, cached: CachedCommandResult) {
-        let persisted = PersistentCommandResult {
-            command_id: command_id.clone(),
-            completed_at_ms: cached.completed_at_ms,
-            result: cached.clone(),
-        };
         // Account every completed result in memory, including responses that are too large or
         // too noisy to persist. A Vec<u8> represented as serde_json::Value is especially costly,
         // so entry-count retention alone is not a meaningful memory bound.
-        let result_jsonl_bytes = persistent_result_jsonl_bytes(&persisted).ok();
+        // Do not clone and serialize large read-only responses merely to decide that they should
+        // not be written. History outlines are intentionally paged and may still be large enough
+        // for this work to become visible on every browser refresh.
+        let result_jsonl_bytes = should_persist_completed_result(&cached.fingerprint)
+            .then(|| PersistentCommandResult {
+                command_id: command_id.clone(),
+                completed_at_ms: cached.completed_at_ms,
+                result: cached.clone(),
+            })
+            .and_then(|persisted| persistent_result_jsonl_bytes(&persisted).ok());
         let result_memory_bytes = cached_command_result_memory_bytes(&command_id, &cached);
-        let persisted_bytes = result_jsonl_bytes.filter(|bytes| {
-            should_persist_completed_result(&cached.fingerprint)
-                && *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES
-        });
+        let persisted_bytes = result_jsonl_bytes
+            .filter(|bytes| *bytes <= COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES);
         let should_persist = persisted_bytes.is_some();
-        let compact_after_append = self
-            .apply_retention_to_completed_results(&command_id, result_memory_bytes)
+        self.apply_retention_to_completed_results(&command_id, result_memory_bytes)
             .await;
         if !should_persist {
             return;
         }
-        if let Err(error) = self
-            .persist_completed_result(command_id, cached, compact_after_append)
-            .await
-        {
+        if let Err(error) = self.persist_completed_result(command_id, cached).await {
             crate::logging::warn_with_fields(
                 "daemon.runtime_transport",
                 "failed to persist command result cache",
@@ -328,7 +332,6 @@ impl CommandResultCache {
         &self,
         command_id: String,
         cached: CachedCommandResult,
-        compact_after_append: bool,
     ) -> io::Result<()> {
         let Some(persistence) = &self.persistence else {
             return Ok(());
@@ -342,12 +345,11 @@ impl CommandResultCache {
         if next_append_bytes > COMMAND_RESULT_CACHE_MAX_PERSISTED_RECORD_BYTES {
             return Ok(());
         }
-        let compact_snapshot =
-            if compact_after_append || persistence.should_compact_now(next_append_bytes)? {
-                Some(self.persistable_completed_results_snapshot().await)
-            } else {
-                None
-            };
+        let compact_snapshot = if persistence.should_compact_now(next_append_bytes)? {
+            Some(self.persistable_completed_results_snapshot().await)
+        } else {
+            None
+        };
         let _guard = persistence.io_lock.lock().await;
         if let Some(parent) = persistence.path.parent() {
             fs::create_dir_all(parent)?;
@@ -364,7 +366,7 @@ impl CommandResultCache {
         &self,
         completed_command_id: &str,
         completed_memory_bytes: u64,
-    ) -> bool {
+    ) {
         let mut order = self.order.lock().await;
         let mut results = self.results.lock().await;
         let mut memory_accounting = self.memory_accounting.lock().await;
@@ -386,7 +388,6 @@ impl CommandResultCache {
             .total_estimated_bytes
             .saturating_add(completed_memory_bytes);
 
-        let mut compacted = false;
         let now_ms = crate::session::unix_epoch_ms();
 
         if let Some(max_age_ms) = self.retention.max_age_ms {
@@ -401,27 +402,19 @@ impl CommandResultCache {
                         completed_at_ms != 0 && now_ms.saturating_sub(completed_at_ms) > max_age_ms
                     })
             }) {
-                compacted |= remove_oldest_completed_result(
-                    &mut order,
-                    &mut results,
-                    &mut memory_accounting,
-                );
+                remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting);
             }
         }
 
         while order.len() > self.retention.max_entries {
-            compacted |=
-                remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting);
+            remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting);
         }
 
         while memory_accounting.total_estimated_bytes > self.retention.max_memory_bytes {
             if !remove_oldest_completed_result(&mut order, &mut results, &mut memory_accounting) {
                 break;
             }
-            compacted = true;
         }
-
-        compacted
     }
 
     async fn completed_results_snapshot(&self) -> Vec<PersistentCommandResult> {
@@ -678,6 +671,10 @@ fn read_persistent_results(
             compact_after_load = true;
             continue;
         };
+        if !should_persist_completed_result(&entry.result.fingerprint) {
+            compact_after_load = true;
+            continue;
+        }
         let completed_at_ms = persistent_result_completed_at_ms(&entry);
         entry.completed_at_ms = completed_at_ms;
         entry.result.completed_at_ms = completed_at_ms;
@@ -760,10 +757,17 @@ fn persistent_result_jsonl_bytes(entry: &PersistentCommandResult) -> io::Result<
 fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
     !matches!(
         fingerprint.command_type.as_str(),
-        "external_provider_session.list"
+        "credential_enrollment.interaction.request"
+            | "external_provider_session.list"
+            | "interaction.respond"
+            | "native_provider.interaction.request"
             | "provider.catalog.get"
+            | "prompt_input_history.get"
             | "session.state.get"
+            | "session.history.blob"
+            | "session.history.outline"
             | "slice.list"
+            | "terminal.command_catalog.get"
             | "waiting_room.inventory.get"
             | "waiting_room.public_snapshot.get"
     )

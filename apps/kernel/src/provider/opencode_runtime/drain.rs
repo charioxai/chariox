@@ -40,6 +40,9 @@ pub(in crate::provider) fn drain_opencode_events(
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
         match state.event_subscription.receiver.try_recv() {
             Ok(OpenCodeEvent::MessageUpdated { info }) => {
+                if info.session_id != state.session_id {
+                    continue;
+                }
                 if resolved_model.is_none() {
                     resolved_model = info.resolved_model();
                     if resolved_model.is_some() {
@@ -49,7 +52,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 if resolved_variant.is_none() {
                     resolved_variant = info.resolved_variant();
                 }
-                if info.role == "assistant" && info.session_id == state.session_id {
+                if info.role == "assistant" {
                     let total_tokens = info.total_tokens();
                     if total_tokens > 0 {
                         resolved_usage_tokens_total = Some(total_tokens);
@@ -58,8 +61,12 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_roles
                     .insert(info.id.clone(), info.role.clone());
+                state
+                    .message_parent_ids
+                    .insert(info.id.clone(), info.parent_id.clone());
                 if info.session_id == state.session_id
                     && info.role == "assistant"
+                    && state.message_belongs_to_active_prompt(&info.id)
                     && info.time.completed.is_some()
                     && !info.is_tool_call_only_completion()
                     && state
@@ -144,6 +151,9 @@ pub(in crate::provider) fn drain_opencode_events(
             }
             Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
                 if session_id == state.session_id {
+                    if state.active_user_message_id.is_some() && kind != "idle" {
+                        state.active_prompt_observed_non_idle_status = true;
+                    }
                     if state.last_status_kind.as_deref() != Some(kind.as_str()) {
                         state.last_status_kind = Some(kind.clone());
                         chunks.push(OpenCodeOutputChunk {
@@ -181,7 +191,8 @@ pub(in crate::provider) fn drain_opencode_events(
                     }
                     if !prompt_completed
                         && kind == "idle"
-                        && state.active_terminal_assistant_message_id.is_some()
+                        && (state.active_terminal_assistant_message_id.is_some()
+                            || state.active_prompt_observed_non_idle_status)
                     {
                         prompt_completed = true;
                         state.active_terminal_assistant_message_id = None;
@@ -209,6 +220,9 @@ pub(in crate::provider) fn drain_opencode_events(
                     OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL,
                 )?;
                 if let Ok(snapshot) = client.snapshot(&state.session_id) {
+                    if state.active_user_message_id.is_some() && snapshot.status != "idle" {
+                        state.active_prompt_observed_non_idle_status = true;
+                    }
                     if resolved_model.is_none() {
                         resolved_model = snapshot
                             .messages
@@ -256,7 +270,8 @@ pub(in crate::provider) fn drain_opencode_events(
                         state.active_terminal_assistant_message_id = None;
                         state.active_user_message_id = None;
                     } else if snapshot.status == "idle"
-                        && state.active_terminal_assistant_message_id.is_some()
+                        && (state.active_terminal_assistant_message_id.is_some()
+                            || state.active_prompt_observed_non_idle_status)
                     {
                         prompt_completed = true;
                         state.active_terminal_assistant_message_id = None;
@@ -269,59 +284,65 @@ pub(in crate::provider) fn drain_opencode_events(
 
     if state.active_user_message_id.is_some() && !prompt_completed {
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-        if let Ok(snapshot) = client.snapshot(&state.session_id) {
-            if resolved_model.is_none() {
-                resolved_model = snapshot
-                    .messages
-                    .iter()
-                    .rev()
-                    .find_map(|message| message.info.resolved_model());
-                if resolved_model.is_some() {
-                    resolved_model_source = Some("snapshot");
+        if let Ok(status) = client.session_status(&state.session_id) {
+            if status != "idle" {
+                state.active_prompt_observed_non_idle_status = true;
+                if state.last_status_kind.as_deref() != Some(status.as_str()) {
+                    state.last_status_kind = Some(status.clone());
+                    chunks.push(OpenCodeOutputChunk {
+                        kind: TerminalOutputKind::ProviderStatus,
+                        merge_key: Some("__provider_status__".to_string()),
+                        bytes: format_session_status(&status).into_bytes(),
+                    });
                 }
-            }
-            if resolved_variant.is_none() {
-                resolved_variant = snapshot
-                    .messages
-                    .iter()
-                    .rev()
-                    .find_map(|message| message.info.resolved_variant());
-            }
-            if let Some(total_tokens) = latest_assistant_usage_tokens(&snapshot.messages) {
-                resolved_usage_tokens_total = Some(total_tokens);
-            }
-            record_snapshot_message_metadata(state, &snapshot.messages);
-            let snapshot_chunks = render_snapshot_output_chunks(
-                state,
-                run.remote_extension_manifest(),
-                &snapshot.messages,
-            );
-            chunks.extend(snapshot_chunks.chunks);
-            let snapshot_completions =
-                collect_new_completed_assistant_messages(state, &snapshot.messages);
-            if !snapshot_completions.is_empty() {
-                completions.extend(snapshot_completions);
-            }
-            if state.last_status_kind.as_deref() != Some(snapshot.status.as_str()) {
-                state.last_status_kind = Some(snapshot.status.clone());
-                chunks.push(OpenCodeOutputChunk {
-                    kind: TerminalOutputKind::ProviderStatus,
-                    merge_key: Some("__provider_status__".to_string()),
-                    bytes: format_session_status(&snapshot.status).into_bytes(),
-                });
-            }
-            if snapshot.status == "idle"
-                && opencode_messages_complete_active_prompt(state, &snapshot.messages)
-            {
-                prompt_completed = true;
-                state.active_terminal_assistant_message_id = None;
-                state.active_user_message_id = None;
-            } else if snapshot.status == "idle"
-                && state.active_terminal_assistant_message_id.is_some()
-            {
-                prompt_completed = true;
-                state.active_terminal_assistant_message_id = None;
-                state.active_user_message_id = None;
+            } else {
+                let mut completion_confirmed = state.active_terminal_assistant_message_id.is_some();
+                if let Ok(messages) = client.messages(&state.session_id) {
+                    completion_confirmed |=
+                        opencode_messages_complete_active_prompt(state, &messages);
+                    if resolved_model.is_none() {
+                        resolved_model = messages
+                            .iter()
+                            .rev()
+                            .find_map(|message| message.info.resolved_model());
+                        if resolved_model.is_some() {
+                            resolved_model_source = Some("snapshot");
+                        }
+                    }
+                    if resolved_variant.is_none() {
+                        resolved_variant = messages
+                            .iter()
+                            .rev()
+                            .find_map(|message| message.info.resolved_variant());
+                    }
+                    if let Some(total_tokens) = latest_assistant_usage_tokens(&messages) {
+                        resolved_usage_tokens_total = Some(total_tokens);
+                    }
+                    record_snapshot_message_metadata(state, &messages);
+                    chunks.extend(
+                        render_snapshot_output_chunks(
+                            state,
+                            run.remote_extension_manifest(),
+                            &messages,
+                        )
+                        .chunks,
+                    );
+                    completions.extend(collect_new_completed_assistant_messages(state, &messages));
+                    completion_confirmed |= state.active_terminal_assistant_message_id.is_some();
+                }
+                if completion_confirmed {
+                    if state.last_status_kind.as_deref() != Some(status.as_str()) {
+                        state.last_status_kind = Some(status.clone());
+                        chunks.push(OpenCodeOutputChunk {
+                            kind: TerminalOutputKind::ProviderStatus,
+                            merge_key: Some("__provider_status__".to_string()),
+                            bytes: format_session_status(&status).into_bytes(),
+                        });
+                    }
+                    prompt_completed = true;
+                    state.active_terminal_assistant_message_id = None;
+                    state.active_user_message_id = None;
+                }
             }
         }
     }

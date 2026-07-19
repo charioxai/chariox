@@ -47,6 +47,9 @@ impl KernelRuntimeState {
             .drain_finished_structured_output_poll_jobs()
         {
             let finished_run_id = finished.provider_run_id.clone();
+            let polled_prompt_id = owned
+                .structured_output_records
+                .take_in_flight_prompt_id(&finished_run_id);
             let is_requested_run = finished_run_id == provider_run_id;
             crate::logging::debug_with_fields(
                 "daemon.provider",
@@ -118,6 +121,47 @@ impl KernelRuntimeState {
                     }
                 }
             };
+            let active_prompt = owned
+                .provider_store
+                .get_run(&finished_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            });
+            if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "discarding stale structured output poll before prompt delivery",
+                    serde_json::json!({
+                        "provider_run_id": finished_run_id,
+                        "polled_prompt_id": polled_prompt_id,
+                        "active_prompt_id": active_prompt_id,
+                        "active_prompt_is_dispatching": active_prompt_is_dispatching,
+                    }),
+                );
+                owned
+                    .structured_output_records
+                    .schedule_next_poll(finished_run_id, now_ms);
+                continue;
+            }
             let run = match owned.provider_store.get_run(&finished_run_id) {
                 Ok(run) => run,
                 Err(_) => {
@@ -166,13 +210,46 @@ impl KernelRuntimeState {
             .structured_output_records
             .poll_due(provider_run_id, crate::session::unix_epoch_ms())
         {
+            let active_prompt = owned
+                .provider_store
+                .get_run(provider_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            if active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            }) {
+                owned.structured_output_records.schedule_after_empty_poll(
+                    provider_run_id.to_string(),
+                    crate::session::unix_epoch_ms(),
+                );
+                return Ok(records);
+            }
             match owned
                 .provider_store
                 .enqueue_structured_output_poll(provider_run_id)?
             {
-                true => owned
-                    .structured_output_records
-                    .mark_poll_enqueued(provider_run_id),
+                true => {
+                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+                    owned
+                        .structured_output_records
+                        .mark_poll_enqueued(provider_run_id, prompt_id);
+                }
                 false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),
@@ -187,9 +264,16 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
-        poll_result: crate::provider::ProviderPromptSignalBatch,
+        mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let session = owned.session_store.get_session(session_id)?;
+        reject_workflow_publication_opencode_model_substitution(
+            session.is_hidden() && !session.workflow_publications().is_empty(),
+            &provider_run,
+            &mut poll_result,
+        );
         if !poll_result.chunks.is_empty()
             || !poll_result.completions.is_empty()
             || !poll_result.notices.is_empty()
@@ -298,16 +382,7 @@ impl KernelRuntimeState {
         } else if saw_runtime_activity {
             owned.note_prompt_output(provider_run_id);
         }
-        for completion in &poll_result.completions {
-            owned.record_assistant_message_completion(
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids.clone(),
-                &completion.message_id,
-                completion.completed_at_ms,
-            );
-            owned.mark_prompt_completion_recorded(provider_run_id);
-        }
+        let completions = poll_result.completions;
         let prompt_completed = poll_result.prompt_completed;
         if let Some(message) = terminal_failure.as_deref() {
             let run = owned
@@ -349,10 +424,20 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         let records = owned.fan_out_terminal_outputs_to_recipients(
             session_id,
-            recipient_attachment_ids,
+            recipient_attachment_ids.clone(),
             terminal_outputs,
         );
         owned.append_history_entries(session_id, history_entries);
+        for completion in &completions {
+            owned.record_assistant_message_completion(
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids.clone(),
+                &completion.message_id,
+                completion.completed_at_ms,
+            );
+            owned.mark_prompt_completion_recorded(provider_run_id);
+        }
         if let Some(message) = terminal_failure {
             self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
                 .await?;
@@ -378,6 +463,45 @@ impl KernelRuntimeState {
         }
         Ok(records)
     }
+}
+
+pub(super) fn reject_workflow_publication_opencode_model_substitution(
+    is_publication_runtime: bool,
+    provider_run: &crate::provider::RuntimeProviderRun,
+    poll_result: &mut crate::provider::ProviderPromptSignalBatch,
+) -> Option<String> {
+    if !is_publication_runtime
+        || provider_run.adapter_key() != "opencode"
+        || provider_run.model() == "default"
+    {
+        return None;
+    }
+    let resolved_model = poll_result.resolved_model.as_deref()?;
+    if resolved_model == provider_run.model() {
+        return None;
+    }
+
+    let failure = format!(
+        "deployed workflow provider model substitution is disabled: requested `{}`, OpenCode resolved `{resolved_model}`",
+        provider_run.model(),
+    );
+    crate::logging::warn_with_fields(
+        "daemon.provider.opencode",
+        "rejected deployed workflow provider model substitution",
+        serde_json::json!({
+            "provider_run_id": provider_run.id(),
+            "requested_model": provider_run.model(),
+            "resolved_model": resolved_model,
+            "resolved_model_source": poll_result.resolved_model_source,
+        }),
+    );
+    poll_result.resolved_model = None;
+    poll_result.resolved_model_source = None;
+    poll_result.prompt_completed = true;
+    if poll_result.terminal_failure.is_none() {
+        poll_result.terminal_failure = Some(failure.clone());
+    }
+    Some(failure)
 }
 
 fn provider_prompt_dispatch_failure_notice(message: &str) -> String {

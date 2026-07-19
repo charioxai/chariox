@@ -12,6 +12,7 @@ RUN pnpm --filter @arroba/tool-display run build \
   && pnpm --filter @arroba/server run build
 
 FROM rust:1.88-bookworm AS rust-builder
+ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=241
 WORKDIR /opt/arroba
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -20,11 +21,22 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
-RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin arroba-kernel
+COPY examples/workflow-code examples/workflow-code
+RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin arroba-kernel \
+  && test "$(apps/kernel/target/release/arroba-kernel --print-local-daemon-protocol-version)" = "${ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 FROM node:22-bookworm-slim
 LABEL org.opencontainers.image.title="Arroba workflow publication"
 LABEL org.opencontainers.image.description="Standalone Arroba kernel plus workflow publication gateway runtime."
+
+ARG ARROBA_CODEX_VERSION=0.144.0
+ARG ARROBA_OPENCODE_VERSION=1.4.1
+ARG ARROBA_CLAUDE_VERSION=2.1.207
+ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=241
+LABEL dev.arroba.provider.codex.version="${ARROBA_CODEX_VERSION}"
+LABEL dev.arroba.provider.opencode.version="${ARROBA_OPENCODE_VERSION}"
+LABEL dev.arroba.provider.claude.version="${ARROBA_CLAUDE_VERSION}"
+LABEL dev.arroba.local-daemon-protocol-version="${ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
@@ -35,9 +47,17 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
+RUN npm install -g \
+    "@openai/codex@${ARROBA_CODEX_VERSION}" \
+    "opencode-ai@${ARROBA_OPENCODE_VERSION}" \
+    "@anthropic-ai/claude-code@${ARROBA_CLAUDE_VERSION}" \
+  && test "$(codex --version)" = "codex-cli ${ARROBA_CODEX_VERSION}" \
+  && test "$(opencode --version)" = "${ARROBA_OPENCODE_VERSION}" \
+  && test "$(claude --version)" = "${ARROBA_CLAUDE_VERSION} (Claude Code)"
 
-RUN useradd --create-home --shell /bin/bash arroba
+RUN useradd --create-home --uid 1001 --shell /bin/bash arroba \
+  && useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action \
+  && useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
 
 WORKDIR /opt/arroba
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -48,7 +68,12 @@ COPY --from=rust-builder /opt/arroba/apps/kernel/target/release/arroba-kernel /u
 COPY docker/publication/entrypoint.sh /usr/local/bin/arroba-publication-container
 COPY docker/publication/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
 RUN chmod +x /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-wait-for-tcp.mjs \
-  && chown -R arroba:arroba /opt/arroba /home/arroba
+  && chown -R root:root /opt/arroba \
+  && chmod -R go-w /opt/arroba \
+  && chown -R arroba:arroba /home/arroba \
+  && chown -R arroba-action:arroba-action /home/arroba-action \
+  && chown -R arroba-gateway:arroba-gateway /home/arroba-gateway \
+  && chmod 700 /home/arroba /home/arroba-action /home/arroba-gateway
 
 WORKDIR /workspace
 ENV HOME=/home/arroba

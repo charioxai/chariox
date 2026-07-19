@@ -53,6 +53,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         )
     });
 
+    let mut submitted_prompt_ids = std::collections::BTreeMap::new();
     for agent_id in [default_agent.id(), spawned.id()] {
         match harness
             .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -65,18 +66,54 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             .expect("prompt should start")
         {
             LocalDaemonResponse::PromptSubmitted {
-                outcome: PromptSubmissionOutcome::Started { .. },
+                outcome: PromptSubmissionOutcome::Started { prompt },
                 ..
-            } => {}
+            } => {
+                submitted_prompt_ids.insert(agent_id.to_string(), prompt.id().to_string());
+            }
             _ => panic!("unexpected local response"),
         }
     }
 
+    let delivery_deadline = Instant::now() + Duration::from_secs(2);
+    let mut prompts_delivered = false;
+    while Instant::now() < delivery_deadline && !prompts_delivered {
+        prompts_delivered = harness.with_app_mut(|app| {
+            crate::app::provider_output::reap_structured_prompt_jobs(app);
+            submitted_prompt_ids.iter().all(|(agent_id, prompt_id)| {
+                app.prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent_id)
+                    .expect("active prompt snapshot should remain available")
+                    .is_some_and(|prompt| {
+                        prompt.id() == prompt_id
+                            && prompt.durable_delivery_phase()
+                                == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                    })
+            })
+        });
+        if !prompts_delivered {
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(
+        prompts_delivered,
+        "both provider submissions should be acknowledged before output is polled"
+    );
+
     harness.with_app_mut(|app| {
+        let structured_output_records = app.structured_output_record_store();
         for (provider_run_id, agent_id) in [
             (default_run_id.clone(), default_agent.id().to_string()),
             (spawned_run_id.clone(), spawned.id().to_string()),
         ] {
+            structured_output_records.mark_poll_enqueued(
+                &provider_run_id,
+                Some(
+                    submitted_prompt_ids
+                        .get(&agent_id)
+                        .expect("submitted prompt should be tracked")
+                        .clone(),
+                ),
+            );
             app.providers_mut()
                 .push_finished_structured_output_poll_for_test(
                     provider_run_id,

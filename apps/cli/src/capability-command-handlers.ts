@@ -16,6 +16,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import { homeProxyGrantConfirmation } from "@arroba/kernel-client/extension-home-proxy-confirmation"
 import {
   formatAgentExtensionGrants as formatSharedAgentExtensionGrants,
   formatAgentExtensionCatalog,
@@ -895,14 +896,17 @@ function confirmActiveHomeProxySlashGrant(
   if (action !== "grant" || kind === "skill" || source !== "home") return false
   const agent = resolveGrantTarget(deps, agentRef, `usage: /${command.kind} grant <agent-ref> <name>`)
   if (!agent) return true
-  if (!agent.remote_execution || command.args.includes("--confirm-home-proxy")) return false
-  const rerun = command.raw.includes("--confirm-home-proxy")
-    ? command.raw
-    : `${command.raw} --confirm-home-proxy`
-  deps.appendNotice([
-    `Confirm exposing ${kind} ${name} to remote agent ${agent.agent_ref}; home keeps credentials local and executes calls on this machine.`,
-    `rerun: ${rerun}`,
-  ].join("\n"))
+  const confirmation = homeProxyGrantConfirmation({
+    action,
+    kind,
+    name,
+    source,
+    agent,
+    command: command.raw,
+    confirmed: command.args.includes("--confirm-home-proxy"),
+  })
+  if (!confirmation) return false
+  deps.appendNotice(confirmation)
   deps.flashFooter("confirmation required for home-proxy grant", "error")
   return true
 }

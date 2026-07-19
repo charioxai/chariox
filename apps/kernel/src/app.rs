@@ -50,7 +50,8 @@ pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artif
 pub(crate) use external_provider_session_discovery::{
     discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
-    read_external_provider_observed_turns, ExternalProviderSessionDiscoverySignature,
+    external_provider_session_transcript_needs_refresh, read_external_provider_observed_turns,
+    ExternalProviderSessionDiscoverySignature,
 };
 pub(crate) use external_provider_sessions::{
     external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
@@ -148,6 +149,8 @@ pub struct DaemonApp {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    credential_enrollment_control:
+        crate::runtime::credential_enrollment_control::CredentialEnrollmentControl,
     transport_health: TransportHealthStore,
     workspace_coordinator: WorkspaceCoordinator,
     terminal: TerminalStreamStore,
@@ -247,6 +250,9 @@ impl DaemonApp {
             provider_run_projection: ProviderRunProjectionStore::default(),
             provider_process_projection: ProviderProcessProjectionStore::default(),
             remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore::default(),
+            credential_enrollment_control:
+                crate::runtime::credential_enrollment_control::CredentialEnrollmentControl::default(
+                ),
             transport_health: TransportHealthStore::default(),
             workspace_coordinator: WorkspaceCoordinator::default(),
             terminal: TerminalStreamStore::new(),
@@ -269,6 +275,20 @@ impl DaemonApp {
         };
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        let restored_publication_tunnel_count = {
+            let sessions = app.sessions();
+            let mut relay_state = app.relay_client_state.try_write().map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "restore workflow publication tunnels",
+                    message: error.to_string(),
+                }
+            })?;
+            crate::runtime::state::workflow_publication_endpoint_runtime::restore_durable_workflow_publication_tunnels(
+                &mut relay_state,
+                &sessions,
+                crate::session::unix_epoch_ms(),
+            )
+        };
         app.seed_prompt_id_allocator()?;
         crate::logging::info_with_fields(
             "daemon.startup",
@@ -276,6 +296,7 @@ impl DaemonApp {
             serde_json::json!({
                 "restore_ms": restore_started.elapsed().as_millis(),
                 "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
+                "restored_publication_tunnel_count": restored_publication_tunnel_count,
             }),
         );
         crate::logging::info_with_fields(
@@ -312,6 +333,12 @@ impl DaemonApp {
 
     pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {
         Arc::clone(&self.relay_client_state)
+    }
+
+    pub(crate) fn credential_enrollment_control(
+        &self,
+    ) -> crate::runtime::credential_enrollment_control::CredentialEnrollmentControl {
+        self.credential_enrollment_control.clone()
     }
 
     pub(crate) fn config_projection_store(&self) -> DaemonConfigProjectionStore {

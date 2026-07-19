@@ -17,6 +17,47 @@ const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_READER_STACK_BYTES: usize = 256 * 1024;
 const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
 
+#[cfg(unix)]
+fn disable_pty_input_echo(
+    master: &dyn MasterPty,
+    provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    let fd = master.as_raw_fd().ok_or_else(|| DaemonError::PtySpawn {
+        provider_run_id: provider_run_id.to_string(),
+        message: "managed PTY did not expose a terminal descriptor".to_string(),
+    })?;
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+        return Err(DaemonError::PtySpawn {
+            provider_run_id: provider_run_id.to_string(),
+            message: format!(
+                "failed to read managed PTY terminal attributes: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    let mut attributes = unsafe { attributes.assume_init() };
+    attributes.c_lflag &= !(libc::ECHO | libc::ECHONL);
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &attributes) } != 0 {
+        return Err(DaemonError::PtySpawn {
+            provider_run_id: provider_run_id.to_string(),
+            message: format!(
+                "failed to disable managed PTY input echo: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn disable_pty_input_echo(
+    _master: &dyn MasterPty,
+    _provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct PtyInputWriter {
     provider_run_id: String,
@@ -168,6 +209,7 @@ impl PtyManager {
                 provider_run_id: request.provider_run_id.clone(),
                 message: error.to_string(),
             })?;
+        disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
 
         let mut command = CommandBuilder::new(request.program);
         for arg in request.args {
@@ -687,7 +729,7 @@ mod tests {
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
 
-    use super::{mpsc, PtyInputWriter, PtyManager, PTY_INPUT_QUEUE_LIMIT};
+    use super::{mpsc, PtyInputWriter, PtyManager, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT};
 
     fn test_run() -> RuntimeProviderRun {
         RuntimeProviderRun::new(
@@ -856,6 +898,65 @@ mod tests {
         manager
             .remove_process(run.id())
             .expect("pty process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_pty_disables_input_echo_before_child_initialization() {
+        let provider_run_id = "provider-run-no-echo";
+        let prompt = "PROMPT_MUST_NOT_APPEAR_AS_PROVIDER_OUTPUT";
+        let response = "provider-ready";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:no-echo".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    format!("sleep 0.2; stty -echo; IFS= read -r _line; printf '%s\\n' {response}"),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("delayed no-echo provider should spawn");
+
+        manager
+            .write_input(provider_run_id, format!("{prompt}\n").as_bytes())
+            .expect("prompt should be written immediately after spawn");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        loop {
+            for chunk in manager
+                .drain_output(provider_run_id)
+                .expect("provider output should be readable")
+            {
+                output.extend(chunk.bytes);
+            }
+            if String::from_utf8_lossy(&output).contains(response) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for delayed provider response"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains(response));
+        assert!(
+            !output.contains(prompt),
+            "PTY driver echoed an injected prompt before the provider disabled echo: {output:?}"
+        );
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("provider process cleanup should succeed");
     }
 
     #[test]

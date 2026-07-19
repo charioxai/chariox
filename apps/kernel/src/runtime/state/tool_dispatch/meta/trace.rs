@@ -332,6 +332,10 @@ impl KernelRuntimeState {
         let mut suppressed_count = 0usize;
         for record in records {
             drained_count += 1;
+            if record.kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
+                suppressed_count += 1;
+                continue;
+            }
             let item = meta_trace_output_item(record, mode);
             if self.meta_trace_should_emit_item(&subscription.subscription_id, mode, &item)
                 && seen.insert(meta_trace_item_key(&item))
@@ -449,6 +453,9 @@ fn meta_trace_output_item(
         }
         crate::terminal::TerminalOutputKind::ProviderOutput => {
             ("assistant".to_string(), truncate_single_line(&text, 240))
+        }
+        crate::terminal::TerminalOutputKind::ProviderTerminal => {
+            unreachable!("provider terminal bytes must not enter meta traces")
         }
         crate::terminal::TerminalOutputKind::ProviderReasoning => {
             ("thinking".to_string(), truncate_single_line(&text, 240))

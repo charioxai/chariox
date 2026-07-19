@@ -191,10 +191,12 @@ impl CommandRouter {
     pub(crate) async fn relay_list_leased_agent_extension_catalog(
         &self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
     ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
         relay_peer_runtime::list_relay_leased_agent_extension_catalog(
             &self.runtime_state,
             leased_agent_id,
+            requesting_home_kernel_id,
         )
         .await
     }
@@ -202,11 +204,13 @@ impl CommandRouter {
     pub(crate) async fn relay_update_leased_agent_worker_extension_grants(
         &self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
         grants: Vec<crate::extension::ExtensionGrant>,
     ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
         relay_peer_runtime::update_relay_leased_agent_worker_extension_grants(
             &self.runtime_state,
             leased_agent_id,
+            requesting_home_kernel_id,
             grants,
         )
         .await

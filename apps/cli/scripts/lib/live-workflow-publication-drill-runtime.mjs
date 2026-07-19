@@ -5,6 +5,11 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { WebSocket } from 'ws'
 
+import {
+  rustBinaryPath,
+  rustManifestPath,
+} from '../../../../scripts/rust-workspace.mjs'
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 export const cliRoot = path.resolve(scriptDir, '..', '..')
 export const repoRoot = path.resolve(cliRoot, '..', '..')
@@ -26,6 +31,10 @@ export function envFlag(name, defaultValue = false) {
   const value = process.env[name]
   if (value == null || value === '') return defaultValue
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase())
+}
+
+export function withPublicationDrillProviderInventory(env) {
+  return { ...env, ARROBA_PROVIDER_DEV_STUB: '1' }
 }
 
 export function realDashboardOptionsFromEnv() {
@@ -68,12 +77,57 @@ export function variant(response, key) {
   return response?.[key] ?? response
 }
 
+export function isTerminalWorkflowRunStatus(status) {
+  return ['completed', 'failed', 'stopped'].includes(String(status).toLowerCase())
+}
+
 export function hasAcceptedRunMetadata(body) {
   return !!body && (body.workflow_run?.id || body.queued === true)
 }
 
 export function sseEventNames(body) {
   return [...body.matchAll(/^event: (.+)$/gm)].map((match) => match[1])
+}
+
+export function publicationStatusWatchdogs(status) {
+  if (Array.isArray(status?.watchdogs)) return status.watchdogs
+  if (Array.isArray(status?.schedules)) return status.schedules
+  return []
+}
+
+export function publicationStatusWatchdogCount(status) {
+  if (Number.isInteger(status?.watchdog_count)) return status.watchdog_count
+  if (Number.isInteger(status?.schedule_count)) return status.schedule_count
+  return publicationStatusWatchdogs(status).length
+}
+
+export async function readSseUntilEvent(response, expectedEvent, options = {}) {
+  if (!response.body) throw new Error('SSE response did not include a readable body')
+  const timeoutMs = options.timeoutMs ?? 5_000
+  const maxChars = options.maxChars ?? 64 * 1024
+  const deadline = Date.now() + timeoutMs
+  const decoder = new TextDecoder()
+  const reader = response.body.getReader()
+  let body = ''
+  try {
+    while (Date.now() < deadline) {
+      const remainingMs = Math.max(1, deadline - Date.now())
+      const chunk = await withTimeout(reader.read(), remainingMs, `SSE ${expectedEvent} event`)
+      if (chunk.done) {
+        body += decoder.decode()
+        break
+      }
+      body += decoder.decode(chunk.value, { stream: true })
+      if (body.length > maxChars) {
+        throw new Error(`SSE stream exceeded ${maxChars} characters before ${expectedEvent}`)
+      }
+      if (sseEventNames(body).includes(expectedEvent)) return body
+    }
+    throw new Error(`SSE stream ended before ${expectedEvent}: ${tail(body, 400)}`)
+  } finally {
+    await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
 }
 
 export function createWebSocketReader(socket) {
@@ -198,15 +252,12 @@ export async function ensureDockerAvailable() {
 }
 
 export async function buildRustBinary(binaryName) {
-  const manifestPath = binaryName === 'arroba-relay'
-    ? path.join(repoRoot, 'apps/relay/Cargo.toml')
-    : path.join(repoRoot, 'apps/kernel/Cargo.toml')
+  const manifestPath = rustManifestPath(repoRoot, binaryName)
   const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', binaryName])
   if (result.code !== 0) {
     throw new Error(`${binaryName} build failed\n${result.stdout}\n${result.stderr}`)
   }
-  const targetRoot = binaryName === 'arroba-relay' ? 'apps/relay' : 'apps/kernel'
-  return path.join(repoRoot, targetRoot, 'target/debug', binaryName)
+  return rustBinaryPath(repoRoot, binaryName)
 }
 
 export async function buildPublicationContainerImage(tag) {

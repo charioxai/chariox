@@ -160,3 +160,103 @@ fn reads_opencode_observed_sqlite_turns() {
     assert!(turns[4].text.contains("opencode message completed"));
     assert!(turns[4].text.contains("kimi-k2.6"));
 }
+
+#[test]
+fn opencode_sqlite_observation_cache_is_scoped_to_the_attached_session() {
+    let temp = temp_dir(&format!(
+        "opencode-sqlite-session-cache-{}",
+        std::process::id()
+    ));
+    let root = temp.path();
+    let db_path = root.join("opencode.db");
+    seed_opencode_sqlite(&db_path);
+    let provider_session_id = "ses_sqlite_cache_target";
+    let connection = Connection::open(&db_path).expect("sqlite fixture should reopen");
+    connection
+        .execute(
+            "update part set session_id = ?1 where session_id = 'ses_sqlite_1'",
+            [provider_session_id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "update message set session_id = ?1 where session_id = 'ses_sqlite_1'",
+            [provider_session_id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "update session set id = ?1 where id = 'ses_sqlite_1'",
+            [provider_session_id],
+        )
+        .unwrap();
+    drop(connection);
+
+    let first = read_opencode_observed_turns(root, provider_session_id);
+    assert_eq!(first.len(), 5);
+    assert!(!external_provider_session_transcript_needs_refresh(
+        "opencode",
+        provider_session_id,
+    ));
+
+    let connection = Connection::open(&db_path).expect("sqlite fixture should reopen");
+    connection
+        .execute_batch(
+            r#"
+            insert into session (
+                id, project_id, slug, directory, title, version,
+                time_created, time_updated
+            ) values (
+                'ses_sqlite_unrelated', 'project_2', 'unrelated',
+                '/repo/unrelated', 'Unrelated session', '0.0.0',
+                1782114000000, 1782114000000
+            );
+            insert into message (id, session_id, time_created, time_updated, data)
+            values (
+                'msg_unrelated', 'ses_sqlite_unrelated', 1782114000001, 1782114000001,
+                '{"role":"user"}'
+            );
+            insert into part (id, message_id, session_id, time_created, time_updated, data)
+            values (
+                'prt_unrelated', 'msg_unrelated', 'ses_sqlite_unrelated',
+                1782114000001, 1782114000001, '{"type":"text","text":"Unrelated"}'
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(provider_transcript_file_fingerprint(&db_path).is_some());
+    assert!(!external_provider_session_transcript_needs_refresh(
+        "opencode",
+        provider_session_id,
+    ));
+
+    let connection = Connection::open(&db_path).expect("sqlite fixture should reopen");
+    connection
+        .execute(
+            "update part set data = ?1, time_updated = 1782115000000 where id = 'prt_assistant_text'",
+            [r#"{"type":"text","text":"Session-specific update."}"#],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "update session set time_updated = 1782115000000 where id = ?1",
+            [provider_session_id],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert!(external_provider_session_transcript_needs_refresh(
+        "opencode",
+        provider_session_id,
+    ));
+    let refreshed = read_opencode_observed_turns(root, provider_session_id);
+    assert!(refreshed
+        .iter()
+        .any(|turn| turn.text == "Session-specific update."));
+    assert!(!external_provider_session_transcript_needs_refresh(
+        "opencode",
+        provider_session_id,
+    ));
+}

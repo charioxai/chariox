@@ -1,5 +1,92 @@
 use super::*;
 
+#[test]
+fn publication_output_rejects_opencode_model_substitution_before_run_mutation() {
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-publication-model-lock",
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/gpt-5.2",
+    );
+    let run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-publication-model-lock",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-publication-model-lock".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-runtime".to_string()),
+        },
+    );
+    let mut batch = crate::provider::ProviderPromptSignalBatch {
+        resolved_model: Some("opencode/big-pickle".to_string()),
+        resolved_model_source: Some("message.updated"),
+        ..crate::provider::ProviderPromptSignalBatch::default()
+    };
+
+    let failure = super::super::structured_provider_output_runtime::reject_workflow_publication_opencode_model_substitution(
+        true,
+        &run,
+        &mut batch,
+    )
+    .expect("publication model drift should be rejected");
+
+    assert!(failure.contains("substitution is disabled"));
+    assert_eq!(run.model(), "opencode/gpt-5.2");
+    assert_eq!(batch.resolved_model, None);
+    assert_eq!(batch.resolved_model_source, None);
+    assert_eq!(batch.terminal_failure.as_deref(), Some(failure.as_str()));
+    assert!(batch.prompt_completed);
+}
+
+#[test]
+fn interactive_output_keeps_opencode_selection_sync_behavior() {
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-interactive-model-sync",
+        "opencode",
+        "opencode",
+        "default",
+        "opencode/gpt-5.2",
+    );
+    let run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-interactive-model-sync",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-interactive-model-sync".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-runtime".to_string()),
+        },
+    );
+    let mut batch = crate::provider::ProviderPromptSignalBatch {
+        resolved_model: Some("opencode/big-pickle".to_string()),
+        resolved_model_source: Some("message.updated"),
+        ..crate::provider::ProviderPromptSignalBatch::default()
+    };
+
+    assert_eq!(
+        super::super::structured_provider_output_runtime::reject_workflow_publication_opencode_model_substitution(
+            false,
+            &run,
+            &mut batch,
+        ),
+        None,
+    );
+    assert_eq!(batch.resolved_model.as_deref(), Some("opencode/big-pickle"));
+    assert_eq!(batch.terminal_failure, None);
+}
+
 async fn assert_owned_output_pump_drains_pending_record_after_run_state_change(
     state: crate::provider::ProviderRunState,
 ) {
@@ -158,6 +245,10 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
                         bytes: vec![0xff, b's', b'e', b'c', b'o', b'n', b'd'],
                     },
                 ],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "structured-batch-2".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
                 ..crate::provider::ProviderPromptSignalBatch::default()
             },
         )
@@ -172,8 +263,27 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
     );
     assert_eq!(
         terminal.attachment_change_sequence(session.id(), attachment.id()),
-        before + 1,
-        "structured output chunks should use one terminal batch notification"
+        before + 2,
+        "the output batch and its completion should each notify the attachment"
+    );
+    assert_eq!(
+        terminal
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|record| record.bytes)
+            .collect::<Vec<_>>(),
+        vec![
+            b"first".to_vec(),
+            vec![0xff, b's', b'e', b'c', b'o', b'n', b'd']
+        ]
+    );
+    assert_eq!(
+        terminal
+            .drain_completion_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|completion| completion.message_id)
+            .collect::<Vec<_>>(),
+        vec!["structured-batch-2".to_string()]
     );
 }
 

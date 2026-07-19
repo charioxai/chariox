@@ -5,6 +5,10 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import {
+  publicationCallerForRequest,
+  publicationInvocationCaller,
+} from "./publication-caller-claims.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
@@ -83,7 +87,10 @@ export function installApiSseJsonRoutes(
     const invocation: NormalizedInvocation = {
       publication_id: publication.publication_id,
       request_id: `api_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      caller: { type: "anonymous", proof: { transport: "api_sse_json" } },
+      caller: publicationInvocationCaller(
+        publicationCallerForRequest(request),
+        { transport: "api_sse_json" },
+      ),
       input: request.body ?? {},
       mode: "async",
     }

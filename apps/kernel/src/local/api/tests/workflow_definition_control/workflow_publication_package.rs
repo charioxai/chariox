@@ -1,6 +1,127 @@
 use super::*;
 
 #[test]
+fn publication_package_omits_runtime_agent_state_and_remains_stable() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "stable-runtime-state");
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("stable-runtime-state".to_string()),
+                kind: Some("ingress".to_string()),
+                route: Some("/prompt/*".to_string()),
+                methods: vec!["GET".to_string()],
+                transport: Some(serde_json::json!({ "kind": "human_http" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: Some("async".to_string()),
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.agents()
+            .bind_remote_execution(
+                &graph.agent_id,
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-1".to_string()),
+                    relay_url: Some("wss://relay.example.test".to_string()),
+                    relay_token: Some("relay-secret-must-not-ship".to_string()),
+                },
+            )
+            .expect("agent should bind to remote execution");
+        app.agents()
+            .set_agent_state(&graph.agent_id, crate::agent::AgentState::Working)
+            .expect("agent should enter working state");
+        app.agents()
+            .set_agent_processing(&graph.agent_id, true)
+            .expect("agent should enter processing state");
+        app.agents()
+            .note_prompt_sent_at(&graph.agent_id, 42)
+            .expect("agent prompt activity should be recorded");
+    });
+
+    let export = || match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest,
+            package_archive_base64,
+            package_files,
+            ..
+        } => (package_digest, package_archive_base64, package_files),
+        _ => panic!("unexpected local response"),
+    };
+    let first = export();
+
+    harness.with_app_mut(|app| {
+        app.agents()
+            .set_remote_execution_active_worker_provider_run_id(&graph.agent_id, None)
+            .expect("worker provider run should settle");
+        app.agents()
+            .set_agent_state(&graph.agent_id, crate::agent::AgentState::Idle)
+            .expect("agent should return to idle");
+        app.agents()
+            .set_agent_processing(&graph.agent_id, false)
+            .expect("agent processing should settle");
+        app.agents()
+            .note_prompt_sent_at(&graph.agent_id, 84)
+            .expect("later prompt activity should be recorded");
+    });
+    let second = export();
+
+    assert_eq!(
+        second.0, first.0,
+        "runtime-only agent changes altered the package digest"
+    );
+    assert_eq!(
+        second.1, first.1,
+        "runtime-only agent changes altered the package archive"
+    );
+    let snapshot = package_json_file(&second.2, "workflow.snapshot.json");
+    let exported_agent = &snapshot["agents"][0];
+    assert!(exported_agent.get("remote_execution").is_none());
+    assert!(exported_agent.get("provider_resume_state").is_none());
+    assert!(exported_agent.get("external_provider_import").is_none());
+    assert!(exported_agent
+        .get("remote_extension_manifest_sync")
+        .is_none());
+    assert_eq!(exported_agent["state"], serde_json::json!("Idle"));
+    assert_eq!(exported_agent["is_processing"], serde_json::json!(false));
+    assert!(exported_agent.get("last_prompt_sent_at_ms").is_none());
+    assert_eq!(
+        exported_agent["last_activity_at_ms"],
+        exported_agent["created_at_ms"]
+    );
+    assert!(!serde_json::to_string(&snapshot)
+        .expect("snapshot should serialize")
+        .contains("relay-secret-must-not-ship"));
+}
+
+#[test]
 fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -112,55 +233,198 @@ fn local_request_api_exports_agent_app_publication_package() {
     std::fs::write(assets_root.join("assets/catalog.json"), "{\"items\":[]}")
         .expect("nested asset should write");
 
-    let exported = match harness
-        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+    let agent_app = serde_json::json!({
+        "enabled": true,
+        "assets": {
+            "public_dir": "app",
+            "index": "index.html"
+        },
+        "routes": [{
+            "path": "/add/*",
+            "hook_id": format!("{}-hook", publication.id()),
+            "prompt_source": "path_tail",
+            "response": "streaming_shell",
+            "required_role": "public",
+            "manipulation": {
+                "level": "state_and_overlay",
+                "scope": "session",
+                "allowed_actions": ["cart.search", "cart.add"]
+            }
+        }],
+        "replicas": {
+            "count": 1,
+            "per_caller_ordering": true
+        },
+        "network": {
+            "destinations": [{
+                "id": "integration:catalog-api",
+                "host": "api.catalog.example",
+                "credential_slot_ids": []
+            }]
+        },
+        "persistent_patch": {
+            "enabled": false
+        }
+    });
+    let export_request = || {
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(
             ExportWorkflowPublicationPackageRequest {
                 session_id: session.id().to_string(),
                 publication_ref: publication.id().to_string(),
                 kernel_url: Some("ws://127.0.0.1:43118".to_string()),
-                agent_app: Some(serde_json::json!({
-                    "enabled": true,
-                    "assets": {
-                        "public_dir": "app",
-                        "index": "index.html"
-                    },
-                    "routes": [{
-                        "path": "/add/*",
-                        "hook_id": format!("{}-hook", publication.id()),
-                        "prompt_source": "path_tail",
-                        "response": "streaming_shell",
-                        "required_role": "public",
-                        "manipulation": {
-                            "level": "state_and_overlay",
-                            "scope": "session",
-                            "allowed_actions": ["cart.search", "cart.add"]
-                        }
-                    }],
-                    "replicas": {
-                        "count": 1,
-                        "per_caller_ordering": true
-                    },
-                    "persistent_patch": {
-                        "enabled": false
-                    }
-                })),
+                agent_app: Some(agent_app.clone()),
                 agent_app_assets_dir: Some(assets_root.to_string_lossy().to_string()),
             },
-        ))
+        )
+    };
+    let (package_digest, package_archive_base64, exported) = match harness
+        .dispatch(export_request())
         .expect("agent app publication package should export")
     {
         LocalDaemonResponse::WorkflowPublicationPackageExported {
             package_version,
+            package_digest,
+            package_archive_base64,
             package_files,
             ..
         } => {
-            assert_eq!(package_version, 2);
-            package_files
+            assert_eq!(package_version, 3);
+            (package_digest, package_archive_base64, package_files)
         }
         _ => panic!("unexpected local response"),
     };
+    match harness
+        .dispatch(export_request())
+        .expect("repeated agent app publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest: repeated_digest,
+            package_archive_base64: repeated_archive,
+            ..
+        } => {
+            assert_eq!(repeated_digest, package_digest);
+            assert_eq!(repeated_archive, package_archive_base64);
+        }
+        _ => panic!("unexpected repeated local response"),
+    }
     let publication_json = package_json_file(&exported, "publication.json");
-    assert_eq!(publication_json["package_version"], serde_json::json!(2));
+    let workflow_snapshot = package_json_file(&exported, "workflow.snapshot.json");
+    assert_eq!(
+        workflow_snapshot["source_session"]["workspace_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["source_session"]["worktree_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["agents"][0]["workspace_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(
+        workflow_snapshot["agents"][0]["worktree_id"],
+        serde_json::json!("/workspace")
+    );
+    assert_eq!(publication_json["package_version"], serde_json::json!(3));
+    assert_eq!(
+        publication_json["deployment_contract"],
+        serde_json::json!({
+            "path": "deployment-contract.json",
+            "schema_version": 1,
+        })
+    );
+    let deployment_contract = package_json_file(&exported, "deployment-contract.json");
+    let deployment_contract_schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../schema/workflow-publication-deployment-contract-v1.schema.json"
+    ))
+    .expect("deployment contract schema should parse");
+    let compiled_schema = jsonschema::JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(&deployment_contract_schema)
+        .expect("deployment contract schema should compile");
+    assert!(
+        compiled_schema.is_valid(&deployment_contract),
+        "exported deployment contract should satisfy its versioned schema"
+    );
+    assert_eq!(deployment_contract["schema_version"], serde_json::json!(1));
+    assert_eq!(
+        deployment_contract["compatibility"]["package_version"],
+        serde_json::json!(3)
+    );
+    assert_eq!(
+        deployment_contract["compatibility"]["minimum_local_daemon_protocol_version"],
+        serde_json::json!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        deployment_contract["provider_requirements"][0]["provider"],
+        serde_json::json!("dev-stub")
+    );
+    assert_eq!(
+        deployment_contract["credential_slots"][0]["slot_id"],
+        serde_json::json!("provider:dev-stub")
+    );
+    assert_eq!(
+        deployment_contract["credential_slots"][0]["allowed_destination_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        deployment_contract["capabilities"]["network"],
+        serde_json::json!({
+            "policy_version": 1,
+            "default_action": "deny",
+            "destinations": [{
+                "id": "integration:catalog-api",
+                "host": { "kind": "exact_dns", "value": "api.catalog.example" },
+                "ports": [443],
+                "protocols": ["tls"],
+                "credential_slot_ids": [],
+            }],
+            "provider_access": [{
+                "slot_id": "provider:dev-stub",
+                "bundle_kind": "development_stub",
+                "bundle_id": "dev-stub-v1",
+            }],
+        })
+    );
+    assert_eq!(
+        deployment_contract["presentation"]["kind"],
+        serde_json::json!("agent_app")
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["id"],
+        serde_json::json!(format!("{}-hook", publication.id()))
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["path"],
+        serde_json::json!("/add/*")
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["methods"],
+        serde_json::json!(["GET"])
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["required_roles"],
+        serde_json::json!(["public"])
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["session"],
+        serde_json::json!({
+            "scope": "session",
+            "per_caller_ordering": true,
+        })
+    );
+    assert_eq!(
+        deployment_contract["resources"]["replicas"],
+        serde_json::json!(1)
+    );
+    assert!(deployment_contract["presentation"]["assets"]
+        .as_array()
+        .is_some_and(|assets| assets.iter().any(|asset| {
+            asset["path"] == serde_json::json!("app/index.html")
+                && asset["sha256"]
+                    .as_str()
+                    .is_some_and(|digest| digest.starts_with("sha256:"))
+        })));
     assert_eq!(publication_json["kind"], serde_json::json!("ingress"));
     assert_eq!(
         publication_json["agent_app"]["routes"][0]["path"],

@@ -70,6 +70,7 @@ pub(crate) fn prompt_id_number(prompt_id: &str) -> Option<u64> {
 pub struct WorkflowDispatch {
     pub node_run: WorkflowNodeRun,
     pub messages: Vec<WorkflowMessage>,
+    pub endpoint_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,12 +78,30 @@ pub struct WorkflowCompletionUpdate {
     pub workflow_run: WorkflowRun,
     pub dispatches: Vec<WorkflowDispatch>,
     pub validation_warnings: Vec<WorkflowHandoffValidationWarning>,
+    pub missing_output_failure: Option<WorkflowMissingOutputFailure>,
+    pub run_output_validation_failure: Option<WorkflowRunOutputValidationFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowHandoffValidationWarning {
     pub edge_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowRunOutputValidationFailure {
+    pub message: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub retry_scheduled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowMissingOutputFailure {
+    pub message: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone)]

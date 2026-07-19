@@ -12,6 +12,9 @@ pub struct TerminalInputRecord {
 #[serde(rename_all = "snake_case")]
 pub enum TerminalOutputKind {
     ProviderOutput,
+    /// Fullscreen provider terminal bytes for a native renderer. These bytes
+    /// are transient transport state, not semantic agent transcript.
+    ProviderTerminal,
     PromptEcho,
     ProviderReasoning,
     ProviderTool,

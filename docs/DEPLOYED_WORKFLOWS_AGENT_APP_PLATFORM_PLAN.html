@@ -1,0 +1,2217 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Deployed Workflows and Agent App Hosting Plan</title>
+    <style>
+      :root {
+        --paper: #f4f6f5;
+        --surface: #ffffff;
+        --ink: #171917;
+        --muted: #59605b;
+        --line: #c9cfcb;
+        --line-strong: #8e9891;
+        --rail: #202420;
+        --rail-muted: #b9c2bc;
+        --green: #0b6654;
+        --green-soft: #d9eee8;
+        --blue: #245bd7;
+        --blue-soft: #e1e9fb;
+        --red: #c43f27;
+        --red-soft: #f7e1dc;
+        --yellow: #dfb52d;
+        --yellow-soft: #f7edc9;
+        --code: #eef1ef;
+        --shadow: 0 12px 34px rgb(23 25 23 / 8%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font-family: "Avenir Next", Avenir, "Helvetica Neue", sans-serif;
+        font-size: 16px;
+        line-height: 1.62;
+      }
+
+      a {
+        color: var(--blue);
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: var(--red);
+      }
+
+      a:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid var(--yellow);
+        outline-offset: 3px;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 20;
+        top: 10px;
+        left: 10px;
+        transform: translateY(-160%);
+        padding: 8px 12px;
+        background: var(--surface);
+        color: var(--ink);
+        border: 2px solid var(--ink);
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      #scroll-progress {
+        position: fixed;
+        z-index: 30;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 4px;
+        background: var(--red);
+      }
+
+      .masthead {
+        position: relative;
+        overflow: hidden;
+        min-height: 440px;
+        padding: 64px clamp(24px, 6vw, 92px) 58px;
+        background: var(--rail);
+        color: #f8faf9;
+        border-bottom: 8px solid var(--red);
+      }
+
+      .masthead::after {
+        content: "DEPLOY";
+        position: absolute;
+        right: -18px;
+        bottom: -62px;
+        color: rgb(255 255 255 / 4%);
+        font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+        font-size: clamp(150px, 22vw, 330px);
+        line-height: 0.9;
+        letter-spacing: 0;
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        margin: 0 0 26px;
+        color: #94dccb;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      h4 {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        font-weight: 700;
+        line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        position: relative;
+        z-index: 1;
+        max-width: 980px;
+        overflow-wrap: anywhere;
+        font-size: 76px;
+      }
+
+      .masthead .lede {
+        position: relative;
+        z-index: 1;
+        max-width: 780px;
+        margin: 28px 0 0;
+        color: #dce2de;
+        overflow-wrap: anywhere;
+        font-size: 22px;
+        line-height: 1.46;
+      }
+
+      .meta-strip {
+        position: relative;
+        z-index: 1;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 26px;
+        margin-top: 40px;
+        padding-top: 20px;
+        border-top: 1px solid #4c544f;
+        color: var(--rail-muted);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .meta-strip span {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .page-shell {
+        display: grid;
+        grid-template-columns: minmax(230px, 300px) minmax(0, 980px);
+        gap: clamp(34px, 6vw, 88px);
+        max-width: 1420px;
+        margin: 0 auto;
+        padding: 0 clamp(20px, 4vw, 64px) 96px;
+      }
+
+      .toc {
+        align-self: start;
+        position: sticky;
+        top: 28px;
+        max-height: calc(100vh - 56px);
+        overflow-y: auto;
+        margin-top: 52px;
+        padding: 0 20px 20px 0;
+        border-right: 1px solid var(--line);
+      }
+
+      .toc-title {
+        margin: 0 0 14px;
+        color: var(--muted);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .toc ol {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        counter-reset: toc;
+      }
+
+      .toc li {
+        counter-increment: toc;
+        border-top: 1px solid var(--line);
+      }
+
+      .toc a {
+        display: grid;
+        grid-template-columns: 28px 1fr;
+        gap: 8px;
+        padding: 8px 0;
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 13px;
+        line-height: 1.3;
+      }
+
+      .toc a::before {
+        content: counter(toc, decimal-leading-zero);
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 11px;
+      }
+
+      .toc a:hover {
+        color: var(--ink);
+      }
+
+      article {
+        min-width: 0;
+        padding-top: 52px;
+      }
+
+      article > section {
+        scroll-margin-top: 24px;
+        padding: 68px 0 14px;
+        border-top: 2px solid var(--ink);
+      }
+
+      article > section:first-child {
+        padding-top: 0;
+        border-top: 0;
+      }
+
+      h2 {
+        max-width: 800px;
+        overflow-wrap: anywhere;
+        font-size: 48px;
+      }
+
+      h3 {
+        margin-top: 34px;
+        font-size: 25px;
+      }
+
+      h4 {
+        margin-top: 24px;
+        font-size: 19px;
+      }
+
+      p {
+        max-width: 820px;
+        margin: 16px 0 0;
+      }
+
+      ul,
+      ol {
+        max-width: 850px;
+        margin: 14px 0 0;
+        padding-left: 24px;
+      }
+
+      li {
+        margin: 7px 0;
+      }
+
+      code,
+      pre {
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      code {
+        padding: 2px 5px;
+        background: var(--code);
+        color: #174c42;
+        border: 1px solid #d8ddda;
+        border-radius: 3px;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        font-size: 0.9em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 22px 0 0;
+        padding: 22px;
+        background: var(--rail);
+        color: #eaf1ed;
+        border-left: 5px solid var(--green);
+        border-radius: 0 6px 6px 0;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .decision {
+        margin-top: 24px;
+        padding: 24px 26px 26px;
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+        border-left: 7px solid var(--green);
+        box-shadow: var(--shadow);
+      }
+
+      .decision strong:first-child,
+      .callout strong:first-child {
+        display: block;
+        margin-bottom: 7px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .callout {
+        margin-top: 22px;
+        padding: 18px 20px;
+        background: var(--yellow-soft);
+        border-left: 6px solid var(--yellow);
+      }
+
+      .callout.danger {
+        background: var(--red-soft);
+        border-color: var(--red);
+      }
+
+      .callout.info {
+        background: var(--blue-soft);
+        border-color: var(--blue);
+      }
+
+      .principles {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 28px;
+        background: var(--line);
+        border: 1px solid var(--line);
+      }
+
+      .principle {
+        min-height: 180px;
+        padding: 22px;
+        background: var(--surface);
+      }
+
+      .principle .number {
+        display: block;
+        margin-bottom: 34px;
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .principle h3 {
+        margin: 0;
+        font-size: 23px;
+      }
+
+      .principle p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .table-wrap {
+        width: 100%;
+        overflow-x: auto;
+        margin-top: 22px;
+        border: 1px solid var(--line-strong);
+        background: var(--surface);
+      }
+
+      table {
+        width: 100%;
+        min-width: 720px;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 13px 15px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--rail);
+        color: #f7faf8;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      tbody tr:nth-child(even) td {
+        background: #f8faf9;
+      }
+
+      td:first-child {
+        font-weight: 700;
+      }
+
+      .status {
+        display: inline-block;
+        white-space: nowrap;
+        padding: 1px 7px;
+        border: 1px solid currentColor;
+        border-radius: 3px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .status.have {
+        color: var(--green);
+        background: var(--green-soft);
+      }
+
+      .status.gap {
+        color: var(--red);
+        background: var(--red-soft);
+      }
+
+      .status.build {
+        color: var(--blue);
+        background: var(--blue-soft);
+      }
+
+      .architecture {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(128px, 1fr));
+        gap: 10px;
+        margin-top: 24px;
+      }
+
+      .architecture .node {
+        position: relative;
+        min-height: 155px;
+        padding: 16px;
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+      }
+
+      .architecture .node:not(:last-child)::after {
+        content: ">";
+        position: absolute;
+        top: 64px;
+        right: -9px;
+        z-index: 2;
+        width: 17px;
+        height: 24px;
+        background: var(--paper);
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-weight: 700;
+        text-align: center;
+      }
+
+      .architecture strong {
+        display: block;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        font-size: 18px;
+      }
+
+      .architecture span {
+        display: block;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .phase-list {
+        margin-top: 28px;
+        border-top: 1px solid var(--line-strong);
+      }
+
+      details.phase {
+        border-bottom: 1px solid var(--line-strong);
+        background: transparent;
+      }
+
+      details.phase summary {
+        display: grid;
+        grid-template-columns: 78px 1fr auto;
+        gap: 18px;
+        align-items: baseline;
+        padding: 20px 0;
+        cursor: pointer;
+        list-style: none;
+      }
+
+      details.phase summary::-webkit-details-marker {
+        display: none;
+      }
+
+      details.phase summary::after {
+        content: "+";
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 24px;
+      }
+
+      details.phase[open] summary::after {
+        content: "-";
+      }
+
+      .phase-id {
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .phase-title {
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        font-size: 24px;
+        font-weight: 700;
+      }
+
+      .phase-body {
+        padding: 0 46px 26px 96px;
+      }
+
+      .phase-body h4:first-child {
+        margin-top: 0;
+      }
+
+      .checklist {
+        padding-left: 0;
+        list-style: none;
+      }
+
+      .checklist li {
+        position: relative;
+        padding-left: 27px;
+      }
+
+      .checklist li::before {
+        content: "[ ]";
+        position: absolute;
+        left: 0;
+        color: var(--green);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }
+
+      .checklist li[data-status="done"]::before {
+        content: "[x]";
+      }
+
+      .checklist li[data-status="blocked"]::before {
+        content: "[!]";
+        color: var(--red);
+      }
+
+      .two-column {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 30px;
+        margin-top: 24px;
+      }
+
+      .two-column > div {
+        padding-top: 14px;
+        border-top: 4px solid var(--green);
+      }
+
+      .two-column > div:nth-child(even) {
+        border-color: var(--red);
+      }
+
+      .two-column h3 {
+        margin: 0;
+      }
+
+      .review-gate {
+        display: grid;
+        grid-template-columns: 150px 1fr;
+        gap: 24px;
+        margin-top: 22px;
+        padding: 20px 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .review-gate:last-child {
+        border-bottom: 1px solid var(--line);
+      }
+
+      .review-gate strong {
+        color: var(--red);
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+
+      .review-gate p {
+        margin-top: 0;
+      }
+
+      .footer {
+        margin-top: 76px;
+        padding: 28px;
+        background: var(--rail);
+        color: #dce2de;
+        border-top: 8px solid var(--green);
+      }
+
+      .footer strong {
+        color: #ffffff;
+      }
+
+      @media (max-width: 1060px) {
+        h1 {
+          font-size: 62px;
+        }
+
+        h2 {
+          font-size: 42px;
+        }
+
+        .page-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          position: static;
+          max-height: none;
+          margin-top: 34px;
+          padding: 20px;
+          border: 1px solid var(--line);
+          background: var(--surface);
+          columns: 2;
+        }
+
+        .toc-title {
+          column-span: all;
+        }
+
+        .toc li {
+          break-inside: avoid;
+        }
+
+        article {
+          padding-top: 10px;
+        }
+
+        .architecture {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .architecture .node:not(:last-child)::after {
+          display: none;
+        }
+      }
+
+      @media (max-width: 680px) {
+        body {
+          font-size: 15px;
+        }
+
+        .masthead {
+          min-height: 0;
+          padding: 48px 20px 42px;
+        }
+
+        h1 {
+          font-size: 42px;
+        }
+
+        h2 {
+          font-size: 34px;
+        }
+
+        .masthead .lede {
+          font-size: 18px;
+        }
+
+        .masthead::after {
+          display: none;
+        }
+
+        .page-shell {
+          padding: 0 16px 64px;
+        }
+
+        .toc {
+          columns: 1;
+        }
+
+        article > section {
+          padding-top: 52px;
+        }
+
+        .principles,
+        .two-column,
+        .architecture {
+          grid-template-columns: 1fr;
+        }
+
+        .principle {
+          min-height: 0;
+        }
+
+        .principle .number {
+          margin-bottom: 18px;
+        }
+
+        details.phase summary {
+          grid-template-columns: 56px 1fr auto;
+          gap: 10px;
+        }
+
+        .phase-title {
+          font-size: 20px;
+        }
+
+        .phase-body {
+          padding: 0 8px 24px 0;
+        }
+
+        .review-gate {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+      }
+
+      @media print {
+        #scroll-progress,
+        .skip-link,
+        .toc {
+          display: none;
+        }
+
+        body {
+          background: #ffffff;
+          color: #000000;
+          font-size: 11pt;
+        }
+
+        .masthead {
+          min-height: 0;
+          padding: 30px;
+          background: #ffffff;
+          color: #000000;
+          border: 2px solid #000000;
+        }
+
+        .masthead .lede,
+        .meta-strip,
+        .eyebrow {
+          color: #222222;
+        }
+
+        .page-shell {
+          display: block;
+          max-width: none;
+          padding: 0;
+        }
+
+        details.phase:not([open]) > *:not(summary) {
+          display: block;
+        }
+
+        article > section {
+          break-before: page;
+        }
+
+        .decision,
+        .principle,
+        .table-wrap,
+        .callout,
+        pre {
+          box-shadow: none;
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to plan</a>
+    <div id="scroll-progress" aria-hidden="true"></div>
+
+    <header class="masthead">
+      <p class="eyebrow">Cross-repository implementation and validation plan / revised 2026-07-18</p>
+      <h1>Deployed Workflows and Agent App Hosting</h1>
+      <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, WorkOS-backed identity, enterprise handoff, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
+      <div class="meta-strip" aria-label="Plan metadata">
+        <span>OSS branch: codex/deployed-workflows-platform</span>
+        <span>Cloud branch: codex/deployed-workflows-platform</span>
+        <span>Integration baseline: OSS main 424288d40 / feature 395cfeeb4; Cloud main ee1600df / feature 54f89e77</span>
+        <span>Status: feature implementation is preserved and validated on dedicated branches; main-first integration, the dedicated Deployed route, and the guided deployment wizard remain the next release increment, followed by the selected WorkOS identity migration</span>
+      </div>
+    </header>
+
+    <div class="page-shell">
+      <nav class="toc" aria-label="Table of contents">
+        <p class="toc-title">Plan index</p>
+        <ol>
+          <li><a href="#decision">Product decision</a></li>
+          <li><a href="#baseline">Current baseline</a></li>
+          <li><a href="#boundaries">Ownership and trust</a></li>
+          <li><a href="#model">Domain model</a></li>
+          <li><a href="#contract">Release contract</a></li>
+          <li><a href="#security">Security foundation</a></li>
+          <li><a href="#identity">WorkOS identity platform</a></li>
+          <li><a href="#handoff">Customer handoff</a></li>
+          <li><a href="#credentials">Credentials</a></li>
+          <li><a href="#access">Audience access</a></li>
+          <li><a href="#web">Web product</a></li>
+          <li><a href="#domains">Domains and CDN</a></li>
+          <li><a href="#operations">Runtime operations</a></li>
+          <li><a href="#services">External services</a></li>
+          <li><a href="#phases">Implementation phases</a></li>
+          <li><a href="#validation">Validation program</a></li>
+          <li><a href="#delivery">Delivery discipline</a></li>
+          <li><a href="#launch">Launch gate</a></li>
+          <li><a href="#decisions">Open decisions</a></li>
+        </ol>
+      </nav>
+
+      <article id="content">
+        <section id="decision">
+          <p class="eyebrow">01 / Product decision</p>
+          <h2>Ship a customer-owned deployment product, not a larger sidebar.</h2>
+          <div class="decision">
+            <strong>Recommended thesis</strong>
+            Arroba should become the managed host for provider-native agent apps. A builder publishes an immutable release; a customer claims a deployment into their organization, connects their own provider and integration credentials, controls who may use it, and operates it on an Arroba-managed URL or their own domain.
+          </div>
+          <p>The differentiated product is a <strong>claimable agent app release</strong>. It is narrower and more defensible than trying to match every n8n workflow-building feature. Arroba can own the deployment, handoff, runtime, authentication, credential binding, and operational experience for developers and agencies that do not want custom infrastructure.</p>
+
+          <div class="principles">
+            <div class="principle">
+              <span class="number">01</span>
+              <h3>Immutable releases</h3>
+              <p>Production changes move through explicit release promotion and rollback. Deployment controls cannot silently rewrite workflow semantics.</p>
+            </div>
+            <div class="principle">
+              <span class="number">02</span>
+              <h3>Customer ownership</h3>
+              <p>The destination organization owns access, credentials, domains, billing, and production activation. Builder access is optional and revocable.</p>
+            </div>
+            <div class="principle">
+              <span class="number">03</span>
+              <h3>Runtime-held credentials</h3>
+              <p>Provider credential bytes never enter publication packages or ordinary Cloud deployment records. Login uses provider-native harnesses in the runtime plane.</p>
+            </div>
+            <div class="principle">
+              <span class="number">04</span>
+              <h3>One shared authority</h3>
+              <p>The kernel remains workflow and execution authority. Cloud is control plane; relay and ingress remain scoped transport and policy boundaries.</p>
+            </div>
+          </div>
+
+          <h3>Initial product focus</h3>
+          <ul>
+            <li>Agencies and independent developers delivering an agent portal or agent API to a company.</li>
+            <li>Teams that want provider-native Codex, Claude, or OpenCode execution without operating application infrastructure.</li>
+            <li>Two deployment kinds on one foundation: browser-facing <strong>Agent App</strong> and programmatic <strong>Endpoint</strong>.</li>
+            <li>Managed hosted runtime as the default handoff; local runtime and export/self-host remain supported sovereignty options.</li>
+          </ul>
+
+          <h3>Explicit non-goals for the first release</h3>
+          <ul>
+            <li>Cloning n8n's full integration catalog, embedded editor, or generic no-code automation breadth.</li>
+            <li>Arbitrary customer frontend code, Kubernetes, marketplace economics, or multi-cloud orchestration.</li>
+            <li>Automatic unreviewed production updates from the builder's mutable workflow.</li>
+            <li>Using persistent workflow patches as a general-purpose customer database.</li>
+          </ul>
+        </section>
+
+        <section id="baseline">
+          <p class="eyebrow">02 / Current baseline</p>
+          <h2>The feature path is preserved; integration and product-surface completion remain.</h2>
+          <p>The dedicated <code>codex/deployed-workflows-platform</code> branches currently end at OSS <code>395cfeeb409100f4737f25ee089f218508acb683</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code>. Their prior technical acceptance remains provenance-bound evidence for those revisions. Current main is newer at OSS <code>424288d4064a226c811d37fdab35c4f2a0eb0d10</code> and Cloud <code>ee1600df1bfdc430205a4b190c08c07d449dd1e9</code>, with additional reliability, history, prompt-draft, and terminal-projection behavior that must remain authoritative. Integration acceptance must therefore be rerun on the final merged revision pair; prior evidence cannot certify conflict resolutions or the new wizard.</p>
+
+          <div class="callout info">
+            <strong>Main-first integration snapshot / 2026-07-18</strong>
+            <p>At this snapshot both feature worktrees and both canonical main worktrees are clean and pushed, but another agent may still advance the feature branches. Divergence is 12 main-only versus 99 feature-only commits in OSS and 13 main-only versus 261 feature-only commits in Cloud. A dry merge reports 16 OSS conflicts concentrated in provider settlement, remote-lease/history, scheduler, and local-slice runtime code, plus 6 Cloud conflicts in terminal service, route composition, and output/turn projection. Recalculate all heads, dirtiness, divergence, and conflicts after the active agent's final checkpoint; these counts are planning evidence, not a frozen merge input.</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Area</th>
+                  <th>Current state</th>
+                  <th>Required target</th>
+                  <th>Owner</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Publication package</td>
+                  <td><span class="status have">Landed</span> Package v3 exports a digest-bound deployment contract with provenance, protocol floor, routes, credential slots, resource hints, network ceilings and provider bundle references.</td>
+                  <td>Keep legacy v1/v2 adapters for local compatibility, but admit managed hosting only through verified immutable v3 artifacts and compatible runtimes.</td>
+                  <td><code>arroba</code></td>
+                </tr>
+                <tr>
+                  <td>Runtime</td>
+                  <td><span class="status have">Landed</span> Local and hosted paths, desired/observed reconciliation, immutable image-ID launch, rolling promotion/rollback, caller claims, limits, audit bridge, child supervision and cleanup.</td>
+                  <td><span class="status have">Accepted</span> Hosted disruption passed in both terminal directions; the exact-head managed-slice run passed both directions with guarded resources and exact baseline restoration.</td>
+                  <td>Both</td>
+                </tr>
+                <tr>
+                  <td>Deployment record</td>
+                  <td><span class="status have">Landed</span> Projects, releases, environments, promotions, claims, access, credentials, domains, audit and usage are distinct records with account-scoped services.</td>
+                  <td><span class="status have">Accepted</span> Migration, desired/observed reconciliation, recovery, rollback, and cross-surface projection passed the final affected suites and drills.</td>
+                  <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Web UI</td>
+                  <td><span class="status have">Partial</span> The feature branch has a substantial Deployed sidebar/detail workspace and matching TUI commands. Current main also has a dedicated Published Workflows route and browser controls that directly start, stop, restart, and inspect local publication runtimes.</td>
+                  <td>Add a compact searchable Deployed sidebar with safe quick actions plus a dedicated <code>/deployed</code> portfolio/detail route. Reuse one service/state authority across sidebar, route, web terminal, and TUI.</td>
+                  <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Deployment initiation</td>
+                  <td><span class="status have">Partial</span> Draft workflows have a single deploy modal that internally publishes and deploys one selected endpoint. Published workflows expose runtime controls, but there is no shared guided, resumable deployment setup flow.</td>
+                  <td>Provide one conditional wizard from both draft and published workflow surfaces. Draft origin includes publication configuration; published origin starts at release/deployment configuration. Both converge on the same durable deployment setup state machine.</td>
+                  <td>Both</td>
+                </tr>
+                <tr>
+                  <td>Human identity</td>
+                  <td><span class="status need">Migration required</span> Cloud authentication is Auth0-specific in package contracts and middleware, while the development shortcut still relies on a narrow email allowlist. Local <code>User</code>, <code>Account</code>, and <code>AccountMembership</code> records already provide the correct place for Arroba-owned authorization.</td>
+                  <td>Adopt WorkOS AuthKit for interactive identity, organization onboarding, SSO, and directory provisioning behind a provider-neutral adapter. Preserve Arroba IDs and authorization records through a reversible Auth0/WorkOS dual-provider migration.</td>
+                  <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Credentials</td>
+                  <td><span class="status have">Landed</span> Destination-owned profiles, one-time enrollments, runner affinity, bind/test/rotate/revoke/purge and direct protocol-241 Claude callback arming from TUI and web.</td>
+                  <td><span class="status have">Accepted</span> Live Codex, Claude, and OpenCode enrollment, expiry, replay rejection, rotation, revocation, purge, and cleanup pass across web and TUI; hosted credential binding and revocation are covered by the guarded Hetzner paths.</td>
+                  <td>Both</td>
+                </tr>
+                <tr>
+                  <td>Audience identity</td>
+                  <td><span class="status have">Landed</span> Public/restricted policy, invitations, account/domain grants, signed machine credentials, forged-header stripping, runtime verification and caller affinity.</td>
+                  <td>Retain the accepted HTTP, SSE, WebSocket, MCP, and signed machine-auth enforcement, then add WorkOS as the default interactive identity path without removing generic OIDC/JWT, API-key, webhook, or allowlist modes.</td>
+                  <td>Both</td>
+                </tr>
+                <tr>
+                  <td>Domains</td>
+                  <td><span class="status have">Landed</span> Stable default routes, verified custom hosts, activation proof, TLS/canonical state and removal behavior.</td>
+                  <td><span class="status have">Accepted</span> Public <code>sslip.io</code> default/custom hosts passed trusted TLS, canonical redirect, auth, HTTP/SSE/WebSocket/MCP, revocation, and complete Caddy restoration.</td>
+                  <td><code>arroba-cloud</code></td>
+                </tr>
+                <tr>
+                  <td>Hosted egress</td>
+                  <td><span class="status have">Landed</span> The v3 network ceiling, dedicated CONNECT gateway, policy compilation, hosted admission, revision-scoped internal network, dual-homed gateway, host enforcement, recovery and convergent cleanup are committed.</td>
+                  <td><span class="status have">Accepted</span> Exact TLS/443 policy, no direct route or fallback, gateway disruption, and hosted legacy-policy rejection passed on the designated Hetzner host.</td>
+                  <td>Both</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Code landmarks</h3>
+          <ul>
+            <li>Package v3 generation and contract: <code>arroba/apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code> and <code>arroba/packages/kernel-client/src/workflow-publication-deployment-contract.ts</code>.</li>
+            <li>Runtime and credential callback contract: <code>arroba/docs/PROTOCOL.md</code> and <code>arroba/apps/kernel/src/runtime/credential_enrollment_control.rs</code>.</li>
+            <li>Relay service-key proof of possession: <code>arroba/apps/kernel/src/transport/relay_client/daemon_requests.rs</code> (committed at <code>b6c58cec2</code>).</li>
+            <li>Publication images: <code>arroba/docker/publication/Dockerfile</code>, <code>arroba/docker/publication/entrypoint.sh</code> and <code>arroba/docker/publication-egress/</code>.</li>
+            <li>Cloud model: <code>arroba-cloud/packages/db/prisma/models.prisma</code>.</li>
+            <li>Contract and activation admission: <code>arroba-cloud/apps/api/src/publication/deployment-runtime-compatibility.ts</code> and <code>arroba-cloud/apps/api/src/publication/publication-egress-policy.ts</code>.</li>
+            <li>Credential callback claim binding: <code>arroba-cloud/apps/api/src/publication/deployment-credential-callback-channel-repository.ts</code>.</li>
+            <li>Runner: <code>arroba-cloud/apps/worker/src/publication-runner.ts</code>.</li>
+            <li>Current Deployed web mount: <code>arroba-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
+            <li>Current draft deploy modal: <code>arroba-cloud/apps/web/src/react/workflows/WorkflowActionButtonsMount.tsx</code>; current publication form: <code>WorkflowEndpointPublicationInspector.tsx</code>.</li>
+            <li>Current dedicated route pattern and local runtime controls: <code>PublishedWorkflowsRouteMount.tsx</code>, <code>PublishedWorkflowsSidebarPanelMount.tsx</code>, and <code>terminal-browser-publication-controller.ts</code>.</li>
+            <li>Current Auth0-specific identity boundary: <code>arroba-cloud/packages/auth/src/index.ts</code>; browser shortcut and mutation security: <code>arroba-cloud/apps/api/src/http/browser-security.ts</code>.</li>
+            <li>Local identity and authorization records: <code>arroba-cloud/packages/db/prisma/models.prisma</code>; provider enum and migration history: <code>arroba-cloud/packages/db/prisma/schema.prisma</code>.</li>
+          </ul>
+        </section>
+
+        <section id="boundaries">
+          <p class="eyebrow">03 / Ownership and trust</p>
+          <h2>Six actors, six different permissions.</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Actor</th>
+                  <th>Owns</th>
+                  <th>May do</th>
+                  <th>Must not receive</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Builder</td>
+                  <td>Source workflow and release proposal.</td>
+                  <td>Publish, invite customer, propose updates, support when retained.</td>
+                  <td>Customer provider secrets or automatic permanent production access.</td>
+                </tr>
+                <tr>
+                  <td>Customer owner</td>
+                  <td>Deployment project, production environment, billing, domains, and policies.</td>
+                  <td>Claim, configure, activate, promote, rollback, invite operators, revoke builder.</td>
+                  <td>Builder's private source workspace unless separately shared.</td>
+                </tr>
+                <tr>
+                  <td>Operator</td>
+                  <td>Operational responsibility delegated by customer.</td>
+                  <td>Observe, restart, rotate bindings, adjust approved runtime limits.</td>
+                  <td>Workflow editing and organization ownership actions.</td>
+                </tr>
+                <tr>
+                  <td>End user</td>
+                  <td>Their own app session and submitted data.</td>
+                  <td>Invoke routes granted by audience policy.</td>
+                  <td>Control-plane, other callers' state, secrets, logs, or raw provider state.</td>
+                </tr>
+                <tr>
+                  <td>Machine caller</td>
+                  <td>Scoped API identity.</td>
+                  <td>Invoke explicit routes within quota and role scope.</td>
+                  <td>Interactive sessions, unrelated routes, or administrative APIs.</td>
+                </tr>
+                <tr>
+                  <td>WorkOS / connected IdP</td>
+                  <td>Authentication assertions, enterprise connection configuration, and provisioning events.</td>
+                  <td>Authenticate people, establish verified subject and organization context, and report SSO/directory lifecycle changes.</td>
+                  <td>Arroba authorization policy, provider credentials, workflow/runtime data, invocation payloads, or relay traffic.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Runtime and control-plane boundary</h3>
+          <div class="architecture" aria-label="Runtime request path">
+            <div class="node"><strong>Caller</strong><span>Browser session, webhook, API key, JWT, or MCP client.</span></div>
+            <div class="node"><strong>Public ingress</strong><span>TLS, host routing, audience auth, quotas, trusted identity claims.</span></div>
+            <div class="node"><strong>Runner / gateway</strong><span>Deployment identity, environment config, credential bindings, streaming.</span></div>
+            <div class="node"><strong>Kernel</strong><span>Workflow, session, agent, interaction, queue, and execution authority.</span></div>
+            <div class="node"><strong>Provider CLI</strong><span>Provider-native execution and credentials under runtime ownership.</span></div>
+          </div>
+          <pre aria-label="Control plane relationship">Builder / customer browser
+        |
+        v
+Arroba Cloud control plane ---- deployment commands ----> runner
+  | auth, metadata, audit                               | containers, volumes
+  | no provider credential bytes                       | provider-native login
+  | no long runtime stream proxy                       v
+  +--------------------------------------------- public ingress
+
+Runtime traffic: caller -> ingress -> publication gateway -> kernel -> provider CLI
+Provider egress: per-revision internal network -> dedicated CONNECT gateway -> public TLS</pre>
+
+          <div class="callout danger">
+            <strong>Non-negotiable</strong>
+            Cloud may store credential status and an opaque runtime reference, but not provider credential payloads. The relay remains encrypted transport, and Scalingo Cloud must not become the proxy for long-running runtime terminal or publication streams.
+          </div>
+        </section>
+
+        <section id="model">
+          <p class="eyebrow">04 / Domain model</p>
+          <h2>Separate source, release, ownership, and runtime state.</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Entity</th>
+                  <th>Purpose</th>
+                  <th>Key fields and invariants</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>DeploymentProject</td>
+                  <td>Customer-owned product identity.</td>
+                  <td>Destination account, name, kind, billing owner, default environment, transfer policy. Survives source deletion.</td>
+                </tr>
+                <tr>
+                  <td>PublicationRelease</td>
+                  <td>Immutable deployable artifact.</td>
+                  <td>Package digest/version, contract version, source provenance, creator, signature, created time, compatibility.</td>
+                </tr>
+                <tr>
+                  <td>Environment</td>
+                  <td>Preview, staging, or production activation.</td>
+                  <td>Active release, desired/observed state, region, runtime mode, limits, configuration version.</td>
+                </tr>
+                <tr>
+                  <td>DeploymentClaim</td>
+                  <td>Builder-to-customer handoff.</td>
+                  <td>Hashed token, destination constraint, role offer, billing choice, expiry, accepted/revoked actor and time.</td>
+                </tr>
+                <tr>
+                  <td>AudiencePolicy</td>
+                  <td>Who may invoke which route.</td>
+                  <td>Mode, identity provider binding, allowlist rules, route-role grants, session policy, network supplements.</td>
+                </tr>
+                <tr>
+                  <td>CredentialProfile</td>
+                  <td>Runtime-owned provider account metadata.</td>
+                  <td>Destination account, provider, opaque runtime reference, status, expiry, last check. No secret bytes.</td>
+                </tr>
+                <tr>
+                  <td>CredentialBinding</td>
+                  <td>Maps release requirement to destination credential.</td>
+                  <td>Environment, stable slot ID, profile/integration ref, binding version, readiness, rotated time.</td>
+                </tr>
+                <tr>
+                  <td>DomainBinding</td>
+                  <td>Default or customer hostname.</td>
+                  <td>Globally unique hostname, verification challenge, DNS state, TLS state, canonical flag, last check.</td>
+                </tr>
+                <tr>
+                  <td>ReleasePromotion</td>
+                  <td>Auditable environment change.</td>
+                  <td>From/to release, config snapshot, actor, result, rollback source, timestamps.</td>
+                </tr>
+                <tr>
+                  <td>UsageLedger</td>
+                  <td>Budgets, billing, and abuse response.</td>
+                  <td>Invocation, runtime, token/cost estimate, storage and egress counters by environment and caller hash.</td>
+                </tr>
+                <tr>
+                  <td>DeploymentAuditEvent</td>
+                  <td>Customer-visible security history.</td>
+                  <td>Actor, action, target, diff metadata, request ID, result, IP/device metadata, immutable timestamp.</td>
+                </tr>
+                <tr>
+                  <td>ExternalIdentity</td>
+                  <td>Provider-neutral link between a verified login and one Arroba user.</td>
+                  <td>Provider, issuer, subject, provider user ID, verified-email metadata, link status, first/last authentication. Unique issuer/subject; never use email as the durable identity key.</td>
+                </tr>
+                <tr>
+                  <td>ExternalOrganizationBinding</td>
+                  <td>Maps a WorkOS organization to one Arroba account.</td>
+                  <td>Provider organization ID, account ID, environment, provisioning mode and lifecycle state. Mapping is explicit and cannot be inferred from display name or email domain.</td>
+                </tr>
+                <tr>
+                  <td>IdentityEventReceipt</td>
+                  <td>Idempotent inbox for identity and directory webhooks.</td>
+                  <td>Provider event ID/type, signature result, received/processed timestamps, retry count and terminal result. Payload retention is bounded and redacted.</td>
+                </tr>
+                <tr>
+                  <td>DeploymentIdentityBinding</td>
+                  <td>Environment-specific interactive audience provider.</td>
+                  <td>Deployment/environment, provider connection, issuer/audience, role/group mapping, session policy and enabled state. It does not grant control-plane membership by itself.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>State machines</h3>
+          <pre>claim:        pending -> accepted | expired | revoked
+release:      uploaded -> verified -> available | rejected | revoked
+environment:  setup -> blocked -> ready -> deploying -> live -> degraded | stopped | failed
+domain:       pending_dns -> verifying -> active | failed -> removing -> removed
+credential:   disconnected -> connecting -> ready -> expiring -> expired | revoked | error
+identity:     pending_link -> active -> suspended | unlinked
+provisioning: received -> verified -> applied | ignored | retrying | failed</pre>
+          <p>Use explicit desired and observed runtime state. API writes desired state; runner reconciliation reports observed state. Never infer successful deployment only from a queued job.</p>
+        </section>
+
+        <section id="contract">
+          <p class="eyebrow">05 / Release contract</p>
+          <h2>Package v3 is the immutable managed-hosting admission unit.</h2>
+          <p>OSS now exports <code>deployment-contract.json</code> in every package v3 archive. The contract identifies the source, content digest and digest scope; declares routes, provider and credential requirements, resources, capabilities, presentation, network ceilings and runtime compatibility; and is validated in both repositories. Package v1/v2 readers remain explicit legacy adapters for local compatibility and must not be treated as equivalent managed-hosting releases.</p>
+
+          <h3>Required contract sections</h3>
+          <ul>
+            <li><strong>Identity:</strong> stable release/package IDs, digest, source provenance, creator, timestamps, minimum runtime and protocol versions.</li>
+            <li><strong>Routes:</strong> path, transport, methods, input/output schema, required roles, session behavior, streaming, timeout, idempotency hints.</li>
+            <li><strong>Provider requirements:</strong> provider, model constraints, allowed substitutions, capability needs, readiness test.</li>
+            <li><strong>Credential slots:</strong> stable slot ID, kind, label, provider/integration, required/optional, scope, allowed hosts, uses, test method.</li>
+            <li><strong>Typed configuration:</strong> stable key, scalar/enum/schema type, default, constraints, sensitivity flag, environment scope.</li>
+            <li><strong>Capabilities:</strong> maximum actions, manipulation permissions, extension requirements, scripts, MCPs, skills, connectors, filesystem and network policy.</li>
+            <li><strong>Resources:</strong> expected concurrency, memory class, replicas, storage, schedules, egress destinations, region/data sensitivity hints.</li>
+            <li><strong>Presentation:</strong> app kind, assets manifest, immutable content hashes, entry route, display name and icon metadata.</li>
+          </ul>
+
+          <h3>Compatibility rules</h3>
+          <ul>
+            <li>A deployment may tighten route roles, network access, provider choice, replicas, limits, schedules, and capabilities; it may never broaden the release's declared maximum.</li>
+            <li>Workflow graph, prompts, endpoint routes, required roles, actions, assets, or capability maxima require a new immutable release.</li>
+            <li>Access policies, credential bindings, typed non-secret settings, domain, allowed runtime override, region, size, replicas, budgets and alerts are environment configuration.</li>
+            <li>Any serialized OSS protocol shape change follows the repository protocol rule: bump the shared version, update snapshot/hash tests, update dependent minimum versions, and add a focused drill.</li>
+          </ul>
+
+          <h3>Implemented admission path</h3>
+          <ul>
+            <li>Archive extraction is bounded and structured; Cloud verifies archive size, file safety, package digest, contract schema, contract/package identity and immutable release metadata before promotion.</li>
+            <li>The v3 compatibility block carries the minimum local daemon protocol. Runners advertise the probed protocol of an immutable Docker image ID, and incompatible jobs are not claimable or recoverable on that image.</li>
+            <li>The publication image pins and build-verifies Codex CLI <code>0.144.0</code>, OpenCode <code>1.4.1</code> and Claude Code <code>2.1.207</code>. The contract maps provider slots to stable official bundle IDs so an environment can tighten, never substitute or broaden, the declared provider ceiling.</li>
+            <li>Hosted activation requires package v3, an enforced network policy snapshot and supported provider bundle references. The Cloud egress-policy compiler, lifecycle admission, aligned API-to-worker policy snapshot, runner orchestration, recovery and cleanup are committed and pass local and designated-Hetzner fail-closed acceptance.</li>
+          </ul>
+
+          <div class="callout info">
+            <strong>Design constraint</strong>
+            The package must describe what a customer needs to provide without containing what the builder provided. A credential slot says "GitHub installation with repository read scope"; it never contains a GitHub token or builder account reference.
+          </div>
+        </section>
+
+        <section id="security">
+          <p class="eyebrow">06 / Security foundation</p>
+          <h2>Keep the landed containment controls below every client.</h2>
+          <p>Phase 0 control-plane containment is implemented: authenticated identity and membership are service-derived, browser mutations are CSRF checked, cross-account object access is denied, canonical routing is deployment-scoped, ambiguous legacy slugs fail closed and managed persistent patches are rejected. Later work added signed caller claims, credential and process isolation, immutable runtime compatibility, resource ceilings and an audit bridge. These controls remain implementation baselines, not proof that the final hosted product matrix has passed.</p>
+          <p>The normative actor, asset, trust-boundary, abuse-case, residual-risk and verification baseline is maintained in <a href="DEPLOYED_WORKFLOWS_THREAT_MODEL.md">Deployed Workflows Threat Model</a>.</p>
+
+          <h3>Control-plane requirements</h3>
+          <ul class="checklist">
+            <li>Derive actor and account membership from the authenticated browser/API session; do not trust body/query identity fields.</li>
+            <li>Apply CSRF protection to browser mutations and explicit bearer/scoped credentials to machine APIs.</li>
+            <li>Define control roles: owner, admin, deployer, operator, viewer, billing. Enforce them in repository/service policy, not only React.</li>
+            <li>Verify WorkOS assertions only at the Cloud identity boundary, map them to an Arroba principal, and authorize from local account/deployment membership. Never treat an IdP role or organization claim as sufficient authority by itself.</li>
+            <li>Scope every lookup and mutation by destination account and deployment ID. Add cross-account denial tests.</li>
+            <li>Hash claim and API-key tokens at rest, display secrets once, support expiry and revocation, and log security events without token content.</li>
+            <li>Move destructive or sensitive operations through auditable service methods with idempotency keys.</li>
+          </ul>
+
+          <h3>Public ingress requirements</h3>
+          <ul class="checklist">
+            <li>Resolve a globally unique verified host to one deployment/environment; never select the latest matching slug.</li>
+            <li>Authenticate before HTTP, SSE, WebSocket, and MCP upgrade/stream creation.</li>
+            <li>Strip caller-supplied identity and internal Arroba headers, then inject a short-lived signed invocation envelope.</li>
+            <li>Include <code>deployment_id</code>, <code>environment_id</code>, <code>sub</code>, <code>org</code>, <code>roles</code>, <code>aud</code>, expiry, nonce, and invocation ID in trusted claims.</li>
+            <li>Verify claims again at the runtime boundary and enforce the package route's <code>required_role</code>.</li>
+            <li>Keep identity structured. Do not automatically splice identity claims into model-visible prompt text.</li>
+            <li>Apply per-deployment and per-caller request, concurrency, queue, body-size, duration and spending limits.</li>
+            <li>Validate CORS, CSRF, cookie scope, WebSocket Origin, forwarded headers, redirect and content-security policy behavior.</li>
+          </ul>
+
+          <h3>Hosted egress requirements</h3>
+          <ul class="checklist">
+            <li>Create one Docker network per deployment revision with <code>--internal</code>; attach the publication container only to that network.</li>
+            <li>Run one dedicated unprivileged CONNECT gateway per revision, dual-homed on the internal revision network and a separate egress-capable network. Do not place the publication container on the egress network.</li>
+            <li>Compile a digest-bound policy only from the immutable v3 ceiling and environment tightening. Permit exact canonical lowercase DNS names on TLS port 443 only.</li>
+            <li>Reject the request unless every A and AAAA answer is public unicast, pin the chosen validated address for the upstream connection, and require TLS ClientHello SNI to equal the CONNECT host exactly.</li>
+            <li>Provide no direct route and no fallback when the gateway, DNS, policy or provider bundle is missing or unhealthy. Hosted start, restart, recovery and promotion must reject <code>legacy_unrestricted</code>.</li>
+          </ul>
+
+          <div class="callout danger">
+            <strong>Persistent patch policy</strong>
+            Keep persistent workflow patching unavailable for customer deployments until strong authentication, authorization, reviewable diffs, audit, rollback, expiry, concurrency handling, and capability limits are implemented. A deployment may not become a hidden workflow editor.
+          </div>
+        </section>
+
+        <section id="identity">
+          <p class="eyebrow">06A / Identity platform</p>
+          <h2>Use WorkOS to authenticate people; keep Arroba authoritative for access.</h2>
+          <p>WorkOS AuthKit is the selected human-identity platform for the Cloud control plane, future React Native clients, and the default interactive identity option for deployed Agent Apps. This replaces the Auth0-specific integration and the current development shortcut. It does not move account ownership, deployment roles, audience policy, runtime sessions, relay tokens, provider credentials, or billing authority out of Arroba.</p>
+
+          <div class="decision">
+            <strong>Selected architecture</strong>
+            <p>WorkOS proves who the person is and supplies organization, SSO, and directory lifecycle context. Arroba maps that verified subject to its own <code>User</code>, maps a WorkOS organization to its own <code>Account</code>, and evaluates every control-plane and deployment authorization from local membership and policy. Cloud then mints narrowly scoped Arroba sessions and invocation claims. WorkOS tokens never enter the kernel, relay, hosted workflow container, provider CLI, or publication package.</p>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Concern</th>
+                  <th>Authority</th>
+                  <th>Boundary</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Human sign-in</td><td>WorkOS AuthKit</td><td>Email/social login, enterprise SSO, verified subject and organization context.</td></tr>
+                <tr><td>Accounts and control roles</td><td>Arroba Cloud</td><td><code>Account</code>, <code>AccountMembership</code>, deployment roles and policy remain canonical.</td></tr>
+                <tr><td>Enterprise provisioning</td><td>WorkOS events, applied by Arroba</td><td>Directory and membership events enter an idempotent inbox; local policy decides their effect.</td></tr>
+                <tr><td>Deployed-app audience</td><td>Arroba policy</td><td>WorkOS is the default interactive provider; generic OIDC/JWT, API keys, webhooks, public and allowlist modes remain available.</td></tr>
+                <tr><td>Browser, mobile, and CLI sessions</td><td>Arroba Cloud after WorkOS verification</td><td>Separate host/client sessions, rotation and revocation; no cross-domain shared cookie.</td></tr>
+                <tr><td>Runtime invocation</td><td>Arroba ingress and kernel</td><td>Short-lived Arroba invocation envelope only; runtime re-verifies route roles and caller isolation.</td></tr>
+                <tr><td>Billing and entitlements</td><td>Arroba plus Stripe/local ledger</td><td>WorkOS billing integration may synchronize metadata later, but it is not the financial source of truth.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Provider-neutral migration foundation</h3>
+          <ul class="checklist">
+            <li>Inventory every Auth0-specific package type, middleware branch, route, environment variable, test fixture, database enum, callback, logout path, and development bypass before changing behavior.</li>
+            <li>Introduce a small <code>HumanIdentityProvider</code> boundary for authorization URL creation, callback verification, logout, user/organization lookup, and signed event verification. Keep policy and database mutation outside the adapter.</li>
+            <li>Replace <code>Auth0IdentityProfile</code> in shared application contracts with a provider-neutral verified identity shape carrying issuer, subject, provider user ID, verified emails, display metadata, and organization context.</li>
+            <li>Evolve the external-identity schema to support both legacy <code>AUTH0</code> and <code>WORKOS</code> records during migration. Preserve existing Arroba user, account, membership, deployment, audit, and billing IDs.</li>
+            <li>Implement explicit identity-linking rules. Never merge users only because email strings match; require verified evidence and an auditable confirmation path for collisions or multiple identities.</li>
+            <li>Run Auth0 and WorkOS callbacks side by side behind configuration during a bounded migration window. Add dual-read diagnostics, reconciliation reports, rollback instructions, and a cutover metric before removing Auth0.</li>
+            <li>Replace the hard-coded development email allowlist with explicit <code>development</code>, <code>private_beta</code>, and <code>production</code> authentication modes. Production must reject startup when required identity configuration is missing.</li>
+            <li>Remove Auth0 code, secrets, callbacks, dependencies, and provider-only schema constraints only after all active identities are mapped, the rollback window closes, and exact-head E2E acceptance passes.</li>
+          </ul>
+
+          <h3>WorkOS organizations and enterprise controls</h3>
+          <ul class="checklist">
+            <li>Create isolated WorkOS development/staging and production environments, with separate secrets, webhook keys, redirect/logout allowlists, custom auth-domain configuration, and one application registration per web or native client.</li>
+            <li>Map every WorkOS organization to exactly one Arroba account through <code>ExternalOrganizationBinding</code>. Never infer ownership from organization name, email domain, or a request parameter.</li>
+            <li>Implement organization creation/selection, invitations, multi-organization switching, guest/contractor membership, and explicit account-creation policy without granting deployment access implicitly.</li>
+            <li>Map WorkOS roles or directory groups through customer-configured rules into Arroba control and deployment roles. Local role policy remains authoritative and denies unmapped or broadened claims.</li>
+            <li>Expose WorkOS Admin Portal launch links for authorized customer admins to configure available SSO and Directory Sync connections. Return setup/readiness state to the Deployed access and handoff screens.</li>
+            <li>Receive signed WorkOS webhooks through an idempotent, replay-safe inbox. Handle duplicates, delay, reordering, retries, unknown event versions, deleted users, organization membership changes, and connection deletion. Identity deletion may suspend a binding but must never cascade-delete an Arroba account, deployment, or customer data.</li>
+            <li>Make deprovisioning effective locally: suspend the relevant membership, revoke Cloud/mobile sessions and subject-scoped delegated grants, reject new invocations for that subject, and retain a non-secret audit trail. Independent machine credentials remain governed by their own lifecycle.</li>
+            <li>Define audited support access, account recovery, ownership recovery, organization deletion, legal hold, and break-glass procedures before enterprise launch.</li>
+          </ul>
+
+          <h3>Web, React Native, and CLI sessions</h3>
+          <ul class="checklist">
+            <li>Complete browser login with Authorization Code flow, state/nonce validation, PKCE where applicable, strict callback allowlists, secure host-only cookies, session rotation, global logout, and device/session revocation.</li>
+            <li>Register distinct iOS and Android applications and use the system browser with Authorization Code plus PKCE, Universal Links/App Links or validated custom schemes, and OS secure storage. Do not embed a password form or share web cookies.</li>
+            <li>Define one mobile session contract for foreground/background refresh, offline expiry, account/organization switching, lost-device revocation, biometric gate policy, and logout across all devices.</li>
+            <li>Keep TUI/CLI authorization as a browser approval exchange: WorkOS authenticates the browser user, Cloud binds the approved account and scopes, then returns a short-lived local Arroba CLI session. Do not place a WorkOS refresh token in terminal state.</li>
+            <li>Project identity, selected organization, session expiry, reauthentication requests, permission prompts, and revocation consistently to web terminal and TUI without exposing provider token payloads.</li>
+          </ul>
+
+          <h3>Deployment audience and handoff</h3>
+          <ul class="checklist">
+            <li>Require a verified WorkOS identity and explicit destination Arroba account before accepting a customer claim. Bind acceptance to the claim, user, account, intended role, expiry, and one idempotency key.</li>
+            <li>Offer WorkOS AuthKit as the smooth default for interactive Agent App users, including invitation, verified-domain, organization, SSO, and directory-backed access where configured.</li>
+            <li>Use shared WorkOS applications per Arroba product surface and environment, with deployment/environment identity bound in signed state and local audience policy. Do not create one WorkOS application per deployment by default; reserve dedicated identity tenants/applications for a separately validated isolation tier.</li>
+            <li>Keep generic customer OIDC/JWT, scoped API key, webhook HMAC, public, and explicit allowlist modes as first-class deployment policies. WorkOS must not become mandatory for machine-to-machine or customer-embedded authentication.</li>
+            <li>Store identity-provider and role/group mapping per deployment environment so preview can use test identity while production uses the customer connection. Promotion cannot silently broaden access.</li>
+            <li>Use a central callback such as <code>auth.arroba.cloud</code> for custom deployed domains. Bind signed state to the exact deployment, environment, destination host, and browser nonce; exchange a one-time code at that host for a host-only Arroba session.</li>
+            <li>Make builder revocation independent of customer organization membership, end-user access, credentials, domains, billing, and runtime availability so handoff never depends on the builder's identity provider session.</li>
+          </ul>
+
+          <h3>Identity resilience and security acceptance</h3>
+          <ul class="checklist">
+            <li>Specify outage behavior: already-running deployments and valid local invocation sessions continue within their configured lifetime; new login, reauthentication, claim acceptance, and privileged control mutations fail closed with a clear recoverable state.</li>
+            <li>Cache verified signing keys only within a bounded policy; test key rotation, unknown key IDs, issuer/audience mismatch, clock skew, stale keys, network failure, and emergency revocation.</li>
+            <li>Test callback interruption, duplicate callback, state/nonce/PKCE replay, login CSRF, open redirect, session fixation, cross-organization confusion, account-link collision, and logout propagation.</li>
+            <li>Test delayed, duplicated, reordered, forged, and temporarily failed webhooks; reconcile from WorkOS after recovery and prove that no event can broaden local access.</li>
+            <li>Measure directory deprovisioning latency through ingress denial and session revocation, document the maximum supported window, and provide an immediate Arroba-side emergency revoke.</li>
+            <li>Redact authorization codes, access/refresh tokens, session secrets, webhook payload secrets, emails beyond operational need, and WorkOS keys from logs, traces, screenshots, support bundles, terminal projection, and audit metadata.</li>
+            <li>Complete security, privacy, DPA, data-residency, retention, SLA, support, pricing, and incident-response review before making WorkOS-backed SSO or directory guarantees to enterprise customers.</li>
+          </ul>
+
+          <h3>Guardrails and deferred options</h3>
+          <ul>
+            <li>Do not combine Clerk and WorkOS. One human-identity integration plus a neutral adapter is easier to secure, migrate, test, and support.</li>
+            <li>Do not make WorkOS roles, entitlements, organization membership, or billing the sole authorization or commercial authority. They are verified inputs to Arroba-owned policy.</li>
+            <li>Do not add WorkOS concepts to the OSS daemon protocol unless a client-visible serialized contract genuinely changes; most identity work belongs in Cloud and ingress.</li>
+            <li>Evaluate WorkOS Agent Registration, Connect, or a Stripe add-on only as later product increments after browser/mobile identity, enterprise handoff, and deployed-audience isolation are stable.</li>
+          </ul>
+
+          <p>Implementation references: <a href="https://workos.com/docs/authkit/users-organizations">AuthKit users and organizations</a>, <a href="https://workos.com/docs/admin-portal">Admin Portal</a>, <a href="https://workos.com/docs/authkit/directory-provisioning">directory provisioning</a>, <a href="https://workos.com/docs/authkit/roles-and-permissions">roles and permissions</a>, <a href="https://workos.com/docs/authkit/applications">multiple applications</a>, <a href="https://workos.com/docs/integrations/react-native-expo">React Native/Expo</a>, <a href="https://workos.com/docs/migrate/auth0">Auth0 migration</a>, <a href="https://workos.com/docs/custom-domains">custom auth domains</a>, and <a href="https://workos.com/docs/authkit/identity-linking">identity linking</a>.</p>
+        </section>
+
+        <section id="handoff">
+          <p class="eyebrow">07 / Customer handoff</p>
+          <h2>A claim flow should replace credential and ownership copying.</h2>
+          <ol>
+            <li><strong>Create release.</strong> Builder publishes an immutable release and selects "Deploy for customer." Arroba validates the package contract before issuing an invitation.</li>
+            <li><strong>Review invitation.</strong> Customer sees the app identity, builder, required providers and integrations, capabilities, data/egress implications, runtime mode, estimated cost and offered builder role.</li>
+            <li><strong>Claim ownership.</strong> Customer authenticates through WorkOS, chooses or creates the explicitly mapped Arroba account, accepts terms, selects billing ownership, and creates the deployment project. The local claim remains single-use, expiring, destination-bound, and idempotent.</li>
+            <li><strong>Connect dependencies.</strong> Customer supplies typed configuration, provider credentials and integration credentials. Builder secrets are never transferred.</li>
+            <li><strong>Set audience.</strong> Customer selects WorkOS-backed invitation/organization/SSO, public, explicit allowlist, generic OIDC/JWT, or machine access and maps identities to published route roles.</li>
+            <li><strong>Choose address.</strong> Arroba assigns a stable default hostname. Customer may attach and verify a custom domain.</li>
+            <li><strong>Private preview.</strong> Arroba runs contract checks and a smoke invocation in preview. Activation stays blocked until all required checks are green.</li>
+            <li><strong>Activate.</strong> Customer promotes the verified release/configuration snapshot to production.</li>
+            <li><strong>Maintain.</strong> Builder proposes future releases. Customer reviews the release and config diff, then promotes or declines it. Rollback is always available.</li>
+            <li><strong>Revoke cleanly.</strong> Customer may remove builder access without breaking runtime ownership, credentials, domain, history, or production availability.</li>
+          </ol>
+
+          <h3>Ownership modes</h3>
+          <div class="two-column">
+            <div>
+              <h3>Customer-owned</h3>
+              <p>Default. Customer owns deployment, billing, credentials and activation. Builder may receive a revocable maintainer role.</p>
+            </div>
+            <div>
+              <h3>Builder-managed</h3>
+              <p>Agency remains operator and billing owner while customer controls audience membership. Ownership transfer remains available later.</p>
+            </div>
+            <div>
+              <h3>Export / self-host</h3>
+              <p>Customer receives the immutable package and declared requirements, then operates it outside managed hosting.</p>
+            </div>
+            <div>
+              <h3>Internal team</h3>
+              <p>No handoff. Source and deployment stay within one organization, but release, credentials and audience boundaries remain identical.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="credentials">
+          <p class="eyebrow">08 / Credentials</p>
+          <h2>Connect accounts in the runtime plane and expose only readiness to Cloud.</h2>
+          <p>The destination-owned credential catalog and provider-specific connect flow are implemented across Cloud, web and TUI. Provider execution still uses official provider CLIs, provider-local servers and documented hooks only; Cloud stores status, account labels and opaque runtime references, never provider credential bytes.</p>
+
+          <h3>Provider connection flow</h3>
+          <ol>
+            <li>Customer selects a required provider slot during setup.</li>
+            <li>Cloud authorizes a short-lived, single-purpose credential setup session for the destination account and runner.</li>
+            <li>Runner starts an isolated setup container/profile and launches the official provider login command.</li>
+            <li>Verification URL, device code, progress, and normalized status travel through a scoped direct runtime/relay path.</li>
+            <li>Provider credential files remain in the runtime profile volume with strict ownership and permissions; setup output and logs are redacted.</li>
+            <li>Runner performs a non-destructive provider-native auth/readiness check and reports provider, account label when available, readiness, expiry and stable error category.</li>
+            <li>Cloud stores only metadata and an opaque runtime reference, then creates the environment binding.</li>
+            <li>Replace/rotate uses a new profile version and rolling restart; revoke removes binding first, then securely purges runtime material after confirmation.</li>
+          </ol>
+
+          <h3>Direct Claude callback path</h3>
+          <ol>
+            <li>An attached web or TUI client creates the same enrollment and sends protocol-241 <code>ArmDeploymentCredentialEnrollment</code> to the home kernel for the exact enrollment, profile, target version, session, focused agent and attachment.</li>
+            <li>Cloud persists an immutable callback route bound to the destination account, live job claim, runner, realm, kernel, session, focused agent and arming user. Bootstrap mints a short-lived relay token for service subject <code>deployment-credential-enrollment:&lt;enrollment_id&gt;</code>, the exact kernel target and the helper's ephemeral public-key thumbprint.</li>
+            <li>For a relay <code>Service</code> identity carrying <code>public_key_thumbprint</code>, the kernel must compare that claim with <code>SHA-256(sender_public_key)</code> before decryption or dispatch. A different helper key fails closed without changing ordinary client behavior.</li>
+            <li>The hosted helper sends the Claude authorization URL in an end-to-end encrypted relay request directly to the kernel. Cloud and the relay do not receive the URL or callback value.</li>
+            <li>The kernel atomically consumes the one-time in-memory arm and creates one secret <code>RuntimeInteraction</code> visible to every attached Arroba web/TUI client. First valid reply wins; cancel and timeout yield no callback.</li>
+            <li>The callback exists only in the encrypted helper response and is written to the waiting official Claude CLI. It is excluded from session state, command caches, ordinary API fields, logs and reprojection.</li>
+          </ol>
+          <div class="callout info">
+            <strong>Current checkpoint</strong>
+            Protocol 241, the one-time kernel interaction, Cloud claim binding, direct relay/Claude callback worker, TUI arming and web arming are committed. OSS <code>b6c58cec2</code> adds kernel-side proof of possession for relay <code>Service</code> identities by checking <code>SHA-256(sender_public_key)</code> against <code>public_key_thumbprint</code> before decrypt/dispatch, with committed match, mismatch and ordinary-client-unaffected tests. Refreshed Claude credentials passed real web-to-TUI and TUI-to-web provider lifecycle drills, including enrollment expiry, replay rejection, rotation, revocation, purge and cleanup. Hosted credential binding, invocation, rotation/revocation behavior, and cleanup subsequently passed the guarded Hetzner paths.
+          </div>
+
+          <h3>Credential classes that must stay distinct</h3>
+          <ul>
+            <li><strong>Provider execution:</strong> Codex, Claude and OpenCode provider accounts.</li>
+            <li><strong>Integration secrets:</strong> GitHub, Slack, databases, third-party APIs, MCPs and connectors.</li>
+            <li><strong>Audience identity:</strong> end-user sessions, OIDC claims, API keys and webhook signatures.</li>
+            <li><strong>Control-plane identity:</strong> customer administrators, builders and operators.</li>
+            <li><strong>Billing identity:</strong> who pays Arroba and, separately, who pays the provider.</li>
+          </ul>
+
+          <h3>Credential operations</h3>
+          <ul class="checklist">
+            <li>List by provider/account label, scope, environments, status, last check, expiry and last rotation.</li>
+            <li>Test without exposing content; normalize <code>ready</code>, <code>expired</code>, <code>revoked</code>, <code>missing_cli</code>, <code>login_required</code>, and <code>unknown</code>.</li>
+            <li>Bind one credential profile to explicit compatible slots and environments; do not silently grant it to every deployment.</li>
+            <li>Redact package, API, runner, process, container, shell, audit and support logs.</li>
+            <li>Detect expiry and notify before production failure; preserve an atomic replace path.</li>
+            <li>Recommend least-privileged service/API credentials for production where provider terms and capabilities permit them.</li>
+          </ul>
+        </section>
+
+        <section id="access">
+          <p class="eyebrow">09 / Audience access</p>
+          <h2>Allow lists are one mode, not the authentication architecture.</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mode</th>
+                  <th>Use case</th>
+                  <th>MVP behavior</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Public</td>
+                  <td>Demo or intentionally open app.</td>
+                  <td>Explicit acknowledgement, anonymous subject, strict rate/spend limits, abuse controls.</td>
+                </tr>
+                <tr>
+                  <td>Email invitation</td>
+                  <td>Named third-party users.</td>
+                  <td>WorkOS-verified identity, expiring invite, local deployment membership and role.</td>
+                </tr>
+                <tr>
+                  <td>Email domain</td>
+                  <td>Company-wide access.</td>
+                  <td>Verified email plus approved domain; customer admin can add exceptions.</td>
+                </tr>
+                <tr>
+                  <td>Organization</td>
+                  <td>Existing Arroba customer team.</td>
+                  <td>Explicit WorkOS-organization-to-Arroba-account binding; local account membership projects to app roles through policy.</td>
+                </tr>
+                <tr>
+                  <td>OIDC / SAML</td>
+                  <td>Enterprise workforce identity.</td>
+                  <td>WorkOS SSO and Directory Sync by default, or a generic customer identity binding; issuer/audience checks, group-to-role map, logout/session and deprovision policy.</td>
+                </tr>
+                <tr>
+                  <td>API key</td>
+                  <td>Server integration or MCP client.</td>
+                  <td>One-time secret, hash at rest, route scopes, expiry, rotation, usage and revocation.</td>
+                </tr>
+                <tr>
+                  <td>JWT / OAuth</td>
+                  <td>Customer's existing application.</td>
+                  <td>Trusted issuer/JWKS, audience, subject and claim-to-role mapping.</td>
+                </tr>
+                <tr>
+                  <td>Webhook HMAC</td>
+                  <td>Inbound event source.</td>
+                  <td>Timestamped signature, replay window and route-specific secret.</td>
+                </tr>
+                <tr>
+                  <td>IP allowlist</td>
+                  <td>Network restriction.</td>
+                  <td>Supplementary rule only; never substitutes for identity on sensitive apps.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Session and data isolation</h3>
+          <ul>
+            <li>Define whether each route is stateless, per-subject, per-browser-session, per-organization, or explicitly shared.</li>
+            <li>Derive runtime caller keys from signed claims, not request headers supplied by the caller.</li>
+            <li>Keep control-plane and deployed-app authorization distinct. Signing into an Agent App or belonging to its audience never grants Cloud deployment-management access.</li>
+            <li>Never reuse prompt history, files, overlays, provider thread state, queue affinity or generated artifacts across unauthorized callers.</li>
+            <li>Audit administrative access changes with before/after policy metadata. Do not log sensitive identity tokens or prompt payloads by default.</li>
+          </ul>
+        </section>
+
+        <section id="web">
+          <p class="eyebrow">10 / Web product</p>
+          <h2>Build a global operating surface with a guided setup path.</h2>
+          <p>Keep workflow drafting and publication near the canvas, but make deployed products available from a global primary navigation tab. The deployment must remain operable after the source session disappears or the builder loses access.</p>
+
+          <h3>Sidebar and dedicated route</h3>
+          <p>Use the same pattern as History and Published Workflows: the terminal sidebar is a compact operating summary, while <code>/deployed</code> is the durable management destination. The sidebar shows search, attention filters, concise status/readiness, and safe quick actions such as open, copy URL, start, stop, restart, and inspect. Selecting a row or the linked title opens <code>/deployed?project=&lt;id&gt;&amp;environment=&lt;id&gt;&amp;section=&lt;section&gt;</code>. Promotion, rollback, transfer, credential revocation, access changes, and deletion remain confirmed detail-route actions.</p>
+          <p>The sidebar, full route, terminal commands, and TUI must consume one normalized deployment projection and issue the same idempotent service commands. Do not build a second fetch loop or client-owned deployment authority for the route.</p>
+
+          <h3>One wizard, two valid origins</h3>
+          <div class="decision">
+            <strong>Product rule</strong>
+            <p><strong>Deploy from draft</strong> means "publish an immutable snapshot, then deploy it". <strong>Deploy from publication</strong> means "deploy this existing immutable publication". The UI may make the draft path feel like one operation, but the persisted publication/release boundary must stay explicit for provenance, retry, promotion, and rollback.</p>
+          </div>
+          <ul>
+            <li><strong>Draft entry:</strong> the workflow canvas Deploy action opens the wizard with source workflow, selected endpoint, queue, and current revision prefilled. Publication steps are editable.</li>
+            <li><strong>Published entry:</strong> each Published Workflows row/detail exposes Deploy. The wizard displays the immutable source summary and begins at deployment target/configuration; publication fields are read-only and are not recreated.</li>
+            <li><strong>Deployed entry:</strong> the Deployed route may offer New deployment, requiring selection of a publication before entering the shared deployment steps.</li>
+            <li><strong>Endpoint scope:</strong> the first integrated increment preserves the current deployable unit of one publication endpoint per release. The wizard selects and configures that endpoint; it does not silently edit the workflow graph. Multi-endpoint application bundles require an explicit route-set contract, conflict rules, shared-version semantics, and atomic rollback before they are presented as one deployment.</li>
+          </ul>
+
+          <h3>Conditional wizard steps</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Step</th>
+                  <th>Draft origin</th>
+                  <th>Published origin</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>1. Source</td><td>Workflow revision, change summary, endpoint readiness, unresolved validation, and snapshot intent.</td><td>Publication identity, digest, provenance, source revision, compatibility, and revocation state.</td></tr>
+                <tr><td>2. Interface</td><td>Select endpoint and queue; configure HTTP, API SSE JSON, WebSocket JSON, MCP, or schedule-only transport; route, methods, parser, response mode, input schema, trace exposure, timeout, and polling.</td><td>Read-only summary of the publication contract. Return to the draft to change interface semantics; create a new publication rather than mutating this one.</td></tr>
+                <tr><td>3. Release</td><td>Review provider bundles, extension and credential slots, Agent App assets, resource/network ceilings, package digest, and compatibility preflight before publication.</td><td>Verify the existing package and deployment contract; select an existing Cloud release when already imported, otherwise import it once by digest.</td></tr>
+                <tr><td>4. Target</td><td colspan="2">Choose hosted Arroba container or ingress-only local runtime, organization/project, environment, region, size, replicas, concurrency, schedule behavior, and update strategy.</td></tr>
+                <tr><td>5. Ownership and access</td><td colspan="2">Choose internal, customer-owned, or builder-managed ownership; select the mapped WorkOS organization; configure public, WorkOS invitation/organization/SSO, explicit allowlist, generic OIDC/JWT, or machine access; define route-role mapping and surface enterprise connection readiness.</td></tr>
+                <tr><td>6. Credentials</td><td colspan="2">Show declared provider/integration slots; bind destination-owned profiles, start enrollment, or leave activation explicitly blocked until the owner completes setup. Never copy builder credential bytes.</td></tr>
+                <tr><td>7. Network and URL</td><td colspan="2">Choose default URL or custom domain setup, canonical host, declared egress policy, budgets, rate/concurrency limits, retention, and alerts.</td></tr>
+                <tr><td>8. Review and deploy</td><td colspan="2">Show every object and side effect that will be created, validation warnings, estimated resource/cost envelope, ownership, access, and credential readiness. Require explicit activation confirmation.</td></tr>
+                <tr><td>9. Progress</td><td colspan="2">Stream publication, package verification, release import, environment reconciliation, private smoke test, ingress/domain, and activation progress. Provide a durable link to the resulting Deployed detail route.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Durable orchestration and recovery</h3>
+          <ul>
+            <li>Persist a deployment setup/intention record with origin, source IDs and digests, chosen options, completed stages, idempotency key, actor, account, and terminal-visible status. The browser must not be the coordinator.</li>
+            <li>For a draft, the kernel validates and snapshots the workflow, creates the publication, and exports package v3. Cloud verifies/imports that package, creates or reuses the release by digest, then creates project/environment configuration and reconciles desired runtime state.</li>
+            <li>For a publication, skip snapshot/publication creation and begin with package verification/import. Never generate a duplicate publication merely because the wizard or network retried.</li>
+            <li>Make every stage idempotent and resumable after browser refresh, terminal detach, relay/API/kernel restart, timeout, or worker failure. Preserve a valid publication/release when a later deployment stage fails; resume from the failed stage or let the user abandon and garbage-collect only incomplete deployment records.</li>
+            <li>Project progress, validation failures, credential/permission interactions, and final IDs to both web and TUI. A second attached client must observe transitions with bounded delay and may safely continue the setup when authorized.</li>
+            <li>Use a private smoke test before public activation. Separate "configuration saved", "preflight passed", "runtime ready", and "production active" so a partial setup is never reported as deployed.</li>
+          </ul>
+
+          <h3>Portfolio view</h3>
+          <p>Show app/deployment, kind, customer owner, environment, desired/observed status, health, active release, access mode, URL/domain, credential readiness, current usage/cost and last change. Support filters for owner, kind, environment, health, provider and attention required.</p>
+
+          <h3>Deployment detail navigation</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Section</th>
+                  <th>Primary content and actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Overview</td><td>Setup checklist, live URL, health, active release, owner, access summary, credentials summary, usage and recent changes.</td></tr>
+                <tr><td>Access</td><td>Audience mode, WorkOS organization/connection readiness, members/allowlists, generic IdP or machine credentials, role mapping, sessions, deprovision state and policy test.</td></tr>
+                <tr><td>Credentials</td><td>Required slots, connected provider/integration accounts, readiness, binding, test, rotate and revoke.</td></tr>
+                <tr><td>Releases</td><td>Immutable history, provenance, package/contract diff, preflight, promote, rollback and release revoke.</td></tr>
+                <tr><td>Domains</td><td>Default URL, custom hostname setup, DNS/TLS state, canonical redirect and verification retry.</td></tr>
+                <tr><td>Runtime</td><td>Mode, region, size, replicas, concurrency, schedules, limits, configuration and lifecycle.</td></tr>
+                <tr><td>Observability</td><td>Invocations, latency, errors, queue, provider usage estimate, structured logs, traces, alerts and retention.</td></tr>
+                <tr><td>Team and handoff</td><td>Owner, billing, maintainers, operators, claim/transfer history, invite/revoke and export.</td></tr>
+                <tr><td>Advanced</td><td>Runtime IDs, runner/container diagnostics, package metadata, support bundle and destructive actions.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Setup checklist</h3>
+          <pre>1. Ownership accepted          [required]
+2. Release verified            [required]
+3. Provider credentials ready  [required when declared]
+4. Integration slots bound     [required when declared]
+5. Identity/audience ready     [required]
+6. Default/custom domain ready [required]
+7. Private smoke test passed   [required]
+8. Budget and limits accepted  [required]
+9. Production activation       [customer action]</pre>
+
+          <h3>UI implementation rules</h3>
+          <ul>
+            <li>Use Cloud design-system primitives, React mount/state projection patterns, tokenized styles and service-owned data shaping.</li>
+            <li>Hide runner, backend, container and runtime session IDs from primary workflows; keep them under Advanced diagnostics.</li>
+            <li>Use status text plus icon/color, clear empty/loading/error states, optimistic updates only where rollback is deterministic, and idempotent commands.</li>
+            <li>Preserve browser terminal and TUI/CLI parity for release, deployment, credential readiness, access summary and lifecycle status.</li>
+            <li>Capture desktop and mobile screenshots for every meaningful visual milestone and test keyboard navigation, focus, overflow and long labels.</li>
+          </ul>
+        </section>
+
+        <section id="domains">
+          <p class="eyebrow">11 / Domains and CDN</p>
+          <h2>Route by verified host from the beginning.</h2>
+          <p>Replace account-local slug lookup with a globally unambiguous hostname binding. A stable deployment ID should remain the routing authority even when the display slug or custom domain changes.</p>
+
+          <h3>Default and custom host flow</h3>
+          <ol>
+            <li>Assign a default hostname such as <code>&lt;slug&gt;-&lt;short-id&gt;.apps.arroba.cloud</code>.</li>
+            <li>Customer enters <code>agent.customer.com</code>. Cloud rejects any hostname already bound or reserved.</li>
+            <li>Cloud issues DNS ownership instructions, preferably CNAME plus TXT challenge when required.</li>
+            <li>Verifier checks ownership and target independently; status records DNS and TLS separately.</li>
+            <li>Only after verification may ingress and certificate automation serve the host.</li>
+            <li>Customer chooses canonical domain and redirect policy. Removal revokes routing before releasing the hostname.</li>
+          </ol>
+
+          <h3>Transport correctness</h3>
+          <ul>
+            <li>Preserve HTTP methods, encoded paths, request bodies, SSE flush behavior, WebSocket close codes/reasons and MCP semantics.</li>
+            <li>Scope cookies to the effective host. Route interactive login through <code>auth.arroba.cloud</code>, bind signed state to the exact destination host, and exchange a one-time host-bound code for a host-only Arroba session. Never share a parent-domain cookie or accept an arbitrary return URL.</li>
+            <li>Treat the WorkOS custom authentication domain and each deployed application's custom domain as separate concerns. One central trusted auth domain may serve many verified Agent App hosts.</li>
+            <li>Validate CORS, CSRF, WebSocket Origin, redirect allowlists, forwarded host/proto, HSTS and certificate failure behavior.</li>
+            <li>Cache only immutable content-hashed static assets. Never CDN-cache invocation POSTs, auth, personalized HTML, SSE, WebSockets, MCP, traces or overlays.</li>
+          </ul>
+
+          <div class="callout info">
+            <strong>Infrastructure default</strong>
+            Start with direct Caddy origin routing and controlled on-demand TLS. Do not make a CDN or Cloudflare account a prerequisite. Add a custom-hostname platform only after real domain volume, WAF needs, certificate operations, or geographic asset delivery justify it.
+          </div>
+        </section>
+
+        <section id="operations">
+          <p class="eyebrow">12 / Runtime operations</p>
+          <h2>Production hosting needs more than start, stop, and logs.</h2>
+          <h3>Release and configuration operations</h3>
+          <ul>
+            <li>Build once, verify digest/signature, promote the same immutable release across environments.</li>
+            <li>Snapshot environment configuration and credential binding versions with every promotion.</li>
+            <li>Use readiness gates and rolling activation; switch ingress only after the replacement is healthy.</li>
+            <li>Rollback release and configuration pointer atomically. State/database rollback is a separate explicit operation.</li>
+            <li>Keep prior runtime for a short bounded drain window, then clean it and preserve diagnostic metadata.</li>
+          </ul>
+
+          <h3>Resource, usage, and abuse controls</h3>
+          <ul>
+            <li>Per environment: replicas, max concurrency, queue depth/age, request body, timeout, runtime memory/CPU class, storage and egress policy.</li>
+            <li>Per caller: request rate, active sessions, token/cost estimate and daily/monthly budget.</li>
+            <li>Customer alerts: credentials expiring, health degraded, error/latency threshold, queue saturation, budget percentage and domain/TLS issue.</li>
+            <li>Emergency controls: deny new invocations, stop environment, revoke one audience key, unbind one credential, or disable one route without deleting history.</li>
+          </ul>
+
+          <h3>Hosted ceilings, supervision, and cleanup</h3>
+          <ul>
+            <li>The runner validates every limit before Docker. Current defaults are 2 GiB memory with swap disabled, 2 CPUs, 256 PIDs and 4,096 open files; accepted configurable ranges remain bounded and malformed or unknown fields fail before launch.</li>
+            <li>Hosted containers use a read-only root, no-new-privileges, a reduced capability set, bounded tmpfs mounts and separate kernel, provider, gateway and action identities/homes. The platform runner key never enters the runtime container.</li>
+            <li><code>tini</code> owns PID 1. The standalone entrypoint supervises kernel, publication gateway and optional action server; an unexpected child exit terminates siblings, waits for them and exits nonzero so the runner can reconcile instead of serving a partial runtime.</li>
+            <li>Promotion keeps the prior healthy revision through candidate readiness and a bounded drain, then removes superseded containers and capabilities. Stop, delete, failed start, runner restart and credential rotation/revocation must converge without an orphaned container, profile or route.</li>
+          </ul>
+
+          <h3>Fail-closed egress topology</h3>
+          <pre aria-label="Hosted egress topology">public egress network
+        |
+        | validated TLS/443 only
+        v
+dual-homed CONNECT gateway
+        ^
+        | per-revision internal Docker network
+        |
+publication container (no direct public route)</pre>
+          <p>The OSS policy parser and gateway enforce exact lowercase DNS names, whole-answer public-IP validation, address pinning and CONNECT/SNI equality. Cloud must compile and persist a tightening-only policy from the immutable release, create the per-revision networks and gateway, inject proxy settings without a bypassing <code>NO_PROXY</code>, health-check the gateway, and tear down both networks and the gateway with the revision. Any missing or legacy policy, unsupported provider bundle, resolution failure, gateway failure or attempted direct path blocks activation or invocation; there is no unrestricted fallback.</p>
+
+          <h3>State and data</h3>
+          <p>For the first release, support stateless apps and external customer databases/connectors. Define deployment-scoped ephemeral files explicitly. Plan a later managed KV/blob capability with per-caller isolation, quotas, backup, retention, export and deletion. Persistent workflow patches are configuration mutations, not application storage.</p>
+
+          <h3>Observability and privacy</h3>
+          <ul>
+            <li>Correlate invocation, ingress, environment, runtime, workflow trace and provider run with non-secret request IDs.</li>
+            <li>Default to metadata-only logs. Prompt, output and attachment capture requires explicit customer policy and retention.</li>
+            <li>Expose redaction, retention, export and deletion controls before promising enterprise compliance.</li>
+            <li>Record resource measurements locally, on each slice/container and on the Hetzner host during drills.</li>
+          </ul>
+
+          <h3>Identity dependency behavior</h3>
+          <ul class="checklist">
+            <li>Keep running deployment processes and calls backed by still-valid Arroba invocation sessions independent from WorkOS availability.</li>
+            <li>Fail new login, claim acceptance, reauthentication, and privileged identity-dependent mutations closed during a WorkOS outage, with retryable status and no partial membership mutation.</li>
+            <li>Reconcile identity events, session revocations, and organization membership after recovery without duplicate effects or access broadening.</li>
+            <li>Expose WorkOS dependency health and last successful reconciliation in operational diagnostics without exposing subjects, tokens, or webhook payloads.</li>
+          </ul>
+        </section>
+
+        <section id="services">
+          <p class="eyebrow">13 / External services</p>
+          <h2>Use temporary local or existing infrastructure until evidence requires registration.</h2>
+          <p>External vendor signup must not block implementation or validation that can be completed with existing abstractions. Every temporary path must be visibly non-production where its security or durability is insufficient.</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Capability</th>
+                  <th>Temporary / existing path</th>
+                  <th>Possible production service</th>
+                  <th>Decision trigger</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Package objects</td>
+                  <td>Local file store for tests; existing Prisma durable store for staging and low volume. Optional local MinIO for S3 compatibility drills.</td>
+                  <td>S3, Cloudflare R2, Backblaze B2, or another S3-compatible EU store.</td>
+                  <td>Package volume, DB size/cost, retention, regional durability and download throughput.</td>
+                </tr>
+                <tr>
+                  <td>Custom domains / CDN</td>
+                  <td>Owned staging wildcard or <code>sslip.io</code>, local hosts entries, and Caddy direct origin/on-demand TLS approval.</td>
+                  <td>Cloudflare for SaaS or equivalent managed custom-hostname/CDN service.</td>
+                  <td>Customer domain count, WAF/DDoS need, certificate burden, global static asset latency.</td>
+                </tr>
+                <tr>
+                  <td>Customer invitations</td>
+                  <td>Copyable expiring claim link displayed to builder; local mail sink for automated tests.</td>
+                  <td>Postmark, Resend, SES, or existing transactional email provider.</td>
+                  <td>Real external beta requiring deliverability, branding and bounce handling.</td>
+                </tr>
+                <tr>
+                  <td>Audience identity</td>
+                  <td>Local signed OIDC/JWT fixtures, fake signed webhook events, and existing Auth0 only during dual-provider migration; use an isolated WorkOS development/staging environment as soon as credentials are available.</td>
+                  <td>WorkOS AuthKit with the required SSO, Directory Sync, Admin Portal, and custom authentication-domain capabilities.</td>
+                  <td>WorkOS production cutover is required before real customer identity; commercial enterprise capabilities are required before the first SSO or directory-backed customer.</td>
+                </tr>
+                <tr>
+                  <td>Provider secrets</td>
+                  <td>Provider-native profiles on restricted local/Hetzner runtime volumes for development drills. Never market this as a finished managed secret product.</td>
+                  <td>Cloud KMS plus encrypted volumes, managed vault, or customer external-vault binding.</td>
+                  <td>First customer-hosted production credential or multi-runner portability requirement.</td>
+                </tr>
+                <tr>
+                  <td>Usage and billing</td>
+                  <td>Postgres usage ledger and non-charging budgets; use the existing billing abstraction only in test mode.</td>
+                  <td>Stripe usage billing. A WorkOS Stripe add-on may synchronize entitlement metadata later but is not the ledger or payment authority.</td>
+                  <td>Pricing validated and first paid deployment ready.</td>
+                </tr>
+                <tr>
+                  <td>Observability</td>
+                  <td>Structured application logs, built-in deployment metrics and test resource samplers.</td>
+                  <td>Managed logs/metrics/traces service.</td>
+                  <td>Retention, paging, query scale or customer SLA requires it.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="decision">
+            <strong>Service-registration position / revised 2026-07-18</strong>
+            <p>The preserved deployment implementation and technical acceptance required no new vendor registration. The identity extension changes the production plan: WorkOS is now a selected dependency, but local signed identity fixtures, fake webhook events, and temporary Auth0 dual-provider support must keep main-first integration and most identity development unblocked while WorkOS credentials or paid enterprise features are unavailable.</p>
+            <ul>
+              <li><strong>Required for identity implementation:</strong> create a non-production WorkOS environment and test applications when possible. Until then, implement the provider-neutral boundary, schema, policy, event inbox, local authorization, generic OIDC/JWT audience path, and deterministic resilience drills against local fixtures.</li>
+              <li><strong>Required before production WorkOS cutover:</strong> configure production web/iOS/Android applications, keys, redirects, logout URLs, webhooks, central auth domain, organization policy, retention, and operational ownership; complete security, privacy, DPA, residency, SLA, pricing, and incident-response review.</li>
+              <li><strong>Required before the first enterprise identity customer:</strong> select the WorkOS SSO/Directory Sync package and validate Admin Portal setup, group/role mapping, JIT behavior, deprovision latency, recovery, and support runbooks with a real test IdP/directory.</li>
+              <li><strong>Required before the first real customer provider credential:</strong> choose and configure a production secrets design: Cloud KMS plus encrypted runner volumes, a managed vault, or a customer-owned external-vault binding. Restricted provider-native files on drill volumes are not a finished multi-tenant secret product.</li>
+              <li><strong>Required before non-WorkOS automated product notifications:</strong> register a transactional email provider. WorkOS may own identity invitation delivery, while a manually shared expiring deployment claim remains a valid private-beta fallback.</li>
+              <li><strong>Not required for a low-volume beta:</strong> a CDN or managed custom-hostname vendor. Direct Caddy origin, customer-controlled DNS, ACME TLS, canonical redirect, all transports, and removal were proven. Add Cloudflare for SaaS or equivalent only when domain volume, WAF/DDoS needs, or certificate operations justify it.</li>
+              <li><strong>Deferred by measured need:</strong> S3-compatible object storage, managed observability, usage billing, and optional WorkOS billing/agent extensions. Existing Postgres/package storage, built-in metrics, and non-charging budgets can support a controlled beta; set migration triggers from the table before offering an SLA or paid scale.</li>
+            </ul>
+          </div>
+        </section>
+
+        <section id="phases">
+          <p class="eyebrow">14 / Implementation phases</p>
+          <h2>Deliver vertical increments with a working product at every gate.</h2>
+          <div class="callout info">
+            <strong>Source-controlled task markers</strong>
+            <p><code>[ ]</code> means pending on the current-main implementation line. An agent may add <code>data-status="done"</code> to render <code>[x]</code> only when the exact commit and evidence satisfy the item, or <code>data-status="blocked"</code> to render <code>[!]</code> with the blocker recorded beside the phase. Commit and push every marker change with the implementation or validation evidence.</p>
+          </div>
+          <div class="phase-list">
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 0</span><span class="phase-title">Baseline, threat model, and containment</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Freeze current behavior with focused API, ingress, package, runner and web projection tests.</li>
+                  <li>Document threat model and actor/asset/trust boundaries.</li>
+                  <li>Wire session-derived control auth, membership/role policy, CSRF and cross-account repository scoping.</li>
+                  <li>Replace ambiguous slug selection with globally unique deployment/environment host resolution.</li>
+                  <li>Disable persistent patches for managed customer deployment paths.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>Cross-account mutation/read probes fail; unauthenticated control mutation fails; duplicate slugs cannot alter routing; existing local and hosted deployment smoke tests still pass.</p>
+                <div class="callout info">
+                  <strong>Containment record / updated 2026-07-16</strong>
+                  <ul>
+                    <li>Session-derived control authorization, CSRF, account scoping, canonical deployment routing and managed persistent-patch rejection are committed in both repositories.</li>
+                    <li>Later hardening now verifies caller identity across HTTP, SSE, WebSocket and MCP; isolates package actions, credentials, kernel transport and the runner audit capability; and supervises hosted runtime children.</li>
+                    <li>The original dedicated-stack screenshots and cleanup evidence remain useful historical containment evidence, but they predate the current v3 admission, protocol-241 callback and egress revisions and are not the final launch result.</li>
+                  </ul>
+                  <p><strong>Accepted gate:</strong> retain these controls in CI and release drills. Capacity was sampled at run time, with fixed local and remote preflight floors of 1.25 GiB available memory and 3 GiB available disk, runtime abort floors of 1 GiB and 2.25 GiB, and an effective 3.25 GiB managed-slice preparation requirement. The final exact-head run maintained the guards and restored the captured host inventory after each direction.</p>
+                </div>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 1</span><span class="phase-title">Release contract and product model</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Versioned deployment contract in OSS package export plus schema/fixture compatibility tests.</li>
+                  <li>Cloud schema and services for project, release, environment, promotion and audit.</li>
+                  <li>Migration adapter from current deployment rows without pretending historical rows have customer claims.</li>
+                  <li>Desired/observed runtime state and idempotent runner commands.</li>
+                  <li>CLI/TUI projection for release verification and environment status.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>One package is uploaded once, verified by digest, promoted through preview and production, then rolled back without changing the release artifact.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 2</span><span class="phase-title">Global Deployed product surface</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Primary navigation entry, deployment portfolio, detail route and setup checklist.</li>
+                  <li>Overview, releases, runtime, observability and advanced diagnostics sections.</li>
+                  <li>Replace raw profile/runner fields with customer language and typed status.</li>
+                  <li>Browser terminal and TUI/CLI lifecycle parity.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>A user can create, inspect, preflight, activate, stop, restart and roll back a deployment without opening the source workflow. Desktop/mobile screenshots and accessibility checks pass.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 2A</span><span class="phase-title">Main-first integration, full route, and deployment wizard</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Freeze exact clean feature heads after the active agent checkpoints and pushes every intended dirty or untracked source change; preserve those source branches unchanged.</li>
+                  <li>Create fresh OSS and Cloud integration worktrees from then-current <code>origin/main</code>, merge the frozen feature heads without rebasing, and manually reconcile conflicts so newer main reliability/history/terminal semantics remain authoritative.</li>
+                  <li>Add the compact searchable Deployed sidebar and dedicated <code>/deployed</code> portfolio/detail route on one shared state/service projection.</li>
+                  <li>Replace the draft deploy modal with the conditional wizard and expose the same wizard from Published Workflows, backed by a durable idempotent deployment setup state machine.</li>
+                  <li>Complete local ingress deployment binding so selecting ingress-only local runtime starts or materializes the approved release from web/TUI and binds it to the Cloud environment without requiring an undocumented manual <code>arroba serve</code> step.</li>
+                  <li>Add protocol/version/snapshot updates where serialized kernel contracts change, migration/compatibility tests, focused route/wizard tests, and interruption/retry drills.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>From both a mutable draft and an existing publication, a user completes hosted-container and ingress-only local deployment through web, observes and continues the same setup through TUI, reaches the dedicated Deployed route, and can safely resume every intermediate failure without duplicate publications, releases, projects, or environments. All newer main behavior and feature acceptance suites pass at the exact integrated revision pair, both integration worktrees are clean and pushed, and no source feature branch was rewritten.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 2B</span><span class="phase-title">WorkOS identity foundation and enterprise handoff</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Begin only after Phase 2A is integrated and accepted. Create fresh identity worktrees from the then-current OSS and Cloud mains; port no auth work onto the stale deployment feature branches.</li>
+                  <li>Inventory and neutralize the Auth0-specific code and schema boundary, add reversible migrations, and preserve current Arroba user/account/membership IDs and authorization semantics.</li>
+                  <li>Add WorkOS AuthKit behind the neutral provider interface, with isolated environments/applications, strict callback/logout configuration, signed webhook inbox, organization binding, and dual-provider migration controls.</li>
+                  <li>Replace the development allowlist shortcut with explicit environment modes, production startup validation, local signed identity fixtures, and fail-closed service policy.</li>
+                  <li>Ship WorkOS-backed browser login, organization creation/selection/switching, invitations, session/device management, and authorized Admin Portal entry for SSO and Directory Sync setup.</li>
+                  <li>Integrate WorkOS interactive audience mode into deployment claim, wizard, Deployed detail, ingress, handoff, role/group mapping, revocation, audit, and TUI projection while retaining generic and machine auth modes.</li>
+                  <li>Implement the central <code>auth.arroba.cloud</code> custom-host exchange and prove that callback state, one-time code, redirect, cookie, and deployment/account binding fail closed.</li>
+                  <li>Define and exercise the React Native iOS/Android PKCE session contract and browser-approved CLI/TUI login without placing WorkOS refresh tokens in runtime or terminal state.</li>
+                  <li>Implement explicit WorkOS outage, signing-key rotation, webhook recovery, directory deprovisioning, emergency revoke, account recovery, and break-glass behavior.</li>
+                  <li>Commit and push each meaningful green increment, update the plan/evidence after each gate, and redact all external-service credentials and identity payloads.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>A migrated user retains the same Arroba account, memberships, deployments, permissions, and audit identity after WorkOS reauthentication; a second organization completes enterprise claim and handoff; SSO/directory deprovision removes access within the documented bound; default and custom-domain Agent App login works; web terminal and TUI agree on identity/access/session state; browser and CLI sessions pass while the iOS/Android contract passes in a minimal harness before native beta; WorkOS disruption does not stop healthy running deployments; rollback to the dual-provider checkpoint remains possible; and both exact-head worktrees are clean and pushed.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 3</span><span class="phase-title">Customer claim, team, and audience access</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Expiring one-time claim links and WorkOS-authenticated customer acceptance into an explicitly mapped Arroba account.</li>
+                  <li>Customer-owned, builder-managed and internal-team ownership modes.</li>
+                  <li>Deployment roles and revocable builder maintainer access.</li>
+                  <li>WorkOS invitation/organization/SSO, email allowlist, verified domain, public, generic OIDC/JWT and scoped API-key audience modes.</li>
+                  <li>Ingress authentication, signed claims, route-role enforcement and caller/session isolation.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>A second account claims a release, controls access, invokes it, denies an unlisted caller, revokes the builder and keeps production running. Cross-account and cross-caller probes show no leakage.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 4</span><span class="phase-title">Bring-your-own provider and integration credentials</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Credential catalog, provider-specific connect sessions and requirements-slot binding.</li>
+                  <li>Codex, Claude and OpenCode native login/readiness adapters.</li>
+                  <li>Integration secret slots with direct runtime delivery or external-vault adapter boundary.</li>
+                  <li>Test, expiry, replace, rotate, revoke, purge and rolling restart flows.</li>
+                  <li>Secret scanning/redaction tests across package, DB, API, runner, logs and support bundles.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>The customer connects each provider from web and TUI surfaces, deployment uses only customer credentials, rotation causes no unexpected cross-deployment access, and revocation produces a clear blocked state.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 5</span><span class="phase-title">Default hosts, custom domains, and streaming ingress</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Stable default host, domain binding and ownership verification services.</li>
+                  <li>Caddy approval endpoint, certificate state and canonical redirect policy.</li>
+                  <li>Central WorkOS login callback, one-time host-bound Arroba session exchange, cookies, CORS, CSRF and WebSocket Origin behavior on custom hosts.</li>
+                  <li>Optional immutable asset caching boundary with no dependency on a CDN vendor.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>Default and temporary custom domains serve HTTP, SSE, WebSocket and MCP correctly; invalid ownership cannot bind; domain removal revokes routing; no personalized or streaming response is cached.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 6</span><span class="phase-title">Limits, usage, reliability, and state contract</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Invocation/concurrency/queue/spend/storage limits and non-charging usage ledger.</li>
+                  <li>Alerts, audit views, structured diagnostics and privacy/retention controls.</li>
+                  <li>Runner/ingress/kernel restart reconciliation, rolling release activation and clear in-flight failure semantics.</li>
+                  <li>Stateless/external-storage product contract and deployment-scoped ephemeral storage limits.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>Limits fail predictably, usage reconciles, outages recover desired state, interrupted calls are explicit, and no orphaned container/profile/package/test account remains after drills.</p>
+              </div>
+            </details>
+
+            <details class="phase" open>
+              <summary><span class="phase-id">Phase 7</span><span class="phase-title">Launch validation and service decision</span></summary>
+              <div class="phase-body">
+                <h4>Deliver</h4>
+                <ul class="checklist">
+                  <li>Full provider, transport, runtime mode, identity provider, role, handoff, domain and disruption matrix.</li>
+                  <li>Web/TUI parity report with screenshots and command evidence.</li>
+                  <li>Resource/cost measurements and capacity recommendation.</li>
+                  <li>External-service registration report and production migration checklist.</li>
+                  <li>Customer-facing runbooks for deployment, claim, credential rotation, domain, rollback, export and deletion.</li>
+                </ul>
+                <h4>Exit</h4>
+                <p>All launch criteria below pass, required external services are either configured or explicitly accepted as the only remaining production gate, and both worktrees are clean and pushed.</p>
+              </div>
+            </details>
+          </div>
+
+          <div class="callout info">
+            <strong>Preserved feature-branch technical acceptance checkpoint / 2026-07-18</strong>
+            <ul>
+              <li>Working vertical paths cover immutable releases, project/environment promotion and rollback, the Deployed web surface and TUI commands, customer handoff and revocable builder access, audience policy, credential lifecycle, domains, HTTP/SSE/WebSocket/MCP, Agent App invocation identity, usage/limits, operations detail, audit and reconciliation.</li>
+              <li>Protocol 241, one-time kernel arming, service-key proof of possession, web/TUI arming and Cloud helper callback completion are committed. Cloud <code>d5e33655</code> completed the callback worker; later runner fixes preserve credential failure evidence and support durable dev-stub enrollment. Refreshed Claude credentials now pass both live terminal directions locally.</li>
+              <li>The OSS v3 network ceiling and dedicated CONNECT gateway are committed at <code>d45177951</code> and <code>b3acbf488</code>. Cloud <code>bac401e2</code>, <code>cff0062</code> and <code>7833a66e</code> landed policy compilation, hosted legacy rejection, revision-scoped internal and dual-homed network orchestration, host enforcement, recovery and convergent cleanup.</li>
+              <li>The final local two-surface artifact <code>local-idle-browser-kernel-86004-1784180201325</code> is green with stable OSS <code>4d503ba984c6782c4cc6c73a2acd74b0fd80cd2f</code> and Cloud <code>6ca6fffe05cf48177df947864d06e123949ae39e</code> provenance. It covers six web/TUI transport cases, two Agent App cases and ten disruption cases across nine components.</li>
+              <li>The same local run exercised same-caller serialization, different-caller concurrency, forged-header denial, cross-surface key lifecycle, bounded load in both directions, handoff, audience, credentials, domains and telemetry. Evidence includes 100 screenshots, 299 TUI snapshots, 18 visual checkpoints and 24 resource checkpoints.</li>
+              <li>The run used its own relay, kernel, Cloud API/server, publication ingress and dynamically probed ports. Peak sampled load was 56 processes and 1,993,424 KiB RSS; cleanup left zero owned processes, freed all 32 core/transient ports, removed temporary and credential roots, and preserved unrelated local containers.</li>
+              <li>Managed-slice relocation, image protocol labels and canonical package digests are committed at OSS <code>8d5d68d28</code>, <code>d25eefcf4</code> and <code>9fd24c57a</code>. A guarded Hetzner preflight then stopped before mutation because 3,286,196,224 bytes were available against the 3,489,660,928-byte effective managed-slice requirement, a 203,464,704-byte shortfall. Its cleanup audit is green and preserved all unrelated workloads.</li>
+              <li>OSS <code>66c859e60</code> now emits one prompt echo at admission, emits completion on synchronous and structured dispatch failure, and ignores stale failures for a newer prompt. Cloud <code>59693abb</code> reconciles an already-completed optimistic web turn with exact history prompt identity without merging separate prompts that share a provider run. Shared kernel-client, CLI, kernel and 165 focused Cloud turn/history/notice/renderer/event tests pass.</li>
+              <li>The deliberate unqualified OpenCode negative probe records one completed history turn, one TUI prompt plus failure notice, an idle agent, no queued interaction and complete PID/port cleanup. Its success-oriented harness exits because no assistant text is expected from the rejected model; the diagnostic exposed and drove the web completed-turn reconciliation fix.</li>
+              <li>Live Codex <code>gpt-5.4</code> and Claude <code>sonnet-4-6</code> pass web-to-TUI and TUI-to-web at clean parent heads <code>3d577945</code>/<code>ebbb9ca78</code>. Live OpenCode <code>opencode/big-pickle</code> passes both directions at exact final heads <code>59693abb</code>/<code>66c859e60</code>. Every run proves one prompt and one response on both terminals, one completed history turn, initial/rotated/recovered invocation markers, credential expiry/retry/replay/rotation/revocation/purge, inspected screenshots and zero remaining owned PIDs or ports.</li>
+              <li>The final OpenCode stacks were run serially, peaked at approximately 2.66 GiB RSS while Chromium and two provider servers were active, and returned task-owned RSS to zero after each direction. The temporary OpenCode credential source was deleted; the post-matrix app-family audit measured approximately 3.7 GiB RSS and no task-owned runtime process.</li>
+              <li>Guarded hosted-fault runs passed both web-to-TUI and TUI-to-web at clean OSS <code>b6907d832</code> and Cloud <code>348dd87f</code>. Each direction exercised bounded runner, API-tunnel, ingress, publication-container, and egress-gateway outages; proved no local or unrestricted fallback; completed rollback/reactivation, signed JWT and webhook authorization including replay/forgery/revocation denial, bounded load, resource sampling, and exact cleanup with baseline inventory preserved.</li>
+              <li>The clean OSS <code>b6907d832</code> / Cloud <code>59693abb</code> remote-machine proof executed the exact prompt and provider run on the Hetzner worker while both web and TUI remained attached to the home session, then exported, promoted, invoked, and observed the immutable package on both surfaces. The same evidence contains both collaborator handoff directions: builder web to customer TUI and builder TUI to customer web, with distinct customer projects, matching package digests, live ingress after claim, and revocable builder access.</li>
+              <li>The final exact-head managed-slice matrix at OSS <code>41bded5580bdbe176be68b9877a6442e4b5a6392</code> and Cloud <code>54f89e7777fc22fbf8fa0c10f103c23851d46544</code> passed serial <code>web-to-tui:managed-slice</code> and <code>tui-to-web:managed-slice</code> cells with <code>selectedAcceptanceComplete=true</code>. The report is <code>.artifacts/deployed-workflows-remote-bidirectional/matrix-41bded558-54f89e77-r15/managed-slice/report.json</code>. <code>fullMatrixComplete=false</code> is expected because this final command intentionally selected the remaining managed-slice case; earlier provenance-bound runs provide the other case evidence.</li>
+              <li>The final reverse source proof binds TUI attachment <code>attachment-2</code>, prompt <code>prompt-1</code>, provider run <code>provider-run-1</code>, exact worker/kernel/lease identity, one exact assistant response on each surface, and three settled convergence samples with one occurrence per terminal. Both final cells also completed release, credential binding, runtime limits, domain operations, HTTP/SSE/WebSocket/MCP, Agent App access and caller revocation, collaborator handoff, second release, rollback/reactivation, and cross-surface retirement.</li>
+              <li>Hetzner resource evidence remained above guards. Across the final two cells, available memory was approximately 3.38-3.41 GB at baseline, 2.74-2.78 GB active, and 3.40 GB after cleanup; available disk was approximately 10.44-10.45 GB at baseline, 8.41-8.48 GB active, and 10.44 GB after cleanup. Each direction performed two ownership-scoped cleanup passes and restored the exact baseline container, image, network, and volume inventory with zero owned process, listener, gateway, or egress-rule residue.</li>
+              <li>The public DNS/TLS report <code>.artifacts/deployed-workflow-public-dns-tls/54f89e77/report.json</code> passed two public <code>sslip.io</code> hostnames on the Hetzner IP with trusted Let's Encrypt TLS 1.3, default-to-custom 308 redirect, denied and allowed auth, HTTP, SSE, MCP, WebSocket, and revocation behavior. Cleanup restored the original Caddy configuration, removed certificate artifacts, closed the run-owned tunnel, and returned approximately 3.44 GB available memory and 10.45 GB available disk.</li>
+              <li>Representative final desktop and mobile screenshots were inspected for the TUI-origin source transcript, Agent App audience policy and machine access, custom-domain management, and customer handoff. Long identifiers truncate without overflow; actions remain reachable; no incoherent overlap or blank state was observed. TUI evidence is retained as command-correlated machine snapshots for every corresponding checkpoint.</li>
+              <li>Final repository gates pass at the implementation heads: OSS validation is <code>644/644</code>; Cloud validation is <code>431/431</code>; Cloud recursive build/lint exits zero. The removed hard line-cap gate was not reintroduced. Both worktrees were clean before this documentation update.</li>
+              <li>Implementation used dedicated relays, kernels, Cloud servers/APIs, ingress processes, probed unused ports, run-owned state, and the designated Hetzner host. Work proceeded serially after the resource-pressure request, compared existing drills whenever technical issues appeared, and committed and pushed every meaningful green increment. Temporary credentials, roots, processes, ports, containers, images, networks, volumes, Caddy changes, and tunnels were ownership-scoped and cleaned.</li>
+            </ul>
+            <p><strong>Acceptance disposition:</strong> <span class="status have">Preserved historical evidence</span> for the feature revisions named above. The evidence is intentionally compositional across clean, pinned increments and the exact-head managed-slice revalidation; it does not mislabel the selected two-cell report as a single full eight-cell run. It does not certify the main-first conflict resolutions, dedicated Deployed route, deployment wizard, or direct local-ingress binding in Phase 2A. Those changes require new exact-pair acceptance before production service onboarding becomes the only remaining launch boundary.</p>
+          </div>
+        </section>
+
+        <section id="validation">
+          <p class="eyebrow">15 / Validation program</p>
+          <h2>Test the product as two people, not only as one API client.</h2>
+          <p>Run a dedicated local Arroba stack for these drills: start this worktree's own relay, kernel, server/Cloud API and publication ingress on dynamically probed unused ports with unique state roots. Do not reuse the user's active daemons, staging processes or state directories. Use the designated Hetzner machine for hosted runtime, remote-machine worker, managed-slice and collaborator drills. Pin and record both repository revisions and stable worktree fingerprints. Before remote work, review existing publication, resilience, provider, remote-agent and slice drills for exact credential transfer, process ownership, port, evidence and cleanup guidance.</p>
+
+          <div class="callout danger">
+            <strong>End-to-end requirement</strong>
+            Every required product journey, authorization case, lifecycle operation, and failure/recovery case must be driven end to end from both the web terminal and the TUI terminal. Unit, API, repository, component, and browser-only tests supplement this evidence; they do not count as acceptance on their own. Both terminals must observe the same deployment state, release, access, credential readiness, interaction, progress, error, and recovery outcome with only bounded propagation delay.
+          </div>
+
+          <div class="callout info">
+            <strong>Isolated drill infrastructure</strong>
+            Each drill must create a run manifest containing source revisions/fingerprints, allocated ports, PIDs/process groups, state directories, package/profile paths, networks, gateways, containers, volumes, temporary accounts and remote artifacts. Install teardown traps where practical, monitor resource headroom while the drill runs, and execute ownership-scoped cleanup after each case and at suite completion. Run cleanup and orphan verification twice. Verify that ports are closed, processes, networks, gateways and containers are gone, temporary state is removed, and local/Hetzner resource use returns to the captured pre-drill baseline.
+          </div>
+
+          <h3>Required matrix</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dimension</th>
+                  <th>Cases</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Surface</td><td>Every scenario through web terminal and TUI terminal end to end; repeat remote cases through remote TUI/CLI where applicable. Add browser control-plane, iOS, and Android clients to identity/session cases without weakening the two-terminal requirement.</td></tr>
+                <tr><td>Deployment origin</td><td>Mutable draft with unpublished changes, draft matching an existing publication, existing healthy publication, revoked/incompatible publication, and publication already imported as a Cloud release.</td></tr>
+                <tr><td>Actor</td><td>Builder, customer owner, maintainer, operator, invited end user, denied user, machine caller, revoked builder.</td></tr>
+                <tr><td>Human identity</td><td>Legacy Auth0 identity during migration, WorkOS email/social identity, WorkOS organization member, enterprise SSO user, directory-provisioned/deprovisioned user, guest/contractor, linked identity, collision candidate, suspended user and recovered owner.</td></tr>
+                <tr><td>Identity client</td><td>Cloud web, default-host Agent App, custom-host Agent App, browser-approved TUI/CLI, React Native iOS and React Native Android; organization switching and logout across devices.</td></tr>
+                <tr><td>Runtime</td><td>Local runtime, hosted Hetzner container, remote machine/slice where applicable.</td></tr>
+                <tr><td>Provider</td><td>Codex, Claude, OpenCode, plus deterministic test adapter for failure injection.</td></tr>
+                <tr><td>Transport</td><td>Human HTTP, API SSE JSON, WebSocket JSON, MCP and schedule-only.</td></tr>
+                <tr><td>Egress</td><td>Empty policy, one/multiple exact hosts, mixed public/private DNS answers, alternate ports, SNI mismatch, gateway loss, direct-route probe and legacy unrestricted denial.</td></tr>
+                <tr><td>Access</td><td>Public, WorkOS invitation, verified email domain, mapped organization, WorkOS SSO/directory group, generic OIDC/JWT, API key, webhook signature and denied/expired/deprovisioned/revoked credentials.</td></tr>
+                <tr><td>Lifecycle</td><td>Save/resume/abandon setup; publish/import/create/configure/preflight/activate; invite, claim, propose update, promote, rollback, stop, restart, transfer, revoke, export and delete.</td></tr>
+                <tr><td>Disruption</td><td>Refresh/detach at every wizard and login boundary, duplicate submit/callback, browser/mobile reconnect, WorkOS/API/JWKS/webhook outage, signing-key rotation, delayed/reordered directory events, relay restart, ingress restart, Cloud API restart, runner restart, kernel/container drop, provider crash, network partition and credential expiry.</td></tr>
+                <tr><td>Domain</td><td>Default host, central auth callback, valid custom host, invalid ownership, forged return host, replayed host exchange, DNS drift, TLS pending/failure, canonical switch and removal.</td></tr>
+                <tr><td>Load</td><td>Single caller, multiple callers, queue saturation, per-caller ordering, rate limit, budget limit and large/slow request.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>End-to-end drills</h3>
+          <p>Execute every drill below once with the web terminal as the initiating surface and once with the TUI terminal as the initiating surface. Keep the second client attached during each run and assert that state, prompts, permissions, requests, logs, health, and lifecycle transitions converge in both directions.</p>
+          <ol>
+            <li><strong>Draft-to-hosted wizard:</strong> start with an unpublished workflow, select endpoint/queue/transport and publication options, review the package contract, configure hosted runtime/access/credentials/domain/limits, deploy, and prove exactly one immutable publication and release were created.</li>
+            <li><strong>Publication-to-local-ingress wizard:</strong> deploy an existing publication without recreating it, start or materialize its local runtime directly from an authorized web/TUI action, bind global ingress, interrupt each stage in separate cases, and resume to the same project/environment IDs.</li>
+            <li><strong>Wizard concurrency and recovery:</strong> keep web and TUI attached, alternate edits and continuation between them, submit duplicate commands, disconnect each client, restart coordinator components, reject stale conflicting edits, and verify one authoritative setup state with no duplicate side effects.</li>
+            <li><strong>Auth0-to-WorkOS migration:</strong> migrate existing users with single and multiple account memberships, force controlled reauthentication, resolve safe linking and collision cases, and prove stable Arroba IDs, memberships, deployment access, billing ownership, audit attribution, rollback, and eventual Auth0 retirement.</li>
+            <li><strong>WorkOS organization handoff:</strong> builder publishes and sends a destination-bound claim; customer authenticates through WorkOS, selects or creates the mapped account, connects dependencies, invites users, activates, then revokes builder while calls continue.</li>
+            <li><strong>Enterprise identity lifecycle:</strong> configure a real test SSO connection and directory through Admin Portal, map groups to local roles, exercise JIT and pre-provisioned users, then suspend/remove the user and measure local session, control, and invocation revocation.</li>
+            <li><strong>Identity session parity:</strong> alternate login, organization switching, reauthentication, permission request, session revocation, and logout between web and TUI; add iOS and Android clients when available and prove the same selected account and bounded propagation without shared refresh tokens.</li>
+            <li><strong>Custom-domain authentication:</strong> authenticate on default and custom Agent App hosts through <code>auth.arroba.cloud</code>; test exact host return, one-time exchange, replay, open redirect, callback interruption, cookie scope, canonical switch, DNS drift, TLS failure and domain removal.</li>
+            <li><strong>Identity dependency outage:</strong> interrupt WorkOS hosted login/API, JWKS retrieval, and webhooks separately and together; prove running deployments and valid bounded local sessions continue, privileged identity-dependent changes fail closed, and recovery reconciles without duplicate or broadened access.</li>
+            <li><strong>Credential independence:</strong> verify builder credentials never appear in package/Cloud/runtime; customer connects each provider; rotate and revoke one binding while unrelated deployments continue.</li>
+            <li><strong>Release safety:</strong> propose a changed release, show contract/config diff, reject an incompatible release, promote compatible release, force health failure and automatically retain/restore prior healthy version.</li>
+            <li><strong>Audience isolation:</strong> exercise allowed, denied, expired, removed and forged identities across every transport; verify route roles and caller state cannot cross.</li>
+            <li><strong>Custom domain transport:</strong> bind temporary hostname, validate DNS/TLS, authenticate, stream all transports, switch canonical host, simulate DNS drift and remove binding.</li>
+            <li><strong>Runtime outage recovery:</strong> restart relay, ingress, Cloud API, runner, kernel/container and provider individually and in combinations; validate desired state reconciliation and clear in-flight outcomes.</li>
+            <li><strong>Egress containment:</strong> prove the publication revision has no direct public route, permitted TLS/443 reaches only the pinned validated address through its dual-homed gateway, every DNS/SNI/policy bypass is denied, gateway failure has no fallback and <code>legacy_unrestricted</code> cannot activate hosted.</li>
+            <li><strong>Resource and cleanup:</strong> record idle/active/peak CPU, RSS, disk, open files, processes, containers, and network on local machine, slices, and Hetzner; then remove every dedicated relay/kernel/server, temporary artifact, container, state/profile directory, and port allocation and prove the baseline returns.</li>
+          </ol>
+
+          <h3>Test layers and evidence</h3>
+          <ul>
+            <li><strong>Unit:</strong> policy, identity mapping/linking, event idempotency, state transitions, schema validation, contract compatibility, token hashing, host normalization, quota calculation.</li>
+            <li><strong>Contract:</strong> OSS package fixtures consumed by Cloud; protocol snapshots and version gates; provider-neutral identity fixtures; WorkOS callback/event fixtures; signed invocation envelope fixtures.</li>
+            <li><strong>Integration:</strong> authenticated API with real Postgres schema, WorkOS staging plus deterministic local IdP/webhooks, runner reconciliation, package store, Caddy routing and provider setup adapter.</li>
+            <li><strong>Security:</strong> cross-account/cross-caller probes, forged identity headers/tokens/events, login CSRF, callback replay, open redirect, identity-link collision, host confusion, path encoding, SSRF/egress, log/secret scans.</li>
+            <li><strong>Visual:</strong> desktop and mobile screenshots for WorkOS login/organization selection, invitation/claim, SSO/directory readiness, session/revocation states, compact Deployed sidebar, dedicated portfolio/detail route, every conditional wizard step, credentials, access, release diff, domains, and observability.</li>
+            <li><strong>Parity:</strong> drive the complete journey and every recovery case from web terminal and TUI terminal, not only matching read checks; compare normalized status, interactions, errors, recovery, and low-delay updates.</li>
+          </ul>
+
+          <h3>Resource measurements</h3>
+          <ul>
+            <li>Capture before/during/after process tree, CPU, RSS, disk, volume size, container count, open file descriptors, listening ports, and free host memory/disk.</li>
+            <li>Measure per idle deployment and per active invocation, then concurrency at 1, 5, 10 and the host-safe ceiling discovered during the drill.</li>
+            <li>Set drill abort thresholds from current local, slice, and Hetzner headroom before load; stop and clean up immediately if memory, disk, CPU, process, or container pressure could affect unrelated workloads.</li>
+            <li>Do not replace live capacity measurements with an old free-disk claim. Preserve the fixed harness floors: preflight needs at least 1.25 GiB available memory and 3 GiB available disk locally and remotely; runtime aborts below 1 GiB or 2.25 GiB; managed-slice preparation currently needs an effective 3.25 GiB including transient staging headroom.</li>
+            <li>Launch local relay, kernel, and server with unique state roots and process groups so teardown cannot target the user's active processes.</li>
+            <li>After each drill remove dedicated relay/kernel/server processes, containers, images no longer needed, profiles, package archives, temporary accounts/domains, volumes, logs, sockets, ports, and background processes.</li>
+            <li>Repeat ownership-scoped cleanup and the orphan scan a second time, then compare measurements with the captured baseline before declaring the suite clean.</li>
+          </ul>
+        </section>
+
+        <section id="delivery">
+          <p class="eyebrow">16 / Delivery discipline</p>
+          <h2>Keep both repositories reviewable and continuously recoverable.</h2>
+          <div class="review-gate">
+            <strong>Source worktrees are evidence, not the merge base</strong>
+            <p>Keep the existing <code>codex/deployed-workflows-platform</code> worktrees and branches intact as preserved feature sources. Do not rebase, force-push, reset, or resolve integration conflicts inside them. Create one fresh integration worktree per repository from current <code>origin/main</code>; main is the immutable behavioral truth onto which feature intent is adapted.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Active-agent freeze and dirty-file capture</strong>
+            <p>Do not freeze or merge while another agent may still write. Ask that agent to stop at a meaningful checkpoint, then inspect tracked modifications, staged changes, untracked files, and ignored drill output in both feature worktrees. Review every intended source/doc/test change, commit it in focused commits, and push it to the feature branch. Classify generated artifacts separately and clean or preserve only required evidence according to repository policy. Do not hide work in a stash or copy an unexplained dirty tree into integration. Record the final feature SHA, <code>git status --short</code>, upstream status, and artifact disposition for each repository.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Main-first merge procedure</strong>
+            <p>Fetch immediately before integration; create <code>codex/deployed-workflows-main-integration</code> from the exact current <code>origin/main</code> in each fresh worktree; record main and feature SHAs; and merge the frozen feature SHA with <code>--no-ff --no-commit</code>. Resolve each conflict semantically from the merge base, main, and feature versions. Preserve main's newer runtime reliability, history, prompt-draft, and terminal-projection behavior, then port the deployment capability around it. Never use blanket <code>ours</code> or <code>theirs</code> resolution.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Integration completeness audit</strong>
+            <p>After conflict resolution, compare merge-base-to-feature intent with the integrated tree, inventory feature-only migrations/protocol changes/routes/tests/docs, and confirm no accepted capability disappeared. Recalculate schema and protocol compatibility, generated clients, snapshots, and minimum-version gates. Before final merge, fetch main again, integrate any new main commits, rerun affected validation, and record the exact tested pair.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Identity work starts after deployment integration</strong>
+            <p>Land and accept Phase 2A first. Then create fresh WorkOS identity worktrees from the current mains and keep Auth0 available only as a bounded migration adapter. Do not entangle authentication migration with unresolved deployment merge conflicts or implement it on stale feature heads. OSS should remain unchanged unless a genuinely shared serialized protocol contract requires a versioned update.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Commit and push</strong>
+            <p>Commit and push every meaningful green increment in each affected repository, including the feature checkpoint, main adaptation, conflict-resolution groups, route, wizard orchestration, UI, tests, drills, and docs. Do not accumulate integration in one opaque commit, and do not push a partially resolved merge as if it were validated.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Cross-repo order</strong>
+            <p>Build and validate both integration branches together. When the serialized runtime contract changes, merge OSS contract/version/tests to main first; rebase is still forbidden, so merge the resulting OSS main into the OSS integration line if needed and update Cloud compatibility/fixtures against that landed SHA. Then merge Cloud. Run mixed-version rejection/compatibility drills and do not leave either main depending on unpushed local state.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Progress record</strong>
+            <p>After each phase update this plan or a companion progress document with commits, tests, screenshots, measurements, known failures, temporary infrastructure, external-service configuration status and cleanup evidence. Keep the <code>[ ]</code> task markers until evidence satisfies each item; record completion in version control rather than browser-local state.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Technical issues</strong>
+            <p>When a provider, relay, remote machine, slice, hosted runner or credential drill fails unexpectedly, compare with existing repository drills before inventing a new path. Preserve the kernel authority and provider-native contracts.</p>
+          </div>
+          <div class="review-gate">
+            <strong>Quality gate</strong>
+            <p>Run focused tests during development and the full affected OSS/Cloud suites before phase completion. Treat schema migrations, protocol changes, ingress policy and shared web projections as broad-blast-radius changes.</p>
+          </div>
+        </section>
+
+        <section id="launch">
+          <p class="eyebrow">17 / Launch gate</p>
+          <h2>Do not call it managed hosting until these statements are true.</h2>
+          <ul class="checklist">
+            <li>The compact Deployed sidebar and dedicated <code>/deployed</code> route expose the same authoritative portfolio/detail state and safe lifecycle commands as the TUI.</li>
+            <li>Draft-origin and publication-origin wizard paths are resumable and idempotent, clearly preserve the immutable publication boundary, and cannot create duplicate publications, releases, projects, environments, or activations after retries.</li>
+            <li>Ingress-only local deployment can be started/materialized and globally bound through supported web and TUI actions without an undocumented manual runtime command.</li>
+            <li>Every managed hosted release is an immutable verified package v3 contract admitted only to a compatible immutable runtime image; legacy packages cannot activate hosted.</li>
+            <li>The production runtime image pins and verifies supported official provider CLI bundles, and activation rejects undeclared, unsupported or substituted bundle references.</li>
+            <li>A customer can claim and operate a deployment without source-workflow or builder-account dependency.</li>
+            <li>WorkOS AuthKit is integrated behind a provider-neutral boundary; migrated users retain stable Arroba user/account/membership/deployment IDs, authorization, billing ownership and audit attribution through cutover and rollback.</li>
+            <li>Every WorkOS organization maps explicitly to one Arroba account, and all control/deployment authorization remains local; WorkOS claims alone cannot grant access.</li>
+            <li>Organization selection, invitation, account switching, SSO/Admin Portal setup, Directory Sync, role/group mapping, deprovisioning, ownership recovery and builder revocation pass with a real enterprise test connection.</li>
+            <li>Browser and browser-approved TUI/CLI login/session/logout/revocation pass without sharing WorkOS refresh tokens or cookies. The React Native iOS/Android PKCE contract passes in a minimal harness before native beta, and full client parity is a native-release gate rather than a blocker for the first web beta.</li>
+            <li>Default and custom-host Agent App login use the central trusted auth callback and one-time host-bound exchange; callback replay, arbitrary return URLs, cross-host cookies and cross-deployment confusion fail.</li>
+            <li>A WorkOS/JWKS/webhook outage does not stop healthy running deployments or valid bounded local invocation sessions; new identity-dependent privileged actions fail closed and reconciliation after recovery never broadens access.</li>
+            <li>WorkOS access/refresh tokens, authorization codes, webhook secrets and raw identity payloads never enter OSS protocol state, relay traffic, runtime containers, provider processes, logs, screenshots or support bundles.</li>
+            <li>Every control mutation is authenticated, authorized, account-scoped, CSRF-safe where relevant, and audited.</li>
+            <li>Every public route has an explicit audience policy; package roles are enforced across HTTP, SSE, WebSocket and MCP.</li>
+            <li>Provider and integration credential bytes are absent from packages, ordinary Cloud records, URLs, logs, traces, screenshots and support bundles.</li>
+            <li>Codex, Claude and OpenCode connect, expire, rotate and revoke with clear customer-visible status.</li>
+            <li>Claude callback setup uses one protocol-241 kernel interaction shared by web and TUI, with exact Cloud claim binding and no callback value in Cloud, relay plaintext, persistence, logs or screenshots.</li>
+            <li>Hosted egress uses a per-revision internal network and dedicated dual-homed CONNECT gateway; exact lowercase DNS/443, whole-answer validation, IP pinning and SNI equality pass while every direct or fallback path fails.</li>
+            <li>Default hostname and at least one real custom hostname pass DNS, TLS, auth, streaming, canonical and removal drills.</li>
+            <li>Immutable release promotion and rollback work without silently rolling back customer data or credentials.</li>
+            <li>Caller state is isolated; cross-account, cross-deployment and cross-caller security tests pass.</li>
+            <li>Budgets, rate limits, concurrency limits and emergency stop prevent unbounded provider or host spend.</li>
+            <li>Runner, ingress, kernel and Cloud restarts reconcile automatically; interrupted calls fail explicitly and new calls recover.</li>
+            <li>Every required journey and disruption has final-revision end-to-end evidence from both web terminal and TUI terminal; usage, health, errors, release, access, interactions and credential readiness remain consistent.</li>
+            <li>Designated Hetzner hosted-container, remote-machine, one live shared managed-slice and second-account collaborator matrices pass with screenshots and TUI state evidence.</li>
+            <li>Resource measurements establish safe host capacity and every drill leaves no dedicated relay/kernel/server, listener, process, container, profile, package, volume, or remote artifact on local, slice, or Hetzner resources.</li>
+            <li>Privacy, retention, export and deletion behavior are documented for logs, prompts, files, identities and deployment metadata.</li>
+            <li>The final external-service report is accepted and any truly production-critical service is configured.</li>
+          </ul>
+        </section>
+
+        <section id="decisions">
+          <p class="eyebrow">18 / Decisions and remaining choices</p>
+          <h2>WorkOS is selected; policy and commercial boundaries still need proof.</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Recommended default</th>
+                  <th>Revisit when</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Primary unit</td><td>Deployment Project with Agent App or Endpoint kind.</td><td>Customers need multiple independently owned apps under one deployment.</td></tr>
+                <tr><td>Ownership</td><td>Customer-owned after claim; builder gets optional maintainer.</td><td>Agency billing/support research shows builder-managed should be default for a segment.</td></tr>
+                <tr><td>Updates</td><td>Manual customer promotion; no automatic production mutation.</td><td>Signed update channels and customer policy can safely allow staged auto-promotion.</td></tr>
+                <tr><td>Runtime</td><td>Managed hosted container for handoff; local and export as alternatives.</td><td>Isolation/cost measurements justify another scheduler or runtime shape.</td></tr>
+                <tr><td>Region</td><td>One EU region initially, with explicit disclosure.</td><td>Paid demand or residency obligation supports another region.</td></tr>
+                <tr><td>App data</td><td>External database/connectors first; ephemeral files bounded.</td><td>Repeated customer use cases justify managed KV/blob/database primitives.</td></tr>
+                <tr><td>Custom domains</td><td>Caddy direct origin; no CDN dependency.</td><td>Measured domain volume, WAF, certificate burden or static latency justifies managed SaaS domains.</td></tr>
+                <tr><td>Auth vendor</td><td>WorkOS AuthKit behind a provider-neutral identity adapter; retain Auth0 only for the bounded migration window.</td><td>The staging proof fails a launch-critical security, React Native, SSO/directory, custom-domain, availability, residency, support or pricing requirement that cannot be mitigated.</td></tr>
+                <tr><td>Authorization authority</td><td>Arroba local users, accounts, memberships, deployment roles and audience policy.</td><td>Do not revisit merely to mirror vendor roles; external roles/groups remain policy inputs.</td></tr>
+                <tr><td>Enterprise packaging</td><td>WorkOS SSO, Directory Sync and Admin Portal enabled per paying customer/connection, with a local emergency revoke.</td><td>Validated pricing and target-customer demand determine plan limits and included connections.</td></tr>
+                <tr><td>Session policy</td><td>Short Arroba control/invocation sessions with rotation and explicit device revocation; running deployments do not depend on live WorkOS calls.</td><td>Security review and measured mobile/offline behavior set exact lifetimes and grace windows.</td></tr>
+                <tr><td>Auth domain</td><td>One central <code>auth.arroba.cloud</code> callback with one-time host-bound exchange for deployed custom domains.</td><td>WorkOS callback constraints or verified security testing require another centralized hostname pattern.</td></tr>
+                <tr><td>Mobile</td><td>Separate WorkOS iOS/Android applications using system browser, Authorization Code plus PKCE, validated app links and OS secure storage.</td><td>Native SDK behavior or platform policy requires a narrower implementation while preserving the session boundary.</td></tr>
+                <tr><td>WorkOS application cardinality</td><td>Shared applications per Arroba product surface and environment; deployment identity remains an Arroba policy/state binding.</td><td>A validated enterprise isolation/branding tier justifies dedicated applications or environments and their operational cost.</td></tr>
+                <tr><td>Identity operations</td><td>EU-compatible WorkOS environment/contract where available, bounded event retention, audited support and documented break-glass recovery.</td><td>Legal/privacy review, customer residency needs, SLA or incident-response terms require a different environment or provider.</td></tr>
+                <tr><td>Source/IP</td><td>Customer receives runtime rights to immutable release, not builder source by default.</td><td>Product/legal policy defines export, resale, revocation and marketplace licenses.</td></tr>
+                <tr><td>Billing</td><td>Customer pays Arroba and connects their provider account; builder-managed is explicit.</td><td>Bundled provider usage becomes legally and economically viable.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="footer">
+            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-241 callback path, service-key proof of possession, fail-closed egress, Deployed web product, matching TUI controls, customer handoff, audience access, provider credentials, domains, observability, and Agent App hosting are committed and technically accepted on the preserved feature revisions. Local, live-provider, hosted-fault, remote-machine, collaborator, exact-head managed-slice, and public DNS/TLS evidence is green with inspected visuals, resource guards, and cleanup. The dedicated route/wizard main-first integration and WorkOS identity extension are planned work and are not covered by that historical acceptance. Keep production activation conditional on exact-head revalidation, WorkOS production readiness and production-grade provider-secret custody; optional CDN, object store, mail, billing, or observability vendors must not block earlier implementation.
+          </div>
+        </section>
+      </article>
+    </div>
+
+    <script>
+      (() => {
+        const progress = document.getElementById("scroll-progress");
+        const update = () => {
+          const available = document.documentElement.scrollHeight - window.innerHeight;
+          const ratio = available > 0 ? window.scrollY / available : 0;
+          progress.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+        };
+        update();
+        window.addEventListener("scroll", update, { passive: true });
+        window.addEventListener("resize", update);
+      })();
+    </script>
+  </body>
+</html>

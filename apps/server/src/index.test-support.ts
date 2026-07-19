@@ -27,9 +27,11 @@ import {
 import {
   acquireAgentAppReplica,
   clearAgentAppReplicaPoolsForTests,
+  enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
 } from "./publication-agent-app-replicas.js"
 import { findWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
+import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
@@ -63,8 +65,10 @@ export {
   rememberAgentAppInvocationRoute,
   acquireAgentAppReplica,
   clearAgentAppReplicaPoolsForTests,
+  enqueueAgentAppReplicaDispatch,
   releaseAgentAppReplicaInvocation,
   findWorkflowRunByInvocationRequestId,
+  ensurePublicationRuntimeAttached,
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
   visibleWorkflowRun,

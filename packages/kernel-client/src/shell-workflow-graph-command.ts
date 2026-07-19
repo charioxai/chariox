@@ -31,6 +31,7 @@ import {
   updateWorkflowNodeInstructionsRequest,
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
+import { homeProxyGrantConfirmation } from "./extension-home-proxy-confirmation.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
 
@@ -224,11 +225,27 @@ export async function executeWorkflowNodeCommand(
     const name = hasExplicitWorkflow ? positional[5] : positional[4]
     const source = readExtensionSource(args)
     if ((extensionAction !== "grant" && extensionAction !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
-      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
+      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector> <name> [--from home|worker] [--environment <name>] [--credential <id>] [--allow read|write|destructive] [--confirm-home-proxy]" }
     }
     if (!source) return { ok: false, message: "workflow extension source must be home or worker" }
     const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
     if (!resolved.ok) return resolved
+    if (extensionAction === "grant" && kind !== "skill" && source === "home") {
+      const targetAgent = await resolveShellAgent(context, deps, resolved.agentRef)
+      if (!targetAgent.ok) return { ok: false, message: targetAgent.message }
+      const confirmation = homeProxyGrantConfirmation({
+        action: extensionAction,
+        kind,
+        name,
+        source,
+        agent: targetAgent.agent,
+        command: parsed.normalized,
+        confirmed: parsed.args.includes("--confirm-home-proxy"),
+      })
+      if (confirmation) {
+        return { ok: false, message: confirmation, data: { agent: targetAgent.agent } }
+      }
+    }
     const response = extensionAction === "grant"
       ? await deps.client.send(grantAgentExtensionRequest(
         context.workspace,

@@ -54,7 +54,10 @@ use connection_state::{
 };
 use daemon_requests::handle_daemon_request;
 use display_tunnel::handle_display_tunnel_open;
-use envelope_io::{encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope};
+use envelope_io::{
+    encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
+    send_outgoing_event_envelope,
+};
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::handle_incoming_envelope;
 #[cfg(test)]
@@ -108,7 +111,7 @@ const RELAY_OUTGOING_QUEUE_LIMIT: usize = 1024;
 const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_TOKEN_REFRESH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-const RELAY_HEARTBEAT_APP_WORK_TIMEOUT: Duration = Duration::from_millis(500);
+const RELAY_HEARTBEAT_APP_WORK_SLOW_THRESHOLD: Duration = Duration::from_millis(500);
 const REMOTE_INVENTORY_RELAY_TIMEOUT_MS: u64 = 10_000;
 const REMOTE_INVENTORY_KERNEL_PROBE_TIMEOUT_MS: u64 = 5_000;
 
@@ -150,6 +153,14 @@ impl RelayOutgoingSender {
         } else {
             self.priority_tx.try_send(envelope)
         }
+    }
+
+    async fn send_event(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        debug_assert!(relay_envelope_uses_event_lane(&envelope));
+        self.event_tx.send(envelope).await
     }
 }
 

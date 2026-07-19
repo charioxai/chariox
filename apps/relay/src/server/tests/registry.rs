@@ -1,5 +1,45 @@
 use super::*;
 
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use tokio::sync::mpsc;
+
+use crate::protocol::RelayConnectionRole;
+use crate::registry::PeerHandle;
+
+fn peer_addr(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+fn insert_live_registration(
+    registry: &mut RelayRegistry,
+    realm_id: &str,
+    registration: DaemonRegistration,
+    port: u16,
+) -> DaemonKey {
+    let key = DaemonKey::new(realm_id, registration.daemon_id.clone());
+    let addr = peer_addr(port);
+    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    registry.daemons.insert(key.clone(), registration.clone());
+    registry.peers.insert(
+        addr,
+        PeerHandle {
+            sender: sender.clone(),
+            role: RelayConnectionRole::Daemon,
+            realm_id: Some(realm_id.to_string()),
+            identity: None,
+            allowed_actions: Vec::new(),
+            daemon_registration: Some(registration),
+            client_daemon_key: None,
+        },
+    );
+    registry.daemon_peers.insert(key.clone(), addr);
+    registry
+        .route_index()
+        .set_daemon_sender(key.clone(), sender);
+    key
+}
+
 #[test]
 fn server_revocation_registry_gates_the_attached_verifier() {
     let mut claims = BTreeMap::new();
@@ -65,13 +105,17 @@ async fn server_binds_listener() {
 #[test]
 fn relay_aliases_differentiate_kernels_on_same_machine() {
     let mut registry = RelayRegistry::default();
-    registry.daemons.insert(
-        DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a"),
+    insert_live_registration(
+        &mut registry,
+        DEFAULT_RELAY_REALM_ID,
         test_registration("daemon-a", "shared-machine", "macOS", 10),
+        10_001,
     );
-    registry.daemons.insert(
-        DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b"),
+    insert_live_registration(
+        &mut registry,
+        DEFAULT_RELAY_REALM_ID,
         test_registration("daemon-b", "shared-machine", "macOS", 20),
+        10_002,
     );
 
     let machines = registry.live_machines();
@@ -112,12 +156,8 @@ fn relay_registry_scopes_metadata_and_aliases_by_realm() {
     realm_b.daemon_alias = Some("shared".to_string());
     realm_b.public_key = "public-key-b".to_string();
 
-    registry
-        .daemons
-        .insert(DaemonKey::new("realm-a", "daemon-a"), realm_a);
-    registry
-        .daemons
-        .insert(DaemonKey::new("realm-b", "daemon-b"), realm_b);
+    insert_live_registration(&mut registry, "realm-a", realm_a, 10_003);
+    insert_live_registration(&mut registry, "realm-b", realm_b, 10_004);
 
     assert_eq!(registry.daemon_count(), 2);
     assert_eq!(registry.live_machines_in_realm("realm-a").len(), 1);
@@ -159,9 +199,7 @@ fn relay_metadata_ignores_temporary_peer_transport_registrations() {
     temporary.available_providers = Vec::new();
     temporary.accepting_remote_leases = false;
 
-    registry
-        .daemons
-        .insert(DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel"), home);
+    insert_live_registration(&mut registry, DEFAULT_RELAY_REALM_ID, home, 10_005);
     registry.daemons.insert(
         DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel:peer-tmp:req-1"),
         temporary,

@@ -74,42 +74,44 @@ pub(crate) fn initialize_opencode_runtime(
         Some(opencode_permission_rules(run.permission_level()))
     };
     let resumable_session_id = run.resume_state().opencode_session_id().map(str::to_string);
-    let session_id = match resumable_session_id {
-        Some(session_id) if client.snapshot(&session_id).is_ok() => {
-            crate::logging::info_with_fields(
-                "daemon.provider.opencode",
-                "reusing opencode session",
-                serde_json::json!({
-                    "provider_run_id": run.id(),
-                    "provider_session_id": session_id.clone(),
-                }),
-            );
-            session_id
-        }
-        Some(previous_session_id) => {
-            crate::logging::warn_with_fields(
-                "daemon.provider.opencode",
-                "opencode session resume failed; creating a new session",
-                serde_json::json!({
-                    "provider_run_id": run.id(),
-                    "provider_session_id": previous_session_id,
-                }),
-            );
-            let session_id = client.create_session_with_retry(
-                session_permission.clone(),
-                OPENCODE_SESSION_CREATE_TIMEOUT,
-                OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
-            )?;
-            crate::logging::info_with_fields(
-                "daemon.provider.opencode",
-                "created opencode session",
-                serde_json::json!({
-                    "provider_run_id": run.id(),
-                    "provider_session_id": session_id.clone(),
-                }),
-            );
-            session_id
-        }
+    let (session_id, preexisting_messages) = match resumable_session_id {
+        Some(previous_session_id) => match client.snapshot(&previous_session_id) {
+            Ok(snapshot) => {
+                crate::logging::info_with_fields(
+                    "daemon.provider.opencode",
+                    "reusing opencode session",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "provider_session_id": previous_session_id.clone(),
+                    }),
+                );
+                (previous_session_id, snapshot.messages)
+            }
+            Err(_) => {
+                crate::logging::warn_with_fields(
+                    "daemon.provider.opencode",
+                    "opencode session resume failed; creating a new session",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "provider_session_id": previous_session_id,
+                    }),
+                );
+                let session_id = client.create_session_with_retry(
+                    session_permission.clone(),
+                    OPENCODE_SESSION_CREATE_TIMEOUT,
+                    OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+                )?;
+                crate::logging::info_with_fields(
+                    "daemon.provider.opencode",
+                    "created opencode session",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "provider_session_id": session_id.clone(),
+                    }),
+                );
+                (session_id, Vec::new())
+            }
+        },
         None => {
             let session_id = client.create_session_with_retry(
                 session_permission.clone(),
@@ -124,7 +126,7 @@ pub(crate) fn initialize_opencode_runtime(
                     "provider_session_id": session_id.clone(),
                 }),
             );
-            session_id
+            (session_id, Vec::new())
         }
     };
     let event_subscription = client.subscribe_events_with_retry(
@@ -139,8 +141,11 @@ pub(crate) fn initialize_opencode_runtime(
         }),
     );
 
+    let mut state = OpenCodeRuntimeState::new(base_url, session_id.clone(), event_subscription);
+    state.baseline_existing_messages(&preexisting_messages);
+
     Ok(OpenCodeRuntimeBinding {
-        state: OpenCodeRuntimeState::new(base_url, session_id.clone(), event_subscription),
+        state,
         selection,
         resume_state: ProviderResumeState::from_opencode_session_id(session_id),
     })

@@ -5,6 +5,8 @@
 
 use super::*;
 
+const PROMPT_SETTLEMENT_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 impl KernelRuntimeOwnedState {
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
@@ -81,24 +83,35 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
-                    if let Ok(session) = self.session_store.get_session(&finished.session_id) {
-                        if let Some(prompt) = self
-                            .prompt_state_owner
-                            .active_prompt_for_agent(&session, &finished.agent_id)
-                        {
-                            if prompt.workflow_run_id().is_some() {
-                                let _ = self.workflow_fail_provider_prompt(
-                                    &finished.session_id,
-                                    &prompt,
-                                    Some(&finished.provider_run_id),
-                                    &diagnostic,
-                                );
-                            }
+                    match self.settle_failed_local_prompt_without_advance(
+                        &finished.session_id,
+                        &finished.agent_id,
+                        &finished.prompt_id,
+                        &finished.provider_run_id,
+                        &diagnostic,
+                    ) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {}
+                        Err(settlement_error) => {
+                            crate::logging::warn_with_fields(
+                                "daemon.prompt_delivery",
+                                "failed to settle structured prompt dispatch failure",
+                                serde_json::json!({
+                                    "session_id": finished.session_id,
+                                    "agent_id": finished.agent_id,
+                                    "prompt_id": finished.prompt_id,
+                                    "provider_run_id": finished.provider_run_id,
+                                    "error": settlement_error.to_string(),
+                                }),
+                            );
+                            let _ = self.cancel_active_prompt_only(
+                                &finished.session_id,
+                                &finished.agent_id,
+                            );
+                            let _ = self.clear_prompt_activity(&finished.provider_run_id);
+                            let _ = self.session_snapshot(&finished.session_id);
                         }
                     }
-                    let _ =
-                        self.cancel_active_prompt_only(&finished.session_id, &finished.agent_id);
-                    let _ = self.session_snapshot(&finished.session_id);
                     let recipients = self
                         .attachment_store
                         .list_session_attachment_ids(&finished.session_id);
@@ -307,7 +320,7 @@ impl KernelRuntimeOwnedState {
             self.active_turns.start(turn);
             self.active_turns
                 .mark_awaiting_first_output(provider_run_id);
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -320,7 +333,7 @@ impl KernelRuntimeOwnedState {
         };
         self.active_turns.mark_streaming(provider_run_id);
         if tracked {
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -347,7 +360,7 @@ impl KernelRuntimeOwnedState {
             }
         }
         if self.prompt_activity.read().contains_key(provider_run_id) {
-            self.schedule_provider_output_deadline(provider_run_id);
+            self.schedule_provider_output_timeout(provider_run_id);
         }
     }
 
@@ -357,9 +370,7 @@ impl KernelRuntimeOwnedState {
             .write()
             .entry(provider_run_id.to_string())
             .and_modify(|state| {
-                state.last_output_at = Some(Instant::now());
-                state.saw_response_content = true;
-                state.settlement_requested = true;
+                state.request_settlement();
             })
             .or_insert(crate::app::ActivePromptState {
                 last_output_at: Some(Instant::now()),
@@ -367,10 +378,46 @@ impl KernelRuntimeOwnedState {
                 completion_recorded: false,
                 settlement_requested: true,
             });
-        self.schedule_provider_output_deadline(provider_run_id);
+        self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }
 
-    fn schedule_provider_output_deadline(&self, provider_run_id: &str) {
+    pub(super) fn schedule_provider_output_check_after(
+        &self,
+        provider_run_id: &str,
+        delay: std::time::Duration,
+    ) {
+        self.provider_output_deadlines.schedule(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(delay.as_millis() as u64),
+        );
+    }
+
+    pub(super) fn schedule_provider_output_check_when_quiet(
+        &self,
+        provider_run_id: &str,
+        quiet_for: std::time::Duration,
+    ) {
+        let delay = self
+            .prompt_activity
+            .read()
+            .get(provider_run_id)
+            .and_then(|state| state.last_output_at)
+            .map(|last_output_at| quiet_for.saturating_sub(last_output_at.elapsed()))
+            .unwrap_or(quiet_for);
+        self.schedule_provider_output_check_after(provider_run_id, delay);
+    }
+
+    pub(super) fn ensure_provider_output_timeout_scheduled(&self, provider_run_id: &str) {
+        if !self.prompt_activity.read().contains_key(provider_run_id) {
+            return;
+        }
+        self.provider_output_deadlines.schedule_if_absent(
+            provider_run_id,
+            crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),
+        );
+    }
+
+    fn schedule_provider_output_timeout(&self, provider_run_id: &str) {
         self.provider_output_deadlines.schedule(
             provider_run_id,
             crate::session::unix_epoch_ms().saturating_add(crate::app::PROVIDER_OUTPUT_TIMEOUT_MS),

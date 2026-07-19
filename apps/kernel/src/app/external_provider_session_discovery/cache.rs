@@ -67,6 +67,9 @@ pub(super) fn remember_provider_transcript_path_with_fingerprint(
             existing.path == path && fingerprint.len >= existing.last_observed_offset
         });
         let observed_turns = previous.and_then(|existing| existing.observed_turns.clone());
+        let observed_len = previous.and_then(|existing| existing.observed_len);
+        let observed_modified_at_ms =
+            previous.and_then(|existing| existing.observed_modified_at_ms);
         let discovery_record = previous.and_then(|existing| {
             (existing.len == fingerprint.len
                 && existing.modified_at_ms == fingerprint.modified_at_ms)
@@ -86,6 +89,8 @@ pub(super) fn remember_provider_transcript_path_with_fingerprint(
                 modified_at_ms: fingerprint.modified_at_ms,
                 discovery_record,
                 last_observed_offset,
+                observed_len,
+                observed_modified_at_ms,
                 observed_turns,
             },
         );
@@ -106,10 +111,35 @@ pub(super) fn cached_provider_observed_turns(
         .cloned()?;
     (entry.provider_session_id == provider_session_id
         && entry.path == path
-        && entry.len == fingerprint.len
-        && entry.modified_at_ms == fingerprint.modified_at_ms)
-        .then(|| entry.observed_turns)
-        .flatten()
+        && entry.observed_len == Some(fingerprint.len)
+        && entry.observed_modified_at_ms == Some(fingerprint.modified_at_ms))
+    .then(|| entry.observed_turns)
+    .flatten()
+}
+
+pub(super) fn provider_observed_transcript_needs_refresh(
+    provider: &str,
+    provider_session_id: &str,
+) -> bool {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let entry = provider_transcript_path_index()
+        .lock()
+        .ok()
+        .and_then(|index| index.get(&key).cloned());
+    let Some(entry) = entry else {
+        return true;
+    };
+    let fingerprint = if provider == "opencode" && is_opencode_sqlite_db(&entry.path) {
+        opencode_sqlite_session_fingerprint(&entry.path, provider_session_id)
+    } else {
+        provider_transcript_file_fingerprint(&entry.path)
+    };
+    let Some(fingerprint) = fingerprint else {
+        return true;
+    };
+    entry.observed_turns.is_none()
+        || entry.observed_len != Some(fingerprint.len)
+        || entry.observed_modified_at_ms != Some(fingerprint.modified_at_ms)
 }
 
 pub(super) fn cached_provider_discovery_record_for_path(
@@ -209,6 +239,8 @@ pub(super) fn remember_provider_observed_turns(
                 modified_at_ms: fingerprint.modified_at_ms,
                 discovery_record,
                 last_observed_offset: fingerprint.len,
+                observed_len: Some(fingerprint.len),
+                observed_modified_at_ms: Some(fingerprint.modified_at_ms),
                 observed_turns: Some(turns),
             },
         );
@@ -229,6 +261,9 @@ pub(super) fn remember_provider_discovery_record(
             existing.path == path && fingerprint.len >= existing.last_observed_offset
         });
         let observed_turns = previous.and_then(|existing| existing.observed_turns.clone());
+        let observed_len = previous.and_then(|existing| existing.observed_len);
+        let observed_modified_at_ms =
+            previous.and_then(|existing| existing.observed_modified_at_ms);
         let last_observed_offset = observed_turns
             .as_ref()
             .and_then(|_| previous.map(|existing| existing.last_observed_offset))
@@ -242,6 +277,8 @@ pub(super) fn remember_provider_discovery_record(
                 modified_at_ms: fingerprint.modified_at_ms,
                 discovery_record: Some(record.clone()),
                 last_observed_offset,
+                observed_len,
+                observed_modified_at_ms,
                 observed_turns,
             },
         );

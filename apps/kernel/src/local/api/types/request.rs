@@ -166,6 +166,8 @@ pub enum LocalDaemonRequest {
     SemanticSearchRecall(SemanticSearchRecallRequest),
     PollRuntimeNotices(PollRuntimeNoticesRequest),
     RespondToInteraction(RespondToInteractionRequest),
+    ArmDeploymentCredentialEnrollment(ArmDeploymentCredentialEnrollmentRequest),
+    RequestCredentialEnrollmentInteraction(RequestCredentialEnrollmentInteractionRequest),
     RequestNativeProviderInteraction(RequestNativeProviderInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
     SubmitPrompts(SubmitPromptsRequest),

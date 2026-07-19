@@ -78,13 +78,13 @@ impl KernelRuntimeState {
                     )
                 })
                 .await?;
-            if outcome.needs_deferred_headless_drain {
-                // The final claude-headless transcript flush can trail the Stop
-                // event; wait for it off the app lock so the whole daemon stays
-                // responsive, then drain once more.
+            if outcome.needs_deferred_transcript_drain {
+                // The final Claude transcript flush can trail the Stop event;
+                // wait for it off the app lock so the whole daemon stays
+                // responsive, then drain once more before settling.
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 self.with_app_side_effect(|app| {
-                    app.finish_deferred_claude_native_headless_stop_for_runtime(
+                    app.finish_deferred_claude_native_stop_for_runtime(
                         session_id,
                         provider_run_id,
                         &provider_run,
@@ -100,6 +100,11 @@ impl KernelRuntimeState {
         {
             Ok(chunks) => chunks,
             Err(error) => {
+                if provider_run.state() == crate::provider::ProviderRunState::Starting
+                    && matches!(error, DaemonError::PtyProcessNotFound { .. })
+                {
+                    return Ok(Vec::new());
+                }
                 if self
                     .reconcile_provider_run_exit(session_id, provider_run_id)
                     .await?
@@ -129,12 +134,18 @@ impl KernelRuntimeState {
                 .await?;
             }
         }
+        let uses_transient_native_terminal =
+            provider_run_uses_transient_native_terminal(&provider_run);
         if !chunks.is_empty() {
-            if crate::provider::provider_run_is_claude_headless(&provider_run) {
+            if crate::provider::provider_run_is_claude_headless(&provider_run)
+                || uses_transient_native_terminal
+            {
                 owned.note_prompt_output(provider_run_id);
             } else {
                 owned.note_prompt_response_content(provider_run_id);
             }
+            owned
+                .schedule_provider_output_check_after(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR);
         }
         let terminal_failure = crate::provider::classify_provider_terminal_failure_text(
             provider_run.adapter_key(),
@@ -153,26 +164,35 @@ impl KernelRuntimeState {
             let terminal_outputs = chunks
                 .into_iter()
                 .map(|chunk| {
-                    let history_text = String::from_utf8_lossy(&chunk.bytes).into_owned();
-                    history_entries.push(
-                        crate::history::SessionHistoryEntry::provider_output(
-                            session_id,
-                            provider_run_id,
-                            agent_id.as_deref(),
-                            crate::terminal::TerminalOutputKind::ProviderOutput,
-                            None,
-                            history_text.clone(),
-                        )
-                        .with_prompt_origin(prompt_metadata.prompt_origin)
-                        .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-                    );
+                    let history_text = (!uses_transient_native_terminal)
+                        .then(|| String::from_utf8_lossy(&chunk.bytes).into_owned());
+                    if let Some(history_text) = history_text.as_ref() {
+                        history_entries.push(
+                            crate::history::SessionHistoryEntry::provider_output(
+                                session_id,
+                                provider_run_id,
+                                agent_id.as_deref(),
+                                crate::terminal::TerminalOutputKind::ProviderOutput,
+                                None,
+                                history_text.clone(),
+                            )
+                            .with_prompt_origin(prompt_metadata.prompt_origin)
+                            .with_source_attachment_id(
+                                prompt_metadata.source_attachment_id.clone(),
+                            ),
+                        );
+                    }
                     super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                         provider_run_id: provider_run_id.to_string(),
                         agent_id: agent_id.clone(),
-                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        kind: if uses_transient_native_terminal {
+                            crate::terminal::TerminalOutputKind::ProviderTerminal
+                        } else {
+                            crate::terminal::TerminalOutputKind::ProviderOutput
+                        },
                         merge_key: None,
                         bytes: chunk.bytes,
-                        history_text: Some(history_text),
+                        history_text,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -201,6 +221,7 @@ impl KernelRuntimeState {
                 let _ = self
                     .settle_owned_pty_prompt_if_quiet(session_id, provider_run_id)
                     .await?;
+                owned.ensure_provider_output_timeout_scheduled(provider_run_id);
             }
         }
         Ok(records)
@@ -212,13 +233,16 @@ impl KernelRuntimeState {
         provider_run_id: &str,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
         let owned = &self.owned;
-        if !owned.prompt_output_quiet_after_response(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR) {
+        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if !provider_run_allows_quiet_pty_settlement(&provider_run)
+            || !owned
+                .prompt_output_quiet_after_response(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR)
+        {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
                 started_next_prompt: false,
             });
         }
-        let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Ok(crate::app::ProviderRunExitSessionSummary {
                 had_active_prompt: false,
@@ -392,6 +416,19 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+fn provider_run_uses_transient_native_terminal(
+    provider_run: &crate::provider::RuntimeProviderRun,
+) -> bool {
+    crate::provider::provider_run_uses_claude_native_bridge(provider_run)
+        && !crate::provider::provider_run_is_claude_headless(provider_run)
+}
+
+pub(super) fn provider_run_allows_quiet_pty_settlement(
+    provider_run: &crate::provider::RuntimeProviderRun,
+) -> bool {
+    !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
 }
 
 fn first_output_timeout_candidates(

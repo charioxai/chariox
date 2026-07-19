@@ -13,6 +13,17 @@ pub(crate) struct ActivePromptState {
     pub(crate) settlement_requested: bool,
 }
 
+impl ActivePromptState {
+    pub(crate) fn request_settlement(&mut self) {
+        if self.settlement_requested {
+            return;
+        }
+        self.last_output_at = Some(Instant::now());
+        self.saw_response_content = true;
+        self.settlement_requested = true;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveTurnPhase {
     Accepted,
@@ -381,6 +392,27 @@ impl PromptWorkspaceClaimStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_settlement_requests_preserve_the_quiet_window() {
+        let mut activity = ActivePromptState {
+            last_output_at: None,
+            saw_response_content: false,
+            completion_recorded: true,
+            settlement_requested: false,
+        };
+
+        activity.request_settlement();
+        let first_requested_at = activity
+            .last_output_at
+            .expect("first settlement request should start the quiet window");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        activity.request_settlement();
+
+        assert_eq!(activity.last_output_at, Some(first_requested_at));
+        assert!(activity.saw_response_content);
+        assert!(activity.settlement_requested);
+    }
 
     #[test]
     fn active_turn_start_does_not_infer_external_metadata_from_prompt_ids() {

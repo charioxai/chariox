@@ -364,6 +364,56 @@
         ]
       },
       {
+        "id": "workflow-publication",
+        "label": "publication",
+        "description": "Create, inspect, export, configure, or disable workflow publications",
+        "value": "/workflow publication ",
+        "searchAliases": [
+          "publish workflow",
+          "export publication",
+          "publication package",
+          "deploy workflow"
+        ],
+        "children": [
+          {
+            "id": "workflow-publication-list",
+            "label": "list",
+            "description": "List workflow publications in the current session",
+            "value": "/workflow publication list"
+          },
+          {
+            "id": "workflow-publication-create",
+            "label": "create",
+            "description": "Publish a workflow endpoint; append the workflow, endpoint, and optional alias",
+            "value": "/workflow publication create "
+          },
+          {
+            "id": "workflow-publication-show",
+            "label": "show",
+            "description": "Show a workflow publication; append its reference",
+            "value": "/workflow publication show "
+          },
+          {
+            "id": "workflow-publication-export",
+            "label": "export",
+            "description": "Export a portable workflow publication package; append its reference and output directory",
+            "value": "/workflow publication export "
+          },
+          {
+            "id": "workflow-publication-config",
+            "label": "config",
+            "description": "Show, set, or clear provider bindings in an exported publication package",
+            "value": "/workflow publication config "
+          },
+          {
+            "id": "workflow-publication-disable",
+            "label": "disable",
+            "description": "Disable a workflow publication; append its reference",
+            "value": "/workflow publication disable "
+          }
+        ]
+      },
+      {
         "id": "workflow-registry",
         "label": "registry",
         "description": "List, register, load, run, or delete reusable workflows",

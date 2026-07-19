@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::process::{stop_child, ClaudeRuntimeMessage};
 use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
+use crate::provider::claude::ClaudeMcpConfigFile;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClaudeRunSelection {
@@ -28,6 +29,7 @@ pub struct ClaudeRuntimeState {
     pub(super) working_directory: Option<PathBuf>,
     pub(super) context_file: Option<PathBuf>,
     pub(super) settings_file: Option<PathBuf>,
+    pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
     pub(super) child: Child,
     pub(super) stdin: ChildStdin,
     pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
@@ -55,6 +57,10 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             .field("working_directory", &self.working_directory)
             .field("context_file", &self.context_file)
             .field("settings_file", &self.settings_file)
+            .field(
+                "mcp_config_file",
+                &self.mcp_config_file.as_ref().map(ClaudeMcpConfigFile::path),
+            )
             .field("active_model", &self.active_model)
             .field("active_variant", &self.active_variant)
             .field("active_execution_mode", &self.active_execution_mode)

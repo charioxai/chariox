@@ -84,7 +84,7 @@ pub(super) fn import_external_provider_agent(
     let external =
         external_session_or_refresh(app, runtime_state, store, &request.external_session_id)?;
     ensure_external_session_is_attachable(&external)?;
-    let session = app.sessions().get_session(&request.session_id)?;
+    let session = app.session_state_store().get_session(&request.session_id)?;
     let provider = request
         .provider
         .unwrap_or_else(|| external.provider.clone());

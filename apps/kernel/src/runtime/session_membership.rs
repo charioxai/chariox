@@ -1,6 +1,9 @@
 use crate::error::DaemonError;
-use crate::local::LocalDaemonRequest;
-use crate::runtime::command::{KernelCallerKind, KernelCommand};
+use crate::local::{
+    deployment_credential_enrollment_interaction_id, LocalDaemonRequest,
+    DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX,
+};
+use crate::runtime::command::{KernelCallerKind, KernelCommand, KernelCommandSource};
 use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::DEFAULT_LOCAL_USER_ID;
@@ -32,6 +35,14 @@ pub(crate) async fn authorize_session_membership(
     command: &KernelCommand,
     request: &LocalDaemonRequest,
 ) -> Result<String, DaemonError> {
+    if matches!(command.caller.caller_kind, KernelCallerKind::HostedService)
+        && !hosted_service_request_is_authorized(command, request)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "authorize hosted service request",
+            message: "hosted service identity is not authorized for this request".to_string(),
+        });
+    }
     if is_implicit_local_session_caller(command) {
         return Ok(DEFAULT_LOCAL_USER_ID.to_string());
     }
@@ -98,6 +109,33 @@ pub(crate) async fn authorize_session_membership(
             ensure_session_member(runtime_state, session_projection, &session_id, &user_id).await?;
             Ok(user_id)
         }
+    }
+}
+
+fn hosted_service_request_is_authorized(
+    command: &KernelCommand,
+    request: &LocalDaemonRequest,
+) -> bool {
+    if command.source != KernelCommandSource::RelayClient {
+        return false;
+    }
+    match request {
+        LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_) => true,
+        LocalDaemonRequest::RespondToInteraction(request) => {
+            let Some(enrollment_id) = command
+                .caller
+                .caller_id
+                .strip_prefix(DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX)
+                .filter(|enrollment_id| !enrollment_id.is_empty())
+            else {
+                return false;
+            };
+            request.choice_id == "cancel"
+                && request.custom_reply.is_none()
+                && request.interaction_id
+                    == deployment_credential_enrollment_interaction_id(enrollment_id)
+        }
+        _ => false,
     }
 }
 

@@ -6,6 +6,7 @@ import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
 import {
+  PROVIDER_TERMINAL_OUTPUT_KIND,
   terminalRecordIsPassiveExternalProviderTelemetry,
   terminalRecordPromptHistoryText,
   terminalRecordProviderStatusShouldRender,
@@ -15,6 +16,25 @@ import {
   terminalRecordTranscriptMetadata,
   transcriptEntryWithTerminalMetadata,
 } from "./terminal-record-transcript.js"
+
+test("provider terminal bytes stay outside semantic transcript and activity", () => {
+  const projection = terminalRecordTranscriptProjection({
+    kind: PROVIDER_TERMINAL_OUTPUT_KIND,
+  }, "\u001b[2JClaude fullscreen redraw", {
+    isProviderIdleStatus: () => false,
+    shouldRenderProviderStatus: () => true,
+  })
+
+  assert.equal(projection.transcriptRole, null)
+  assert.equal(projection.transcriptText, "")
+  assert.equal(projection.startsStreaming, false)
+  assert.equal(projection.marksAgentBusy, false)
+  assert.equal(projection.updatesProviderActivity, false)
+  assert.equal(projection.appendsLiveTranscript, false)
+  assert.equal(projection.renderInAgentPane, false)
+  assert.equal(projection.append, false)
+  assert.equal(projection.replace, false)
+})
 
 test("terminalRecordTranscriptMetadata projects prompt and source attachment identity", () => {
   assert.deepEqual(terminalRecordTranscriptMetadata({

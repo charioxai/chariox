@@ -137,6 +137,7 @@ export function hydrateSessionHistoryTranscriptEntries(
       role,
       chunk,
       mergeKey: options.mergeKey,
+      historyEntryIndex: options.historyEntryIndex,
       sourceText: options.sourceText,
       nextEntryId: nextId + 1,
       currentTurnId: options.turnId ?? null,
@@ -281,16 +282,27 @@ export function hydrateSessionHistoryOutlineAgentEntries(
     }
     const externalMetadata = outlineTurnExternalMetadata(turn)
     const promptMetadata = sessionHistoryOutlineTurnPromptMetadata(turn)
-    const promptEntries = hydrateSessionHistoryPageEntriesForTurn([turn.user_prompt], turnId, turn.prompt_id ?? null)
-    for (const entry of promptEntries) {
-      entries.push(applyOutlineTurnMetadata(
-        applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs, lifecycle),
-        externalMetadata,
-        promptMetadata,
-      ))
+    const appendPageEntries = (pageEntries: SessionHistoryPageEntry[]) => {
+      const hydratedEntries = hydrateSessionHistoryPageEntriesForTurn(
+        pageEntries,
+        turnId,
+        turn.prompt_id ?? null,
+      )
+      for (const entry of hydratedEntries) {
+        entries.push(applyOutlineTurnMetadata(
+          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs, lifecycle),
+          externalMetadata,
+          promptMetadata,
+        ))
+      }
     }
+
+    appendPageEntries([turn.user_prompt])
+    let adjacentPageEntries: SessionHistoryPageEntry[] = []
     for (const item of orderedSessionHistoryOutlineItems(turn)) {
       if (item.kind === "blob") {
+        appendPageEntries(adjacentPageEntries)
+        adjacentPageEntries = []
         entries.push(applyOutlineTurnMetadata(
           applyOutlineTurnLifecycleMetadata(
             outlineBlobTranscriptEntry(item.blob, agent.agent_id, turnId, turn.prompt_id ?? null, ++nextId),
@@ -302,15 +314,9 @@ export function hydrateSessionHistoryOutlineAgentEntries(
         ))
         continue
       }
-      const hydratedEntries = hydrateSessionHistoryPageEntriesForTurn([item.entry], turnId, turn.prompt_id ?? null)
-      for (const entry of hydratedEntries) {
-        entries.push(applyOutlineTurnMetadata(
-          applyOutlineTurnLifecycleMetadata({ ...entry, id: ++nextId }, completedAtMs, lifecycle),
-          externalMetadata,
-          promptMetadata,
-        ))
-      }
+      adjacentPageEntries.push(item.entry)
     }
+    appendPageEntries(adjacentPageEntries)
   })
 
   return applyTranscriptDisplayState(entries, [], activeTurnId) as SessionHistoryTranscriptEntry[]

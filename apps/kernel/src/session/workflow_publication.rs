@@ -188,6 +188,10 @@ impl WorkflowPublicationDefinition {
         &self.created_by_user_id
     }
 
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
     pub fn status(&self) -> Option<&str> {
         self.status.as_deref()
     }

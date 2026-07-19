@@ -166,19 +166,25 @@ pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
 pub(crate) async fn list_relay_leased_agent_extension_catalog(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    requesting_home_kernel_id: &str,
 ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
     runtime_state
-        .list_relay_leased_agent_extension_catalog(leased_agent_id)
+        .list_relay_leased_agent_extension_catalog(leased_agent_id, requesting_home_kernel_id)
         .await
 }
 
 pub(crate) async fn update_relay_leased_agent_worker_extension_grants(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
+    requesting_home_kernel_id: &str,
     grants: Vec<crate::extension::ExtensionGrant>,
 ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
     runtime_state
-        .update_relay_leased_agent_worker_extension_grants(leased_agent_id, grants)
+        .update_relay_leased_agent_worker_extension_grants(
+            leased_agent_id,
+            requesting_home_kernel_id,
+            grants,
+        )
         .await
 }
 

@@ -211,20 +211,20 @@ impl KernelRuntimeOwnedState {
                     &context.workflow_node_run_id,
                 )?;
         }
+        let output_valid = warning.is_none();
         Ok((
             crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
                     "submitted": true,
-                    "valid": warning.is_none(),
+                    "valid": output_valid,
                     "warning": warning,
                     "workflow_run_id": workflow_run.id(),
                     "workflow_node_run_id": context.workflow_node_run_id,
-                    "next_action": if is_final {
-                        "Final workflow run output was submitted. If it is valid with no warning, finish this same workflow turn now."
-                    } else {
-                        "Intermediate workflow run output was submitted as a user-visible event. Continue this same workflow turn. You may submit more intermediate outputs if useful. Before stopping, either emit the required final fenced JSON handoff or submit final workflow run output if authorized."
-                    },
+                    "next_action": workflow_output_submission_next_action(
+                        is_final,
+                        output_valid,
+                    ),
                 }),
             },
             dispatches,
@@ -385,5 +385,39 @@ impl KernelRuntimeOwnedState {
         }
         dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         Ok(dispatches)
+    }
+}
+
+fn workflow_output_submission_next_action(is_final: bool, valid: bool) -> &'static str {
+    match (is_final, valid) {
+        (true, true) => {
+            "Final workflow run output was submitted and validated. Finish this same workflow turn now."
+        }
+        (true, false) => {
+            "Final workflow run output failed validation. Revise it and call validate_and_submit_workflow_run_output again. Do not finish this turn until the tool returns valid: true with no warning."
+        }
+        (false, _) => {
+            "Intermediate workflow run output was submitted as a user-visible event. Continue this same workflow turn. You may submit more intermediate outputs if useful. Before stopping, either emit the required final fenced JSON handoff or submit final workflow run output if authorized."
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workflow_output_submission_next_action;
+
+    #[test]
+    fn invalid_final_output_submission_requires_revision() {
+        let action = workflow_output_submission_next_action(true, false);
+        assert!(action.contains("failed validation"));
+        assert!(action.contains("call validate_and_submit_workflow_run_output again"));
+        assert!(action.contains("Do not finish"));
+    }
+
+    #[test]
+    fn valid_final_output_submission_allows_turn_completion() {
+        let action = workflow_output_submission_next_action(true, true);
+        assert!(action.contains("submitted and validated"));
+        assert!(action.contains("Finish this same workflow turn"));
     }
 }

@@ -1,4 +1,13 @@
 import { randomUUID } from "node:crypto"
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs"
 
 import WebSocket from "ws"
 
@@ -48,11 +57,147 @@ const KERNEL_RECONNECT_MAX_DELAY_MS = 5_000
 const KERNEL_RECONNECT_JITTER_MS = 250
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
+const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"
 export { LocalIpcError } from "./local-ipc-error.js"
 
+type BoundKernelLocalAuthCredential = {
+  endpoint: string
+  token: string
+}
+
+const hostedPublicationEnvironmentNames = [
+  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL",
+  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
+  "ARROBA_PUBLICATION_CLOUD_API_URL",
+  "ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID",
+  "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY",
+] as const
+
+let kernelLocalAuthCredentialFromEnvironment: BoundKernelLocalAuthCredential | undefined
+
+export function consumeKernelLocalAuthTokenFromEnv(endpoint = configuredLocalKernelEndpoint()): string | undefined {
+  const rawEnvironmentToken = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN
+  const rawTokenFile = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
+  delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN
+  delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
+  if (rawEnvironmentToken !== undefined && rawTokenFile !== undefined) {
+    throw new Error("kernel local auth token and token file cannot both be configured")
+  }
+  if (kernelLocalAuthCredentialFromEnvironment) {
+    if (rawEnvironmentToken !== undefined || rawTokenFile !== undefined) {
+      throw new Error("kernel local auth credential cannot be reconfigured after consumption")
+    }
+    const canonicalEndpoint = requireCanonicalLoopbackKernelEndpoint(endpoint)
+    if (canonicalEndpoint !== kernelLocalAuthCredentialFromEnvironment.endpoint) {
+      throw new Error(
+        `kernel local auth credential is bound to kernel endpoint ${kernelLocalAuthCredentialFromEnvironment.endpoint}`,
+      )
+    }
+    return kernelLocalAuthCredentialFromEnvironment.token
+  }
+  if (rawEnvironmentToken === undefined && rawTokenFile === undefined) return undefined
+
+  const canonicalEndpoint = requireCanonicalLoopbackKernelEndpoint(endpoint)
+  const environmentToken = rawEnvironmentToken?.trim()
+  const tokenFile = rawTokenFile?.trim()
+  if (rawEnvironmentToken !== undefined && !environmentToken) {
+    throw new Error("kernel local auth token must not be empty")
+  }
+  if (rawTokenFile !== undefined && !tokenFile) {
+    throw new Error("kernel local auth token file path must not be empty")
+  }
+  if (environmentToken && isHostedPublicationGateway()) {
+    throw new Error("hosted publication gateways require a one-shot kernel local auth token file")
+  }
+  const token = environmentToken ?? readPrivateKernelLocalAuthToken(tokenFile!)
+  kernelLocalAuthCredentialFromEnvironment = { endpoint: canonicalEndpoint, token }
+  return token
+}
+
+function readPrivateKernelLocalAuthToken(path: string): string {
+  let descriptor: number
+  try {
+    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  } catch (error) {
+    throw new Error(`kernel local auth token file could not be opened safely: ${String(error)}`)
+  }
+  try {
+    const metadata = fstatSync(descriptor)
+    const currentUid = process.getuid?.()
+    if (
+      !metadata.isFile()
+      || (metadata.mode & 0o077) !== 0
+      || (currentUid !== undefined && metadata.uid !== currentUid)
+      || metadata.nlink !== 1
+      || metadata.size > MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES
+    ) {
+      throw new Error(
+        "kernel local auth token file must be a bounded, single-link owned regular file with mode 0600",
+      )
+    }
+    const pathMetadata = lstatSync(path)
+    if (
+      !pathMetadata.isFile()
+      || pathMetadata.isSymbolicLink()
+      || pathMetadata.dev !== metadata.dev
+      || pathMetadata.ino !== metadata.ino
+    ) {
+      throw new Error("kernel local auth token file changed while it was being consumed")
+    }
+    unlinkSync(path)
+    if (fstatSync(descriptor).nlink !== 0) {
+      throw new Error("kernel local auth token file was not consumed from its validated descriptor")
+    }
+    const token = readFileSync(descriptor, "utf8").trim()
+    if (!token) throw new Error("kernel local auth token file must not be empty")
+    return token
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+function requireCanonicalLoopbackKernelEndpoint(endpoint: string): string {
+  const canonicalEndpoint = canonicalLoopbackKernelEndpoint(endpoint)
+  if (!canonicalEndpoint) {
+    throw new Error("kernel local auth credentials require an exact canonical loopback kernel endpoint")
+  }
+  return canonicalEndpoint
+}
+
+function canonicalLoopbackKernelEndpoint(endpoint: string): string | null {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return null
+  }
+  if (
+    url.protocol !== "ws:"
+    || (url.hostname !== "127.0.0.1" && url.hostname !== "[::1]")
+    || url.username !== ""
+    || url.password !== ""
+    || url.pathname !== "/"
+    || url.search !== ""
+    || url.hash !== ""
+  ) {
+    return null
+  }
+  return url.href
+}
+
+function configuredLocalKernelEndpoint() {
+  return process.env.ARROBA_KERNEL_URL?.trim()
+    || `ws://${process.env.ARROBA_KERNEL_HOST?.trim() || "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT?.trim() || "43118"}`
+}
+
+function isHostedPublicationGateway() {
+  return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
+}
+
 type LocalIpcClientOptions = {
+  localAuthToken?: string | undefined
   relayAuthToken?: string | undefined
   targetDaemonId?: string | undefined
   targetDaemonAlias?: string | undefined
@@ -67,6 +212,8 @@ type LocalIpcClientOptions = {
 
 export class LocalIpcClient {
   readonly socketPath: string
+  private readonly localAuthEndpoint: string | null
+  private readonly localAuthToken: string | null
   private readonly relayAuthToken: string | null
   private readonly relayTarget: RelayTarget | null
   private controlWebsocket: WebSocket | null = null
@@ -116,6 +263,32 @@ export class LocalIpcClient {
       10,
     )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
+    const explicitLocalAuthToken = options.localAuthToken?.trim()
+    if (options.localAuthToken !== undefined && !explicitLocalAuthToken) {
+      throw new Error("kernel local auth token must not be empty")
+    }
+    if (explicitLocalAuthToken && (
+      process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN !== undefined
+      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
+    )) {
+      throw new Error("explicit and environment kernel local auth credentials cannot both be configured")
+    }
+    if (this.relayAuthToken && (
+      explicitLocalAuthToken
+      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN !== undefined
+      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
+    )) {
+      throw new Error("kernel local auth credentials cannot be used with relay transport")
+    }
+    if (explicitLocalAuthToken && isHostedPublicationGateway()) {
+      throw new Error("hosted publication gateways require a one-shot kernel local auth token file")
+    }
+    this.localAuthToken = this.relayAuthToken
+      ? null
+      : explicitLocalAuthToken ?? consumeKernelLocalAuthTokenFromEnv(endpoint) ?? null
+    this.localAuthEndpoint = this.localAuthToken
+      ? requireCanonicalLoopbackKernelEndpoint(endpoint)
+      : null
     this.relayTarget = this.relayAuthToken
       ? {
         daemon_id: options.targetDaemonId?.trim() || null,
@@ -453,7 +626,11 @@ export class LocalIpcClient {
     }
 
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
-      const socket = new WebSocket(this.socketPath)
+      const socket = this.localAuthToken && this.localAuthEndpoint && !this.isRelayMode()
+        ? new WebSocket(this.localAuthEndpoint, {
+            headers: { authorization: `Bearer ${this.localAuthToken}` },
+          })
+        : new WebSocket(this.socketPath)
       let settled = false
       this.setConnectingWebSocket(lane, socket)
 
@@ -469,7 +646,15 @@ export class LocalIpcClient {
         reject(new LocalIpcError(operation, formatTransportError(error, this.socketPath), code, retryable))
       }
 
-      const handleConnectError = (error: unknown) => fail("connect kernel websocket", error, "connection_closed", true)
+      const handleConnectError = (error: unknown) => {
+        const authenticationFailed = /Unexpected server response: (?:401|403)/i.test(String(error))
+        fail(
+          "connect kernel websocket",
+          error,
+          authenticationFailed ? "authentication_failed" : "connection_closed",
+          !authenticationFailed,
+        )
+      }
       const handleConnectClose = (code: number, reason: Buffer) => {
         const closeMessage = reason.length > 0
           ? reason.toString("utf8")

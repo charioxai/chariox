@@ -262,6 +262,17 @@ Native TUI permissions:
 - where a provider-native TUI can submit an approval response through a stable proxy or hook seam, the native response MUST resolve the same kernel interaction rather than bypassing it; first valid resolution wins
 - if the provider only exposes the approval through a rendered PTY, Arroba may detect the rendered prompt and create the kernel interaction, then inject the resulting decision back into the PTY using the provider's native selection semantics
 
+Provider-native credential enrollment callback bridge (local daemon protocol 241):
+
+- an attached client first sends `ArmDeploymentCredentialEnrollment` to its home kernel. The arm is bound to the authenticated user and relay realm plus the exact enrollment, profile, target version, session, focused agent, and attachment ownership
+- arms are kernel-memory-only, one-time, bounded by TTL and capacity, and shared by local and relay command routers for that kernel process. Expired, mismatched, consumed, or wrong-kernel arms fail closed
+- the expected hosted helper subject is `deployment-credential-enrollment:<enrollment_id>`. `RequestCredentialEnrollmentInteraction` is accepted only from the encrypted relay client lane when relay-authenticated caller metadata identifies that exact `Service` subject and the arm's user and realm. Request-body identity is not accepted as authorization
+- a relay-authenticated `Service` caller is request-scoped: the kernel rejects every local-daemon request other than `RequestCredentialEnrollmentInteraction`, even when the token's user is a session member
+- the helper sends the provider authorization URL inside the encrypted kernel payload. Cloud and the transport-only relay receive no provider URL or callback content
+- the kernel creates one ordinary agent-scoped `RuntimeInteraction` containing the authorization URL, a `Cancel` choice, and a custom choice whose `input_kind` is `secret`. Every attached web or TUI client receives the same interaction, and the first valid response wins
+- cancel and timeout return terminal status without a callback. A submitted callback is returned only in the awaiting helper response; it is not stored in session state, projected as an event, included in command payload logging, or entered in the in-memory or persistent command-result cache
+- this bridge drives the official Claude CLI callback seam only. Arroba does not implement OAuth authorization, token exchange, PKCE generation, or provider credential storage
+
 Native TUI hidden context:
 
 - granted skill prompt context and other Arroba-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
@@ -445,7 +456,8 @@ Minimum response/result shapes:
 - prompt completion returns structured completion details and the next started prompt when relevant
 - prompt cancellation returns the updated prompt state; for provider-backed turns the daemon advances queued work only after the provider confirms the stop
 - config update returns canonical session config state, version, and updated session state
-- terminal output polling returns structured terminal-output fan-out records, including distinct provider text, reasoning, tool, error, and status output kinds
+- terminal output polling returns structured terminal-output fan-out records, including distinct provider text, reasoning, tool, error, status, and transient `provider_terminal` output kinds
+- `provider_terminal` carries fullscreen native-renderer bytes only; clients must not treat it as semantic transcript, turn activity, history, or completion evidence
 - end-session returns structured final session metadata
 
 Current session-management semantics:

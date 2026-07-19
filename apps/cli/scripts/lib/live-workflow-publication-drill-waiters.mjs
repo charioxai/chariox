@@ -3,7 +3,7 @@ import path from 'node:path'
 import { cp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 const { LocalIpcClient } = await import('../../../../packages/kernel-client/dist/ipc.js')
 const { getDaemonHealthRequest, getProviderRunRequest, getSessionStateRequest, getWorkflowPublicationRequest, getWorkflowRunRequest, listSessionsRequest, listWorkflowRunsRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
-import { variant } from './live-workflow-publication-drill-runtime.mjs'
+import { isTerminalWorkflowRunStatus, variant } from './live-workflow-publication-drill-runtime.mjs'
 
 export async function assertGatewayDoesNotListen(baseUrl, timeoutMs = 1_500) {
   const deadline = Date.now() + timeoutMs
@@ -201,7 +201,7 @@ export async function waitForProviderRunReady(client, providerRunId) {
 }
 
 export async function waitForScheduledWorkflowRun(client, sessionId, workflowId, options = {}) {
-  const deadline = Date.now() + (options.requireOutput ? 30_000 : 20_000)
+  const deadline = Date.now() + (options.timeoutMs ?? (options.requireOutput ? 30_000 : 20_000))
   let lastRuns = []
   let lastRun = null
   while (Date.now() < deadline) {

@@ -557,12 +557,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn list_leased_agent_extension_catalog(
         &self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
     ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
         let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
             DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             }
         })?;
+        self.ensure_requesting_home_owns_lease(
+            leased_agent,
+            requesting_home_kernel_id,
+            "list worker extension catalog",
+        )?;
         let session = self
             .app
             .sessions
@@ -577,6 +583,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn update_leased_agent_worker_extension_grants(
         &mut self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
         mut grants: Vec<crate::extension::ExtensionGrant>,
     ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
         let leased_agent = self
@@ -587,7 +594,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
-        if leased_agent.active_home_prompt_id.is_some() {
+        self.ensure_requesting_home_owns_lease(
+            &leased_agent,
+            requesting_home_kernel_id,
+            "worker extension grant sync",
+        )?;
+        if leased_agent.active_home_prompt_id.is_some()
+            || self
+                .app
+                .prompt_owner_active_prompt_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )?
+                .is_some()
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "worker extension grant sync",
                 message: format!(
@@ -635,6 +655,31 @@ impl<'a> RemoteLeaseRuntime<'a> {
 
         let manifest_hash = crate::extension::extension_grant_manifest_hash(&grants)?;
         Ok((manifest_hash, grants))
+    }
+
+    fn ensure_requesting_home_owns_lease(
+        &self,
+        leased_agent: &LeasedAgent,
+        requesting_home_kernel_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)
+            .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
+                lease_id: leased_agent.lease_id.clone(),
+            })?;
+        if lease.home_kernel_id == requesting_home_kernel_id {
+            return Ok(());
+        }
+        Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "requesting Home kernel `{requesting_home_kernel_id}` does not own leased agent `{}`",
+                leased_agent.id
+            ),
+        })
     }
 
     fn terminate_backing_provider_runtime(&mut self, leased_agent: &LeasedAgent) {
@@ -891,6 +936,93 @@ mod tests {
     }
 
     #[test]
+    fn worker_extension_endpoints_accept_the_owning_home_kernel() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+
+        let catalog = RemoteLeaseRuntime::new(&mut app)
+            .list_leased_agent_extension_catalog(&leased_agent.id, "home-kernel")
+            .expect("owning Home kernel should list the Worker catalog");
+        let (manifest_hash, grants) = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_worker_extension_grants(
+                &leased_agent.id,
+                "home-kernel",
+                Vec::new(),
+            )
+            .expect("owning Home kernel should update Worker grants");
+
+        assert!(catalog
+            .iter()
+            .all(|entry| { entry.source == crate::extension::ExtensionSource::Worker }));
+        assert_eq!(
+            manifest_hash,
+            crate::extension::extension_grant_manifest_hash(&[])
+                .expect("empty grant manifest should hash")
+        );
+        assert!(grants.is_empty());
+    }
+
+    #[test]
+    fn worker_extension_endpoints_reject_a_different_home_kernel_without_mutation() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        let requested_grant = crate::extension::ExtensionGrant::new(
+            crate::extension::ExtensionKind::Mcp,
+            "untrusted-worker-mcp",
+        )
+        .from_source(crate::extension::ExtensionSource::Worker);
+
+        let list_error = RemoteLeaseRuntime::new(&mut app)
+            .list_leased_agent_extension_catalog(&leased_agent.id, "other-home")
+            .expect_err("another Home kernel must not list the Worker catalog");
+        assert_home_owner_error(list_error, "list worker extension catalog");
+        let update_error = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_worker_extension_grants(
+                &leased_agent.id,
+                "other-home",
+                vec![requested_grant],
+            )
+            .expect_err("another Home kernel must not update Worker grants");
+        assert_home_owner_error(update_error, "worker extension grant sync");
+
+        assert!(app
+            .agents()
+            .get_agent(&leased_agent.backing_agent_id)
+            .expect("backing agent should exist")
+            .extension_grants_from(crate::extension::ExtensionSource::Worker)
+            .is_empty());
+    }
+
+    #[test]
+    fn worker_extension_update_rejects_an_active_turn_without_mutation() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        let existing_grant = crate::extension::ExtensionGrant::new(
+            crate::extension::ExtensionKind::Mcp,
+            "existing-worker-mcp",
+        )
+        .from_source(crate::extension::ExtensionSource::Worker);
+        app.agents_mut()
+            .grant_extension(&leased_agent.backing_agent_id, existing_grant.clone())
+            .expect("fixture Worker grant should be stored");
+        sync_active_prompt(&mut app, &leased_agent);
+
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .update_leased_agent_worker_extension_grants(
+                &leased_agent.id,
+                "home-kernel",
+                Vec::new(),
+            )
+            .expect_err("active turn should block Worker grant reconciliation");
+
+        assert_active_turn_error(error, "worker extension grant sync");
+        assert_eq!(
+            app.agents()
+                .get_agent(&leased_agent.backing_agent_id)
+                .expect("backing agent should exist")
+                .extension_grants_from(crate::extension::ExtensionSource::Worker),
+            vec![existing_grant]
+        );
+    }
+
+    #[test]
     fn worker_extension_manifest_rejects_duplicate_grants_before_mutation() {
         let _guard = crate::env_lock::lock();
         let isolation_root = std::env::temp_dir().join(format!(
@@ -986,6 +1118,19 @@ mod tests {
                 assert!(message.contains("has an active turn"));
             }
             other => panic!("expected active turn error, got {other:?}"),
+        }
+    }
+
+    fn assert_home_owner_error(error: DaemonError, operation: &'static str) {
+        match error {
+            DaemonError::LocalTransport {
+                operation: actual,
+                message,
+            } => {
+                assert_eq!(actual, operation);
+                assert!(message.contains("does not own leased agent"));
+            }
+            other => panic!("expected Home ownership error, got {other:?}"),
         }
     }
 }

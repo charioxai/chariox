@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import path from 'node:path'
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { withDevStubProviderInventory } from './lib/drill-runtime-helpers.mjs'
 import {
   assertSuccessfulMcpToolCall,
   assertSuccessfulSseTranscript,
@@ -45,6 +46,7 @@ const { connectKernelCloudRelay } = await import('../dist/relay-api.js')
 const {
   changePublicationDeployment,
   createPublicationDeploymentFromPackage,
+  listPublicationDeploymentLogs,
 } = await import('../dist/publication-deployment-api.js')
 
 const {
@@ -102,12 +104,22 @@ function usage() {
     '  --provider dev-stub|codex|opencode|claude',
     '  --model MODEL',
     '  --credential-profile NAME',
+    '  --cloud-api-url URL',
+    '  --cloud-account-id ID',
+    '  --cloud-session-token TOKEN',
+    '  --relay-mode auto|local|cloud',
+    '  --kernel-port PORT',
+    '  --relay-port PORT',
+    '  --serve-port PORT',
+    '  --daemon-alias ALIAS',
+    '  --relay-token TOKEN',
     '  --real-dashboard',
     '  --agent-app-shopping',
     '  --agent-app-session-isolation',
     '  --artifacts-dir DIR',
     '  --browser-screenshot',
     '  --keep-tmp',
+    '  --hold-ms MS',
     '  --debug-hold-ms MS',
   ].join('\n')
 }
@@ -120,12 +132,22 @@ function parseArgs(argv) {
     model: null,
     slug: null,
     credentialProfile: null,
+    cloudApiUrl: process.env.ARROBA_DRILL_CLOUD_API_URL?.trim() || null,
+    cloudAccountId: process.env.ARROBA_DRILL_CLOUD_ACCOUNT_ID?.trim() || null,
+    cloudSessionToken: process.env.ARROBA_DRILL_CLOUD_SESSION_TOKEN?.trim() || null,
+    relayMode: process.env.ARROBA_DRILL_RELAY_MODE?.trim() || 'auto',
+    kernelPort: optionalPort(process.env.ARROBA_DRILL_KERNEL_PORT),
+    relayPort: optionalPort(process.env.ARROBA_DRILL_RELAY_PORT),
+    servePort: optionalPort(process.env.ARROBA_DRILL_SERVE_PORT),
+    daemonAlias: process.env.ARROBA_DRILL_DAEMON_ALIAS?.trim() || null,
+    relayToken: process.env.ARROBA_DRILL_RELAY_TOKEN?.trim() || null,
     realDashboard: false,
     agentAppShopping: false,
     agentAppSessionIsolation: false,
     artifactsDir: path.join(repoRoot, '.artifacts', 'cloud-publication-deployments'),
     browserScreenshot: false,
     keepTmp: false,
+    holdMs: 0,
     debugHoldMs: 0,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -136,12 +158,22 @@ function parseArgs(argv) {
     else if (arg === '--model') options.model = argv[++index]
     else if (arg === '--slug') options.slug = argv[++index]
     else if (arg === '--credential-profile') options.credentialProfile = argv[++index]
+    else if (arg === '--cloud-api-url') options.cloudApiUrl = argv[++index]
+    else if (arg === '--cloud-account-id') options.cloudAccountId = argv[++index]
+    else if (arg === '--cloud-session-token') options.cloudSessionToken = argv[++index]
+    else if (arg === '--relay-mode') options.relayMode = argv[++index]
+    else if (arg === '--kernel-port') options.kernelPort = requiredPort(argv[++index], '--kernel-port')
+    else if (arg === '--relay-port') options.relayPort = requiredPort(argv[++index], '--relay-port')
+    else if (arg === '--serve-port') options.servePort = requiredPort(argv[++index], '--serve-port')
+    else if (arg === '--daemon-alias') options.daemonAlias = argv[++index]
+    else if (arg === '--relay-token') options.relayToken = argv[++index]
     else if (arg === '--real-dashboard') options.realDashboard = true
     else if (arg === '--agent-app-shopping') options.agentAppShopping = true
     else if (arg === '--agent-app-session-isolation') options.agentAppSessionIsolation = true
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
     else if (arg === '--browser-screenshot') options.browserScreenshot = true
     else if (arg === '--keep-tmp') options.keepTmp = true
+    else if (arg === '--hold-ms') options.holdMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--debug-hold-ms') options.debugHoldMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--help' || arg === '-h') {
       console.log(usage())
@@ -157,6 +189,11 @@ function parseArgs(argv) {
   }
   if (!options.model) options.model = defaultModel(options.provider, options.transport, options.realDashboard)
   if (!options.slug) options.slug = `cloud-${options.mode.replace('_', '-')}-${options.transport.replace(/_/g, '-')}-${Date.now()}`
+  if (!['auto', 'local', 'cloud'].includes(options.relayMode)) throw new Error('--relay-mode must be auto, local, or cloud')
+  if (Boolean(options.cloudApiUrl) !== Boolean(options.cloudAccountId)) {
+    throw new Error('--cloud-api-url and --cloud-account-id must be provided together')
+  }
+  if (!Number.isFinite(options.holdMs) || options.holdMs < 0) throw new Error('--hold-ms must be a non-negative integer')
   if (!Number.isFinite(options.debugHoldMs) || options.debugHoldMs < 0) throw new Error('--debug-hold-ms must be a non-negative integer')
   return options
 }
@@ -165,6 +202,17 @@ function normalizeMode(value) {
   if (value === 'hosted-container' || value === 'hosted_container') return 'hosted_container'
   if (value === 'local-runtime' || value === 'local_runtime') return 'local_runtime'
   throw new Error('--mode must be hosted-container or local-runtime')
+}
+
+function optionalPort(value) {
+  if (!value?.trim()) return null
+  return requiredPort(value, 'drill port environment variable')
+}
+
+function requiredPort(value, label) {
+  const port = Number.parseInt(value ?? '', 10)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`${label} must be a valid TCP port`)
+  return port
 }
 
 function normalizeTransport(value) {
@@ -210,17 +258,17 @@ async function main() {
   const serverConfigHome = path.join(root, 'server-config')
   const stateHome = path.join(root, 'state')
   const home = path.join(root, 'home')
-  const kernelPort = await freePort()
-  const relayPort = await freePort()
+  const kernelPort = options.kernelPort ?? await freePort()
+  const relayPort = options.relayPort ?? await freePort()
   const mcpPort = await freePort()
   const opencodePort = await freePort()
   const codexPort = await freePort()
-  const servePort = await freePort()
+  const servePort = options.servePort ?? await freePort()
   const actionPort = options.mode === 'local_runtime' ? await freePort() : 33119
-  const daemonAlias = `cloud-publication-drill-${process.pid}-${Date.now()}`
-  const relayToken = `cloud-publication-drill-${process.pid}-${Date.now()}`
-  const useLocalRelay = options.mode !== 'local_runtime'
-  const env = {
+  const daemonAlias = options.daemonAlias ?? `cloud-publication-drill-${process.pid}-${Date.now()}`
+  const relayToken = options.relayToken ?? `cloud-publication-drill-${process.pid}-${Date.now()}`
+  const useLocalRelay = shouldUseLocalRelay(options)
+  const baseEnv = {
     ...process.env,
     HOME: options.provider === 'dev-stub' ? home : process.env.HOME,
     XDG_CONFIG_HOME: configHome,
@@ -238,6 +286,9 @@ async function main() {
       ARROBA_RELAY_TOKEN: relayToken,
     } : {}),
   }
+  const env = options.provider === 'dev-stub'
+    ? withDevStubProviderInventory(baseEnv)
+    : baseEnv
   if (process.env.HOME) {
     if (!env.CODEX_HOME) env.CODEX_HOME = path.join(process.env.HOME, '.codex')
     if (!env.ARROBA_CLAUDE_CONFIG) env.ARROBA_CLAUDE_CONFIG = path.join(process.env.HOME, '.claude.json')
@@ -248,6 +299,7 @@ async function main() {
   let actionServer = null
   let client = null
   let deploymentId = null
+  let profile = null
   let succeeded = false
   let failure = null
   const sessionIds = []
@@ -257,7 +309,7 @@ async function main() {
     await mkdir(path.join(serverConfigHome, 'arroba'), { recursive: true })
     await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
     await writeFile(path.join(serverConfigHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
-    await copyCloudProfile(configHome).catch(() => {})
+    if (!options.cloudApiUrl) await copyCloudProfile(configHome).catch(() => {})
 
     const kernelBinary = await buildRustBinary('arroba-kernel')
     const relayBinary = await buildRustBinary('arroba-relay')
@@ -274,7 +326,7 @@ async function main() {
     const kernelUrl = `ws://127.0.0.1:${kernelPort}`
     await waitForKernel(kernelUrl)
     client = new LocalIpcClient(kernelUrl, { kernelPingIntervalMs: 60_000, kernelMaxMissedPongs: 10 })
-    if (options.mode === 'local_runtime') {
+    if (options.mode === 'local_runtime' && !useLocalRelay) {
       const connected = await connectKernelCloudRelay(client)
       logStep('cloud_relay_connected', { relayUrl: connected.relayUrl, tokenExpiresAtMs: connected.tokenExpiresAtMs })
       await delay(1_000)
@@ -294,7 +346,7 @@ async function main() {
       agentAppShopping: options.agentAppShopping,
       actionPort,
     })
-    const profile = relayCloudProfile(await loadPreferences())
+    profile = explicitCloudProfile(options) ?? relayCloudProfile(await loadPreferences())
     if (!profile) throw new Error('cloud is not linked. Run /cloud login from the TUI before this drill.')
     logStep('deploy', { mode: options.mode, transport: options.transport, slug: options.slug })
     const deployment = await createPublicationDeploymentFromPackage({
@@ -374,14 +426,28 @@ async function main() {
     const statePath = path.join(options.artifactsDir, `${options.slug}-deployment.json`)
     await writeFile(statePath, `${JSON.stringify({ deployment: readyDeployment, publicationContext, evidence, logs }, null, 2)}\n`)
     logStep('evidence_written', { statePath, ...evidence })
+    if (options.holdMs > 0) {
+      logStep('hold', {
+        ms: options.holdMs,
+        deploymentId: readyDeployment.id,
+        publicBaseUrl: readyDeployment.publicBaseUrl,
+      })
+      await delay(options.holdMs)
+    }
     succeeded = true
   } catch (error) {
     failure = error
     throw error
   } finally {
-    if (!succeeded && deploymentId) {
-      const profile = relayCloudProfile(await loadPreferences().catch(() => ({})))
-      if (profile) await changePublicationDeployment(profile, deploymentId, 'stop').catch(() => {})
+    if (deploymentId && profile) {
+      if (options.mode === 'local_runtime') {
+        await markLocalDeploymentUnavailable(profile, deploymentId).catch((error) => {
+          logStep('cleanup_warning', { action: 'mark-local-backend-unavailable', error: errorMessage(error) })
+        })
+      }
+      await changePublicationDeployment(profile, deploymentId, 'stop').catch((error) => {
+        logStep('cleanup_warning', { action: 'stop-deployment', error: errorMessage(error) })
+      })
     }
     await stopProcess(serve).catch((error) => logStep('cleanup_warning', { process: 'serve', error: errorMessage(error) }))
     await stopProcess(actionServer).catch((error) => logStep('cleanup_warning', { process: 'actionServer', error: errorMessage(error) }))
@@ -405,6 +471,8 @@ async function main() {
           provider: options.provider,
           model: options.model,
           credentialProfile: options.credentialProfile,
+          cloudApiUrl: options.cloudApiUrl,
+          relayMode: options.relayMode,
           realDashboard: options.realDashboard,
           agentAppShopping: options.agentAppShopping,
           agentAppSessionIsolation: options.agentAppSessionIsolation,
@@ -433,6 +501,43 @@ async function main() {
         },
       })
     }
+  }
+}
+
+function explicitCloudProfile(options) {
+  if (!options.cloudApiUrl || !options.cloudAccountId) return null
+  return {
+    apiUrl: options.cloudApiUrl,
+    accountId: options.cloudAccountId,
+    ...(options.cloudSessionToken ? { cloudSessionToken: options.cloudSessionToken } : {}),
+  }
+}
+
+function shouldUseLocalRelay(options) {
+  if (options.relayMode === 'local') return true
+  if (options.relayMode === 'cloud') return false
+  return options.mode !== 'local_runtime' || Boolean(options.cloudApiUrl)
+}
+
+async function markLocalDeploymentUnavailable(profile, deploymentId) {
+  const response = await fetch(
+    `${profile.apiUrl.replace(/\/+$/, '')}/publication-deployments/${encodeURIComponent(deploymentId)}/local-backend`,
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...(profile.cloudSessionToken ? { authorization: `Bearer ${profile.cloudSessionToken}` } : {}),
+      },
+      body: JSON.stringify({
+        accountId: profile.accountId,
+        status: 'unavailable',
+        lastError: 'Local publication drill completed and released its runtime.',
+      }),
+    },
+  )
+  if (!response.ok) {
+    throw new Error(`Cloud publication backend cleanup failed with HTTP ${response.status}: ${await response.text()}`)
   }
 }
 

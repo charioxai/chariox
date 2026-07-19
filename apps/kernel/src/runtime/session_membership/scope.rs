@@ -122,6 +122,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentSubstitutes(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::ArmDeploymentCredentialEnrollment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RespondToInteraction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::RequestNativeProviderInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -457,9 +463,9 @@ mod tests {
 
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
-        AttachToSessionRequest, DetachFromSessionRequest, LaunchProviderRunRequest,
-        LaunchProviderRunsRequest, ListSessionsRequest, QueryRecallRequest, RelayStatusRequest,
-        ResolveSessionRequest,
+        ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, DetachFromSessionRequest,
+        LaunchProviderRunRequest, LaunchProviderRunsRequest, ListSessionsRequest,
+        QueryRecallRequest, RelayStatusRequest, ResolveSessionRequest, RespondToInteractionRequest,
     };
 
     #[test]
@@ -497,6 +503,30 @@ mod tests {
             Some(SessionMembershipScope::AttachmentId(
                 "attachment-1".to_string()
             ))
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::RespondToInteraction(
+                RespondToInteractionRequest {
+                    session_id: "session-1".to_string(),
+                    interaction_id: "interaction-1".to_string(),
+                    choice_id: "cancel".to_string(),
+                    custom_reply: None,
+                },
+            )),
+            Some(SessionMembershipScope::SessionId("session-1".to_string()))
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::ArmDeploymentCredentialEnrollment(
+                ArmDeploymentCredentialEnrollmentRequest {
+                    session_id: "session-1".to_string(),
+                    attachment_id: "attachment-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    enrollment_id: "enrollment-1".to_string(),
+                    profile_id: "profile-1".to_string(),
+                    target_version: 1,
+                },
+            )),
+            Some(SessionMembershipScope::SessionId("session-1".to_string()))
         );
     }
 

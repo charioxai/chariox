@@ -85,6 +85,15 @@ async function requiredPublicationProviders(publication: WorkflowPublicationConf
 }
 
 async function providerReadiness(provider: string, client: LocalIpcClient): Promise<PublicationProviderReadiness> {
+  if (provider === "dev-stub" && developmentProviderStubEnabled()) {
+    return {
+      provider,
+      status: "provider_ready",
+      ready: true,
+      cli: { available: true, command: "internal:dev-stub", version: null },
+      auth: { status: "provider_ready", account_profile: "development-stub" },
+    }
+  }
   const command = providerCommand(provider)
   const cli = await providerCliStatus(command)
   if (!cli.available) {
@@ -111,14 +120,57 @@ async function providerReadiness(provider: string, client: LocalIpcClient): Prom
   }
 }
 
+function developmentProviderStubEnabled(): boolean {
+  return ["1", "true", "yes", "on"].includes(
+    process.env.ARROBA_PROVIDER_DEV_STUB?.trim().toLowerCase() ?? "",
+  )
+}
+
 async function providerCliStatus(command: string): Promise<PublicationProviderReadiness["cli"]> {
   try {
-    const result = await execFileAsync(command, ["--version"], { timeout: 5_000, maxBuffer: 64 * 1024 })
+    const result = await execFileAsync(command, ["--version"], {
+      env: providerVersionEnvironment(),
+      timeout: 5_000,
+      maxBuffer: 64 * 1024,
+    })
     const version = `${result.stdout}${result.stderr}`.trim().split(/\r?\n/)[0] ?? null
     return { available: true, command, version: version || null }
   } catch {
     return { available: false, command, version: null }
   }
+}
+
+function providerVersionEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const name of [
+    "PATH",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "HOME",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+  ] as const) {
+    const value = process.env[name]
+    if (value !== undefined) env[name] = value
+  }
+  env.PATH ??= "/usr/local/bin:/usr/bin:/bin"
+  return env
 }
 
 async function providerAuthStatus(
@@ -155,7 +207,10 @@ function normalizeProvider(provider: unknown): string | null {
   if (typeof provider !== "string") return null
   const trimmed = provider.trim().toLowerCase()
   if (!trimmed) return null
-  return trimmed.split(":")[0] ?? trimmed
+  const base = trimmed.split(":")[0] ?? trimmed
+  if (base === "default") return "opencode"
+  if (base === "claude-headless" || base === "claude-p") return "claude"
+  return base
 }
 
 async function fileExists(path: string): Promise<boolean> {

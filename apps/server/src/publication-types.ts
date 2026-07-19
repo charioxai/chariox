@@ -78,6 +78,10 @@ export type WorkflowPublicationPackage = {
   source_session_id?: string
   workflow_id: string
   default_bindings_path?: string
+  deployment_contract?: {
+    path?: string
+    schema_version?: number
+  }
   hooks: PublicationHookConfig[]
   agent_app?: AgentAppConfig
 }
@@ -88,7 +92,18 @@ export type AgentAppConfig = {
   routes?: AgentAppRouteConfig[]
   actions?: Record<string, AgentAppActionConfig>
   replicas?: AgentAppReplicaConfig
+  network?: AgentAppNetworkConfig
   persistent_patch?: { enabled?: boolean }
+}
+
+export type AgentAppNetworkConfig = {
+  destinations?: AgentAppNetworkDestinationConfig[]
+}
+
+export type AgentAppNetworkDestinationConfig = {
+  id: string
+  host: string
+  credential_slot_ids?: string[]
 }
 
 export type AgentAppAssetsConfig = {

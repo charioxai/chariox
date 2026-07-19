@@ -625,6 +625,18 @@ Provider-native permission prompts follow the same rule: a provider request
 creates one kernel-owned `RuntimeInteraction`, projected to all Arroba clients,
 and provider-native approval replies are routed back to that interaction where
 the provider seam allows it.
+Provider-native Claude credential enrollment uses the same authority boundary.
+An attached client arms a bounded, one-time enrollment on the home kernel. A
+later hosted helper request arrives over the encrypted relay client lane and is
+accepted only when signed relay metadata proves the enrollment-specific
+`Service` subject plus the arm's user and realm. The kernel projects one normal
+secret `RuntimeInteraction` to every attached client and returns the first
+callback only to the waiting helper. Callback-bearing requests and responses
+bypass command-result caching, and callback values never enter session state or
+event projection. Hosted `Service` identities are denied every other kernel
+request. Cloud and relay remain outside the encrypted provider URL and
+callback payload. This is an official Claude CLI callback bridge, not an Arroba
+OAuth or PKCE implementation.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
@@ -633,6 +645,13 @@ Code's `UserPromptSubmit` hook `additionalContext` response. Local launchers and
 worker kernels answer a scoped hook context request with the same granted-skill
 prompt context used by normal Arroba provider runs, while keeping that context
 out of visible PTY input and native TUI transcript rendering.
+
+Managed Claude native interfaces keep fullscreen PTY redraw bytes separate from
+semantic transcript output. The PTY bytes travel as transient
+`provider_terminal` records for the native renderer and are never persisted or
+projected into agent panes. Semantic assistant/reasoning/tool output comes from
+Claude's hook-provided transcript path, and the Claude `Stop` hook remains the
+authoritative turn-settlement signal after a final deferred transcript drain.
 
 Slice-backed native TUI mode is the same composition with a home-managed slice
 as the worker execution environment. Provider TUIs still attach to the home

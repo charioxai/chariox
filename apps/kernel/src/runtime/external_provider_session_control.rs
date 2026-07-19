@@ -45,12 +45,12 @@ use self::import::*;
 use self::poller::*;
 pub(crate) use self::poller::{
     execute_external_provider_session_request,
-    refresh_attached_external_provider_histories_for_runtime_session,
     refresh_attached_external_provider_histories_for_session,
 };
 use self::targets::*;
 
-const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(2);
+const EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL: Duration = Duration::from_secs(30);
+const EXTERNAL_PROVIDER_ATTACHED_HISTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_millis(250);
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
@@ -78,8 +78,14 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
     let mut cache = ExternalProviderSessionDiscoveryCache::default();
     refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false)
         .await;
-    let mut interval = tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut discovery_interval =
+        tokio::time::interval(EXTERNAL_PROVIDER_SESSION_DISCOVERY_INTERVAL);
+    discovery_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    discovery_interval.tick().await;
+    let mut history_interval =
+        tokio::time::interval(EXTERNAL_PROVIDER_ATTACHED_HISTORY_REFRESH_INTERVAL);
+    history_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    history_interval.tick().await;
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => {
@@ -87,8 +93,18 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                     break;
                 }
             }
-            _ = interval.tick() => {
+            _ = discovery_interval.tick() => {
                 refresh_external_provider_session_index(&app, Some(&runtime_state), Some(&mut cache), false).await;
+            }
+            _ = history_interval.tick() => {
+                refresh_attached_external_provider_histories_matching(
+                    &app,
+                    Some(&runtime_state),
+                    None,
+                    None,
+                    true,
+                )
+                .await;
             }
         }
     }

@@ -93,6 +93,30 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if !force
+            && active_prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
+            owned.schedule_provider_output_check_after(
+                provider_run_id,
+                STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+            );
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider settlement ignored before prompt delivery acknowledgement",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "prompt_completed": prompt_completed,
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
 
         if prompt_completed {
             owned.mark_prompt_completion_recorded(provider_run_id);
@@ -248,31 +272,16 @@ impl KernelRuntimeState {
                     workflow_run_id,
                     workflow_node_run_id,
                     provider_run_id,
+                ) && !owned.prompt_output_quiet_after_response(
+                    provider_run_id,
+                    WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR,
                 ) {
-                    if !owned.prompt_output_quiet_after_response(
+                    owned.note_prompt_settlement_requested(provider_run_id);
+                    owned.schedule_provider_output_check_when_quiet(
                         provider_run_id,
                         WORKFLOW_MISSING_OUTPUT_SETTLE_QUIET_FOR,
-                    ) {
-                        owned.note_prompt_settlement_requested(provider_run_id);
-                        let _ = owned.session_snapshot(session_id);
-                        return Ok(crate::app::ProviderRunExitSessionSummary {
-                            had_active_prompt: true,
-                            started_next_prompt: false,
-                        });
-                    }
-                    let message =
-                        "provider completed workflow turn without a validated workflow output";
-                    owned.workflow_fail_provider_prompt(
-                        session_id,
-                        &active_prompt,
-                        Some(provider_run_id),
-                        message,
-                    )?;
-                    let _ = owned.complete_local_prompt_without_advance(
-                        session_id,
-                        &agent_id,
-                        Some(provider_run_id),
-                    )?;
+                    );
+                    let _ = owned.session_snapshot(session_id);
                     return Ok(crate::app::ProviderRunExitSessionSummary {
                         had_active_prompt: true,
                         started_next_prompt: false,

@@ -29,15 +29,16 @@ use attachments::{
 };
 use permission::{
     append_claude_headless_debug, claude_headless_bypass_confirmation_visible,
-    claude_headless_composer_visible, claude_headless_prompt_waiting_in_composer,
-    claude_headless_workspace_trust_visible, claude_native_marker, claude_permission_recent_file,
-    claude_rendered_permission_visible, clear_claude_hook_permission_tombstone,
-    clear_claude_permission_recent, extract_native_hidden_instructions,
-    format_claude_permission_message, normalize_claude_visible_prompt_for_headless,
-    read_claude_headless_submit_retry, redact_native_hidden_instructions,
-    should_bridge_claude_permission, take_claude_permission_inputs,
-    take_matching_claude_hook_permission_tombstone, timestamp_millis,
-    update_claude_permission_recent, write_claude_headless_startup_wait_marker,
+    claude_headless_bypass_selection_pending, claude_headless_composer_visible,
+    claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_visible,
+    claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
+    clear_claude_hook_permission_tombstone, clear_claude_permission_recent,
+    extract_native_hidden_instructions, format_claude_permission_message,
+    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
+    redact_native_hidden_instructions, should_bridge_claude_permission,
+    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
+    timestamp_millis, update_claude_permission_recent,
+    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
     write_claude_headless_submit_retry, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_response,
@@ -50,8 +51,8 @@ use transcript::{
 };
 
 const CLAUDE_ATTACHMENT_CONTEXT_BYTES: usize = 64 * 1024;
-const CLAUDE_HEADLESS_STOP_DRAIN_MS: u64 = 300;
-const CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
+const CLAUDE_TRANSCRIPT_STOP_DRAIN_MS: u64 = 300;
+const CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX: &str = "stop-draining:";
 
 /// Delay between writing a prompt's visible text into the provider PTY and
 /// sending the Enter keystroke, giving the terminal time to register the
@@ -75,11 +76,10 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ClaudeNativeProcessOutcome {
-    /// A claude-headless run reported Stop/SessionEnd this pass. The caller
-    /// should drain its transcripts once more after a short delay taken off
-    /// the app lock, to capture the final assistant flush without blocking
-    /// the whole daemon inside `process`.
-    pub(crate) needs_deferred_headless_drain: bool,
+    /// A managed Claude run reported Stop/SessionEnd this pass. The caller
+    /// should drain its transcript once more after a short delay taken off the
+    /// app lock, capturing the final assistant flush before settlement.
+    pub(crate) needs_deferred_transcript_drain: bool,
 }
 
 pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
@@ -199,17 +199,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 );
             }
         }
-        if provider_run.provider() == "claude-headless" {
-            if let Some(settled) = self.process_pending_headless_stop(
-                session_id,
-                provider_run_id,
-                &agent_id,
-                context_file,
-                false,
-            )? {
-                outcome.needs_deferred_headless_drain = !settled;
-                return Ok(outcome);
-            }
+        if let Some(settled) = self.process_pending_claude_stop(
+            session_id,
+            provider_run_id,
+            &agent_id,
+            context_file,
+            provider_run.provider() == "claude-headless",
+            false,
+        )? {
+            outcome.needs_deferred_transcript_drain = !settled;
+            return Ok(outcome);
         }
         self.inject_pending_prompt(
             session_id,
@@ -218,9 +217,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             context_file,
             provider_run,
         )?;
-        if provider_run.provider() == "claude-headless" {
-            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
-        }
+        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
@@ -239,20 +236,18 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             let Ok(event) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
-            if provider_run.provider() == "claude-headless" {
-                if let Some(transcript_path) = event
-                    .get("transcript_path")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    self.drain_headless_transcript(
-                        session_id,
-                        provider_run_id,
-                        context_file,
-                        transcript_path,
-                    )?;
-                }
+            if let Some(transcript_path) = event
+                .get("transcript_path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                self.drain_claude_transcript(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    transcript_path,
+                )?;
             }
             let event_name = event
                 .get("hook_event_name")
@@ -329,42 +324,29 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     write_claude_native_marker(context_file, &format!("native:{}", prompt.id()));
                 }
             } else if matches!(event_name, "Stop" | "StopFailure" | "SessionEnd") {
-                if provider_run.provider() == "claude-headless" {
-                    // Drain whatever the transcript holds now; the final flush
-                    // can land shortly after Stop, so ask the caller to drain
-                    // again after a brief delay taken off the app lock rather
-                    // than sleeping here and stalling the daemon.
-                    self.drain_known_headless_transcripts(
-                        session_id,
-                        provider_run_id,
+                // Stop is the authoritative settlement signal for every
+                // managed Claude interface. Drain now and once more after a
+                // short off-lock delay because the final transcript flush can
+                // trail the hook event.
+                self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+                if let Some(active_prompt) = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                {
+                    write_claude_native_marker(
                         context_file,
-                    )?;
-                    if let Some(active_prompt) = self
-                        .app
-                        .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
-                    {
-                        write_claude_native_marker(
-                            context_file,
-                            &format!(
-                                "{CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX}{}:{}",
-                                active_prompt.id(),
-                                unix_epoch_ms()
-                            ),
-                        );
-                        outcome.needs_deferred_headless_drain = true;
-                    } else {
-                        let _ = fs::write(context_file, "");
-                        write_claude_native_marker(context_file, "");
-                    }
-                    continue;
+                        &format!(
+                            "{CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX}{}:{}",
+                            active_prompt.id(),
+                            unix_epoch_ms()
+                        ),
+                    );
+                    outcome.needs_deferred_transcript_drain = true;
+                } else {
+                    let _ = fs::write(context_file, "");
+                    write_claude_native_marker(context_file, "");
                 }
-                self.complete_native_prompt_after_stop(
-                    session_id,
-                    provider_run_id,
-                    &agent_id,
-                    context_file,
-                    false,
-                )?;
+                continue;
             } else if matches!(event_name, "PreToolUse" | "PermissionRequest") {
                 self.resolve_permission_event(
                     session_id,
@@ -376,51 +358,49 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 )?;
             }
         }
-        if provider_run.provider() == "claude-headless" {
-            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
-        }
+        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         Ok(outcome)
     }
 
-    pub(crate) fn finish_deferred_headless_stop(
+    pub(crate) fn finish_deferred_stop(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        if provider_run.provider() != "claude-headless" {
-            return Ok(());
-        }
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Ok(());
         };
         let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
-        let _ = self.process_pending_headless_stop(
+        let _ = self.process_pending_claude_stop(
             session_id,
             provider_run_id,
             agent_id,
             context_file,
+            provider_run.provider() == "claude-headless",
             true,
         )?;
         Ok(())
     }
 
-    fn process_pending_headless_stop(
+    fn process_pending_claude_stop(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         agent_id: &str,
         context_file: &str,
+        mark_next_headless_prompt_ready: bool,
         force: bool,
     ) -> Result<Option<bool>, DaemonError> {
-        let Some((prompt_id, stopped_at_ms)) = claude_headless_stop_drain_marker(context_file)
+        let Some((prompt_id, stopped_at_ms)) = claude_transcript_stop_drain_marker(context_file)
         else {
             return Ok(None);
         };
-        self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
-        if !force && unix_epoch_ms().saturating_sub(stopped_at_ms) < CLAUDE_HEADLESS_STOP_DRAIN_MS {
+        self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        if !force && unix_epoch_ms().saturating_sub(stopped_at_ms) < CLAUDE_TRANSCRIPT_STOP_DRAIN_MS
+        {
             return Ok(Some(false));
         }
         let active_prompt = self
@@ -449,7 +429,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run_id,
             agent_id,
             context_file,
-            true,
+            mark_next_headless_prompt_ready,
         )?;
         Ok(Some(true))
     }
@@ -496,7 +476,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(())
     }
 
-    fn drain_known_headless_transcripts(
+    fn drain_known_claude_transcripts(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
@@ -504,12 +484,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
     ) -> Result<(), DaemonError> {
         let paths = known_claude_transcript_paths(context_file);
         for path in paths {
-            self.drain_headless_transcript(session_id, provider_run_id, context_file, &path)?;
+            self.drain_claude_transcript(session_id, provider_run_id, context_file, &path)?;
         }
         Ok(())
     }
 
-    fn drain_headless_transcript(
+    fn drain_claude_transcript(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
@@ -573,7 +553,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         if let Some(model) = drain.model {
             metadata.resolved_model = Some(model);
-            metadata.resolved_model_source = Some("claude.headless.transcript");
+            metadata.resolved_model_source = Some("claude.transcript");
         }
         if metadata.resolved_resume_state.is_some() || metadata.resolved_model.is_some() {
             self.app
@@ -612,7 +592,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 provider_run_id,
                 chunk.kind,
                 Some(format!(
-                    "claude-headless:{provider_run_id}:{}",
+                    "claude-transcript:{provider_run_id}:{}",
                     chunk.merge_key_suffix
                 )),
                 recipient_attachment_ids.clone(),
@@ -658,12 +638,26 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         };
         let visible = claude_rendered_permission_visible(rendered);
-        if provider_run.provider() == "claude-headless" && !rendered.is_empty() {
-            append_claude_headless_debug(context_file, "pty", rendered);
-            self.drain_known_headless_transcripts(session_id, provider_run_id, context_file)?;
+        if !rendered.is_empty() {
+            if provider_run.provider() == "claude-headless" {
+                append_claude_headless_debug(context_file, "pty", rendered);
+            }
+            self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         }
         if provider_run.provider() == "claude-headless" {
             let recent = update_claude_permission_recent(context_file, rendered);
+            if claude_headless_bypass_selection_pending(context_file) {
+                append_claude_headless_debug(
+                    context_file,
+                    "auto_confirm_enter",
+                    "bypass_permissions",
+                );
+                self.app
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+                write_claude_headless_startup_wait_marker(context_file);
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
             if claude_headless_workspace_trust_visible(&recent) {
                 append_claude_headless_debug(context_file, "auto_confirm", "workspace_trust");
                 self.app
@@ -675,8 +669,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if claude_headless_bypass_confirmation_visible(&recent) {
                 append_claude_headless_debug(context_file, "auto_confirm", "bypass_permissions");
                 self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B")?;
+                write_claude_headless_bypass_selection_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
@@ -1039,6 +1033,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         let prompt_typed_for_headless = provider_run.provider() == "claude-headless"
             && marker.as_deref() == Some(&format!("typed:{}", prompt.id));
+        if provider_run.provider() == "claude-headless"
+            && claude_headless_bypass_selection_pending(context_file)
+        {
+            append_claude_headless_debug(context_file, "bypass_selection_wait", prompt.id);
+            return Ok(());
+        }
         if let Some(started_at_ms) = marker
             .as_deref()
             .and_then(|value| value.strip_prefix("startup-wait:"))
@@ -1081,8 +1081,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     "bypass_permissions",
                 );
                 self.app
-                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B\r")?;
-                write_claude_headless_startup_wait_marker(context_file);
+                    .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B")?;
+                write_claude_headless_bypass_selection_marker(context_file);
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
@@ -1292,9 +1292,9 @@ fn submit_wait_state(marker: Option<&str>, prompt_id: &str, now_ms: u64) -> Subm
     }
 }
 
-fn claude_headless_stop_drain_marker(context_file: &str) -> Option<(String, u64)> {
+fn claude_transcript_stop_drain_marker(context_file: &str) -> Option<(String, u64)> {
     let marker = claude_native_marker(context_file)?;
-    let payload = marker.strip_prefix(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)?;
+    let payload = marker.strip_prefix(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)?;
     let (prompt_id, stopped_at_ms) = payload.rsplit_once(':')?;
     let stopped_at_ms = stopped_at_ms.parse::<u64>().ok()?;
     (!prompt_id.trim().is_empty()).then(|| (prompt_id.to_string(), stopped_at_ms))

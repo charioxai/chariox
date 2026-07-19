@@ -243,7 +243,7 @@ impl<'a> KernelSessionService<'a> {
                 agent.agent_ref()
             ),
         })?;
-        let relay_config = self.app.relay_config_for_remote_execution(remote);
+        let relay_config = self.app.relay_config_for_remote_extension_sync(remote);
         let response = self.app.block_on_relay_future(
             crate::transport::relay_client::send_peer_request_via_temporary_connection(
                 &relay_config,
@@ -384,7 +384,16 @@ impl<'a> KernelSessionService<'a> {
             .extension_grants_from(crate::extension::ExtensionSource::Worker)
             .is_empty()
         {
-            self.app.reconcile_remote_worker_extension_grants(&agent)?;
+            if let Err(error) = self.app.reconcile_remote_worker_extension_grants(&agent) {
+                crate::logging::warn_with_fields(
+                    "workflow_code.worker_extensions",
+                    "stored workflow Worker extension grants for later reconciliation",
+                    serde_json::json!({
+                        "agent_id": agent.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         Ok(())
     }
@@ -1344,5 +1353,56 @@ mod extension_grant_tests {
             "colliding-script",
         ));
         assert_eq!(unchanged.session_id(), session.id());
+    }
+
+    #[test]
+    fn workflow_worker_grants_remain_desired_state_when_immediate_sync_fails() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (_, agent) = KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let agent = app
+            .agents()
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to a worker");
+        let grant = ExtensionGrant::new(ExtensionKind::Skill, "worker-skill")
+            .from_source(crate::extension::ExtensionSource::Worker);
+
+        KernelSessionService::new(&mut app)
+            .grant_workflow_code_node_extensions(agent.id(), &[grant.clone()])
+            .expect("workflow apply should retain desired state when immediate sync fails");
+
+        let stored = app
+            .agents()
+            .get_agent(agent.id())
+            .expect("agent should remain present");
+        assert!(stored.has_extension_grant_from(
+            crate::extension::ExtensionSource::Worker,
+            ExtensionKind::Skill,
+            "worker-skill",
+        ));
+        let sync = stored
+            .worker_extension_grant_sync()
+            .expect("failed reconciliation should remain visible");
+        assert_eq!(
+            sync.state,
+            crate::extension::RemoteExtensionManifestSyncState::Failed
+        );
+        assert!(sync.last_error.is_some());
     }
 }

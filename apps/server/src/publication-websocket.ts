@@ -10,6 +10,13 @@ import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import {
+  authorizePublicationCaller,
+  PublicationCallerClaimsError,
+  publicationCallerAuthorizationFailure,
+  publicationInvocationCaller,
+  type VerifiedPublicationCallerClaims,
+} from "./publication-caller-claims.js"
 import { validateInput } from "./publication-parser.js"
 import { waitForWorkflowRunByInvocationRequestId } from "./publication-run-correlation.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
@@ -77,12 +84,20 @@ export function installPublicationWebSocket(
   app.server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname
     if (pathname !== invokePath) return
+    let caller: VerifiedPublicationCallerClaims | null
+    try {
+      caller = authorizePublicationCaller(request.headers, publication)
+    } catch (error) {
+      if (error instanceof PublicationCallerClaimsError) {
+        writeWebSocketAuthorizationFailure(socket, error)
+      } else {
+        socket.destroy(error instanceof Error ? error : undefined)
+      }
+      return
+    }
     webSocketServer.handleUpgrade(request, socket, head, (webSocket) => {
-      webSocketServer.emit("connection", webSocket, request)
+      void handlePublicationWebSocket(webSocket, request, publication, deps, caller)
     })
-  })
-  webSocketServer.on("connection", (webSocket, request) => {
-    void handlePublicationWebSocket(webSocket, request, publication, deps)
   })
   return webSocketServer
 }
@@ -92,6 +107,7 @@ async function handlePublicationWebSocket(
   _request: IncomingMessage,
   publication: WorkflowPublicationConfig,
   deps: GatewayDeps,
+  caller: VerifiedPublicationCallerClaims | null,
 ) {
   const state: WebSocketConnectionState = {
     pendingArtifacts: new Map(),
@@ -100,10 +116,31 @@ async function handlePublicationWebSocket(
     traces: createPublicationTraceStreamState(),
     started: false,
   }
+  const invocationCaller = caller
+    ? publicationInvocationCaller(caller, { transport: "websocket_json" })
+    : { type: "anonymous" }
   webSocket.on("message", (data) => {
-    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, { type: "anonymous" }, state)
+    void handlePublicationWebSocketMessage(webSocket, data, publication, deps, invocationCaller, state)
   })
   sendWebSocketJson(webSocket, { type: "ready", publication_id: publication.publication_id })
+}
+
+function writeWebSocketAuthorizationFailure(
+  socket: Duplex,
+  error: PublicationCallerClaimsError,
+): void {
+  const failure = publicationCallerAuthorizationFailure(error)
+  const body = JSON.stringify(failure.body)
+  const statusText = failure.statusCode === 403 ? "Forbidden" : "Unauthorized"
+  socket.end([
+    `HTTP/1.1 ${failure.statusCode} ${statusText}`,
+    "Cache-Control: no-store",
+    "Connection: close",
+    "Content-Type: application/json; charset=utf-8",
+    `Content-Length: ${Buffer.byteLength(body, "utf8")}`,
+    "",
+    body,
+  ].join("\r\n"))
 }
 
 async function handlePublicationWebSocketMessage(

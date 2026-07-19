@@ -189,7 +189,7 @@ pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
     );
 }
 
-fn dev_stub_public_inventory_enabled() -> bool {
+pub(crate) fn dev_stub_public_inventory_enabled() -> bool {
     std::env::var("ARROBA_PROVIDER_DEV_STUB")
         .ok()
         .is_some_and(|value| {

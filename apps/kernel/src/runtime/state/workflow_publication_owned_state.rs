@@ -91,7 +91,7 @@ impl KernelRuntimeOwnedState {
             request.agent_app_assets_dir.as_deref(),
         )?;
         let package_version = workflow_publication_package_version(request.agent_app.as_ref());
-        let package_digest = workflow_publication_package_digest(&package_files);
+        let package_digest = workflow_publication_package_digest(&package_files)?;
         let package_archive_base64 = workflow_publication_package_archive_base64(&package_files)?;
         Ok(LocalDaemonResponse::WorkflowPublicationPackageExported {
             publication,

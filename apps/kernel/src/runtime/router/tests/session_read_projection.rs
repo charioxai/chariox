@@ -291,15 +291,33 @@ async fn missing_session_inspection_uses_warmed_projection_without_app_lock() {
     }
 }
 
-#[tokio::test]
-async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
+fn session_inspection_projection_setup() -> (Arc<Mutex<DaemonApp>>, Box<CommandRouter>, String) {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
         .expect("session should be created");
     let session_id = session.id().to_string();
     let app = Arc::new(Mutex::new(app));
-    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let router = Box::new(CommandRouter::with_interactive_capacity(
+        Arc::clone(&app),
+        1,
+    ));
+    (app, router, session_id)
+}
+
+fn spawn_session_inspection_request(
+    router: &CommandRouter,
+    command_id: &'static str,
+    request: LocalDaemonRequest,
+) -> tokio::task::JoinHandle<Result<LocalDaemonResponse, DaemonError>> {
+    let command = KernelCommand::from_local_request(command_id, None, None, &request);
+    let router = router.clone();
+    tokio::spawn(async move { router.dispatch(command, request).await })
+}
+
+#[tokio::test]
+async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
+    let (app, router, session_id) = session_inspection_projection_setup();
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
         session_id: session_id.clone(),
@@ -342,84 +360,44 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
     };
 
     let app_guard = app.lock().await;
-    let list_agents_request = LocalDaemonRequest::ListAgents(ListAgentsRequest {
-        session_id: session_id.clone(),
-    });
-    let list_workflows_request = LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
-        session_id: session_id.clone(),
-    });
-    let resolve_workflow_request = LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
-        session_id: session_id.clone(),
-        workflow_ref: "inspection".to_string(),
-    });
-    let list_runs_request = LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
-        session_id: session_id.clone(),
-        workflow_ref: Some("inspection".to_string()),
-    });
-    let list_watchdogs_request =
+    let list_agents_task = spawn_session_inspection_request(
+        &router,
+        "cmd-inspection-agents",
+        LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session_id.clone(),
+        }),
+    );
+    let list_workflows_task = spawn_session_inspection_request(
+        &router,
+        "cmd-inspection-workflows",
+        LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+            session_id: session_id.clone(),
+        }),
+    );
+    let resolve_workflow_task = spawn_session_inspection_request(
+        &router,
+        "cmd-inspection-resolve-workflow",
+        LocalDaemonRequest::ResolveWorkflow(ResolveWorkflowRequest {
+            session_id: session_id.clone(),
+            workflow_ref: "inspection".to_string(),
+        }),
+    );
+    let list_runs_task = spawn_session_inspection_request(
+        &router,
+        "cmd-inspection-runs",
+        LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+            session_id: session_id.clone(),
+            workflow_ref: Some("inspection".to_string()),
+        }),
+    );
+    let list_watchdogs_task = spawn_session_inspection_request(
+        &router,
+        "cmd-inspection-watchdogs",
         LocalDaemonRequest::ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest {
             session_id: session_id.clone(),
             workflow_ref: Some("inspection".to_string()),
-        });
-
-    let list_agents_router = router.clone();
-    let list_agents_task = tokio::spawn(async move {
-        let command = KernelCommand::from_local_request(
-            "cmd-inspection-agents",
-            None,
-            None,
-            &list_agents_request,
-        );
-        list_agents_router
-            .dispatch(command, list_agents_request)
-            .await
-    });
-    let list_workflows_router = router.clone();
-    let list_workflows_task = tokio::spawn(async move {
-        let command = KernelCommand::from_local_request(
-            "cmd-inspection-workflows",
-            None,
-            None,
-            &list_workflows_request,
-        );
-        list_workflows_router
-            .dispatch(command, list_workflows_request)
-            .await
-    });
-    let resolve_workflow_router = router.clone();
-    let resolve_workflow_task = tokio::spawn(async move {
-        let command = KernelCommand::from_local_request(
-            "cmd-inspection-resolve-workflow",
-            None,
-            None,
-            &resolve_workflow_request,
-        );
-        resolve_workflow_router
-            .dispatch(command, resolve_workflow_request)
-            .await
-    });
-    let list_runs_router = router.clone();
-    let list_runs_task = tokio::spawn(async move {
-        let command = KernelCommand::from_local_request(
-            "cmd-inspection-runs",
-            None,
-            None,
-            &list_runs_request,
-        );
-        list_runs_router.dispatch(command, list_runs_request).await
-    });
-    let list_watchdogs_router = router.clone();
-    let list_watchdogs_task = tokio::spawn(async move {
-        let command = KernelCommand::from_local_request(
-            "cmd-inspection-watchdogs",
-            None,
-            None,
-            &list_watchdogs_request,
-        );
-        list_watchdogs_router
-            .dispatch(command, list_watchdogs_request)
-            .await
-    });
+        }),
+    );
 
     tokio::task::yield_now().await;
     assert!(list_agents_task.is_finished());

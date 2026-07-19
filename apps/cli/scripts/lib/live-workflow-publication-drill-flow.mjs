@@ -5,7 +5,7 @@ const { createDefaultShellContext, parseShellCommand } = await import('../../../
 const { executeShellCommand } = await import('../../../../packages/kernel-client/dist/shell-executor.js')
 const { createSessionRequest, attachToSessionRequest, spawnAgentRequest, launchProviderRunRequest, createWorkflowRequest, addWorkflowNodeRequest, updateWorkflowNodeInstructionsRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, getSessionStateRequest, endSessionRequest, createWorkflowScheduleRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './drill-artifacts.mjs'
-import { REAL_DASHBOARD_PROMPT, buildRustBinary, cliRoot, createContainerPortablePackage, createSelfSignedCertificate, envFlag, freePort, hasAcceptedRunMetadata, logStep, nowStamp, realDashboardOptionsFromEnv, removeDockerContainer, removeDockerImage, repoRoot, run, sseEventNames, startProcess, startServeWithProviderPrompt, stopProcess, tail, variant, websocketUrlFromHttp } from './live-workflow-publication-drill-runtime.mjs'
+import { REAL_DASHBOARD_PROMPT, buildRustBinary, cliRoot, createContainerPortablePackage, createSelfSignedCertificate, envFlag, freePort, hasAcceptedRunMetadata, logStep, nowStamp, readSseUntilEvent, realDashboardOptionsFromEnv, removeDockerContainer, removeDockerImage, repoRoot, run, sseEventNames, startProcess, startServeWithProviderPrompt, stopProcess, tail, variant, websocketUrlFromHttp, withPublicationDrillProviderInventory } from './live-workflow-publication-drill-runtime.mjs'
 import { invokePublicationWebSocket } from './live-workflow-publication-drill-runtime.mjs'
 import { runHumanHttpBrowserDrill, runHumanHttpHtmlFinalBrowserDrill, runHumanHttpRootFormBrowserDrill, runSharedViewerBrowserDrill } from './live-workflow-publication-drill-browser.mjs'
 import { assertGatewayDoesNotListen, assertPackageDoesNotContain, assertPublicationRuntimeSessionHidden, collectPublicationInvocationDiagnostic, createUnavailableProviderPackage, waitForGateway, waitForKernel, waitForPublicationStatusLatestOutput, waitForRegisteredPublicationEndpoint, waitForRelayTarget, waitForScheduledWorkflowRun, waitForTcpPort } from './live-workflow-publication-drill-waiters.mjs'
@@ -49,7 +49,7 @@ export async function runLiveWorkflowPublicationDrill() {
   const gatewayHttpsUrl = `https://127.0.0.1:${gatewayHttpsPort}`
   const relayToken = `publication-drill-relay-${process.pid}`
   const daemonAlias = `publication-drill-${process.pid}`
-  const env = {
+  const env = withPublicationDrillProviderInventory({
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
@@ -64,7 +64,7 @@ export async function runLiveWorkflowPublicationDrill() {
     ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
     ARROBA_RELAY_URL: relayUrl,
     ARROBA_RELAY_TOKEN: relayToken,
-  }
+  })
   if (realDashboard?.useHostProviderHome && hostHome) {
     if (!env.CODEX_HOME) env.CODEX_HOME = path.join(hostHome, '.codex')
     if (!env.ARROBA_CLAUDE_CONFIG) env.ARROBA_CLAUDE_CONFIG = path.join(hostHome, '.claude.json')
@@ -437,10 +437,10 @@ export async function runLiveWorkflowPublicationDrill() {
         }],
       }),
     })
-    const apiSseBody = await apiSseResponse.text()
-    if (apiSseResponse.status !== 200 || !apiSseBody.includes('event: queued')) {
-      throw new Error(`expected API SSE queued event, got ${apiSseResponse.status}: ${apiSseBody.slice(0, 400)}`)
+    if (apiSseResponse.status !== 200) {
+      throw new Error(`expected API SSE queued event, got ${apiSseResponse.status}: ${(await apiSseResponse.text()).slice(0, 400)}`)
     }
+    const apiSseBody = await readSseUntilEvent(apiSseResponse, 'queued')
     logStep('api_sse_queued_ok')
     await stopProcess(gateway)
     gateway = null

@@ -255,10 +255,13 @@ impl KernelRuntimeState {
     pub(crate) async fn list_relay_leased_agent_extension_catalog(
         &self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
     ) -> Result<Vec<crate::extension::ExtensionCatalogEntry>, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
+        let requesting_home_kernel_id = requesting_home_kernel_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app).list_leased_agent_extension_catalog(&leased_agent_id)
+            RemoteLeaseRuntime::new(app)
+                .list_leased_agent_extension_catalog(&leased_agent_id, &requesting_home_kernel_id)
         })
         .await
     }
@@ -266,12 +269,17 @@ impl KernelRuntimeState {
     pub(crate) async fn update_relay_leased_agent_worker_extension_grants(
         &self,
         leased_agent_id: &str,
+        requesting_home_kernel_id: &str,
         grants: Vec<crate::extension::ExtensionGrant>,
     ) -> Result<(String, Vec<crate::extension::ExtensionGrant>), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
+        let requesting_home_kernel_id = requesting_home_kernel_id.to_string();
         self.with_app_side_effect(move |app| {
-            RemoteLeaseRuntime::new(app)
-                .update_leased_agent_worker_extension_grants(&leased_agent_id, grants)
+            RemoteLeaseRuntime::new(app).update_leased_agent_worker_extension_grants(
+                &leased_agent_id,
+                &requesting_home_kernel_id,
+                grants,
+            )
         })
         .await
     }
@@ -605,7 +613,9 @@ impl KernelRuntimeState {
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
                 run,
-                !output_chunks.is_empty() || !completions.is_empty(),
+                output_chunks.iter().any(|chunk| {
+                    chunk.kind != crate::terminal::TerminalOutputKind::ProviderTerminal
+                }) || !completions.is_empty(),
             )
         });
         let session_id = session_id.to_string();

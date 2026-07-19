@@ -1,44 +1,54 @@
 //! Claude native TUI hook files and launch arguments.
 
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
 
-use super::launch_args::{claude_mcp_config, normalized_claude_model};
+use super::launch_args::normalized_claude_model;
+use super::mcp_config::{
+    create_claude_runtime_files_root, materialize_request_claude_mcp_config, ClaudeRuntimeFilesRoot,
+};
 
 pub(super) struct ClaudeNativeTuiFiles {
+    root: ClaudeRuntimeFilesRoot,
     pub(super) events_file: PathBuf,
     pub(super) context_file: PathBuf,
     pub(super) context_response_dir: PathBuf,
     pub(super) permission_response_dir: PathBuf,
     pub(super) settings_file: PathBuf,
+    mcp_config_file: Option<PathBuf>,
+}
+
+impl ClaudeNativeTuiFiles {
+    pub(super) fn materialize_mcp_config(
+        &mut self,
+        request: &LaunchProviderRequest,
+    ) -> Result<(), DaemonError> {
+        self.mcp_config_file = materialize_request_claude_mcp_config(request, &self.root)?;
+        Ok(())
+    }
+
+    pub(super) fn mcp_config_file(&self) -> Option<&Path> {
+        self.mcp_config_file.as_deref()
+    }
+
+    pub(super) fn persist_for_launch(&mut self) {
+        self.root.persist_for_launch();
+    }
 }
 
 pub(super) fn prepare_claude_native_tui_files(
     request: &LaunchProviderRequest,
 ) -> Result<ClaudeNativeTuiFiles, DaemonError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    let root = env::temp_dir().join(format!(
-        "arroba-claude-remote-native-{}-{now}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
-        operation: "prepare claude native tui files",
-        message: error.to_string(),
-    })?;
-    let events_file = root.join("events.jsonl");
-    let context_file = root.join("hidden-context.txt");
-    let context_response_dir = root.join("hook-context-responses");
-    let permission_response_dir = root.join("permission-responses");
-    let settings_file = root.join("settings.json");
-    let hook_handler_file = root.join("hook-handler.mjs");
+    let root = create_claude_runtime_files_root()?;
+    let events_file = root.path().join("events.jsonl");
+    let context_file = root.path().join("hidden-context.txt");
+    let context_response_dir = root.path().join("hook-context-responses");
+    let permission_response_dir = root.path().join("permission-responses");
+    let settings_file = root.path().join("settings.json");
+    let hook_handler_file = root.path().join("hook-handler.mjs");
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
@@ -72,6 +82,7 @@ pub(super) fn prepare_claude_native_tui_files(
         "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
             == AgentPermissionLevel::Yolo,
         "hooks": {
+            "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -88,11 +99,13 @@ pub(super) fn prepare_claude_native_tui_files(
         message: error.to_string(),
     })?;
     Ok(ClaudeNativeTuiFiles {
+        root,
         events_file,
         context_file,
         context_response_dir,
         permission_response_dir,
         settings_file,
+        mcp_config_file: None,
     })
 }
 
@@ -120,7 +133,7 @@ fn claude_native_hook_command(
 fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { setTimeout as setCallbackTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -159,6 +172,9 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
+if (eventName === "SessionStart") {
+  try { unlinkSync(join(dirname(process.argv[1]), "mcp-config.json")) } catch {}
+}
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
@@ -243,6 +259,7 @@ process.exit(0)
 pub(super) fn claude_native_tui_args(
     request: &LaunchProviderRequest,
     settings_file: &Path,
+    mcp_config_file: Option<&Path>,
 ) -> Result<Vec<String>, DaemonError> {
     let mut args = vec![
         "--settings".to_string(),
@@ -281,18 +298,11 @@ pub(super) fn claude_native_tui_args(
     if request.permission_level.unwrap_or_default() == AgentPermissionLevel::Yolo {
         args.push("--allow-dangerously-skip-permissions".to_string());
     }
-    if let Some(config) = claude_mcp_config(
-        &request.mcp_servers,
-        request
-            .runtime_mcp_binding
-            .as_ref()
-            .map(|binding| binding.server_url.as_str()),
-        request
-            .runtime_mcp_binding
-            .as_ref()
-            .map(|binding| binding.auth_token.as_str()),
-    )? {
-        args.extend(["--mcp-config".to_string(), config]);
+    if let Some(config_file) = mcp_config_file {
+        args.extend([
+            "--mcp-config".to_string(),
+            config_file.display().to_string(),
+        ]);
         args.push("--strict-mcp-config".to_string());
         if request.runtime_mcp_binding.is_some() {
             args.extend(["--allowedTools".to_string(), "mcp__arroba__*".to_string()]);
@@ -304,9 +314,13 @@ pub(super) fn claude_native_tui_args(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
     use std::path::Path;
+    use std::process::{Command, Stdio};
 
-    use crate::provider::{AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState};
+    use crate::provider::{
+        AgentPermissionLevel, LaunchProviderRequest, ProviderResumeState, RuntimeMcpBinding,
+    };
 
     use super::{
         claude_native_hook_handler, claude_native_tui_args, prepare_claude_native_tui_files,
@@ -323,6 +337,66 @@ mod tests {
     }
 
     #[test]
+    fn session_start_hook_removes_materialized_mcp_credentials() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-1",
+            "claude",
+            "claude",
+            "default",
+            "claude-sonnet-4-6",
+        )
+        .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+            "http://127.0.0.1:43120/mcp",
+            "private-token",
+        ));
+        let mut native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        native
+            .materialize_mcp_config(&request)
+            .expect("MCP config should materialize");
+        let config_path = native
+            .mcp_config_file()
+            .expect("MCP config path should exist")
+            .to_path_buf();
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook_handler)
+            .env("ARROBA_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("hook handler should start");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(br#"{"hook_event_name":"SessionStart"}"#)
+            .expect("hook input should write");
+
+        let output = child
+            .wait_with_output()
+            .expect("hook handler should finish");
+
+        assert!(
+            output.status.success(),
+            "hook handler failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!config_path.exists());
+        assert!(std::fs::read_to_string(&native.events_file)
+            .expect("hook event should be recorded")
+            .contains("SessionStart"));
+    }
+
+    #[test]
     fn native_tui_resumes_requested_claude_session() {
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -335,7 +409,7 @@ mod tests {
             "claude-session-1",
         ));
 
-        let args = claude_native_tui_args(&request, Path::new("settings.json"))
+        let args = claude_native_tui_args(&request, Path::new("settings.json"), None)
             .expect("Claude native TUI args should resolve");
 
         assert!(args

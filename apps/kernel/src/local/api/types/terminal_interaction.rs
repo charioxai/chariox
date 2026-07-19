@@ -1,5 +1,21 @@
 use super::*;
 
+use std::fmt;
+
+use zeroize::Zeroize;
+
+pub const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX: &str =
+    "deployment-credential-enrollment:";
+pub const DEPLOYMENT_CREDENTIAL_ENROLLMENT_INTERACTION_ID_PREFIX: &str = "credential-enrollment:";
+
+pub fn deployment_credential_enrollment_service_subject(enrollment_id: &str) -> String {
+    format!("{DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX}{enrollment_id}")
+}
+
+pub fn deployment_credential_enrollment_interaction_id(enrollment_id: &str) -> String {
+    format!("{DEPLOYMENT_CREDENTIAL_ENROLLMENT_INTERACTION_ID_PREFIX}{enrollment_id}")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRuntimeNoticesRequest {
     pub session_id: String,
@@ -13,6 +29,62 @@ pub struct RespondToInteractionRequest {
     pub choice_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_reply: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArmDeploymentCredentialEnrollmentRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub agent_id: String,
+    pub enrollment_id: String,
+    pub profile_id: String,
+    pub target_version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestCredentialEnrollmentInteractionRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub enrollment_id: String,
+    pub profile_id: String,
+    pub target_version: u64,
+    pub provider_authorization_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<u64>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialEnrollmentInteractionStatus {
+    Submitted,
+    Canceled,
+    TimedOut,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CredentialEnrollmentCallback(String);
+
+impl CredentialEnrollmentCallback {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CredentialEnrollmentCallback {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialEnrollmentCallback([REDACTED])")
+    }
+}
+
+impl Drop for CredentialEnrollmentCallback {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

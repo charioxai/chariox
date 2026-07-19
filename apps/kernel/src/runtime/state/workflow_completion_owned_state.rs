@@ -47,65 +47,54 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
         );
         if completion_snapshot.is_none() && !has_valid_pending_final_output {
-            let message = "provider completed workflow turn without a validated workflow output";
-            let provider_diagnostic =
-                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id));
-            let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
-                provider_diagnostic
+            if let Some(provider_diagnostic) =
+                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id))
             {
-                (
-                    crate::session::WorkflowFailureKind::ProviderFailure,
-                    diagnostic.clone(),
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
+                self.workflow_record_failure(
+                    session_id,
+                    workflow_run_id,
+                    &crate::session::WorkflowFailureEvent::new(
+                        crate::session::WorkflowFailureKind::ProviderFailure,
+                        workflow_node_run_id,
+                        Vec::new(),
+                        provider_diagnostic.clone(),
                     ),
-                )
-            } else {
-                (
-                    crate::session::WorkflowFailureKind::MissingStructuredOutput,
-                    message.to_string(),
-                    format!("Workflow run `{workflow_run_id}` failed: {message}."),
-                )
-            };
-            self.workflow_record_failure(
-                session_id,
-                workflow_run_id,
-                &crate::session::WorkflowFailureEvent::new(
-                    failure_kind,
+                );
+                self.session_store.write().fail_workflow_node_run(
+                    session_id,
+                    workflow_run_id,
                     workflow_node_run_id,
-                    Vec::new(),
-                    failure_message,
-                ),
-            );
-            self.session_store.write().fail_workflow_node_run(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            let _ = self.release_workflow_node_workspace_claim(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            );
-            self.record_notice(
-                session_id,
-                provider_run_id,
-                self.attachment_store
-                    .list_session_attachment_ids(session_id),
-                notice_message,
-            );
-            self.workflow_maybe_start_next_queued_prompt(session_id);
-            self.persist_workflow_completion_session(session_id)?;
-            return Ok(WorkflowPromptDispatches::default());
+                )?;
+                let _ = self.release_workflow_node_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+                self.record_notice(
+                    session_id,
+                    provider_run_id,
+                    self.attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
+                    ),
+                );
+                self.workflow_maybe_start_next_queued_prompt(session_id);
+                self.persist_workflow_completion_session(session_id)?;
+                return Ok(WorkflowPromptDispatches::default());
+            }
         }
         let max_turns = self.workflow_max_turns(session_id);
-        let completion_result = self.session_store.write().complete_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            completion_snapshot.clone(),
-            max_turns,
-        );
+        let completion_result = self
+            .session_store
+            .write()
+            .complete_workflow_node_run_after_provider_turn(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                completion_snapshot.clone(),
+                max_turns,
+            );
         let update = match completion_result {
             Ok(update) => update,
             Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
@@ -186,7 +175,7 @@ impl KernelRuntimeOwnedState {
                 ),
             );
         }
-        if update.workflow_run.final_output_valid() == Some(false) {
+        if let Some(failure) = update.run_output_validation_failure.as_ref() {
             self.workflow_record_failure(
                 session_id,
                 workflow_run_id,
@@ -194,14 +183,60 @@ impl KernelRuntimeOwnedState {
                     crate::session::WorkflowFailureKind::WorkflowRunOutputValidationFailed,
                     workflow_node_run_id,
                     Vec::new(),
-                    update
-                        .workflow_run
-                        .final_output_warning()
-                        .unwrap_or("workflow run output validation failed"),
+                    failure.message.clone(),
                 ),
             );
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                if failure.retry_scheduled {
+                    format!(
+                        "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                        failure.attempt, failure.max_attempts, failure.message
+                    )
+                } else {
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
+                        failure.attempt, failure.max_attempts, failure.message
+                    )
+                },
+            );
         }
-        if update.validation_warnings.is_empty() {
+        if let Some(failure) = update.missing_output_failure.as_ref() {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    failure.message.clone(),
+                ),
+            );
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                if failure.retry_scheduled {
+                    format!(
+                        "Workflow run `{workflow_run_id}` produced no structured output on attempt {}/{}; a corrective turn was scheduled.",
+                        failure.attempt, failure.max_attempts
+                    )
+                } else {
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed after producing no structured output on attempt {}/{}.",
+                        failure.attempt, failure.max_attempts
+                    )
+                },
+            );
+        }
+        if update.validation_warnings.is_empty()
+            && update.missing_output_failure.is_none()
+            && update.run_output_validation_failure.is_none()
+        {
             let _ = self
                 .session_store
                 .write()
@@ -225,6 +260,7 @@ impl KernelRuntimeOwnedState {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completing => "is completing",
             crate::session::WorkflowRunStatus::Completed => "completed",
+            crate::session::WorkflowRunStatus::Failed => "failed",
             crate::session::WorkflowRunStatus::Stopped => "stopped",
             _ => "updated",
         };

@@ -155,6 +155,22 @@ async fn leased_projection_pump_gate_allows_finished_or_missing_task() {
     assert!(should_start_leased_projection_pump(Some(&task)));
 }
 
+#[tokio::test]
+async fn leased_projection_pump_does_not_cancel_slow_work() {
+    let (completed_tx, completed_rx) = oneshot::channel();
+
+    await_leased_projection_pump(
+        async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _ = completed_tx.send(());
+        },
+        Duration::from_millis(1),
+    )
+    .await;
+
+    assert!(completed_rx.await.is_ok());
+}
+
 #[test]
 fn cloud_presence_refresh_interval_is_stable_and_bounded() {
     let first = cloud_presence_refresh_interval("daemon-a");

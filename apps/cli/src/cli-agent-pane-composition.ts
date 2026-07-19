@@ -252,8 +252,10 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     replaceTranscriptEntries: (entries, agentId) => deps.replaceTranscriptEntries(entries, agentId),
     applyResponseLayout: deps.applyResponseLayout,
     rebuildAuxiliaryAgentPane,
+    isCurrentSession: (sessionId) => deps.isAttached() && deps.sessionState().id === sessionId,
   })
   const refreshAgentPanes = agentPaneRefreshController.refresh
+  const refreshAgentHistories = agentPaneRefreshController.refreshAgentHistories
   const shouldRefreshAgentPanesForSessionChange = agentPaneRefreshController.shouldRefreshForSessionChange
 
   return {
@@ -280,6 +282,7 @@ export function createCliAgentPaneComposition(deps: CliAgentPaneCompositionDeps)
     appendProviderChunkToAgentPane,
     appendToolUpdateToAgentPane,
     refreshAgentPanes,
+    refreshAgentHistories,
     shouldRefreshAgentPanesForSessionChange,
   }
 }

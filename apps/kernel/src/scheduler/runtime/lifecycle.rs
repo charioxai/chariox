@@ -73,66 +73,55 @@ pub fn on_workflow_prompt_completed(
         workflow_node_run_id,
     );
     if completion_snapshot.is_none() && !has_valid_pending_final_output {
-        let message = "provider completed workflow turn without a validated workflow output";
-        let provider_diagnostic =
-            provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id));
-        let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
-            provider_diagnostic
+        if let Some(provider_diagnostic) =
+            provider_run_id.and_then(|run_id| provider_run_terminal_diagnostic(app, run_id))
         {
-            (
-                WorkflowFailureKind::ProviderFailure,
-                diagnostic.clone(),
-                format!(
-                    "Workflow run `{workflow_run_id}` failed after provider turn failure: {diagnostic}"
-                ),
-            )
-        } else {
-            (
-                WorkflowFailureKind::MissingStructuredOutput,
-                message.to_string(),
-                format!("Workflow run `{workflow_run_id}` failed: {message}."),
-            )
-        };
-        app.sessions_mut().fail_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-        )?;
-        record_and_route_workflow_failure(
-            app,
-            session_id,
-            workflow_run_id,
-            &WorkflowFailureEvent::new(
-                failure_kind,
+            app.sessions_mut().fail_workflow_node_run(
+                session_id,
+                workflow_run_id,
                 workflow_node_run_id,
-                Vec::new(),
-                failure_message,
-            ),
-        );
-        app.record_notice(
-            session_id,
-            provider_run_id,
-            app.attachments().list_session_attachment_ids(session_id),
-            notice_message,
-        );
-        maybe_start_next_queued_workflow_prompt(app, session_id);
-        persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
-        return Ok(());
+            )?;
+            record_and_route_workflow_failure(
+                app,
+                session_id,
+                workflow_run_id,
+                &WorkflowFailureEvent::new(
+                    WorkflowFailureKind::ProviderFailure,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    provider_diagnostic.clone(),
+                ),
+            );
+            app.record_notice(
+                session_id,
+                provider_run_id,
+                app.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
+                ),
+            );
+            maybe_start_next_queued_workflow_prompt(app, session_id);
+            persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
+            return Ok(());
+        }
     }
     let max_turns = workflow_max_turns(app, session_id);
     let completion_result = {
-        app.sessions_mut().complete_workflow_node_run(
-            session_id,
-            workflow_run_id,
-            workflow_node_run_id,
-            completion_snapshot.clone(),
-            max_turns,
-        )
+        app.sessions_mut()
+            .complete_workflow_node_run_after_provider_turn(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                completion_snapshot.clone(),
+                max_turns,
+            )
     };
     let WorkflowCompletionUpdate {
         workflow_run,
         dispatches,
         validation_warnings,
+        missing_output_failure,
+        run_output_validation_failure,
     } = match completion_result {
         Ok(update) => update,
         Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
@@ -212,7 +201,7 @@ pub fn on_workflow_prompt_completed(
             ),
         );
     }
-    if workflow_run.final_output_valid() == Some(false) {
+    if let Some(failure) = run_output_validation_failure.as_ref() {
         record_and_route_workflow_failure(
             app,
             session_id,
@@ -221,13 +210,59 @@ pub fn on_workflow_prompt_completed(
                 WorkflowFailureKind::WorkflowRunOutputValidationFailed,
                 workflow_node_run_id,
                 Vec::new(),
-                workflow_run
-                    .final_output_warning()
-                    .unwrap_or("workflow run output validation failed"),
+                failure.message.clone(),
             ),
         );
+        app.record_notice(
+            session_id,
+            provider_run_id,
+            app.attachments().list_session_attachment_ids(session_id),
+            if failure.retry_scheduled {
+                format!(
+                    "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                    failure.attempt, failure.max_attempts, failure.message
+                )
+            } else {
+                format!(
+                    "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
+                    failure.attempt, failure.max_attempts, failure.message
+                )
+            },
+        );
     }
-    if validation_warnings.is_empty() {
+    if let Some(failure) = missing_output_failure.as_ref() {
+        record_and_route_workflow_failure(
+            app,
+            session_id,
+            workflow_run_id,
+            &WorkflowFailureEvent::new(
+                WorkflowFailureKind::MissingStructuredOutput,
+                workflow_node_run_id,
+                Vec::new(),
+                failure.message.clone(),
+            ),
+        );
+        app.record_notice(
+            session_id,
+            provider_run_id,
+            app.attachments().list_session_attachment_ids(session_id),
+            if failure.retry_scheduled {
+                format!(
+                    "Workflow run `{workflow_run_id}` produced no structured output on attempt {}/{}; a corrective turn was scheduled.",
+                    failure.attempt, failure.max_attempts
+                )
+            } else {
+                format!(
+                    "Workflow run `{workflow_run_id}` failed after producing no structured output on attempt {}/{}.",
+                    failure.attempt, failure.max_attempts
+                )
+            },
+        );
+    }
+    if validation_warnings.is_empty()
+        && missing_output_failure.is_none()
+        && run_output_validation_failure.is_none()
+    {
         let updated = app.sessions_mut().mark_workflow_turn_validated_completed(
             session_id,
             workflow_run_id,

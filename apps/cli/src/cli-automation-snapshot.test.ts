@@ -26,6 +26,14 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     primary_provider: "opencode",
     primary_model: "sonnet",
     primary_effort: "medium",
+    worktree_id: "/worker/repo",
+    remote_execution: {
+      worker_machine_id: "machine-1",
+      worker_kernel_id: "kernel-1",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "provider-run-1",
+    },
     visible_in_freeform: false,
     state: "Idle",
     is_processing: false,
@@ -100,6 +108,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
   } as unknown as RuntimeSession
 
   const snapshot = buildCliAutomationSnapshot({
+    attachmentId: () => "attachment-1",
     workspaceScreenMode: () => "workflow",
     workflowScreenActive: () => true,
     daemonDisconnected: () => false,
@@ -138,6 +147,7 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
   })
 
   assert.equal(snapshot.screen, "workflow")
+  assert.equal(snapshot.attachmentId, "attachment-1")
   assert.equal((snapshot.session as { id: string }).id, "session-1")
   assert.deepEqual((snapshot.session as { agents: unknown[] }).agents[0], {
     id: "agent-1",
@@ -152,6 +162,14 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     primaryProvider: "opencode",
     primaryModel: "sonnet",
     primaryEffort: "medium",
+    worktreeId: "/worker/repo",
+    remoteExecution: {
+      workerMachineId: "machine-1",
+      workerKernelId: "kernel-1",
+      executionLeaseId: "lease-1",
+      leasedAgentId: "leased-agent-1",
+      activeWorkerProviderRunId: "provider-run-1",
+    },
     visibleInFreeform: false,
     state: "Idle",
     isProcessing: false,

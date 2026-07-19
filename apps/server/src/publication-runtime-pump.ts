@@ -50,7 +50,8 @@ function publicationRuntimeAttachmentKey(publication: WorkflowPublicationConfig,
 
 function publicationRuntimeClientId(publication: WorkflowPublicationConfig) {
   const safePublicationId = publication.publication_id.replace(/[^A-Za-z0-9_.-]/g, "_")
-  return `arroba-publication-gateway-${process.pid}-${safePublicationId}`
+  const safeSessionId = publication.session_id.replace(/[^A-Za-z0-9_.-]/g, "_")
+  return `arroba-publication-gateway-${process.pid}-${safePublicationId}-${safeSessionId}`
 }
 
 function sessionAttachedId(response: unknown) {

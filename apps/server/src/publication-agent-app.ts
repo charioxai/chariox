@@ -1,4 +1,13 @@
 import { readFile, stat } from "node:fs/promises"
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs"
 import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
 
@@ -24,6 +33,11 @@ import {
 import {
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
+import {
+  publicationCallerForRequest,
+  publicationInvocationCaller,
+  type VerifiedPublicationCallerClaims,
+} from "./publication-caller-claims.js"
 import {
   forwardHumanHttpResult,
 } from "./publication-human-http.js"
@@ -65,6 +79,82 @@ type AgentAppReply = {
 
 const AGENT_APP_AUDIT_PATH = "/.well-known/arroba/agent-app/audit-log"
 const AGENT_APP_AUDIT_TOKEN = randomUUID()
+const MAX_AGENT_APP_AUDIT_URL_BYTES = 8 * 1024
+let configuredAgentAppAuditUrl: string | undefined
+
+export function consumeAgentAppAuditUrlFromEnv(): void {
+  const directUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  const urlFile = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE?.trim()
+  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL
+  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+  if (directUrl && urlFile) throw new Error("publication audit URL and URL file cannot both be configured")
+  if (directUrl) {
+    configuredAgentAppAuditUrl = normalizeAgentAppAuditUrl(directUrl)
+    return
+  }
+  if (!urlFile) return
+  configuredAgentAppAuditUrl = readPrivateAgentAppAuditUrlFile(urlFile)
+}
+
+export function readPrivateAgentAppAuditUrlFile(path: string): string {
+  let descriptor: number
+  try {
+    descriptor = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  } catch (error) {
+    throw new Error(`publication audit URL file could not be opened safely: ${String(error)}`)
+  }
+  try {
+    const metadata = fstatSync(descriptor)
+    const currentUid = process.getuid?.()
+    if (
+      !metadata.isFile()
+      || (metadata.mode & 0o077) !== 0
+      || (currentUid !== undefined && metadata.uid !== currentUid)
+      || metadata.nlink !== 1
+      || metadata.size > MAX_AGENT_APP_AUDIT_URL_BYTES
+    ) {
+      throw new Error(
+        "publication audit URL file must be a bounded, single-link owned regular file with mode 0600",
+      )
+    }
+    const pathMetadata = lstatSync(path)
+    if (
+      !pathMetadata.isFile()
+      || pathMetadata.isSymbolicLink()
+      || pathMetadata.dev !== metadata.dev
+      || pathMetadata.ino !== metadata.ino
+    ) {
+      throw new Error("publication audit URL file changed while it was being consumed")
+    }
+    unlinkSync(path)
+    if (fstatSync(descriptor).nlink !== 0) {
+      throw new Error("publication audit URL file was not consumed from its validated descriptor")
+    }
+    return normalizeAgentAppAuditUrl(readFileSync(descriptor, "utf8"))
+  } finally {
+    closeSync(descriptor)
+  }
+}
+
+function normalizeAgentAppAuditUrl(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error("publication audit URL must not be empty")
+  let url: URL
+  try {
+    url = new URL(trimmed)
+  } catch {
+    throw new Error("publication audit URL must be an absolute HTTP(S) URL")
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:")
+    || url.username !== ""
+    || url.password !== ""
+    || url.hash !== ""
+  ) {
+    throw new Error("publication audit URL must be an absolute HTTP(S) URL without credentials or fragments")
+  }
+  return url.href
+}
 
 export function isAgentAppPublication(publication: WorkflowPublicationConfig): boolean {
   return publication.agent_app?.enabled === true
@@ -108,7 +198,8 @@ async function invokeAgentAppRoute(
   deps: GatewayDeps,
 ) {
   const prompt = promptFromRoute(request.url, route)
-  const callerSession = agentAppCallerSession(request.headers, randomUUID)
+  const caller = publicationCallerForRequest(request)
+  const callerSession = agentAppCallerSession(request.headers, randomUUID, caller)
   if (callerSession.setCookie) reply.header("set-cookie", callerSession.setCookie)
   const requestId = `agentapp_${Date.now()}_${Math.random().toString(16).slice(2)}`
   rememberAgentAppInvocationRoute(publication, requestId, route, {
@@ -124,6 +215,7 @@ async function invokeAgentAppRoute(
         lease: queuedLease,
         requestId,
         callerKey: callerSession.callerKey,
+        caller,
         deps,
       })
     })
@@ -145,6 +237,7 @@ async function invokeAgentAppRoute(
     lease,
     requestId,
     callerKey: callerSession.callerKey,
+    caller,
     deps,
   })
   return forwardHumanHttpResult(reply as never, selectedPublication, result, requestId)
@@ -157,24 +250,22 @@ async function invokeSelectedAgentAppRoute(options: {
   lease: AgentAppReplicaLease
   requestId: string
   callerKey: string
+  caller: VerifiedPublicationCallerClaims | null
   deps: GatewayDeps
 }): Promise<{ selectedPublication: WorkflowPublicationConfig; result: WorkflowInvocationResult }> {
   const selectedPublication = options.lease.publication
   const invocation: NormalizedInvocation = {
     publication_id: selectedPublication.publication_id,
     request_id: options.requestId,
-    caller: {
-      type: "anonymous",
-      proof: {
-        transport: "agent_app_human_http",
-        route: options.route.path,
-        agent_app_session: options.callerKey,
-        agent_app_request_id: options.requestId,
-        replica_session_id: selectedPublication.session_id,
-        agent_app_actions: routeAgentAppActions(options.publication, options.route),
-        agent_app_audit: agentAppAuditProof(),
-      },
-    },
+    caller: publicationInvocationCaller(options.caller, {
+      transport: "agent_app_human_http",
+      route: options.route.path,
+      agent_app_session: options.callerKey,
+      agent_app_request_id: options.requestId,
+      replica_session_id: selectedPublication.session_id,
+      agent_app_actions: routeAgentAppActions(options.publication, options.route),
+      agent_app_audit: agentAppAuditProof(),
+    }),
     input: { prompt: options.prompt },
     mode: "async",
   }
@@ -242,7 +333,8 @@ function normalizeAuditEntry(value: unknown): PublicationDeploymentLogEntry | nu
 }
 
 function agentAppAuditProof(): { url: string; token: string } | undefined {
-  const explicitUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  const explicitUrl = configuredAgentAppAuditUrl
+    ?? process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
   if (explicitUrl) {
     return { url: explicitUrl, token: AGENT_APP_AUDIT_TOKEN }
   }
@@ -296,9 +388,14 @@ async function invokeHttpAction(
     method: transport.method ?? "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
+    redirect: "manual",
+    signal: AbortSignal.timeout(30_000),
   })
+  if (response.status >= 300 && response.status < 400) {
+    throw new Error("agent app action redirects are forbidden")
+  }
   const contentType = response.headers.get("content-type") ?? "application/json; charset=utf-8"
-  const text = await response.text()
+  const text = await readBoundedAgentAppActionResponse(response, 1_048_576)
   let body: unknown = text
   if (contentType.includes("application/json")) {
     try {
@@ -308,6 +405,36 @@ async function invokeHttpAction(
     }
   }
   return { status: response.status, contentType, body }
+}
+
+async function readBoundedAgentAppActionResponse(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get("content-length"))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel()
+    throw new Error("agent app action response exceeds the byte limit")
+  }
+  if (!response.body) return ""
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let byteLength = 0
+  try {
+    while (true) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      byteLength += chunk.value.byteLength
+      if (byteLength > maxBytes) throw new Error("agent app action response exceeds the byte limit")
+      chunks.push(chunk.value)
+    }
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
+  const bytes = new Uint8Array(byteLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
 }
 
 function promptFromRoute(requestUrl: string, route: AgentAppRouteConfig): string {
@@ -360,7 +487,7 @@ async function serveAgentAppAsset(
   const parsedUrl = new URL(request.url, "http://agent-app.local")
   const pathname = parsedUrl.pathname
   const effectAsset = resolveAgentAppEffectAsset(publication, pathname, {
-    sessionKey: agentAppCallerKey(request.headers),
+    sessionKey: agentAppCallerKey(request.headers, publicationCallerForRequest(request)),
     invocationRequestId: parsedUrl.searchParams.get("arroba_invocation"),
   })
   if (effectAsset) {

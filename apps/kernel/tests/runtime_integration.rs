@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
-use std::env;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arroba_kernel::agent::CreateAgentRequest;
 use arroba_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
@@ -10,15 +9,18 @@ use arroba_kernel::local::{
     LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 use arroba_kernel::provider::{LaunchProviderRequest, ProviderRunState};
+use arroba_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use arroba_kernel::session::{
     CreateSessionRequest, PromptSubmissionOutcome, SessionStatus, WorkflowNodeRunStatus,
     WorkflowRunStatus,
 };
 use arroba_kernel::{DaemonApp, DaemonConfig};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 mod support;
+use support::kernel_websocket::{connect_with_retry, reserved_kernel_listener, unused_tcp_port};
 use support::runtime_integration::{
-    collect_terminal_output_until, opencode_env_guard, wait_for_local_provider_run_ready,
+    collect_terminal_output_until, wait_for_local_provider_run_ready,
     wait_for_local_terminal_output,
 };
 
@@ -260,13 +262,13 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
     );
 }
 
-#[test]
-fn workflow_runs_progress_without_terminal_pumps() {
-    let _guard = opencode_env_guard();
-    env::set_var("ARROBA_PROMPT_IDLE_MS", "1");
-
-    let mut app =
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workflow_runs_progress_without_terminal_pumps() {
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let session = app
         .sessions_mut()
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -307,41 +309,63 @@ fn workflow_runs_progress_without_terminal_pumps() {
         )
         .expect("workflow endpoint should be created");
 
-    let (run, _workflow, _endpoint) = app
-        .invoke_workflow_endpoint_and_schedule(
+    let app = std::sync::Arc::new(TokioMutex::new(app));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server_app = std::sync::Arc::clone(&app);
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(server_app, kernel_websocket_listener, async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let readiness_socket = connect_with_retry(&config.kernel_websocket_url()).await;
+    drop(readiness_socket);
+
+    let run = {
+        let mut app = app.lock().await;
+        app.invoke_workflow_endpoint_and_schedule(
             session.id(),
             workflow.id(),
             endpoint.id(),
             Some("kickoff".to_string()),
         )
-        .expect("workflow run should start");
+        .expect("workflow run should start")
+        .0
+    };
 
     let run_id = run.id().to_string();
-    let start = Instant::now();
-    loop {
-        app.pump_active_prompt_outputs();
-        let run = app
-            .sessions()
-            .resolve_workflow_run_ref(session.id(), &run_id)
-            .expect("workflow run should exist");
-        if !matches!(
-            run.status(),
-            WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
-        ) {
-            break;
+    let run = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let run = {
+                let app = app.lock().await;
+                app.sessions()
+                    .resolve_workflow_run_ref(session.id(), &run_id)
+                    .expect("workflow run should exist")
+                    .clone()
+            };
+            if !matches!(
+                run.status(),
+                WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
+            ) {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        if start.elapsed() > Duration::from_secs(2) {
-            panic!("workflow run never completed");
+    })
+    .await;
+    let run = match run {
+        Ok(run) => run,
+        Err(_) => {
+            let app = app.lock().await;
+            panic!(
+                "workflow run never completed: run={:#?}, pending_terminal_output_records={}",
+                app.sessions()
+                    .resolve_workflow_run_ref(session.id(), &run_id),
+                app.terminal().output_records().len(),
+            )
         }
-        thread::sleep(Duration::from_millis(5));
-    }
-
-    let run = app
-        .sessions()
-        .resolve_workflow_run_ref(session.id(), &run_id)
-        .expect("workflow run should exist");
-    app.end_session(session.id())
-        .expect("session should end cleanly");
+    };
     assert!(
         matches!(
             run.status(),
@@ -358,6 +382,16 @@ fn workflow_runs_progress_without_terminal_pumps() {
         )),
         "workflow node run should settle"
     );
+
+    app.lock()
+        .await
+        .end_session(session.id())
+        .expect("session should end cleanly");
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
 }
 
 #[test]

@@ -56,6 +56,7 @@ import {
 } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAgent } from "./shell-agent-resolver.js"
+import { homeProxyGrantConfirmation } from "./extension-home-proxy-confirmation.js"
 import {
   formatAgentExtensionGrants,
   formatAgentExtensionCatalog,
@@ -717,21 +718,19 @@ async function confirmActiveHomeProxyGrant(
   if (!agent.ok) {
     return { ok: false, message: agent.message }
   }
-  if (!agent.agent.remote_execution) {
-    return null
-  }
-  if (parsed.args.includes("--confirm-home-proxy")) {
-    return null
-  }
-  const command = parsed.normalized.includes("--confirm-home-proxy")
-    ? parsed.normalized
-    : `${parsed.normalized} --confirm-home-proxy`
+  const confirmation = homeProxyGrantConfirmation({
+    action,
+    kind,
+    name,
+    source,
+    agent: agent.agent,
+    command: parsed.normalized,
+    confirmed: parsed.args.includes("--confirm-home-proxy"),
+  })
+  if (!confirmation) return null
   return {
     ok: false,
-    message: [
-      `Confirm exposing ${kind} ${name} to remote agent ${agent.agent.agent_ref}; home keeps credentials local and executes calls on this machine.`,
-      `rerun: ${command}`,
-    ].join("\n"),
+    message: confirmation,
     data: { agent: agent.agent },
   }
 }

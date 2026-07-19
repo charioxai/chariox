@@ -2,7 +2,7 @@
 use super::support::*;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn proxied_session_subscriptions_are_forwarded_through_relay() {
+async fn proxied_session_subscriptions_share_one_attachment_without_replacement() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -110,6 +110,80 @@ async fn proxied_session_subscriptions_are_forwarded_through_relay() {
     assert_eq!(event["event"], serde_json::json!("session_snapshot"));
     assert_eq!(
         event["session"]["id"],
+        serde_json::json!(created_session_id)
+    );
+    let _initial_first_heartbeat =
+        expect_named_client_event(&mut client_socket, &subscription_private_key, "heartbeat").await;
+
+    let (mut second_client_socket, _) = connect_async(&url)
+        .await
+        .expect("second client should connect to relay");
+    send_client_envelope(
+        &mut second_client_socket,
+        &RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+        },
+    )
+    .await;
+    let _second_daemon_public_key = expect_client_connected(&mut second_client_socket).await;
+    let second_subscription_private_key = relay_crypto::generate_private_key_base64();
+    let second_subscription_public_key =
+        relay_crypto::public_key_from_private_key_base64(&second_subscription_private_key)
+            .expect("second subscription public key should derive");
+    send_client_envelope(
+        &mut second_client_socket,
+        &RelayEnvelope::ClientSubscribe {
+            request_id: "sub-2".to_string(),
+            subscription_id: "subscription-2".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            session_id: created_session_id.clone(),
+            attachment_id: attachment_id.clone(),
+            client_public_key: second_subscription_public_key,
+            subscription_scope: None,
+            resume_from_event_id: None,
+        },
+    )
+    .await;
+    let second_subscribe_response = expect_json_client_response(
+        &mut second_client_socket,
+        "sub-2",
+        &second_subscription_private_key,
+    )
+    .await;
+    assert_eq!(second_subscribe_response["ok"], serde_json::json!(true));
+    let second_event =
+        expect_client_event(&mut second_client_socket, &second_subscription_private_key).await;
+    assert_eq!(second_event["event"], serde_json::json!("session_snapshot"));
+
+    let first_heartbeat = tokio::time::timeout(
+        Duration::from_secs(7),
+        expect_named_client_event(&mut client_socket, &subscription_private_key, "heartbeat"),
+    )
+    .await
+    .expect("first subscription should remain live after second subscription");
+    assert_eq!(
+        first_heartbeat.1["session_id"],
+        serde_json::json!(created_session_id)
+    );
+    let second_heartbeat = tokio::time::timeout(
+        Duration::from_secs(7),
+        expect_named_client_event(
+            &mut second_client_socket,
+            &second_subscription_private_key,
+            "heartbeat",
+        ),
+    )
+    .await
+    .expect("second subscription should remain live");
+    assert_eq!(
+        second_heartbeat.1["session_id"],
         serde_json::json!(created_session_id)
     );
 

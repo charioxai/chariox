@@ -181,6 +181,9 @@ pub(super) fn claude_user_anchor_from_prefix(path: &Path) -> Option<ObservedExte
 }
 
 pub(super) fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExternalProviderTurn> {
+    if claude_internal_resume_entry(value) {
+        return Vec::new();
+    }
     let observed_at_ms = string_field(value, &["timestamp"])
         .and_then(|timestamp| parse_timestamp_millis(&timestamp));
     let record_type = value.get("type").and_then(Value::as_str);
@@ -200,6 +203,20 @@ pub(super) fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExt
             }]
         }
         _ => Vec::new(),
+    }
+}
+
+fn claude_internal_resume_entry(value: &Value) -> bool {
+    match value.get("type").and_then(Value::as_str) {
+        Some("user") => value.get("isMeta").and_then(Value::as_bool) == Some(true),
+        Some("assistant") => {
+            value
+                .get("message")
+                .and_then(|message| message.get("model"))
+                .and_then(Value::as_str)
+                == Some("<synthetic>")
+        }
+        _ => false,
     }
 }
 

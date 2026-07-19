@@ -11,6 +11,15 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
+        let _permit = self.provider_runtime_lanes.acquire(started.run.id()).await;
+        self.fail_provider_launch_in_lane(started, error).await;
+    }
+
+    pub(super) async fn fail_provider_launch_in_lane(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        error: &DaemonError,
+    ) {
         let mut durable_agent_update = None;
         {
             let owned = &self.owned;

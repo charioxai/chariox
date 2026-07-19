@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
-import { cp, readFile } from 'node:fs/promises'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { WebSocket } from 'ws'
 import { LocalIpcClient } from '../../../../packages/kernel-client/dist/ipc.js'
 import {
@@ -12,6 +12,11 @@ import {
   getPublicationDeployment,
   listPublicationDeploymentLogs,
 } from '../../dist/publication-deployment-api.js'
+import {
+  rustBinaryPath,
+  rustManifestPath,
+} from '../../../../scripts/rust-workspace.mjs'
+import { publicationStatusWatchdogCount, publicationStatusWatchdogs } from './live-workflow-publication-drill-runtime.mjs'
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..')
 
@@ -159,11 +164,12 @@ export async function waitForSchedulePublicationStatus(base, options = {}) {
     const body = await response.text()
     if (!response.ok) throw new Error(`schedule status failed: ${response.status} ${body}`)
     last = JSON.parse(body)
-    if (last.schedule_count !== 1 || !Array.isArray(last.schedules) || last.schedules.length !== 1) {
+    const watchdogs = publicationStatusWatchdogs(last)
+    if (publicationStatusWatchdogCount(last) !== 1 || watchdogs.length !== 1) {
       throw new Error(`schedule status did not expose exactly one schedule: ${body}`)
     }
     const latest = last.latest_output?.message
-    const schedule = last.schedules[0]
+    const schedule = watchdogs[0]
     const status = String(schedule.last_status ?? '').toLowerCase()
     if (latest && ['started', 'completed_budget'].includes(status)) {
       if (options.expectHtmlDashboard) {
@@ -725,10 +731,10 @@ export async function waitForProviderRunReady(client, providerRunId) {
 }
 
 export async function buildRustBinary(binaryName) {
-  const binaryPath = path.join(repoRoot, 'apps', binaryName.replace(/^arroba-/, ''), 'target', 'debug', binaryName)
+  const binaryPath = rustBinaryPath(repoRoot, binaryName)
   const exists = await readFile(binaryPath).then(() => true).catch(() => false)
   if (exists) return binaryPath
-  const manifestPath = path.join(repoRoot, 'apps', binaryName.replace(/^arroba-/, ''), 'Cargo.toml')
+  const manifestPath = rustManifestPath(repoRoot, binaryName)
   const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', binaryName])
   if (result.code !== 0) throw new Error(`cargo build ${binaryName} failed\n${result.stdout}\n${result.stderr}`)
   return binaryPath

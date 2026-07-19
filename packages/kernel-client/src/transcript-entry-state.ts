@@ -343,6 +343,16 @@ export function transcriptHasTrailingUserPrompt<TEntry extends Pick<TranscriptEn
   text: string,
   promptId?: string | null,
 ): boolean {
+  if (hasTranscriptPromptIdentity(promptId)) {
+    const matchingPrompt = entries.some((entry) => (
+      entry.role === "user"
+      && hasTranscriptPromptIdentity(entry.promptId)
+      && entry.promptId === promptId
+    ))
+    if (matchingPrompt) {
+      return true
+    }
+  }
   const lastEntry = entries.at(-1)
   if (lastEntry?.role !== "user") {
     return false

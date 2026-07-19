@@ -337,7 +337,7 @@ mod tests {
     async fn stop_run_removes_worker_and_lane_registration() {
         let mailbox = ProviderRunActorMailbox::default();
         let _sender = mailbox.worker_for_run("run-1");
-        let _permit = mailbox.operation_lanes.acquire("run-1").await;
+        let permit = mailbox.operation_lanes.acquire("run-1").await;
         mailbox.mark_structured_prompt_io_in_flight("run-1".to_string());
         assert!(mailbox.mark_structured_output_poll_in_flight("run-1".to_string()));
         assert_eq!(
@@ -361,6 +361,17 @@ mod tests {
 
         mailbox.clear_runtime("run-1");
         mailbox.stop_run("run-1");
+        assert_eq!(
+            mailbox
+                .operation_lanes
+                .lanes
+                .lock()
+                .expect("lane map should not be poisoned")
+                .len(),
+            1,
+            "an active lane must not be forgotten during teardown"
+        );
+        drop(permit);
 
         assert_eq!(
             mailbox

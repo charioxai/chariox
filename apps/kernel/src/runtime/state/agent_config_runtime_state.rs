@@ -386,7 +386,7 @@ impl KernelRuntimeState {
         if let (Some(relay_url), Some(relay_token)) =
             (remote.relay_url.clone(), remote.relay_token.clone())
         {
-            config.apply_remote_relay_override(relay_url, relay_token);
+            config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
             &config,
@@ -679,7 +679,7 @@ impl KernelRuntimeState {
             remote_execution.relay_url.clone(),
             remote_execution.relay_token.clone(),
         ) {
-            config.apply_remote_relay_override(relay_url, relay_token);
+            config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
         let target = ClientTarget {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),

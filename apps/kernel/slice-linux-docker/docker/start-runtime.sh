@@ -50,6 +50,10 @@ fi
 screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
 screen -S arroba-slice-provider-bridge -X quit >/dev/null 2>&1 || true
+# A restored container can retain the provider bridge briefly after its screen
+# socket has already become stale. Kill only that orphan before rebinding the
+# published provider ranges so the first restart is as reliable as a retry.
+pkill -f "$ROOT/provider-port-bridge.mjs" >/dev/null 2>&1 || true
 
 if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLOUD_RELAY_CONFIG_PATH" ]]; then
   CLOUD_RELAY_CONFIG_JSON="$(cat "$CLOUD_RELAY_CONFIG_PATH")"

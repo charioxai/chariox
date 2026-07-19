@@ -46,6 +46,7 @@ const {
   attachToSessionRequest,
   createWorkflowRequest,
   addWorkflowNodeRequest,
+  updateWorkflowNodeInstructionsRequest,
   createWorkflowEndpointRequest,
   invokeWorkflowEndpointRequest,
   getSessionStateRequest,
@@ -255,7 +256,7 @@ async function main() {
     const spawned = deriveSpawnedKernelUrl()
     kernelUrl = spawned.kernelUrl
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'target/debug/arroba-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       'arroba-kernel',
     )

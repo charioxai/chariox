@@ -36,3 +36,38 @@ test("publication bindings resolve the default model sentinel without prompting"
   assert.equal(resolved.snapshot.agents?.[0]?.model, null)
   assert.equal(resolved.changed, false)
 })
+
+test("publication bindings keep OpenCode models provider-qualified after catalog validation", async () => {
+  for (const capturedModel of ["gpt-5.2", "opencode/gpt-5.2"]) {
+    const snapshot = {
+      workflow: {
+        id: "workflow-1",
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+      },
+      agents: [{
+        id: "agent-1",
+        provider: "opencode",
+        model: capturedModel,
+        effort: null,
+      }],
+    } as unknown as WorkflowPublicationSnapshot
+
+    const resolved = await resolvePublicationProviderModelBindings(
+      snapshot,
+      `/tmp/arroba-publication-opencode-${capturedModel.replaceAll("/", "-")}-bindings-does-not-exist.json`,
+      {
+        send: async <T>(): Promise<T> => ({
+          ProviderCatalog: {
+            catalog: {
+              all: [{ id: "opencode", models: { "gpt-5.2": {} } }],
+            },
+          },
+        }) as T,
+      },
+      { promptReplacement: false },
+    )
+
+    assert.equal(resolved.snapshot.agents?.[0]?.model, "opencode/gpt-5.2")
+    assert.equal(resolved.changed, false)
+  }
+})

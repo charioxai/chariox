@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) async fn pump_leased_projection_events(
     router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &RelayOutgoingSender,
 ) {
     let events = match router.relay_try_pump_leased_runtime_projections().await {
@@ -22,53 +23,36 @@ pub(super) async fn pump_leased_projection_events(
     };
     for (target_daemon_id, event) in events {
         let config = router.relay_config_snapshot();
-        let target_kernel = match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            relay_discovery::get_live_kernel(&config, &target_daemon_id),
-        )
-        .await
-        {
-            Ok(Ok(kernel)) => kernel,
-            Ok(Err(error)) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay",
-                    "failed to resolve leased runtime projection target",
-                    serde_json::json!({
-                        "target_daemon_id": target_daemon_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                continue;
-            }
-            Err(_) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay",
-                    "timed out resolving leased runtime projection target",
-                    serde_json::json!({
-                        "target_daemon_id": target_daemon_id,
-                    }),
-                );
-                continue;
-            }
-        };
-        let encrypted_event = match encrypt_peer_payload(
-            &config.relay_private_key,
-            &target_kernel.public_key,
-            &event,
-        ) {
-            Ok(payload) => payload,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay",
-                    "failed to encrypt leased runtime projection event",
-                    serde_json::json!({
-                        "target_daemon_id": target_daemon_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                continue;
-            }
-        };
+        let target_public_key =
+            match resolve_projection_target_public_key(router, state, &target_daemon_id).await {
+                Ok(public_key) => public_key,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay",
+                        "failed to resolve leased runtime projection target",
+                        serde_json::json!({
+                            "target_daemon_id": target_daemon_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+            };
+        let encrypted_event =
+            match encrypt_peer_payload(&config.relay_private_key, &target_public_key, &event) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay",
+                        "failed to encrypt leased runtime projection event",
+                        serde_json::json!({
+                            "target_daemon_id": target_daemon_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+            };
         if let Err(error) = send_outgoing_envelope(
             outgoing_tx,
             RelayEnvelope::DaemonPeerEvent {
@@ -135,6 +119,7 @@ pub(super) async fn handle_daemon_peer_event(
 
 pub(super) async fn emit_leased_projection_event(
     router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &RelayOutgoingSender,
     leased_agent_id: &str,
     provider_run_id: &str,
@@ -147,17 +132,10 @@ pub(super) async fn emit_leased_projection_event(
     else {
         return Ok(());
     };
-    let target_kernel = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        relay_discovery::get_live_kernel(&config, &target_daemon_id),
-    )
-    .await
-    .map_err(|_| DaemonError::LocalTransport {
-        operation: "resolve relay peer event target",
-        message: format!("timed out resolving relay target kernel `{target_daemon_id}`"),
-    })??;
+    let target_public_key =
+        resolve_projection_target_public_key(router, state, &target_daemon_id).await?;
     let encrypted_event =
-        encrypt_peer_payload(&config.relay_private_key, &target_kernel.public_key, &event)?;
+        encrypt_peer_payload(&config.relay_private_key, &target_public_key, &event)?;
     send_outgoing_envelope(
         outgoing_tx,
         RelayEnvelope::DaemonPeerEvent {
@@ -168,4 +146,29 @@ pub(super) async fn emit_leased_projection_event(
             encrypted_event,
         },
     )
+}
+
+async fn resolve_projection_target_public_key(
+    router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
+    target_daemon_id: &str,
+) -> Result<String, DaemonError> {
+    if let Some(public_key) = state.read().await.peer_public_key(target_daemon_id) {
+        return Ok(public_key);
+    }
+    let config = router.relay_config_snapshot();
+    let target_kernel = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        relay_discovery::get_live_kernel(&config, target_daemon_id),
+    )
+    .await
+    .map_err(|_| DaemonError::LocalTransport {
+        operation: "resolve relay peer event target",
+        message: format!("timed out resolving relay target kernel `{target_daemon_id}`"),
+    })??;
+    state.write().await.remember_peer_public_key(
+        target_daemon_id.to_string(),
+        target_kernel.public_key.clone(),
+    );
+    Ok(target_kernel.public_key)
 }

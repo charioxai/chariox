@@ -4,6 +4,10 @@ use sha2::{Digest, Sha256};
 
 use super::*;
 
+mod deployment_contract;
+
+const PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
+
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     session: &crate::session::RuntimeSession,
@@ -52,6 +56,7 @@ pub(super) fn workflow_publication_package_files(
         .iter()
         .filter(|agent| node_agent_ids.contains(agent.id()))
         .cloned()
+        .map(|agent| agent.canonicalized_for_publication_package(PUBLICATION_WORKSPACE_ROOT))
         .collect::<Vec<_>>();
     let missing_agent_ids = node_agent_ids
         .iter()
@@ -69,12 +74,12 @@ pub(super) fn workflow_publication_package_files(
     }
     let snapshot = crate::local::WorkflowPublicationSnapshot {
         schema_version: 1,
-        captured_at_ms: Some(crate::session::unix_epoch_ms()),
+        captured_at_ms: Some(publication.created_at_ms()),
         source_session: Some(crate::local::WorkflowPublicationSourceSessionSnapshot {
             id: Some(session.id().to_string()),
             alias: session.alias().map(str::to_string),
-            workspace_id: session.workspace_id().to_string(),
-            worktree_id: session.worktree_id().to_string(),
+            workspace_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
+            worktree_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
         }),
         workflow: workflow.clone(),
         endpoint: Some(endpoint),
@@ -135,11 +140,28 @@ pub(super) fn workflow_publication_package_files(
             false,
         ),
     ];
-    if workflow_publication_package_version(agent_app) == 2 {
+    if agent_app
+        .and_then(|value| value.get("enabled"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
         if let Some(assets_dir) = agent_app_assets_dir {
             files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
         }
     }
+    let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
+        publication,
+        &publication_value,
+        &snapshot,
+        agent_app,
+        &requirements,
+        &files,
+    )?;
+    files.push(package_file(
+        "deployment-contract.json",
+        pretty_json(&deployment_contract)?,
+        false,
+    ));
     Ok(files)
 }
 
@@ -225,23 +247,23 @@ fn workflow_publication_package_json(
             "public_dir": "public",
             "scripts_dir": "scripts",
         },
+        "deployment_contract": {
+            "path": "deployment-contract.json",
+            "schema_version": 1,
+        },
     });
-    if workflow_publication_package_version(agent_app) == 2 {
-        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
-    }
-    package
-}
-
-pub(super) fn workflow_publication_package_version(agent_app: Option<&serde_json::Value>) -> u32 {
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
         == Some(true)
     {
-        2
-    } else {
-        1
+        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
     }
+    package
+}
+
+pub(super) fn workflow_publication_package_version(_agent_app: Option<&serde_json::Value>) -> u32 {
+    3
 }
 
 fn workflow_publication_agent_app_json(agent_app: Option<&serde_json::Value>) -> serde_json::Value {
@@ -593,6 +615,7 @@ fn workflow_publication_readme(
         "## Files",
         "",
         "- `publication.json`: published workflow package metadata",
+        "- `deployment-contract.json`: immutable release requirements and compatibility contract",
         "- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents",
         "- `requirements.json`: required extensions and credential handles",
         "- `bindings.example.json`: provider/model override template",
@@ -694,16 +717,28 @@ fn workflow_publication_styles_css() -> String {
 
 pub(super) fn workflow_publication_package_digest(
     files: &[crate::local::WorkflowPublicationPackageFile],
-) -> String {
+) -> Result<String, DaemonError> {
     let mut hash = Sha256::new();
     let mut files = files.iter().collect::<Vec<_>>();
     files.sort_by(|left, right| left.path.cmp(&right.path));
+    hash.update((files.len() as u64).to_be_bytes());
     for file in files {
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(&file.content_base64)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "digest workflow publication package",
+                message: format!(
+                    "failed to decode package file `{}` while hashing: {error}",
+                    file.path
+                ),
+            })?;
+        hash.update((file.path.len() as u64).to_be_bytes());
         hash.update(file.path.as_bytes());
-        hash.update(file.content_base64.as_bytes());
+        hash.update((content.len() as u64).to_be_bytes());
+        hash.update(&content);
         hash.update([u8::from(file.executable)]);
     }
-    format!("sha256:{:x}", hash.finalize())
+    Ok(format!("sha256:{:x}", hash.finalize()))
 }
 
 pub(super) fn workflow_publication_package_archive_base64(
@@ -846,4 +881,53 @@ fn escape_html(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn publication_package_digest_length_frames_file_records() {
+        let left = vec![package_file("z", b"b", false)];
+        let right = vec![package_file("zYg==", b"", false)];
+
+        let left_digest = workflow_publication_package_digest(&left).expect("left digest");
+        let right_digest = workflow_publication_package_digest(&right).expect("right digest");
+
+        assert_eq!(
+            left_digest,
+            "sha256:586e9150a9d5fb2f9acdfda4a029feb0ea7aaa1c91332d142c1b5e305051f7e5"
+        );
+        assert_eq!(
+            right_digest,
+            "sha256:cf85ff5ab71aacd4309f63acea96197342afc4cf6e9af3eb955ddaf73a90a53c"
+        );
+        assert_ne!(left_digest, right_digest);
+    }
+
+    #[test]
+    fn publication_package_digest_matches_the_cloud_canonical_vector() {
+        let files = vec![
+            package_file("publication.json", b"{}", false),
+            package_file("entrypoint.sh", b"#!/bin/sh\nexit 0\n", true),
+        ];
+
+        assert_eq!(
+            workflow_publication_package_digest(&files).expect("package digest"),
+            "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
+        );
+    }
+
+    fn package_file(
+        path: &str,
+        content: &[u8],
+        executable: bool,
+    ) -> crate::local::WorkflowPublicationPackageFile {
+        crate::local::WorkflowPublicationPackageFile {
+            path: path.to_string(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+            executable,
+        }
+    }
 }

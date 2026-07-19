@@ -58,11 +58,22 @@ pub(super) struct PendingInteraction {
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(in crate::runtime) struct PendingInteractionResolution {
     pub(crate) status: &'static str,
     pub(crate) choice_id: Option<String>,
     pub(crate) reply: Option<String>,
+}
+
+impl std::fmt::Debug for PendingInteractionResolution {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingInteractionResolution")
+            .field("status", &self.status)
+            .field("choice_id", &self.choice_id)
+            .field("reply", &self.reply.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use arroba_relay::protocol::EncryptedRelayPayload;
+use tokio::sync::RwLock;
 
 use crate::error::DaemonError;
 use crate::runtime::router::CommandRouter;
@@ -14,11 +15,13 @@ use crate::transport::relay_peer::{
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
-use super::RelayOutgoingSender;
+use super::{RelayClientState, RelayOutgoingSender};
 
 pub(super) async fn handle_daemon_peer_request(
     router: &Arc<CommandRouter>,
+    state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &RelayOutgoingSender,
+    from_daemon_id: &str,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
     let (request, requester_public_key, daemon_private_key, daemon_id) = {
@@ -60,6 +63,12 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_id,
         )
     };
+    if !from_daemon_id.trim().is_empty() {
+        state.write().await.remember_peer_public_key(
+            stable_peer_daemon_id(from_daemon_id),
+            requester_public_key.clone(),
+        );
+    }
 
     let response = match request {
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
@@ -240,7 +249,10 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::ListLeasedAgentExtensionCatalog { leased_agent_id } => {
             match router
-                .relay_list_leased_agent_extension_catalog(&leased_agent_id)
+                .relay_list_leased_agent_extension_catalog(
+                    &leased_agent_id,
+                    stable_peer_daemon_id(from_daemon_id),
+                )
                 .await
             {
                 Ok(entries) => RelayPeerResponse::LeasedAgentExtensionCatalogListed {
@@ -261,7 +273,11 @@ pub(super) async fn handle_daemon_peer_request(
             grants,
         } => {
             match router
-                .relay_update_leased_agent_worker_extension_grants(&leased_agent_id, grants)
+                .relay_update_leased_agent_worker_extension_grants(
+                    &leased_agent_id,
+                    stable_peer_daemon_id(from_daemon_id),
+                    grants,
+                )
                 .await
             {
                 Ok((manifest_hash, grants)) => {
@@ -397,6 +413,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok((provider_run_id, outcome)) => {
                     if let Err(error) = emit_leased_projection_event(
                         router,
+                        state,
                         outgoing_tx,
                         &leased_agent_id,
                         &provider_run_id,
@@ -451,6 +468,7 @@ pub(super) async fn handle_daemon_peer_request(
                 Ok((provider_run_id, replayed)) => {
                     if let Err(error) = emit_leased_projection_event(
                         router,
+                        state,
                         outgoing_tx,
                         &leased_agent_id,
                         &provider_run_id,
@@ -911,5 +929,25 @@ pub(super) async fn handle_daemon_peer_request(
                 false,
             )),
         },
+    }
+}
+
+fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
+    from_daemon_id
+        .split_once(":peer-tmp:daemon-peer-tmp-")
+        .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stable_peer_daemon_id;
+
+    #[test]
+    fn temporary_peer_connection_ids_resolve_to_the_home_kernel_identity() {
+        assert_eq!(
+            stable_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-123"),
+            "home-kernel"
+        );
+        assert_eq!(stable_peer_daemon_id("home-kernel"), "home-kernel");
     }
 }

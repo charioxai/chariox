@@ -167,6 +167,49 @@ test("workflow node extension commands explain collaborator-owned nodes without 
   assert.doesNotMatch(harness.calls.join("\n"), /agent-hidden/)
 })
 
+test("workflow node Home script grants require explicit home-proxy confirmation", async () => {
+  const notices: string[] = []
+  let grantCalls = 0
+  const remoteAgent = agent({
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: null,
+    },
+  })
+  const harness = createHarness({
+    sessionAgents: [remoteAgent],
+    workflow: workflow({ nodes: [node()] }),
+    appendNotice: (message) => notices.push(message),
+    grantAgentScript: async () => {
+      grantCalls += 1
+      return remoteAgent
+    },
+  })
+
+  await handleWorkflowNodeCommand(
+    harness.deps,
+    harness.context,
+    ["node", "extension", "grant", "node-1", "script", "lookup", "--environment", "py"],
+  )
+
+  assert.equal(grantCalls, 0)
+  assert.match(notices[0] ?? "", /Confirm exposing script lookup to remote agent agent-a/)
+  assert.match(notices[0] ?? "", /rerun: \/workflow node extension grant node-1 script lookup --environment py --confirm-home-proxy/)
+  assert.equal(harness.calls.at(-1), "footer:error:confirmation required for home-proxy grant")
+
+  await handleWorkflowNodeCommand(
+    harness.deps,
+    harness.context,
+    ["node", "extension", "grant", "node-1", "script", "lookup", "--environment", "py", "--confirm-home-proxy"],
+  )
+
+  assert.equal(grantCalls, 1)
+  assert.equal(harness.calls.at(-1), "footer:info:granted home:script:lookup to workflow node node-1")
+})
+
 type HarnessOptions = Partial<WorkflowNodeCommandDeps> & {
   agentsByRef?: Record<string, AgentInstance>
   context?: Partial<WorkflowNodeCommandContext>

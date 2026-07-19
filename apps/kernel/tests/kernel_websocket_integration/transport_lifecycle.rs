@@ -6,6 +6,7 @@ use arroba_kernel::local::{
 };
 use arroba_kernel::runtime_transport::{
     run_kernel_websocket_server_on_listener, CONNECTION_INBOUND_REQUEST_LIMIT,
+    KERNEL_RUNTIME_THREAD_STACK_SIZE,
 };
 use arroba_kernel::session::CreateSessionRequest;
 use arroba_kernel::{DaemonApp, DaemonConfig};
@@ -367,103 +368,115 @@ async fn kernel_websocket_closes_slow_consumers_when_the_outgoing_queue_overflow
         .expect("kernel websocket server should shut down cleanly");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
-    let mut config = DaemonConfig::for_tests();
-    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
-    config.kernel_websocket_port = kernel_websocket_port;
-    config.runtime_mcp_port = unused_tcp_port();
-    config.kernel_websocket_queue_capacity = 64;
-    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+#[test]
+fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_stack_size(KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .enable_all()
+        .build()
+        .expect("production-equivalent kernel runtime should build");
+    runtime.block_on(async {
+        let mut config = DaemonConfig::for_tests();
+        let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+        config.kernel_websocket_port = kernel_websocket_port;
+        config.runtime_mcp_port = unused_tcp_port();
+        config.kernel_websocket_queue_capacity = 64;
+        let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
 
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        run_kernel_websocket_server_on_listener(
-            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-            kernel_websocket_listener,
-            async {
-                let _ = shutdown_rx.await;
-            },
-        )
-        .await
-    });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            run_kernel_websocket_server_on_listener(
+                std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                kernel_websocket_listener,
+                async {
+                    let _ = shutdown_rx.await;
+                },
+            )
+            .await
+        });
 
-    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
-    let cwd = std::env::current_dir()
-        .expect("current directory should be available")
-        .to_string_lossy()
-        .to_string();
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let cwd = std::env::current_dir()
+            .expect("current directory should be available")
+            .to_string_lossy()
+            .to_string();
 
-    let create_response = send_request(
-        &mut socket,
-        "create-session",
-        LocalDaemonRequest::CreateSession(CreateSessionRequest::new(cwd.as_str(), cwd.as_str())),
-    )
-    .await;
-    let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
-        .as_str()
-        .expect("session id should be present")
-        .to_string();
-
-    let attach_response = send_request(
-        &mut socket,
-        "attach-session",
-        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-            session_id: session_id.clone(),
-            client_id: "ws-inbound-limit-client".to_string(),
-            capability_level: ClientCapabilityLevel::FullTerminal,
-        }),
-    )
-    .await;
-    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
-        .as_str()
-        .expect("attachment id should be present")
-        .to_string();
-
-    for index in 0..=CONNECTION_INBOUND_REQUEST_LIMIT {
-        send_frame(
+        let create_response = send_request(
             &mut socket,
-            json!({
-                "type": "request",
-                "request_id": format!("slow-shell-{index}"),
-                "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-                    session_id: session_id.clone(),
-                    attachment_id: attachment_id.clone(),
-                    command: "sh".to_string(),
-                    args: vec!["-c".to_string(), "sleep 1".to_string()],
-                    working_directory: None,
-                    timeout_ms: Some(3_000),
-                }),
+            "create-session",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                cwd.as_str(),
+                cwd.as_str(),
+            )),
+        )
+        .await;
+        let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
+            .as_str()
+            .expect("session id should be present")
+            .to_string();
+
+        let attach_response = send_request(
+            &mut socket,
+            "attach-session",
+            LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+                session_id: session_id.clone(),
+                client_id: "ws-inbound-limit-client".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
             }),
         )
         .await;
-    }
+        let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]
+            ["id"]
+            .as_str()
+            .expect("attachment id should be present")
+            .to_string();
 
-    let overload_response = wait_for_error_code(&mut socket, "kernel_request_overloaded").await;
-    assert_eq!(
-        overload_response["error"]["retryable"].as_bool(),
-        Some(true)
-    );
+        for index in 0..=CONNECTION_INBOUND_REQUEST_LIMIT {
+            send_frame(
+                &mut socket,
+                json!({
+                    "type": "request",
+                    "request_id": format!("slow-shell-{index}"),
+                    "request": LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+                        session_id: session_id.clone(),
+                        attachment_id: attachment_id.clone(),
+                        command: "sh".to_string(),
+                        args: vec!["-c".to_string(), "sleep 1".to_string()],
+                        working_directory: None,
+                        timeout_ms: Some(3_000),
+                    }),
+                }),
+            )
+            .await;
+        }
 
-    let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
-    let health = send_request(
-        &mut health_socket,
-        "daemon-health-after-inbound-overload",
-        LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
-    )
-    .await;
-    let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
-    assert!(
-        transport["inbound_overload_rejections"]
-            .as_u64()
-            .unwrap_or_default()
-            >= 1,
-        "transport health should report inbound overload rejections: {health}"
-    );
+        let overload_response = wait_for_error_code(&mut socket, "kernel_request_overloaded").await;
+        assert_eq!(
+            overload_response["error"]["retryable"].as_bool(),
+            Some(true)
+        );
 
-    let _ = shutdown_tx.send(());
-    server
-        .await
-        .expect("kernel websocket task should join")
-        .expect("kernel websocket server should shut down cleanly");
+        let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let health = send_request(
+            &mut health_socket,
+            "daemon-health-after-inbound-overload",
+            LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+        )
+        .await;
+        let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
+        assert!(
+            transport["inbound_overload_rejections"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 1,
+            "transport health should report inbound overload rejections: {health}"
+        );
+
+        let _ = shutdown_tx.send(());
+        server
+            .await
+            .expect("kernel websocket task should join")
+            .expect("kernel websocket server should shut down cleanly");
+    });
 }

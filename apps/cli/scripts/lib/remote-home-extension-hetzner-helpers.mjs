@@ -14,14 +14,20 @@ export const DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB = 262144
 export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
   remoteRoot,
   workerWorktree,
+  workerKernelBinary = null,
   expectedRepoHead = null,
   minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
 }) {
-  await assertHetznerArrobaBinaries(options)
+  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
+    options.hetznerRepo,
+    workerKernelBinary,
+  )
+  if (!workerKernelBinary) await assertHetznerArrobaBinaries(options)
   await runHetznerCommand(options, remoteHomeExtensionHetznerPreflightCommand({
     hetznerRepo: options.hetznerRepo,
     remoteRoot,
     workerWorktree,
+    workerKernelBinary: resolvedWorkerKernelBinary,
     expectedRepoHead,
     minFreeKb,
   }))
@@ -31,15 +37,21 @@ export function remoteHomeExtensionHetznerPreflightCommand({
   hetznerRepo,
   remoteRoot,
   workerWorktree,
+  workerKernelBinary = null,
   expectedRepoHead = null,
   minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
 }) {
   const expected = expectedRepoHead == null ? "" : String(expectedRepoHead).trim()
+  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
+    hetznerRepo,
+    workerKernelBinary,
+  )
   return [
     "set -e",
     `repo=${shellQuote(hetznerRepo)}`,
     `remote_root=${shellQuote(remoteRoot)}`,
     `worker_worktree=${shellQuote(workerWorktree)}`,
+    `worker_kernel=${shellQuote(resolvedWorkerKernelBinary)}`,
     `expected_head=${shellQuote(expected)}`,
     `min_free_kb=${Number(minFreeKb)}`,
     "actual_head=$(git -C \"$repo\" rev-parse HEAD 2>/dev/null || true)",
@@ -65,8 +77,22 @@ export function remoteHomeExtensionHetznerPreflightCommand({
     "check_free_kb repo \"$repo\"",
     "check_free_kb remote-root \"$remote_root\"",
     "check_free_kb worker-worktree \"$worker_worktree\"",
+    "if ! test -x \"$worker_kernel\"; then",
+    "  printf 'run-owned worker kernel %s is not executable; stage the exact pinned kernel before launching the worker.\\n' \"$worker_kernel\" >&2",
+    "  exit 20",
+    "fi",
     "mkdir -p \"$remote_root\" \"$worker_worktree\"",
   ].join("\n")
+}
+
+export function remoteHomeExtensionHetznerWorkerKernelBinary(hetznerRepo, workerKernelBinary = null) {
+  const candidate = workerKernelBinary
+    ? String(workerKernelBinary)
+    : path.posix.join(hetznerRepo, "apps/kernel/target/debug/arroba-kernel")
+  if (!path.posix.isAbsolute(candidate)) {
+    throw new Error(`remote worker kernel path must be absolute: ${candidate}`)
+  }
+  return candidate
 }
 
 async function assertRemoteRelayPortFree(options, port) {
@@ -187,8 +213,12 @@ export function spawnRemoteHomeExtensionHetznerWorker({
   workerAlias,
   workerKernelPort,
   workerMcpPort,
+  workerKernelBinary = null,
 }) {
-  const workerPidFile = path.posix.join(remoteRoot, "worker.pid")
+  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
+    options.hetznerRepo,
+    workerKernelBinary,
+  )
   return spawn("ssh", sshArgs(options, remoteEnvCommand({
     ARROBA_REMOTE_REPO: options.hetznerRepo,
     ARROBA_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
@@ -213,7 +243,23 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
     ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
     ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, "worker-capabilities"),
-  }, `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && echo $$ > ${shellQuote(workerPidFile)} && exec ./apps/kernel/target/debug/arroba-kernel`)), {
+  }, remoteHomeExtensionHetznerWorkerLaunchCommand({
+    remoteRoot,
+    workerWorktree,
+    workerKernelBinary: resolvedWorkerKernelBinary,
+  }))), {
     stdio: ["ignore", "ignore", "inherit"],
   })
+}
+
+export function remoteHomeExtensionHetznerWorkerLaunchCommand({
+  remoteRoot,
+  workerWorktree,
+  workerKernelBinary,
+}) {
+  if (!path.posix.isAbsolute(workerKernelBinary)) {
+    throw new Error(`remote worker kernel path must be absolute: ${workerKernelBinary}`)
+  }
+  const workerPidFile = path.posix.join(remoteRoot, "worker.pid")
+  return `mkdir -p ${shellQuote(remoteRoot)} ${shellQuote(workerWorktree)} && echo $$ > ${shellQuote(workerPidFile)} && exec ${shellQuote(workerKernelBinary)}`
 }

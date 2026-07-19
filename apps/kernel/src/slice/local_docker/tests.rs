@@ -85,6 +85,29 @@ fn linux_docker_slice_provisioner_validation_requires_an_existing_file() {
 }
 
 #[test]
+fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+
+    for support_file in [
+        "start-runtime.sh",
+        "start-providers.sh",
+        "slice-screen.sh",
+        "browser-cdp.mjs",
+        "provider-port-bridge.mjs",
+        "validate-screen.sh",
+    ] {
+        assert!(
+            script.contains(&format!("docker/{support_file}")),
+            "slice support refresh must copy {support_file}"
+        );
+    }
+}
+
+#[test]
 fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let record = test_record();
     let options = test_options();

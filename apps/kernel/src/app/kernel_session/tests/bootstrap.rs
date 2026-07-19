@@ -42,6 +42,95 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
 }
 
 #[test]
+fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
+    let config = DaemonConfig::for_tests();
+    let tunnel_id = "publication-durable-restart";
+    let local_url = "http://127.0.0.1:43100/publications/runtime/public-api";
+    let expires_at_ms = crate::session::unix_epoch_ms().saturating_add(60_000);
+    let (session_id, publication_id) = {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut publication = crate::session::WorkflowPublicationDefinition::new(
+            "publication-public-api",
+            session.id(),
+            "workflow-public-api",
+            "endpoint-public-api",
+            None,
+            Some("public-api".to_string()),
+            "ingress",
+            Some("/public-api".to_string()),
+            vec!["POST".to_string()],
+            None,
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "owner-user",
+        );
+        let open_url = format!(
+            "https://relay.example.test/display/{tunnel_id}/publications/runtime/public-api"
+        );
+        publication.mark_served(
+            "running",
+            &open_url,
+            serde_json::json!({
+                "kind": "tunnel",
+                "url": open_url,
+                "local_url": local_url,
+                "runtime_session_id": "publication-runtime-session",
+                "expires_at_ms": expires_at_ms,
+            }),
+        );
+        app.sessions
+            .write()
+            .restore_workflow_publication(session.id(), publication.clone())
+            .expect("publication should restore into the live session");
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("updated session should load");
+        app.durable_state_store()
+            .append_event(
+                "session.updated",
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": &session,
+                    "reason": "test_publication_tunnel_restart",
+                }),
+            )
+            .expect("publication session should persist");
+        (session.id().to_string(), publication.id().to_string())
+    };
+
+    let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let relay_state = app
+        .relay_client_state
+        .try_read()
+        .expect("bootstrap should release relay state");
+    let target = relay_state
+        .display_tunnel(tunnel_id, crate::session::unix_epoch_ms())
+        .expect("unexpired publication tunnel should restore before relay reconnect");
+    assert_eq!(
+        target.slice_id,
+        format!("publication:{session_id}:{publication_id}")
+    );
+    assert_eq!(target.local_base_url, "http://127.0.0.1:43100/");
+    assert_eq!(target.expires_at_ms, expires_at_ms);
+    assert_eq!(
+        target.capabilities,
+        vec![
+            "http".to_string(),
+            "websocket".to_string(),
+            "publication".to_string(),
+        ]
+    );
+}
+
+#[test]
 fn bootstrap_restores_queued_prompt_private_state_and_replays_submission_once() {
     let config = DaemonConfig::for_tests();
     let (session_id, agent_id, attachment_id, queued_prompt_id) = {

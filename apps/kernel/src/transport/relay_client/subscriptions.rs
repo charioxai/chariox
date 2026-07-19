@@ -1,5 +1,7 @@
 //! Relay subscription task lifecycle and event polling loops.
 
+use std::future::Future;
+
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
@@ -42,10 +44,7 @@ pub(super) fn relay_subscription_task_key(
     relay_subscription_id: &str,
 ) -> String {
     let scope = subscription_scope.unwrap_or("session");
-    if scope == WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE {
-        return format!("{scope}\u{1f}{relay_subscription_id}");
-    }
-    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}")
+    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
 }
 
 pub(super) async fn handle_relay_subscribe(
@@ -347,19 +346,11 @@ pub(super) async fn run_relay_subscription_loop(
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
     let mut next_snapshot_reconciliation_at = Instant::now();
+    let mut next_attachment_heartbeat_at = Instant::now();
     let mut next_heartbeat_at = Instant::now();
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        if Instant::now() >= next_heartbeat_at {
-            record_relay_subscription_attachment_heartbeat(
-                &router,
-                &session_id,
-                &attachment_id,
-                "heartbeat_deadline",
-            )
-            .await;
-        }
         let terminal_attachment_change_sequence =
             router.terminal_attachment_change_sequence(&session_id, &attachment_id);
         let terminal_session_change_sequence = router.terminal_session_change_sequence(&session_id);
@@ -375,15 +366,32 @@ pub(super) async fn run_relay_subscription_loop(
         } else {
             None
         };
-        let watch_result = router
-            .relay_watch_subscription_state(
+        let watch_result = await_relay_subscription_watch_with_heartbeats(
+            router.relay_watch_subscription_state(
                 &session_id,
                 &attachment_id,
                 should_check_snapshot,
                 previous_snapshot_for_watch,
                 last_workflow_design_sequence,
-            )
-            .await;
+            ),
+            &mut next_attachment_heartbeat_at,
+            relay_subscription_heartbeat_interval(),
+            || {
+                let router = Arc::clone(&router);
+                let session_id = session_id.clone();
+                let attachment_id = attachment_id.clone();
+                async move {
+                    record_relay_subscription_attachment_heartbeat(
+                        &router,
+                        &session_id,
+                        &attachment_id,
+                        "heartbeat_deadline",
+                    )
+                    .await;
+                }
+            },
+        )
+        .await;
         if should_check_snapshot {
             last_snapshot_projection_sequence = Some(session_projection_change_sequence);
             next_snapshot_reconciliation_at =
@@ -629,6 +637,41 @@ pub(super) async fn run_relay_subscription_loop(
     }
 }
 
+async fn await_relay_subscription_watch_with_heartbeats<F, T, H, HF>(
+    watch: F,
+    next_heartbeat_at: &mut Instant,
+    heartbeat_interval: Duration,
+    mut heartbeat: H,
+) -> T
+where
+    F: Future<Output = T>,
+    H: FnMut() -> HF,
+    HF: Future<Output = ()>,
+{
+    tokio::pin!(watch);
+    loop {
+        if Instant::now() >= *next_heartbeat_at {
+            heartbeat().await;
+            *next_heartbeat_at =
+                advance_relay_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            continue;
+        }
+        let wait = next_heartbeat_at
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        tokio::select! {
+            result = &mut watch => return result,
+            _ = sleep(wait) => {
+                heartbeat().await;
+                *next_heartbeat_at = advance_relay_subscription_deadline(
+                    *next_heartbeat_at,
+                    heartbeat_interval,
+                );
+            }
+        }
+    }
+}
+
 async fn record_relay_subscription_attachment_heartbeat(
     router: &Arc<CommandRouter>,
     session_id: &str,
@@ -866,25 +909,78 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
 #[cfg(test)]
 mod tests {
     use super::{
-        relay_subscription_task_key, relay_subscription_task_matches,
-        remove_relay_subscription_task_by_relay_id, RelaySubscriptionTask, RelaySubscriptionTasks,
-        WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+        await_relay_subscription_watch_with_heartbeats, relay_subscription_task_key,
+        relay_subscription_task_matches, remove_relay_subscription_task_by_relay_id,
+        RelaySubscriptionTask, RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
     };
 
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    async fn relay_subscription_tasks_are_owned_by_logical_attachment_subscription() {
+    async fn stalled_relay_watch_does_not_starve_attachment_heartbeats() {
+        let heartbeat_count = Arc::new(AtomicUsize::new(0));
+        let mut next_heartbeat_at = std::time::Instant::now();
+        let result = await_relay_subscription_watch_with_heartbeats(
+            async {
+                sleep(Duration::from_millis(30)).await;
+                "watch-complete"
+            },
+            &mut next_heartbeat_at,
+            Duration::from_millis(5),
+            {
+                let heartbeat_count = Arc::clone(&heartbeat_count);
+                move || {
+                    let heartbeat_count = Arc::clone(&heartbeat_count);
+                    async move {
+                        heartbeat_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result, "watch-complete");
+        assert!(heartbeat_count.load(Ordering::SeqCst) > 0);
+    }
+
+    #[tokio::test]
+    async fn ready_relay_watch_does_not_win_over_due_attachment_heartbeat() {
+        let heartbeat_count = Arc::new(AtomicUsize::new(0));
+        let mut next_heartbeat_at = std::time::Instant::now();
+        let result = await_relay_subscription_watch_with_heartbeats(
+            async { "watch-complete" },
+            &mut next_heartbeat_at,
+            Duration::from_millis(5),
+            {
+                let heartbeat_count = Arc::clone(&heartbeat_count);
+                move || {
+                    let heartbeat_count = Arc::clone(&heartbeat_count);
+                    async move {
+                        heartbeat_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result, "watch-complete");
+        assert_eq!(heartbeat_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_subscription_tasks_with_one_attachment_can_coexist() {
         let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
         let first_key =
             relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-1");
         let second_key =
             relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-2");
-        assert_eq!(first_key, second_key);
+        assert_ne!(first_key, second_key);
 
         let first_handle = tokio::spawn(async {
             sleep(Duration::from_secs(60)).await;
@@ -901,9 +997,6 @@ mod tests {
         let second_handle = tokio::spawn(async {
             sleep(Duration::from_secs(60)).await;
         });
-        if let Some(existing) = tasks.lock().await.remove(&second_key) {
-            existing.handle.abort();
-        }
         tasks.lock().await.insert(
             second_key,
             RelaySubscriptionTask {
@@ -912,12 +1005,21 @@ mod tests {
                 handle: second_handle,
             },
         );
-        assert_eq!(tasks.lock().await.len(), 1);
+        assert_eq!(tasks.lock().await.len(), 2);
 
         let removed =
             remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
         assert!(removed.is_some());
-        assert!(tasks.lock().await.is_empty());
+        assert_eq!(tasks.lock().await.len(), 1);
+        assert_eq!(
+            tasks
+                .lock()
+                .await
+                .get(&first_key)
+                .map(|task| task.relay_subscription_id.as_str()),
+            Some("relay-subscription-1")
+        );
+        tasks.lock().await.get(&first_key).unwrap().handle.abort();
     }
 
     #[test]

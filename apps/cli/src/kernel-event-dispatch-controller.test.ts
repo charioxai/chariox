@@ -373,6 +373,25 @@ test("kernel event dispatch treats successful transport resume as local liveness
   ])
 })
 
+test("kernel event dispatch reconciles durable history after assistant completion", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({
+    event: "assistant_message_completed",
+    session_id: "session-1",
+    provider_run_id: "run-1",
+    agent_id: "agent-1",
+    message_id: "message-1",
+    completed_at_ms: 1,
+  })
+
+  assert.deepEqual(harness.calls, [
+    "drain-terminal-records",
+    "assistant-completed:agent-1",
+    "refresh-assistant-history:agent-1",
+  ])
+})
+
 function createHarness() {
   const calls: string[] = []
   const snapshots: Array<{
@@ -388,11 +407,17 @@ function createHarness() {
       terminalRecords.push(records)
       calls.push(`queue-terminal-records:${records.length}`)
     },
+    drainTerminalOutputRecords: () => {
+      calls.push("drain-terminal-records")
+    },
     applyRuntimeNotices: (notices) => {
       calls.push(`runtime-notices:${notices.length}`)
     },
     applyAssistantMessageCompleted: (event) => {
       calls.push(`assistant-completed:${event.agent_id ?? "null"}`)
+    },
+    refreshAssistantMessageHistory: (agentId: string) => {
+      calls.push(`refresh-assistant-history:${agentId}`)
     },
     applyKernelSessionSnapshot: (nextSession, nextProviderRun) => {
       snapshots.push({ session: nextSession, providerRun: nextProviderRun })

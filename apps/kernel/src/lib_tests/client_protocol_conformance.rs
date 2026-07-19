@@ -147,6 +147,14 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             "apps/kernel/src/local/api/tests/protocol_shapes/provider_usage_activity.rs",
                             &["LOCAL_DAEMON_PROTOCOL_VERSION", "ApplyWorkflowDesignOp"],
                         ),
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/credential_enrollment.rs",
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "ArmDeploymentCredentialEnrollment",
+                                "RequestCredentialEnrollmentInteraction",
+                            ],
+                        ),
                     ],
                 ),
                 (
@@ -418,10 +426,20 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 ),
                 (
                     "permissions",
-                    vec![evidence(
-                        "packages/kernel-client/src/ipc-terminal-runtime-requests.ts",
-                        &["RequestNativeProviderInteraction"],
-                    )],
+                    vec![
+                        evidence(
+                            "packages/kernel-client/src/ipc-terminal-runtime-requests.ts",
+                            &[
+                                "RequestNativeProviderInteraction",
+                                "armDeploymentCredentialEnrollmentRequest",
+                                "requestCredentialEnrollmentInteractionRequest",
+                            ],
+                        ),
+                        evidence(
+                            "packages/kernel-client/src/credential-enrollment-requests.test.ts",
+                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "timeout_sec"],
+                        ),
+                    ],
                 ),
                 (
                     "attachments",

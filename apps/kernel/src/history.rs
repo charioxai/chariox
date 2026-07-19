@@ -549,6 +549,7 @@ impl Drop for OperationalHistoryWriter {
 pub struct OperationalHistoryStore {
     path: PathBuf,
     connection: Arc<Mutex<Connection>>,
+    legacy_import_lock: Arc<Mutex<()>>,
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
@@ -647,6 +648,7 @@ impl OperationalHistoryStore {
         let store = Self {
             path,
             connection: Arc::new(Mutex::new(connection)),
+            legacy_import_lock: Arc::new(Mutex::new(())),
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),

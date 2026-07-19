@@ -515,6 +515,15 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         .expect("remote binding should still exist")
         .leased_agent_id
         .clone();
+    assert_eq!(
+        state_worker
+            .read()
+            .await
+            .peer_public_key(&config_home.daemon_id)
+            .as_deref(),
+        Some(config_home.relay_public_key.as_str()),
+        "worker should retain the authenticated home key for projection events"
+    );
 
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay accept loop should stop");

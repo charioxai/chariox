@@ -4,23 +4,29 @@ import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
 
+import {
+  rustBinaryPath,
+  rustManifestPath,
+} from "./rust-workspace.mjs"
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(__dirname, "..")
 const kernelDir = path.join(repoRoot, "apps/kernel")
 const relayDir = path.join(repoRoot, "apps/relay")
 
 export async function startRustBin(binaryName) {
-  const binaryPath = path.join(kernelDir, "target/debug", binaryName)
+  const binaryPath = rustBinaryPath(repoRoot, binaryName)
   const inputs = [
+    path.join(repoRoot, "Cargo.toml"),
+    path.join(repoRoot, "Cargo.lock"),
     path.join(kernelDir, "Cargo.toml"),
-    path.join(kernelDir, "Cargo.lock"),
     path.join(relayDir, "Cargo.toml"),
     ...await collectFiles(path.join(kernelDir, "src"), [".rs", ".md"]),
     ...await collectFiles(path.join(relayDir, "src"), [".rs"]),
   ]
 
   if (await needsBuild(inputs, [binaryPath])) {
-    await run("cargo", ["build", "--manifest-path", path.join(kernelDir, "Cargo.toml"), "--bin", binaryName], repoRoot)
+    await run("cargo", ["build", "--manifest-path", rustManifestPath(repoRoot, binaryName), "--bin", binaryName], repoRoot)
   }
 
   const child = spawn(binaryPath, process.argv.slice(2), {

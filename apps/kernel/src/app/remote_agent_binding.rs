@@ -459,7 +459,7 @@ impl DaemonApp {
         {
             return self.agents.get_agent(agent.id());
         }
-        let relay_config = self.relay_config_for_remote_execution(&remote_execution);
+        let relay_config = self.relay_config_for_remote_extension_sync(&remote_execution);
         let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
             &relay_config,
             ClientTarget {
@@ -956,6 +956,20 @@ impl DaemonApp {
             remote_execution.relay_token.clone(),
         ) {
             config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        config
+    }
+
+    pub(crate) fn relay_config_for_remote_extension_sync(
+        &self,
+        remote_execution: &RemoteAgentBinding,
+    ) -> DaemonConfig {
+        let mut config = self.config.clone();
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_execution.relay_url.clone(),
+            remote_execution.relay_token.clone(),
+        ) {
+            config.apply_missing_remote_relay_override(relay_url, relay_token);
         }
         config
     }

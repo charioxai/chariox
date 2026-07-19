@@ -209,6 +209,13 @@ impl KernelRuntimeState {
         let mut provider_run_agent_cache =
             std::collections::BTreeMap::<String, Option<String>>::new();
         for output in request.outputs {
+            if output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
+                return Err(DaemonError::LocalTransport {
+                    operation: "append native provider output",
+                    message: "provider_terminal is kernel-owned transient transport state"
+                        .to_string(),
+                });
+            }
             let agent_id = match provider_run_agent_cache.get(&output.provider_run_id) {
                 Some(agent_id) => agent_id.clone(),
                 None => {
@@ -230,7 +237,9 @@ impl KernelRuntimeState {
                 &request.session_id,
                 agent_id.as_deref(),
             );
-            if output.kind != crate::terminal::TerminalOutputKind::PromptEcho {
+            if output.kind != crate::terminal::TerminalOutputKind::PromptEcho
+                && output.kind != crate::terminal::TerminalOutputKind::ProviderTerminal
+            {
                 history_entries.push(
                     crate::history::SessionHistoryEntry::provider_output(
                         &request.session_id,

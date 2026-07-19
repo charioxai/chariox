@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Prefix stamped onto the `source_attachment_id` of every kernel-internal
+/// restart-recovery dispatch. It identifies an envelope that carries provider
+/// resume text (not user input) so downstream fanout can suppress it.
+pub(crate) const KERNEL_RECOVERY_ATTACHMENT_PREFIX: &str = "kernel-recovery:";
+
+/// Whether an attachment id belongs to a kernel-internal restart-recovery
+/// dispatch. Kept as a shared helper so every fanout/persistence boundary
+/// checks the same marker.
+pub(crate) fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> bool {
+    attachment_id.starts_with(KERNEL_RECOVERY_ATTACHMENT_PREFIX)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) accepted_local_redispatched: usize,
@@ -377,7 +389,7 @@ impl KernelRuntimeState {
             agent_id: agent.id().to_string(),
             prompt_id: prompt.id().to_string(),
             target_active_prompt_id: None,
-            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
             prompt: continuation,
             hidden_system_context: String::new(),
             attachments: Vec::new(),
@@ -692,7 +704,7 @@ mod tests {
             agent_id: agent_id.clone(),
             prompt_id,
             target_active_prompt_id: None,
-            source_attachment_id: format!("kernel-recovery:{operation_id}"),
+            source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
             prompt: provider_restart_continuation_prompt(operation_id),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
@@ -714,5 +726,68 @@ mod tests {
             .input_records()
             .iter()
             .all(|record| !String::from_utf8_lossy(&record.bytes).contains(operation_id)));
+    }
+
+    #[tokio::test]
+    async fn internal_recovery_prompt_is_not_echoed_to_other_attachments() {
+        // The dispatch fanout is the boundary where a recovery envelope would
+        // become user-visible terminal output on subscribed attachments. The
+        // local dispatch runtime guards its call site, but remote-lease
+        // dispatchers also invoke this helper and any future caller could
+        // regress the invariant. Assert the fanout helper itself refuses to
+        // surface a `kernel-recovery:*` envelope regardless of caller.
+        let (runtime, session_id, agent_id, _prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        let provider_run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("provider run should exist")
+            .id()
+            .to_string();
+        let observer_attachment_id = runtime
+            .with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app)
+                    .attach(AttachRequest::new(
+                        &session_id,
+                        "attachment-restart-recovery-observer",
+                        ClientCapabilityLevel::FullTerminal,
+                    ))
+                    .expect("observer attachment should attach")
+                    .id()
+                    .to_string()
+            })
+            .await;
+        let operation_id = "arroba-recovery:prompt-hidden:1";
+        let recovery_source_attachment =
+            format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}");
+        let recovery_prompt = provider_restart_continuation_prompt(operation_id);
+
+        runtime.owned.echo_prompt_to_other_attachments(
+            &session_id,
+            &provider_run_id,
+            "prompt-hidden",
+            &recovery_source_attachment,
+            &recovery_prompt,
+            &[],
+        );
+
+        let leaked_records: Vec<_> = runtime
+            .owned
+            .terminal_stream
+            .output_records()
+            .into_iter()
+            .filter(|record| {
+                record
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|id| id == &observer_attachment_id)
+                    && String::from_utf8_lossy(&record.bytes).contains(operation_id)
+            })
+            .collect();
+        assert!(
+            leaked_records.is_empty(),
+            "kernel-recovery envelope must never be echoed to other attachments; leaked records = {leaked_records:#?}",
+        );
     }
 }
