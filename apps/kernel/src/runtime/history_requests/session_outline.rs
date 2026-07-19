@@ -371,14 +371,16 @@ fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
 
 fn external_recovery_envelope_prompt(prompt: &HistoryEvent) -> bool {
     const RECOVERY_OPERATION_PREFIX: &str = "[Arroba recovery operation arroba-recovery:";
+    const CODEX_TURN_ABORTED_PREFIX: &str = "<turn_aborted>";
 
     prompt.kind == HistoryEventKind::UserPrompt
         && prompt.to_session_history_entry().is_some_and(|entry| {
-            entry.is_external_provider_observed()
-                && entry
-                    .text
-                    .trim_start()
-                    .starts_with(RECOVERY_OPERATION_PREFIX)
+            if !entry.is_external_provider_observed() {
+                return false;
+            }
+            let text = entry.text.trim_start();
+            text.starts_with(RECOVERY_OPERATION_PREFIX)
+                || text.starts_with(CODEX_TURN_ABORTED_PREFIX)
         })
 }
 
