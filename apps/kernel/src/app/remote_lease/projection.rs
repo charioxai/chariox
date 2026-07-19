@@ -302,22 +302,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .as_ref()
             .and_then(|run| run.terminal_diagnostic())
             .is_some_and(|diagnostic| !diagnostic.trim().is_empty());
-        let provider_run_has_projected_output = leased_agent
-            .projected_output_history_keys
-            .iter()
-            .any(|key| {
-                key.starts_with(&format!(
-                    "{}:{provider_run_id}:",
-                    leased_agent.backing_session_id
-                ))
-            });
+        let provider_run_has_projected_output =
+            current_batch_has_provider_output || latest_output_history_completion_key.is_some();
         let native_prompt_has_settled =
             completion_waits_for_native_prompt_settlement && !backing_prompt_active;
         let mut deferred_explicit_completion = false;
         let completion_waits_for_output = !completions.is_empty()
             && requires_explicit_completion
             && !native_prompt_has_settled
-            && output_chunks.is_empty()
+            && !current_batch_has_provider_output
             && !provider_run_has_projected_output
             && !provider_run_failed;
         let completion_waits_for_native_stop = !completions.is_empty()
@@ -342,7 +335,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let explicit_completion_waiting_for_output = requires_explicit_completion
             && !provider_run_failed
             && !native_prompt_has_settled
-            && output_chunks.is_empty()
+            && !current_batch_has_provider_output
             && !provider_run_has_projected_output
             && (deferred_explicit_completion
                 || leased_agent
@@ -363,7 +356,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && requires_explicit_completion
             && !explicit_completion_waiting_for_prompt_settlement
             && (native_prompt_has_settled
-                || !output_chunks.is_empty()
+                || current_batch_has_provider_output
                 || provider_run_has_projected_output)
         {
             if let Some(replay) = leased_agent

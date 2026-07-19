@@ -196,7 +196,7 @@ export type TerminalOutputRecord = {
   prompt_id?: string | null
   prompt_origin?: "arroba" | "external" | string | null
   source_attachment_id?: string | null
-  kind: "provider_output" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
+  kind: "provider_output" | "provider_terminal" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string
   source?: "external_provider_observed" | string | null
   external_provider?: string | null

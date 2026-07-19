@@ -79,11 +79,19 @@ test("remote Claude rendering selects raw worker output by home agent identity",
       {
         provider_run_id: "provider-run-2",
         agent_id: "agent-other",
+        kind: "provider_terminal",
         bytes: [...Buffer.from("WRONG_AGENT")],
       },
       {
         provider_run_id: "provider-run-2",
         agent_id: "agent-home-b",
+        kind: "provider_output",
+        bytes: [...Buffer.from("SEMANTIC_ANSWER")],
+      },
+      {
+        provider_run_id: "provider-run-2",
+        agent_id: "agent-home-b",
+        kind: "provider_terminal",
         bytes: [...Buffer.from("CLAUDEDELTA")],
       },
     ], "leased:leased-agent-b:provider-run-2", "agent-home-b")
@@ -102,6 +110,7 @@ test("remote Claude readiness waits for its fragmented input surface", async () 
   readiness.observe([{
     provider_run_id: "provider-run-other",
     agent_id: "agent-other",
+    kind: "provider_terminal",
     bytes: [...Buffer.from("Claude Code\u001b[?2004h")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -110,11 +119,13 @@ test("remote Claude readiness waits for its fragmented input surface", async () 
   readiness.observe([{
     provider_run_id: "provider-run-2",
     agent_id: "agent-home-b",
+    kind: "provider_terminal",
     bytes: [...Buffer.from("\u001b]0;Claude ")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
   readiness.observe([{
     provider_run_id: "provider-run-2",
     agent_id: "agent-home-b",
+    kind: "provider_terminal",
     bytes: [...Buffer.from("Code\u0007\u001b[?2004h")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
 
@@ -134,6 +145,7 @@ test("remote Claude initial prompt waits for readiness then submits Enter separa
   readiness.observe([{
     provider_run_id: "provider-run-2",
     agent_id: "agent-home-b",
+    kind: "provider_terminal",
     bytes: [...Buffer.from("\u001b]0;Claude Code\u0007\u001b[?2004h")],
   }], "leased:agent-b:provider-run-2", "agent-home-b")
 

@@ -143,8 +143,11 @@ impl ProviderOutputFanout {
         }
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
-        let recipient_attachment_ids =
-            self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
+            recipient_attachment_ids
+        } else {
+            self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids)
+        };
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id);
         let record = self.terminal.fan_out_output_with_prompt_metadata(
@@ -158,8 +161,10 @@ impl ProviderOutputFanout {
             recipient_attachment_ids,
             &bounded_bytes,
         );
-        self.notify_metaagent_trace_activity(session_id, agent_id);
-        if kind != TerminalOutputKind::PromptEcho {
+        if kind != TerminalOutputKind::ProviderTerminal {
+            self.notify_metaagent_trace_activity(session_id, agent_id);
+        }
+        if kind != TerminalOutputKind::PromptEcho && kind != TerminalOutputKind::ProviderTerminal {
             let text = String::from_utf8_lossy(&bounded_bytes).into_owned();
             if kind == TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id {

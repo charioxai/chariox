@@ -1,5 +1,6 @@
 import type { RuntimeNoticeRecord, TerminalOutputRecord, TranscriptEntry } from "./cli-types.js"
 import {
+  terminalRecordIsProviderTerminal,
   terminalRecordTranscriptProjection,
   transcriptEntryWithTerminalMetadata,
   type TerminalRecordTranscriptMetadata,
@@ -188,6 +189,9 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
   const processTerminalOutputRecord = (record: TerminalOutputRecord) => {
     deps.recordDaemonActivity("terminal_record")
+    if (terminalRecordIsProviderTerminal(record)) {
+      return
+    }
     deps.recordTurnActivity("terminal_record")
     const text = Buffer.from(record.bytes).toString("utf8")
     const recordAgentId = deps.resolveTerminalRecordAgentId(record)

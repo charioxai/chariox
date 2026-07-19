@@ -193,8 +193,13 @@ impl<'a> ProviderOutputPump<'a> {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
+        let uses_transient_native_terminal =
+            crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
+                && !crate::provider::provider_run_is_claude_headless(&provider_run);
         if !chunks.is_empty() {
-            if crate::provider::provider_run_is_claude_headless(&provider_run) {
+            if crate::provider::provider_run_is_claude_headless(&provider_run)
+                || uses_transient_native_terminal
+            {
                 self.context.note_prompt_output(request.provider_run_id);
             } else {
                 self.context
@@ -208,12 +213,23 @@ impl<'a> ProviderOutputPump<'a> {
             chunks
                 .into_iter()
                 .map(|chunk| {
-                    self.context.fan_out_provider_output(
-                        request.session_id,
-                        request.provider_run_id,
-                        request.recipient_attachment_ids.clone(),
-                        &chunk.bytes,
-                    )
+                    if uses_transient_native_terminal {
+                        self.context.fan_out_terminal_output(
+                            request.session_id,
+                            request.provider_run_id,
+                            TerminalOutputKind::ProviderTerminal,
+                            None,
+                            request.recipient_attachment_ids.clone(),
+                            &chunk.bytes,
+                        )
+                    } else {
+                        self.context.fan_out_provider_output(
+                            request.session_id,
+                            request.provider_run_id,
+                            request.recipient_attachment_ids.clone(),
+                            &chunk.bytes,
+                        )
+                    }
                 })
                 .collect::<Vec<_>>()
         };
@@ -944,13 +960,13 @@ impl DaemonApp {
         )
     }
 
-    pub(crate) fn finish_deferred_claude_native_headless_stop_for_runtime(
+    pub(crate) fn finish_deferred_claude_native_stop_for_runtime(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
         provider_run: &RuntimeProviderRun,
     ) -> Result<(), DaemonError> {
-        ProviderOutputClaudeNativeBridge::new(self).finish_deferred_headless_stop(
+        ProviderOutputClaudeNativeBridge::new(self).finish_deferred_stop(
             session_id,
             provider_run_id,
             provider_run,

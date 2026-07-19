@@ -293,6 +293,15 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 
 #[test]
 fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude-headless");
+}
+
+#[test]
+fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude");
+}
+
+fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -333,7 +342,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-sonnet",
     )
@@ -388,14 +397,14 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
         .process(session.id(), run.id(), &run, None)
         .expect("Stop event should be processed");
 
-    assert!(outcome.needs_deferred_headless_drain);
+    assert!(outcome.needs_deferred_transcript_drain);
     assert!(app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
         .expect("active prompt should load")
         .is_some());
     assert!(claude_native_marker(&context_file)
         .as_deref()
-        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)));
+        .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
     fs::write(
         &transcript_file,
@@ -413,7 +422,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     .expect("late transcript output should be written");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
-        .finish_deferred_headless_stop(session.id(), run.id(), &run)
+        .finish_deferred_stop(session.id(), run.id(), &run)
         .expect("deferred transcript drain should finish");
 
     assert!(app

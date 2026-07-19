@@ -98,24 +98,35 @@ impl KernelRuntimeOwnedState {
                     )
                 })
                 .clone();
-            let scoped_recipient_attachment_ids = recipient_scope_cache
-                .entry(agent_id.clone())
-                .or_insert_with(|| {
-                    let mut scoped_recipient_attachment_ids = self
-                        .private_recipient_attachment_ids(
+            let provider_terminal =
+                output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
+            let scoped_recipient_attachment_ids = if provider_terminal {
+                std::sync::Arc::from(self.private_recipient_attachment_ids(
+                    agent_id.as_deref(),
+                    recipient_attachment_ids.clone(),
+                ))
+            } else {
+                recipient_scope_cache
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| {
+                        let mut scoped_recipient_attachment_ids = self
+                            .private_recipient_attachment_ids(
+                                agent_id.as_deref(),
+                                recipient_attachment_ids.clone(),
+                            );
+                        scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
+                            session_id,
                             agent_id.as_deref(),
-                            recipient_attachment_ids.clone(),
+                            scoped_recipient_attachment_ids,
                         );
-                    scoped_recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-                        session_id,
-                        agent_id.as_deref(),
-                        scoped_recipient_attachment_ids,
-                    );
-                    std::sync::Arc::from(scoped_recipient_attachment_ids)
-                })
-                .clone();
-            if let Some(agent_id) = agent_id.as_deref() {
-                trace_agent_ids.insert(agent_id.to_string());
+                        std::sync::Arc::from(scoped_recipient_attachment_ids)
+                    })
+                    .clone()
+            };
+            if !provider_terminal {
+                if let Some(agent_id) = agent_id.as_deref() {
+                    trace_agent_ids.insert(agent_id.to_string());
+                }
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
@@ -168,11 +179,16 @@ impl KernelRuntimeOwnedState {
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
         let recipient_attachment_ids =
             self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
-            session_id,
-            agent_id.as_deref(),
-            recipient_attachment_ids,
-        );
+        let recipient_attachment_ids =
+            if kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
+                recipient_attachment_ids
+            } else {
+                self.with_metaagent_trace_recipient_ids(
+                    session_id,
+                    agent_id.as_deref(),
+                    recipient_attachment_ids,
+                )
+            };
         let record = self.terminal_stream.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
@@ -184,8 +200,12 @@ impl KernelRuntimeOwnedState {
             recipient_attachment_ids,
             bytes,
         );
-        self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
-        if kind != crate::terminal::TerminalOutputKind::PromptEcho {
+        if kind != crate::terminal::TerminalOutputKind::ProviderTerminal {
+            self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
+        }
+        if kind != crate::terminal::TerminalOutputKind::PromptEcho
+            && kind != crate::terminal::TerminalOutputKind::ProviderTerminal
+        {
             let text = String::from_utf8_lossy(bytes).into_owned();
             if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {

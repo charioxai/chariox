@@ -19,6 +19,7 @@ import {
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
 
 export const STEERING_PROMPT_MERGE_KEY_PREFIX = "steering-prompt:"
+export const PROVIDER_TERMINAL_OUTPUT_KIND = "provider_terminal"
 
 export type TerminalRecordTranscriptFields = {
   readonly prompt_id?: string | null
@@ -99,6 +100,7 @@ export function terminalRecordTranscriptProjection(
   },
 ): TerminalRecordTranscriptProjection {
   const metadata = terminalRecordTranscriptMetadata(record)
+  const providerTerminal = terminalRecordIsProviderTerminal(record)
   const historyRefreshSignal = externalProviderObservedHistoryRefreshSignal(record, text)
   const passiveExternalTelemetry = terminalRecordIsPassiveExternalProviderTelemetry({ ...record, text })
   const providerStatusIdle = record.kind === "provider_status" && options.isProviderIdleStatus(text)
@@ -107,16 +109,22 @@ export function terminalRecordTranscriptProjection(
     && !providerStatusIdle
     ? terminalRecordProviderStatusShouldRender(record, text, options.shouldRenderProviderStatus)
     : false
-  const transcriptRole = terminalRecordTranscriptRole(record.kind)
-  const transcriptText = record.kind === "provider_error" ? normalizeTerminalRecordErrorText(text) : text
-  const renderInAgentPane = !historyRefreshSignal
+  const transcriptRole = providerTerminal ? null : terminalRecordTranscriptRole(record.kind)
+  const transcriptText = providerTerminal
+    ? ""
+    : record.kind === "provider_error"
+      ? normalizeTerminalRecordErrorText(text)
+      : text
+  const renderInAgentPane = !providerTerminal
+    && !historyRefreshSignal
     && !passiveExternalTelemetry
     && !providerStatusIdle
     && terminalRecordShouldRenderInAgentPane(record.kind, text, {
       externalObserved: sessionHistoryEntryIsExternalProviderObserved(metadata),
       passiveExternalTelemetry,
     })
-  const updatesProviderActivity = record.kind === "provider_status"
+  const updatesProviderActivity = !providerTerminal
+    && record.kind === "provider_status"
     && !historyRefreshSignal
     && !passiveExternalTelemetry
     && !providerStatusIdle
@@ -147,6 +155,12 @@ export function terminalRecordTranscriptProjection(
     replace: renderInAgentPane && terminalRecordRoleShouldReplace(transcriptRole),
     steeringPrompt,
   }
+}
+
+export function terminalRecordIsProviderTerminal(
+  record: Pick<TerminalRecordTranscriptFields, "kind">,
+): boolean {
+  return record.kind === PROVIDER_TERMINAL_OUTPUT_KIND
 }
 
 export function terminalRecordIsSteeringPrompt(

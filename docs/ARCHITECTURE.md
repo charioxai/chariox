@@ -646,6 +646,13 @@ worker kernels answer a scoped hook context request with the same granted-skill
 prompt context used by normal Arroba provider runs, while keeping that context
 out of visible PTY input and native TUI transcript rendering.
 
+Managed Claude native interfaces keep fullscreen PTY redraw bytes separate from
+semantic transcript output. The PTY bytes travel as transient
+`provider_terminal` records for the native renderer and are never persisted or
+projected into agent panes. Semantic assistant/reasoning/tool output comes from
+Claude's hook-provided transcript path, and the Claude `Stop` hook remains the
+authoritative turn-settlement signal after a final deferred transcript drain.
+
 Slice-backed native TUI mode is the same composition with a home-managed slice
 as the worker execution environment. Provider TUIs still attach to the home
 kernel session; `slice_ref` only selects where provider execution runs. Native

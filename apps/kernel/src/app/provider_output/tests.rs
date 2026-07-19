@@ -71,6 +71,58 @@ fn pump_structured_test_run(
     let _ = attachment_id;
 }
 
+#[test]
+fn provider_terminal_is_transient_and_does_not_wake_meta_traces() {
+    let (app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let session = app
+        .sessions
+        .get_session(&session_id)
+        .expect("session should exist");
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let trace_store = app.metaagent_trace_subscription_store();
+    let subscription = trace_store.subscribe(
+        &session_id,
+        "meta-agent",
+        &agent_id,
+        crate::runtime::metaagent_trace::MetaagentTraceMode::Verbose,
+    );
+    let history_count = app
+        .load_session_history_entries(&session, Some(&agent_id))
+        .expect("history should load")
+        .len();
+
+    let record = ProviderOutputFanout::new(&app).fan_out(
+        &session_id,
+        &provider_run_id,
+        TerminalOutputKind::ProviderTerminal,
+        None,
+        vec![attachment_id.clone()],
+        b"\x1b[2Jfullscreen redraw",
+    );
+
+    assert_eq!(record.kind, TerminalOutputKind::ProviderTerminal);
+    assert!(record.recipient_attachment_ids.contains(&attachment_id));
+    assert!(!record
+        .recipient_attachment_ids
+        .contains(&subscription.recipient_attachment_id));
+    assert_eq!(
+        trace_store.target_activity_sequence(&session_id, &agent_id),
+        0
+    );
+    assert_eq!(
+        app.load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should still load")
+            .len(),
+        history_count
+    );
+}
+
 fn pending_structured_output_record(
     session_id: &str,
     provider_run_id: &str,

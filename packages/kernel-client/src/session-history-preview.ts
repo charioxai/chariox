@@ -8,6 +8,7 @@ import { externalProviderObservedProviderStatusShouldRender } from "./external-p
 import { sessionHistoryEntryKindTranscriptRole } from "./session-history-outline.js"
 import { mergeAdjacentSessionHistoryPageEntries } from "./session-history-page-entries.js"
 import { providerTranscriptRoleForKind } from "./transcript-kind-role.js"
+import { PROVIDER_TERMINAL_OUTPUT_KIND } from "./terminal-record-transcript.js"
 
 export const DEFAULT_TRANSCRIPT_PREVIEW_LINE_LIMIT = 14
 
@@ -69,6 +70,9 @@ export function previewLineForTerminalRecord(
   kind: TerminalOutputRecord["kind"],
   text: string,
 ): string {
+  if (kind === PROVIDER_TERMINAL_OUTPUT_KIND) {
+    return ""
+  }
   const normalized = firstNormalizedLine(text)
   if (!normalized) {
     return ""
@@ -113,7 +117,7 @@ function terminalRecordPreviewRole(kind: TerminalOutputRecord["kind"]): Transcri
   if (kind === "prompt_echo") {
     return "user"
   }
-  return providerTranscriptRoleForKind(kind)
+  return providerTranscriptRoleForKind(kind) ?? "assistant"
 }
 
 function trimPreviewLines(lines: readonly string[], limit: number): string[] {

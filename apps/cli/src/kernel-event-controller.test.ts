@@ -101,6 +101,20 @@ test("off-focus agent output updates the agent pane and preview without mutating
   ])
 })
 
+test("provider terminal bytes count only as daemon transport activity", () => {
+  const { deps, calls } = createDeps()
+  const controller = createKernelEventController(deps as never)
+
+  controller.processTerminalOutputRecord({
+    timestamp_ms: 1,
+    agent_id: "agent-b",
+    kind: "provider_terminal",
+    bytes: [...Buffer.from("\u001b[2Jfullscreen redraw", "utf8")],
+  })
+
+  assert.deepEqual(calls, ["activity:terminal_record"])
+})
+
 test("unscoped terminal output records do not render into the visible transcript", () => {
   const { deps, calls } = createDeps()
   const controller = createKernelEventController(deps as never)

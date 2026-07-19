@@ -1,4 +1,6 @@
-use super::provider_output_runtime::provider_run_ids_for_owned_output_pump;
+use super::provider_output_runtime::{
+    provider_run_allows_quiet_pty_settlement, provider_run_ids_for_owned_output_pump,
+};
 use super::*;
 use std::collections::VecDeque;
 use std::fs;
@@ -152,3 +154,33 @@ mod history_projection;
 mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_output;
+
+#[test]
+fn claude_native_runs_never_use_quiet_pty_settlement() {
+    let native_request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let native_run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-native-claude",
+        &native_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-claude-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+
+    assert!(!provider_run_allows_quiet_pty_settlement(&native_run));
+}
