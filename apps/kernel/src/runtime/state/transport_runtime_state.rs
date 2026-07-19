@@ -39,6 +39,10 @@ impl KernelRuntimeState {
     pub(crate) async fn pump_transport_runtime(&self) {
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
+        super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
+            self,
+        )
+        .await;
         if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
             crate::logging::warn_with_fields(
                 "daemon.provider_process_gc",

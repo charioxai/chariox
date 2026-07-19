@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use rand::RngCore;
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::error::DaemonError;
@@ -76,21 +77,60 @@ pub(crate) async fn execute_register_workflow_publication_endpoint_request(
     request: RegisterWorkflowPublicationEndpointRequest,
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let served = served_publication_endpoint(config_projection, relay_state, &request).await?;
-    let deployment = serde_json::json!({
-        "kind": served.access,
-        "url": served.open_url,
-        "local_url": request.local_url,
-        "runtime_session_id": request.runtime_session_id,
-        "expires_at_ms": served.expires_at_ms,
-    });
+    let publication = runtime_state
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
+    if publication.created_by_user_id() != caller_user_id {
+        return Err(super::KernelRuntimeOwnedState::deny_owner(
+            caller_user_id,
+            publication.created_by_user_id(),
+            format!("workflow publication `{}`", request.publication_ref),
+            "register workflow publication endpoint",
+        ));
+    }
+    let preferred_tunnel_id = publication
+        .deployment()
+        .and_then(|deployment| deployment.pointer("/binding/deployment_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(stable_deployment_tunnel_id);
+    let served = served_publication_endpoint(
+        config_projection,
+        relay_state,
+        &request,
+        preferred_tunnel_id.as_deref(),
+    )
+    .await?;
+    let mut deployment = publication
+        .deployment()
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    deployment.insert("kind".to_string(), serde_json::json!(served.access.clone()));
+    deployment.insert(
+        "url".to_string(),
+        serde_json::json!(served.open_url.clone()),
+    );
+    deployment.insert(
+        "local_url".to_string(),
+        serde_json::json!(request.local_url.clone()),
+    );
+    deployment.insert(
+        "runtime_session_id".to_string(),
+        serde_json::json!(request.runtime_session_id.clone()),
+    );
+    deployment.insert(
+        "expires_at_ms".to_string(),
+        serde_json::json!(served.expires_at_ms),
+    );
     runtime_state.owned.workflow_register_publication_endpoint(
         request,
         caller_user_id,
         served.open_url,
         served.access,
         served.expires_at_ms,
-        deployment,
+        serde_json::Value::Object(deployment),
     )
 }
 
@@ -104,10 +144,17 @@ async fn served_publication_endpoint(
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Arc<RwLock<RelayClientState>>,
     request: &RegisterWorkflowPublicationEndpointRequest,
+    preferred_tunnel_id: Option<&str>,
 ) -> Result<ServedPublicationEndpoint, DaemonError> {
     let local_url = parse_local_publication_url(&request.local_url)?;
-    if let Some(tunneled) =
-        tunneled_publication_endpoint(config_projection, relay_state, request, &local_url).await?
+    if let Some(tunneled) = tunneled_publication_endpoint(
+        config_projection,
+        relay_state,
+        request,
+        &local_url,
+        preferred_tunnel_id,
+    )
+    .await?
     {
         return Ok(tunneled);
     }
@@ -123,12 +170,15 @@ async fn tunneled_publication_endpoint(
     relay_state: Arc<RwLock<RelayClientState>>,
     request: &RegisterWorkflowPublicationEndpointRequest,
     local_url: &url::Url,
+    preferred_tunnel_id: Option<&str>,
 ) -> Result<Option<ServedPublicationEndpoint>, DaemonError> {
     let local_base_url = local_publication_base_url(local_url)?;
     let now_ms = crate::session::unix_epoch_ms();
     let ttl_ms = request.ttl_ms.unwrap_or(PUBLICATION_TUNNEL_TTL_MS);
     let expires_at_ms = now_ms.saturating_add(ttl_ms);
-    let tunnel_id = format!("publication-{}", random_hex_id());
+    let tunnel_id = preferred_tunnel_id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("publication-{}", random_hex_id()));
     let (outgoing_tx, tunnel_url) = {
         let mut guard = relay_state.write().await;
         guard.prune_expired_display_tunnels(now_ms);
@@ -252,6 +302,11 @@ fn publication_tunnel_capabilities() -> Vec<String> {
         .collect()
 }
 
+fn stable_deployment_tunnel_id(deployment_id: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(deployment_id.as_bytes()));
+    format!("publication-{}", &digest[..32])
+}
+
 fn random_hex_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -260,7 +315,7 @@ fn random_hex_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::relay_display_base_url;
+    use super::{relay_display_base_url, stable_deployment_tunnel_id};
 
     #[test]
     fn relay_display_base_url_maps_websocket_schemes_to_browser_schemes() {
@@ -277,5 +332,14 @@ mod tests {
             Some("https://relay.example.test/")
         );
         assert!(relay_display_base_url("http://relay.example.test").is_none());
+    }
+
+    #[test]
+    fn deployment_tunnel_identity_is_stable_and_opaque() {
+        let first = stable_deployment_tunnel_id("deployment-1");
+        assert_eq!(first, stable_deployment_tunnel_id("deployment-1"));
+        assert_ne!(first, stable_deployment_tunnel_id("deployment-2"));
+        assert!(first.starts_with("publication-"));
+        assert!(!first.contains("deployment-1"));
     }
 }

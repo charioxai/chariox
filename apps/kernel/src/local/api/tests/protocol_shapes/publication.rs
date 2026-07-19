@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 242);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -109,6 +109,18 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             host: None,
             port: None,
             kernel_url: None,
+        },
+    );
+    let bind_deployment_request = LocalDaemonRequest::BindWorkflowPublicationDeployment(
+        crate::local::BindWorkflowPublicationDeploymentRequest {
+            session_id: "session-1".to_string(),
+            publication_ref: "publication-1".to_string(),
+            setup_id: "setup-1".to_string(),
+            operation_key: "deployment-setup:setup-1:runtime".to_string(),
+            deployment_id: "deployment-1".to_string(),
+            release_id: "release-1".to_string(),
+            package_digest: "sha256:abc123".to_string(),
+            desired_revision: 7,
         },
     );
     let mut workflow =
@@ -314,7 +326,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         },
         register_endpoint_request,
         LocalDaemonResponse::WorkflowPublicationEndpointRegistered {
-            publication: served_publication,
+            publication: served_publication.clone(),
             open_url: "https://relay.example.test/display/publication-1/".to_string(),
             viewer_url: "https://relay.example.test/display/publication-1/".to_string(),
             access: "tunnel".to_string(),
@@ -341,6 +353,23 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             viewer_url: Some("http://127.0.0.1:3000/".to_string()),
             process_id: Some(4242),
             message: Some("publication runtime is running".to_string()),
+        },
+        bind_deployment_request,
+        LocalDaemonResponse::WorkflowPublicationDeploymentBound {
+            publication: Box::new(served_publication),
+            operation_key: "deployment-setup:setup-1:runtime".to_string(),
+            deployment_id: "deployment-1".to_string(),
+            release_id: "release-1".to_string(),
+            package_digest: "sha256:abc123".to_string(),
+            desired_revision: 7,
+            state: "running".to_string(),
+            runtime_session_id: Some("runtime-session-1".to_string()),
+            local_url: Some("http://127.0.0.1:3000/".to_string()),
+            tunnel_url: Some(
+                "https://relay.example.test/display/publication-1/".to_string(),
+            ),
+            process_id: Some(4242),
+            replayed: false,
         },
     ]);
     let mut snapshot = snapshot;
@@ -381,6 +410,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         "/17/WorkflowPublicationRuntimeControlled/publication/runtime_last_heartbeat_at_ms",
         "/17/WorkflowPublicationRuntimeControlled/publication/runtime_logs/0/at_ms",
         "/17/WorkflowPublicationRuntimeControlled/publication/updated_at_ms",
+        "/19/WorkflowPublicationDeploymentBound/publication/created_at_ms",
+        "/19/WorkflowPublicationDeploymentBound/publication/runtime_last_heartbeat_at_ms",
+        "/19/WorkflowPublicationDeploymentBound/publication/runtime_logs/0/at_ms",
+        "/19/WorkflowPublicationDeploymentBound/publication/updated_at_ms",
     ] {
         *snapshot
             .pointer_mut(path)
@@ -539,6 +572,24 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         ),
         Some(&serde_json::json!(1842))
     );
+    assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/operation_key"),
+        Some(&serde_json::json!("deployment-setup:setup-1:runtime"))
+    );
+    assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/desired_revision"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        snapshot.pointer("/19/WorkflowPublicationDeploymentBound/tunnel_url"),
+        Some(&serde_json::json!(
+            "https://relay.example.test/display/publication-1/"
+        ))
+    );
+    assert_eq!(
+        snapshot.pointer("/19/WorkflowPublicationDeploymentBound/replayed"),
+        Some(&serde_json::json!(false))
+    );
     assert_eq!(snapshot.pointer("/0/CreateWorkflowPublication/auth"), None);
     assert_eq!(
         snapshot.pointer("/6/WorkflowPublicationCreated/publication/auth"),
@@ -557,13 +608,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "430e65137780e2fa9a2df9ff8828ebd7025a27a78dd2169bb78bd7ba6108b6cd"
+        "4952e1e6015bd773d864ce65c37151f5e71c5a1b7ac3db4302a0851a8d85c493"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 242);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

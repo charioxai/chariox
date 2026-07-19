@@ -119,6 +119,32 @@ export function controlWorkflowPublicationRuntimeRequest(
   }
 }
 
+export function bindWorkflowPublicationDeploymentRequest(
+  sessionId: string,
+  publicationRef: string,
+  input: {
+    setupId: string
+    operationKey: string
+    deploymentId: string
+    releaseId: string
+    packageDigest: string
+    desiredRevision: number
+  },
+) {
+  return {
+    BindWorkflowPublicationDeployment: {
+      session_id: sessionId,
+      publication_ref: publicationRef,
+      setup_id: input.setupId,
+      operation_key: input.operationKey,
+      deployment_id: input.deploymentId,
+      release_id: input.releaseId,
+      package_digest: input.packageDigest,
+      desired_revision: input.desiredRevision,
+    },
+  }
+}
+
 export function registerWorkflowPublicationEndpointRequest(
   sessionId: string,
   publicationRef: string,

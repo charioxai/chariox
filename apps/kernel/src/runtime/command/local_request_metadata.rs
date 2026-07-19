@@ -626,6 +626,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(_) => {
             "workflow_publication.runtime.control"
         }
+        LocalDaemonRequest::BindWorkflowPublicationDeployment(_) => {
+            "workflow_publication.deployment.bind"
+        }
         LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(_) => {
             "workflow_publication.endpoint.register"
         }

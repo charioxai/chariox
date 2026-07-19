@@ -245,6 +245,7 @@ pub enum LocalDaemonRequest {
     ExportWorkflowPublicationPackage(ExportWorkflowPublicationPackageRequest),
     DisableWorkflowPublication(DisableWorkflowPublicationRequest),
     ControlWorkflowPublicationRuntime(ControlWorkflowPublicationRuntimeRequest),
+    BindWorkflowPublicationDeployment(BindWorkflowPublicationDeploymentRequest),
     RegisterWorkflowPublicationEndpoint(RegisterWorkflowPublicationEndpointRequest),
     MaterializeWorkflowPublication(MaterializeWorkflowPublicationRequest),
     CreateWorkflowEndpoint(CreateWorkflowEndpointRequest),

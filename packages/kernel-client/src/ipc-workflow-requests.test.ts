@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   applyWorkflowCodeArtifactRequest,
   applyWorkflowCodeRequest,
+  bindWorkflowPublicationDeploymentRequest,
   createWorkflowCodeArtifactRequest,
   controlWorkflowPublicationRuntimeRequest,
   deleteWorkflowCodeArtifactRequest,
@@ -74,6 +75,28 @@ test("workflow publication runtime control request matches kernel shape", () => 
       host: null,
       port: null,
       kernel_url: null,
+    },
+  })
+})
+
+test("workflow publication deployment bind request matches kernel shape", () => {
+  assert.deepEqual(bindWorkflowPublicationDeploymentRequest("session-1", "publication-1", {
+    setupId: "setup-1",
+    operationKey: "deployment-setup:setup-1:runtime",
+    deploymentId: "deployment-1",
+    releaseId: "release-1",
+    packageDigest: `sha256:${"a".repeat(64)}`,
+    desiredRevision: 7,
+  }), {
+    BindWorkflowPublicationDeployment: {
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      setup_id: "setup-1",
+      operation_key: "deployment-setup:setup-1:runtime",
+      deployment_id: "deployment-1",
+      release_id: "release-1",
+      package_digest: `sha256:${"a".repeat(64)}`,
+      desired_revision: 7,
     },
   })
 })

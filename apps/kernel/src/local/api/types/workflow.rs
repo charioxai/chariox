@@ -358,6 +358,18 @@ pub struct ControlWorkflowPublicationRuntimeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowPublicationDeploymentRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub setup_id: String,
+    pub operation_key: String,
+    pub deployment_id: String,
+    pub release_id: String,
+    pub package_digest: String,
+    pub desired_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterWorkflowPublicationEndpointRequest {
     pub session_id: String,
     pub publication_ref: String,

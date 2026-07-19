@@ -35,7 +35,10 @@ use crate::runtime::session_collaboration_executor::execute_session_collaboratio
 use crate::runtime::session_read_control::execute_session_read_request;
 use crate::runtime::slice_command_executor::execute_slice_request;
 use crate::runtime::state::workflow_publication_endpoint_runtime::execute_register_workflow_publication_endpoint_request;
-use crate::runtime::state::workflow_publication_runtime_lifecycle::execute_control_workflow_publication_runtime_request;
+use crate::runtime::state::workflow_publication_runtime_lifecycle::{
+    execute_bind_workflow_publication_deployment_request,
+    execute_control_workflow_publication_runtime_request,
+};
 use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
 use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_batch_request,
@@ -355,6 +358,17 @@ impl CommandRouter {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_control_workflow_publication_runtime_request(
                     &self.runtime_state,
+                    request,
+                    &caller_user_id,
+                )
+                .await
+            }
+            LocalDaemonRequest::BindWorkflowPublicationDeployment(request) => {
+                let caller_user_id = command_caller_user_id(&command);
+                execute_bind_workflow_publication_deployment_request(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    Arc::clone(&self.relay_state),
                     request,
                     &caller_user_id,
                 )
