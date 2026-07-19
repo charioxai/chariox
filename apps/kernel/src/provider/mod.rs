@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+mod catalog_process;
 mod claude;
 mod claude_runtime;
 mod codex;
@@ -24,8 +25,10 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
+pub(crate) use catalog_process::ProviderCatalogEndpoint;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use codex::lease_codex_catalog_endpoint;
 pub use codex::{
     codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
     resolve_codex_executable,
@@ -53,6 +56,7 @@ pub use launch_contract::{
     ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
+pub(crate) use opencode::lease_opencode_catalog_endpoint;
 pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
     resolve_opencode_executable,

@@ -3,7 +3,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::provider::{AgentEndpointMode, OpenCodeClient};
+use crate::provider::{AgentEndpointMode, OpenCodeClient, ProviderCatalogEndpoint};
 
 use super::ports::{clear_opencode_catalog_port_if_unset, resolve_opencode_catalog_port};
 
@@ -18,6 +18,10 @@ fn opencode_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
 }
 
 pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
+    lease_opencode_catalog_endpoint().map(ProviderCatalogEndpoint::into_persistent_endpoint)
+}
+
+pub(crate) fn lease_opencode_catalog_endpoint() -> Result<ProviderCatalogEndpoint, DaemonError> {
     let launch = super::plan_opencode_launch(None)?;
     let endpoint =
         launch
@@ -28,7 +32,7 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
                 message: "opencode launch did not expose a structured endpoint".to_string(),
             })?;
     if endpoint_is_healthy(&endpoint) {
-        return Ok(endpoint);
+        return Ok(ProviderCatalogEndpoint::existing(endpoint));
     }
     if launch.endpoint_mode == AgentEndpointMode::External {
         return Err(DaemonError::LocalTransport {
@@ -64,7 +68,7 @@ pub fn ensure_opencode_catalog_endpoint() -> Result<String, DaemonError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if endpoint_is_healthy(&endpoint) {
-            return Ok(endpoint);
+            return Ok(ProviderCatalogEndpoint::managed(endpoint, child));
         }
         if let Some(status) = child
             .try_wait()
