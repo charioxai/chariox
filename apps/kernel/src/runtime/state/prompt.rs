@@ -69,6 +69,21 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.complete_local_prompt_without_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+        )
+    }
+
+    pub(super) fn complete_local_prompt_without_advance_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        expected_prompt_id: Option<&str>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -87,12 +102,14 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
 
-        let completed = self
-            .prompt_state_owner
-            .complete_active_prompt_only(&session, agent_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
+        let completed = self.prompt_state_owner.complete_active_prompt_if_matches(
+            &session,
+            agent_id,
+            expected_prompt_id,
+        );
+        let Some(completed) = completed else {
+            return Ok(None);
+        };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
@@ -150,6 +167,23 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         next_queued_prompt: &crate::session::PromptQueueItem,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        self.complete_local_prompt_with_queued_advance_if_matches(
+            session_id,
+            agent_id,
+            provider_run_id,
+            next_queued_prompt,
+            None,
+        )
+    }
+
+    pub(super) fn complete_local_prompt_with_queued_advance_if_matches(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        next_queued_prompt: &crate::session::PromptQueueItem,
+        expected_prompt_id: Option<&str>,
+    ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let target_agent = self.agent_store.get_agent(agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -175,12 +209,14 @@ impl KernelRuntimeOwnedState {
         if provider_run.state() != crate::provider::ProviderRunState::Running {
             return Ok(None);
         }
-        let completed = self
-            .prompt_state_owner
-            .complete_active_prompt_only(&session, agent_id)
-            .ok_or_else(|| DaemonError::NoActivePrompt {
-                session_id: session_id.to_string(),
-            })?;
+        let completed = self.prompt_state_owner.complete_active_prompt_if_matches(
+            &session,
+            agent_id,
+            expected_prompt_id,
+        );
+        let Some(completed) = completed else {
+            return Ok(None);
+        };
         self.record_completed_prompt_settlement(
             session_id,
             agent_id,
