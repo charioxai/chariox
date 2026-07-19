@@ -78,6 +78,7 @@ import {
   runNativeOpenCodePromptDetached,
   sendClaudeRenderedPromptViaKernelInput,
 } from "./lib/native-tui-provider-drivers.mjs"
+import { exportClaudeCredentials } from "./lib/live-provider-thread-transfer-runtime.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -253,6 +254,33 @@ async function syncHetznerCodexAuth(options) {
     `${options.hetznerHost}:/root/.codex/auth.json.tmp`,
   ])
   await execFileAsync("ssh", sshArgs(options, "mv /root/.codex/auth.json.tmp /root/.codex/auth.json && chmod 600 /root/.codex/auth.json"))
+}
+
+async function syncHetznerClaudeAuth(options, root) {
+  const credentialsPath = path.join(root, "claude-credentials.json")
+  const remoteTempPath = `/root/.claude/.credentials.json.arroba-${process.pid}.tmp`
+  try {
+    const exported = await exportClaudeCredentials(credentialsPath, realHomeDir)
+    if (!exported) throw new Error("local Claude credentials are unavailable")
+    await execFileAsync("ssh", sshArgs(options, "mkdir -p /root/.claude && chmod 700 /root/.claude"))
+    await execFileAsync("scp", [
+      "-i",
+      options.hetznerKey,
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      exported,
+      `${options.hetznerHost}:${remoteTempPath}`,
+    ])
+    await execFileAsync("ssh", sshArgs(
+      options,
+      `mv ${shellQuote(remoteTempPath)} /root/.claude/.credentials.json && chmod 600 /root/.claude/.credentials.json`,
+    ))
+  } finally {
+    await rm(credentialsPath, { force: true })
+    await execFileAsync("ssh", sshArgs(options, `rm -f ${shellQuote(remoteTempPath)}`)).catch(() => {})
+  }
 }
 
 async function syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot) {
@@ -433,6 +461,7 @@ async function main() {
       await prepareHetznerWorktree(options, worktree)
       hetznerWorktreePrepared = true
       if (options.providers.includes("claude")) {
+        await syncHetznerClaudeAuth(options, root)
         await prepareHetznerClaudeWorkspaceTrust(options, worktree, remoteClaudeTrustStatePath)
         hetznerClaudeTrustPrepared = true
       }
