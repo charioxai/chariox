@@ -402,7 +402,7 @@ fn dispatched_native_provider_interaction_updates_subscription_projection() {
 async fn dispatched_native_provider_interaction_updates_subscription_projection_inner() {
     let (app, session_id, agent_id, attachment_id) =
         native_interaction_subscription_app("native-interaction-subscription");
-    let router = CommandRouter::with_interactive_capacity(app, 1);
+    let router = Box::new(CommandRouter::with_interactive_capacity(app, 1));
 
     let initial = router
         .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)

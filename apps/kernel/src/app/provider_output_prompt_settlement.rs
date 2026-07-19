@@ -48,8 +48,9 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         else {
             return Ok(());
         };
-        if active_prompt.durable_delivery_phase()
-            == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        if active_prompt.status() == crate::session::PromptStatus::Dispatching
+            || active_prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
         {
             return Ok(());
         }
