@@ -122,7 +122,7 @@ test("remote Claude readiness waits for its fragmented input surface", async () 
   assert.equal(resolved, true)
 })
 
-test("remote Claude initial prompt waits for readiness and submits atomically", async () => {
+test("remote Claude initial prompt waits for readiness then submits Enter separately", async () => {
   const requests: Record<string, unknown>[] = []
   const client = {
     send: async (request: Record<string, unknown>) => {
@@ -146,14 +146,24 @@ test("remote Claude initial prompt waits for readiness and submits atomically", 
     readiness,
   })
 
-  assert.deepEqual(requests, [{
-    SendTerminalInput: {
-      session_id: "session-1",
-      attachment_id: "attachment-1",
-      provider_run_id: "leased:agent-b:provider-run-2",
-      data_base64: Buffer.from("Reply exactly\r").toString("base64"),
+  assert.deepEqual(requests, [
+    {
+      SendTerminalInput: {
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        provider_run_id: "leased:agent-b:provider-run-2",
+        data_base64: Buffer.from("Reply exactly").toString("base64"),
+      },
     },
-  }])
+    {
+      SendTerminalInput: {
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        provider_run_id: "leased:agent-b:provider-run-2",
+        data_base64: Buffer.from("\r").toString("base64"),
+      },
+    },
+  ])
 })
 
 test("remote Claude resize targets its provider run and retries a transport outage", async () => {

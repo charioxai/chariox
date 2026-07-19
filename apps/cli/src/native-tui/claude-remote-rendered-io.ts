@@ -137,7 +137,15 @@ export async function submitClaudeRemoteRenderedInitialPrompt(options: {
     options.sessionId,
     options.attachmentId,
     options.providerRunId,
-    `${options.prompt}\r`,
+    options.prompt,
+  )
+  await sleep(250)
+  await sendRemoteRenderedInput(
+    options.client,
+    options.sessionId,
+    options.attachmentId,
+    options.providerRunId,
+    "\r",
   )
 }
 
