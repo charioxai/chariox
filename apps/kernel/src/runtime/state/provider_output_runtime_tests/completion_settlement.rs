@@ -121,29 +121,11 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         )
         .expect("workflow prompt promotion should succeed")
         .expect("workflow prompt should promote");
-    runtime
-        .owned
-        .mark_active_prompt_delivery(
-            session.id(),
-            agent.id(),
-            promoted.id(),
-            crate::session::DurablePromptDeliveryPhase::Dispatching,
-            Some(run.id().to_string()),
-            run.provider_session_id().map(str::to_string),
-        )
-        .expect("promoted prompt should remain dispatching");
-    let promoted_session = runtime
-        .owned
-        .session_store
-        .get_session(session.id())
-        .expect("session should exist");
-    let promoted = promoted_session
-        .active_prompt_for_agent(agent.id())
-        .expect("workflow prompt should be active");
     assert_eq!(promoted.workflow_node_run_id(), Some(node_run_id.as_str()));
+    assert_eq!(promoted.status(), crate::session::PromptStatus::Dispatching);
     assert_eq!(
         promoted.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        Some(crate::session::DurablePromptDeliveryPhase::Accepted)
     );
     let promoted_prompt_id = promoted.id().to_string();
 
@@ -185,10 +167,12 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         .get_session(session.id())
         .expect("session should exist");
     assert_eq!(
-        session_state
-            .active_prompt_for_agent(agent.id())
-            .map(|prompt| prompt.id()),
-        Some(promoted_prompt_id.as_str())
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session_state, agent.id())
+            .map(|prompt| prompt.id().to_string()),
+        Some(promoted_prompt_id.clone())
     );
     assert_eq!(
         session_state
@@ -198,11 +182,22 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
             .status(),
         crate::session::WorkflowNodeRunStatus::Ready
     );
-    runtime.owned.note_prompt_started(run.id());
     runtime
         .owned
         .workflow_start_prompt(session.id(), &promoted)
         .expect("guarded workflow prompt should proceed to provider dispatch");
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            promoted.id(),
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("guarded workflow prompt should enter provider dispatch");
+    runtime.owned.note_prompt_started(run.id());
     let started_session = runtime
         .owned
         .session_store

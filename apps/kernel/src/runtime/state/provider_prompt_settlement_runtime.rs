@@ -94,8 +94,9 @@ impl KernelRuntimeState {
             });
         }
         if !force
-            && active_prompt.durable_delivery_phase()
-                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            && (active_prompt.status() == crate::session::PromptStatus::Dispatching
+                || active_prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching))
         {
             owned.schedule_provider_output_check_after(
                 provider_run_id,

@@ -48,6 +48,25 @@ impl CodexClient {
         params: Value,
         buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<T, DaemonError> {
+        self.send_request_buffering_notifications_with_timeout(
+            socket,
+            next_request_id,
+            method,
+            params,
+            buffered_notifications,
+            codex_request_timeout(method),
+        )
+    }
+
+    fn send_request_buffering_notifications_with_timeout<T: for<'de> Deserialize<'de>>(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        method: &'static str,
+        params: Value,
+        buffered_notifications: &mut Vec<CodexNotification>,
+        timeout: Duration,
+    ) -> Result<T, DaemonError> {
         let request_id = *next_request_id;
         *next_request_id += 1;
         let payload = json!({
@@ -60,8 +79,16 @@ impl CodexClient {
             .send(Message::Text(payload.to_string().into()))
             .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
 
+        let deadline = Instant::now() + timeout;
         loop {
-            let raw = self.read_next_message(socket, codex_request_timeout(method))?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(self.protocol_error(
+                    "codex_read",
+                    format!("timed out waiting for Codex app-server after {timeout:?}"),
+                ));
+            }
+            let raw = self.read_next_message(socket, remaining)?;
             let message: JsonRpcMessage = serde_json::from_str(&raw)
                 .map_err(|error| self.protocol_error("codex_read_parse", error.to_string()))?;
             if self.respond_to_server_request(socket, &message)? {
@@ -253,9 +280,12 @@ fn codex_request_timeout(method: &str) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_read_should_retry;
-    use super::codex_request_timeout;
-    use std::time::Duration;
+    use super::{codex_read_should_retry, codex_request_timeout, CodexClient};
+    use serde_json::{json, Value};
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use tokio_tungstenite::tungstenite::{accept, connect, Message};
 
     #[test]
     fn codex_read_retries_transient_empty_socket_errors() {
@@ -281,5 +311,57 @@ mod tests {
             Duration::from_secs(120)
         );
         assert_eq!(codex_request_timeout("turn/start"), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn codex_request_deadline_does_not_reset_while_notifications_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket fixture");
+        let address = listener.local_addr().expect("resolve websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket fixture");
+            let mut socket = accept(stream).expect("upgrade websocket fixture");
+            socket.read().expect("read request payload");
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < deadline {
+                let notification = json!({
+                    "jsonrpc": "2.0",
+                    "method": "item/agentMessage/delta",
+                    "params": { "itemId": "item-1", "delta": "still working" },
+                });
+                if socket
+                    .send(Message::Text(notification.to_string().into()))
+                    .is_err()
+                {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let endpoint = format!("ws://{address}");
+        let (mut socket, _) = connect(&endpoint).expect("connect websocket fixture");
+        let client = CodexClient::new("provider-run-test", endpoint).expect("create client");
+        let mut next_request_id = 1;
+        let mut buffered_notifications = Vec::new();
+        let timeout = Duration::from_millis(75);
+        let started = Instant::now();
+
+        let error = client
+            .send_request_buffering_notifications_with_timeout::<Value>(
+                &mut socket,
+                &mut next_request_id,
+                "turn/start",
+                json!({}),
+                &mut buffered_notifications,
+                timeout,
+            )
+            .expect_err("continuous notifications must not extend the request deadline");
+
+        assert!(error
+            .to_string()
+            .contains("timed out waiting for Codex app-server"));
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(!buffered_notifications.is_empty());
+        drop(socket);
+        server.join().expect("join websocket fixture");
     }
 }

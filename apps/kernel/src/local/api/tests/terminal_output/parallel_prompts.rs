@@ -53,6 +53,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         )
     });
 
+    let mut prompt_ids = std::collections::BTreeMap::new();
     for agent_id in [default_agent.id(), spawned.id()] {
         match harness
             .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
@@ -65,12 +66,45 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
             .expect("prompt should start")
         {
             LocalDaemonResponse::PromptSubmitted {
-                outcome: PromptSubmissionOutcome::Started { .. },
+                outcome: PromptSubmissionOutcome::Started { prompt },
                 ..
-            } => {}
+            } => {
+                prompt_ids.insert(agent_id.to_string(), prompt.id().to_string());
+            }
             _ => panic!("unexpected local response"),
         }
     }
+
+    thread::sleep(Duration::from_millis(1_000));
+    harness.with_app_mut(|app| {
+        crate::app::provider_output::pump_terminal_output_for_attachment(
+            app,
+            session.id(),
+            attachment.id(),
+        )
+        .expect("pre-prompt polls should drain");
+        for (agent_id, provider_run_id) in [
+            (default_agent.id(), default_run_id.as_str()),
+            (spawned.id(), spawned_run_id.as_str()),
+        ] {
+            let prompt_id = prompt_ids
+                .get(agent_id)
+                .expect("submitted prompt id should be retained");
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent_id,
+                prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run_id.to_string()),
+                None,
+            )
+            .expect("prompt fixture should be delivered");
+            app.prompt_owner_mark_active_prompt_running(session.id(), agent_id)
+                .expect("prompt fixture should be running");
+            app.structured_output_record_store()
+                .mark_poll_enqueued(provider_run_id, Some(prompt_id.clone()));
+        }
+    });
 
     harness.with_app_mut(|app| {
         for (provider_run_id, agent_id) in [

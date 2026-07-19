@@ -348,6 +348,11 @@ impl PromptStateOwner {
             });
         }
         active.set_durable_delivery(phase, provider_run_id, provider_session_id);
+        if phase == crate::session::DurablePromptDeliveryPhase::Delivered
+            && active.status() == PromptStatus::Dispatching
+        {
+            active.set_status(PromptStatus::Running);
+        }
         Ok(active.clone())
     }
 
@@ -1071,6 +1076,7 @@ mod tests {
             delivered.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
         );
+        assert_eq!(delivered.status(), PromptStatus::Running);
         assert_eq!(
             delivered.durable_delivery_provider_session_id(),
             Some("provider-session-1")
