@@ -580,6 +580,10 @@ async fn start_publication_runtime_claimed(
     }
 
     let kernel_url = publication_runtime_kernel_url(runtime_state, request.kernel_url.as_deref());
+    let package_kernel_url = publication_runtime_package_kernel_url(
+        &kernel_url,
+        launch_context.expected_package_digest.as_deref(),
+    );
     if let Err(error) = validate_publication_runtime_bind_address(&host, port, is_schedule_only) {
         let message = error.to_string();
         let _ = mark_publication_runtime_error(
@@ -594,7 +598,7 @@ async fn start_publication_runtime_claimed(
         crate::local::ExportWorkflowPublicationPackageRequest {
             session_id: request.session_id.clone(),
             publication_ref: publication.id().to_string(),
-            kernel_url: Some(kernel_url.clone()),
+            kernel_url: package_kernel_url,
             agent_app: None,
             agent_app_assets_dir: None,
         },
@@ -975,6 +979,15 @@ fn publication_runtime_kernel_url(
         })
 }
 
+fn publication_runtime_package_kernel_url(
+    kernel_url: &str,
+    expected_package_digest: Option<&str>,
+) -> Option<String> {
+    expected_package_digest
+        .is_none()
+        .then(|| kernel_url.to_string())
+}
+
 fn materialize_publication_package(
     session_id: &str,
     publication_id: &str,
@@ -1353,6 +1366,25 @@ mod tests {
             .expect_err("malformed digest should fail")
             .to_string()
             .contains("lowercase sha256"));
+    }
+
+    #[test]
+    fn bound_deployment_materializes_the_canonical_release_package() {
+        assert_eq!(
+            super::publication_runtime_package_kernel_url(
+                "ws://127.0.0.1:43118",
+                Some(&format!("sha256:{}", "a".repeat(64))),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn direct_runtime_package_keeps_its_requested_kernel_url() {
+        assert_eq!(
+            super::publication_runtime_package_kernel_url("ws://127.0.0.1:43118", None),
+            Some("ws://127.0.0.1:43118".to_string()),
+        );
     }
 
     #[tokio::test]
