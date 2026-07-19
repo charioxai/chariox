@@ -321,16 +321,13 @@ fn parse_workflow_structured_output(text: &str) -> Option<WorkflowStructuredOutp
     let mut parsed = None;
     while let Some(start) = text[cursor..].find("```json") {
         let block_start = cursor + start + "```json".len();
-        let remaining = &text[block_start..];
-        let end = remaining.find("```");
-        let candidate = end.map_or(remaining, |end| &remaining[..end]).trim();
-        if let Ok(value) = serde_json::from_str::<WorkflowStructuredOutputEnvelope>(candidate) {
+        let candidate = text[block_start..].trim_start();
+        let mut values = serde_json::Deserializer::from_str(candidate)
+            .into_iter::<WorkflowStructuredOutputEnvelope>();
+        if let Some(Ok(value)) = values.next() {
             parsed = Some(value);
         }
-        let Some(end) = end else {
-            break;
-        };
-        cursor = block_start + end + "```".len();
+        cursor = block_start;
     }
     parsed.or_else(|| serde_json::from_str::<WorkflowStructuredOutputEnvelope>(text.trim()).ok())
 }
@@ -436,5 +433,25 @@ The provider forgot to close the fence.
             .into_output_message()
             .expect("message should serialize");
         assert_eq!(output, r#"{"ok":true}"#);
+    }
+
+    #[test]
+    fn workflow_structured_output_accepts_code_fences_inside_message() {
+        let parsed = parse_workflow_structured_output(
+            r####"
+```json
+{"summary":"test proposed","output":{"message":"Proposed test:\n```ts\nassert.equal(active, null)\n```\nThis covers the terminal state."}}
+```
+"####,
+        )
+        .expect("structured output with an embedded code fence should parse");
+
+        let output = parsed
+            .output
+            .expect("structured output should contain output")
+            .into_output_message()
+            .expect("message should serialize");
+        assert!(output.contains("```ts"));
+        assert!(output.contains("terminal state"));
     }
 }
