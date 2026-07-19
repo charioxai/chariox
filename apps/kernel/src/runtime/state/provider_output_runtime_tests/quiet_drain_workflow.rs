@@ -678,6 +678,110 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
     assert!(active_prompt.prompt().contains(
         "The previous workflow turn ended without the required validated structured output"
     ));
+    let correction_prompt_id = active_prompt.id().to_string();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            correction_node_run.id(),
+            crate::session::WorkflowOutputPayload::new(
+                r#"{"summary":"corrected","output":{"message":"done"}}"#,
+                Vec::<crate::session::WorkflowArtifactRef>::new(),
+            ),
+            true,
+            None,
+        )
+        .expect("corrective workflow output should validate");
+
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("corrective-structured-output".to_string()),
+                    bytes: b"```json\n{\"summary\":\"corrected\",\"output\":{\"message\":\"done\"}}\n```"
+                        .to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "corrective-structured-output".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("corrective structured output should begin settling");
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
+        .await
+        .expect("corrective workflow completion should request settlement");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, true)
+        .await
+        .expect("corrective workflow prompt should settle after output drains");
+
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("settled session snapshot should exist");
+    assert!(settled_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+    assert_eq!(
+        settled_session
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should exist")
+            .status(),
+        crate::session::WorkflowRunStatus::Completed
+    );
+    assert!(runtime.owned.active_turns.get(run.id()).is_none());
+
+    let settlement_events = runtime
+        .owned
+        .operational_history_store
+        .load_session_events_for_agent_sequence_range(session.id(), agent.id(), 0, i64::MAX as u64)
+        .expect("operational prompt history should load");
+    assert!(settlement_events.iter().any(|event| {
+        event.prompt_id.as_deref() == Some(correction_prompt_id.as_str())
+            && event
+                .metadata
+                .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
+    }));
+
+    let durable_session = runtime
+        .owned
+        .durable_state_store
+        .load_events_by_kind("session.updated")
+        .expect("durable session events should load")
+        .into_iter()
+        .rev()
+        .find(|event| event.subject_id.as_deref() == Some(session.id()))
+        .and_then(|event| event.payload.get("session").cloned())
+        .map(serde_json::from_value::<crate::session::RuntimeSession>)
+        .transpose()
+        .expect("durable session should decode")
+        .expect("workflow settlement should persist the session");
+    assert!(durable_session
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+    assert_eq!(
+        durable_session
+            .workflow_run(workflow_run.id())
+            .expect("durable workflow run should exist")
+            .status(),
+        crate::session::WorkflowRunStatus::Completed
+    );
 }
 
 #[tokio::test]

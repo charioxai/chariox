@@ -445,13 +445,35 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .pending_structured_output_records
             .poll_due(provider_run_id, crate::session::unix_epoch_ms())
         {
+            let active_prompt = provider_run
+                .agent_instance_id()
+                .map(str::to_string)
+                .and_then(|agent_id| {
+                    self.app
+                        .prompt_owner_active_prompt_for_agent(session_id, &agent_id)
+                        .ok()
+                        .flatten()
+                });
+            if active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            }) {
+                self.pending_structured_output_records
+                    .schedule_after_empty_poll(
+                        provider_run_id.to_string(),
+                        crate::session::unix_epoch_ms(),
+                    );
+                return Ok(records);
+            }
             match self
                 .provider_store
                 .enqueue_structured_output_poll(provider_run_id)?
             {
-                true => self
-                    .pending_structured_output_records
-                    .mark_poll_enqueued(provider_run_id),
+                true => {
+                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+                    self.pending_structured_output_records
+                        .mark_poll_enqueued(provider_run_id, prompt_id);
+                }
                 false => self
                     .pending_structured_output_records
                     .schedule_after_empty_poll(
@@ -475,6 +497,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .drain_finished_structured_output_poll_jobs()
         {
             let provider_run_id = finished.provider_run_id.clone();
+            let polled_prompt_id = self
+                .pending_structured_output_records
+                .take_in_flight_prompt_id(&provider_run_id);
             let is_requested_run = provider_run_id == requested_provider_run_id;
             let now_ms = crate::session::unix_epoch_ms();
             let poll_result = match finished.result {
@@ -544,6 +569,35 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 }
             };
             let session_id = provider_run.session_id().to_string();
+            let active_prompt = provider_run
+                .agent_instance_id()
+                .map(str::to_string)
+                .and_then(|agent_id| {
+                    self.app
+                        .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+                        .ok()
+                        .flatten()
+                });
+            let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            });
+            if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "discarding stale structured output poll before prompt delivery",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "polled_prompt_id": polled_prompt_id,
+                        "active_prompt_id": active_prompt_id,
+                        "active_prompt_is_dispatching": active_prompt_is_dispatching,
+                    }),
+                );
+                self.pending_structured_output_records
+                    .schedule_next_poll(provider_run_id, now_ms);
+                continue;
+            }
             let recipient_attachment_ids = if is_requested_run {
                 requested_recipient_attachment_ids.clone()
             } else {

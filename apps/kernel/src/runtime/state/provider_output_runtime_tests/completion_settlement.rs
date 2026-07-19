@@ -1,6 +1,225 @@
 use super::*;
 
 #[tokio::test]
+async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-stale-poll-workflow-promotion",
+            "worktree-stale-poll-workflow-promotion",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-stale-poll-workflow-promotion",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "direct user prompt",
+        Vec::new(),
+    )
+    .expect("direct prompt should start");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("queued-after-user".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("workflow node should complete the run");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("finish the workflow".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "workflow prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    let workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "workflow prompt",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id)
+    .with_durable_operation("workflow-operation-1", "workflow-fingerprint-1");
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), workflow_prompt, false)
+        .expect("workflow prompt should queue behind direct prompt")
+    else {
+        panic!("workflow prompt should remain queued");
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    runtime.owned.mark_prompt_completion_recorded(run.id());
+    runtime.owned.note_prompt_settlement_requested(run.id());
+    let current_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&current_session, agent.id())
+        .expect("direct prompt should complete");
+    let promoted = runtime
+        .owned
+        .prompt_state_owner
+        .activate_next_queued_prompt_with_prompt_id(
+            &current_session,
+            agent.id(),
+            None,
+            runtime.owned.session_store.reserve_prompt_id(),
+        )
+        .expect("workflow prompt promotion should succeed")
+        .expect("workflow prompt should promote");
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            promoted.id(),
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(run.id().to_string()),
+            run.provider_session_id().map(str::to_string),
+        )
+        .expect("promoted prompt should remain dispatching");
+    let promoted_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let promoted = promoted_session
+        .active_prompt_for_agent(agent.id())
+        .expect("workflow prompt should be active");
+    assert_eq!(promoted.workflow_node_run_id(), Some(node_run_id.as_str()));
+    assert_eq!(
+        promoted.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+    );
+    let promoted_prompt_id = promoted.id().to_string();
+
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(run.id(), Some(promoted_prompt_id.clone()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "stale-direct-completion".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+        .await
+        .expect("duplicate completion should be drained before submit acknowledgement");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("stale completion must not settle the promoted workflow prompt");
+
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(agent.id())
+            .map(|prompt| prompt.id()),
+        Some(promoted_prompt_id.as_str())
+    );
+    assert_eq!(
+        session_state
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should exist")
+            .node_runs()[0]
+            .status(),
+        crate::session::WorkflowNodeRunStatus::Ready
+    );
+    runtime.owned.note_prompt_started(run.id());
+    runtime
+        .owned
+        .workflow_start_prompt(session.id(), &promoted)
+        .expect("guarded workflow prompt should proceed to provider dispatch");
+    let started_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("started session should exist");
+    let started_node_run = &started_session
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should exist")
+        .node_runs()[0];
+    assert_eq!(
+        started_node_run.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert!(started_node_run.started_at_ms().is_some());
+}
+
+#[tokio::test]
 async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_interval() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

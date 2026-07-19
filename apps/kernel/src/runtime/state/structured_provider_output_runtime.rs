@@ -47,6 +47,9 @@ impl KernelRuntimeState {
             .drain_finished_structured_output_poll_jobs()
         {
             let finished_run_id = finished.provider_run_id.clone();
+            let polled_prompt_id = owned
+                .structured_output_records
+                .take_in_flight_prompt_id(&finished_run_id);
             let is_requested_run = finished_run_id == provider_run_id;
             crate::logging::debug_with_fields(
                 "daemon.provider",
@@ -118,6 +121,47 @@ impl KernelRuntimeState {
                     }
                 }
             };
+            let active_prompt = owned
+                .provider_store
+                .get_run(&finished_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            });
+            if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "discarding stale structured output poll before prompt delivery",
+                    serde_json::json!({
+                        "provider_run_id": finished_run_id,
+                        "polled_prompt_id": polled_prompt_id,
+                        "active_prompt_id": active_prompt_id,
+                        "active_prompt_is_dispatching": active_prompt_is_dispatching,
+                    }),
+                );
+                owned
+                    .structured_output_records
+                    .schedule_next_poll(finished_run_id, now_ms);
+                continue;
+            }
             let run = match owned.provider_store.get_run(&finished_run_id) {
                 Ok(run) => run,
                 Err(_) => {
@@ -166,13 +210,46 @@ impl KernelRuntimeState {
             .structured_output_records
             .poll_due(provider_run_id, crate::session::unix_epoch_ms())
         {
+            let active_prompt = owned
+                .provider_store
+                .get_run(provider_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            if active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            }) {
+                owned.structured_output_records.schedule_after_empty_poll(
+                    provider_run_id.to_string(),
+                    crate::session::unix_epoch_ms(),
+                );
+                return Ok(records);
+            }
             match owned
                 .provider_store
                 .enqueue_structured_output_poll(provider_run_id)?
             {
-                true => owned
-                    .structured_output_records
-                    .mark_poll_enqueued(provider_run_id),
+                true => {
+                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+                    owned
+                        .structured_output_records
+                        .mark_poll_enqueued(provider_run_id, prompt_id);
+                }
                 false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),

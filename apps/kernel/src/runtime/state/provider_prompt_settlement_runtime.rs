@@ -93,6 +93,30 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if !force
+            && active_prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
+            owned.schedule_provider_output_check_after(
+                provider_run_id,
+                STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+            );
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider settlement ignored before prompt delivery acknowledgement",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "prompt_completed": prompt_completed,
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
 
         if prompt_completed {
             owned.mark_prompt_completion_recorded(provider_run_id);

@@ -10,6 +10,7 @@ pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
     next_poll_due_at_ms: Arc<Mutex<BTreeMap<String, u64>>>,
+    in_flight_prompt_ids: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl StructuredOutputRecordStore {
@@ -47,11 +48,27 @@ impl StructuredOutputRecordStore {
             .is_none_or(|due_at_ms| *due_at_ms <= now_ms)
     }
 
-    pub(crate) fn mark_poll_enqueued(&self, provider_run_id: &str) {
+    pub(crate) fn mark_poll_enqueued(&self, provider_run_id: &str, prompt_id: Option<String>) {
         self.next_poll_due_at_ms
             .lock()
             .expect("structured output poll schedule poisoned")
             .remove(provider_run_id);
+        let mut prompt_ids = self
+            .in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned");
+        if let Some(prompt_id) = prompt_id {
+            prompt_ids.insert(provider_run_id.to_string(), prompt_id);
+        } else {
+            prompt_ids.remove(provider_run_id);
+        }
+    }
+
+    pub(crate) fn take_in_flight_prompt_id(&self, provider_run_id: &str) -> Option<String> {
+        self.in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned")
+            .remove(provider_run_id)
     }
 
     pub(crate) fn schedule_next_poll(&self, provider_run_id: String, due_at_ms: u64) {
@@ -101,6 +118,10 @@ impl StructuredOutputRecordStore {
             .expect("structured output record store poisoned")
             .remove(provider_run_id);
         self.stop_polling(provider_run_id);
+        self.in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned")
+            .remove(provider_run_id);
     }
 
     pub(crate) fn stop_polling(&self, provider_run_id: &str) {
@@ -154,9 +175,13 @@ mod tests {
             ["provider-run-1".to_string()].into_iter().collect()
         );
 
-        store.mark_poll_enqueued("provider-run-1");
+        store.mark_poll_enqueued("provider-run-1", Some("prompt-1".to_string()));
 
         assert!(store.poll_due("provider-run-1", 1_501));
         assert_eq!(store.poll_due_at_ms("provider-run-1"), None);
+        assert_eq!(
+            store.take_in_flight_prompt_id("provider-run-1").as_deref(),
+            Some("prompt-1")
+        );
     }
 }

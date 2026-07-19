@@ -44,12 +44,16 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         prompt_completed: bool,
         saw_settlement_blocking_activity: bool,
     ) -> Result<(), DaemonError> {
-        let Some(active_prompt_status) = self
-            .active_prompt_for_settlement(session_id, provider_run_id)?
-            .map(|prompt| prompt.status())
+        let Some(active_prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)?
         else {
             return Ok(());
         };
+        if active_prompt.durable_delivery_phase()
+            == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
+            return Ok(());
+        }
+        let active_prompt_status = active_prompt.status();
         if prompt_completed {
             crate::transport::flow_control::mark_prompt_completion_recorded(
                 self.app,
