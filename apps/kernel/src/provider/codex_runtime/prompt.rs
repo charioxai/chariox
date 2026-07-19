@@ -257,6 +257,7 @@ pub fn abort_codex_turn(
         &mut state.next_request_id,
         &thread_id,
         &turn_id,
+        &mut state.buffered_notifications,
     )
 }
 

@@ -281,6 +281,7 @@ fn codex_request_timeout(method: &str) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::{codex_read_should_retry, codex_request_timeout, CodexClient};
+    use crate::provider::CodexNotification;
     use serde_json::{json, Value};
     use std::net::TcpListener;
     use std::thread;
@@ -361,6 +362,77 @@ mod tests {
             .contains("timed out waiting for Codex app-server"));
         assert!(started.elapsed() < Duration::from_millis(250));
         assert!(!buffered_notifications.is_empty());
+        drop(socket);
+        server.join().expect("join websocket fixture");
+    }
+
+    #[test]
+    fn codex_turn_interrupt_preserves_terminal_notification_before_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket fixture");
+        let address = listener.local_addr().expect("resolve websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket fixture");
+            let mut socket = accept(stream).expect("upgrade websocket fixture");
+            let request = socket.read().expect("read interrupt request");
+            let Message::Text(request) = request else {
+                panic!("expected text request");
+            };
+            let request: Value = serde_json::from_str(&request).expect("parse interrupt request");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {
+                                "id": "turn-1",
+                                "status": "interrupted",
+                                "items": []
+                            }
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send terminal notification");
+            socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": request.get("id").cloned().expect("request id"),
+                        "result": {}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send interrupt response");
+        });
+        let endpoint = format!("ws://{address}");
+        let (mut socket, _) = connect(&endpoint).expect("connect websocket fixture");
+        let client = CodexClient::new("provider-run-test", endpoint).expect("create client");
+        let mut next_request_id = 1;
+        let mut buffered_notifications = Vec::new();
+
+        client
+            .turn_interrupt(
+                &mut socket,
+                &mut next_request_id,
+                "thread-1",
+                "turn-1",
+                &mut buffered_notifications,
+            )
+            .expect("interrupt turn");
+
+        assert_eq!(
+            buffered_notifications,
+            vec![CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "interrupted".to_string(),
+                error_message: None,
+                items: Vec::new(),
+            }]
+        );
         drop(socket);
         server.join().expect("join websocket fixture");
     }

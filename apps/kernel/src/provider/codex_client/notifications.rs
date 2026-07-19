@@ -74,6 +74,9 @@ pub enum CodexNotification {
         error_message: Option<String>,
         items: Vec<Value>,
     },
+    TurnAborted {
+        reason: Option<String>,
+    },
     Error {
         message: String,
     },
@@ -301,6 +304,14 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                 .to_string(),
         }),
         "turn/completed" => parse_turn_completed_notification(&params),
+        "codex/event/turn_aborted" => Some(CodexNotification::TurnAborted {
+            reason: params
+                .get("msg")
+                .and_then(|message| message.get("reason"))
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .map(str::to_string),
+        }),
         "error" => Some(CodexNotification::Error {
             message: params
                 .get("error")

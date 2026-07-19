@@ -913,6 +913,51 @@ fn interrupted_turn_is_treated_as_terminal_cancellation() {
 }
 
 #[test]
+fn legacy_aborted_turn_clears_unfinished_tools_and_settles() {
+    let mut active_turn_id = Some("turn-legacy-abort".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("tool-still-running");
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnAborted {
+            reason: Some("interrupted".to_string()),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:turn-legacy-abort");
+    assert_eq!(notices, vec!["interrupted".to_string()]);
+}
+
+#[test]
 fn failed_turn_records_terminal_failure() {
     let mut active_turn_id = Some("turn-3".to_string());
     let mut turn_tracker = CodexTurnTracker::default();

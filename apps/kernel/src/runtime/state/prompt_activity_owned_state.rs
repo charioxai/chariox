@@ -140,14 +140,22 @@ impl KernelRuntimeOwnedState {
                 );
             } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
             {
-                if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(
-                    &provider_run,
-                ) {
-                    if let Some(agent_id) = provider_run.agent_instance_id() {
-                        let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
+                // A successful structured-provider abort RPC is the
+                // authoritative acknowledgement that the interrupted turn no
+                // longer owns the agent. Some providers do not emit a usable
+                // terminal event afterwards, so settle the cancelling prompt
+                // from this acknowledgement instead of leaving it WORKING.
+                if let Some(agent_id) = provider_run.agent_instance_id() {
+                    if let Ok(cancellation) = self
+                        .finalize_local_prompt_cancellation_with_queued_advance(
                             &finished.session_id,
                             agent_id,
                             Some(&finished.provider_run_id),
+                        )
+                    {
+                        let _ = self.workflow_cancel_prompt(
+                            &finished.session_id,
+                            &cancellation.cancellation.prompt,
                         );
                     }
                 }
