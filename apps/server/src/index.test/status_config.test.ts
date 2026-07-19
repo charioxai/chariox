@@ -41,6 +41,7 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@arroba/kernel-client/kernel-types"
 
 test("GET /health returns an ok status payload", async () => {
   const { app } = buildServer(baseConfig, {
@@ -679,7 +680,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       compatibility: {
         package_version: 3,
         minimum_kernel_version: "0.1.0",
-        minimum_local_daemon_protocol_version: 240,
+        minimum_local_daemon_protocol_version: LOCAL_DAEMON_PROTOCOL_VERSION,
       },
       routes: [{ id: "hook-1" }],
       provider_requirements: [],
@@ -695,11 +696,14 @@ test("gateway requires a valid deployment contract for package v3", async () => 
     const config = await loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" })
     assert.equal(config.publication_id, "pub-1")
 
-    deploymentContract.compatibility.minimum_local_daemon_protocol_version = 242
+    const unsupportedProtocolVersion = LOCAL_DAEMON_PROTOCOL_VERSION + 1
+    deploymentContract.compatibility.minimum_local_daemon_protocol_version = unsupportedProtocolVersion
     await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
     await assert.rejects(
       loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
-      /requires local daemon protocol version 242, but target runtime supports 241/,
+      new RegExp(
+        `requires local daemon protocol version ${unsupportedProtocolVersion}, but target runtime supports ${LOCAL_DAEMON_PROTOCOL_VERSION}`,
+      ),
     )
   } finally {
     await rm(root, { recursive: true, force: true })
