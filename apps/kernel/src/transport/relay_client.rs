@@ -83,7 +83,11 @@ use subscriptions::{
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::RelayDisplayTunnelTarget;
-pub use connector::{run_daemon_relay_connector, run_daemon_relay_connector_with_static_relay};
+#[cfg(test)]
+pub use connector::run_daemon_relay_connector;
+pub use connector::{
+    run_daemon_relay_connector_with_router, run_daemon_relay_connector_with_static_relay,
+};
 
 #[cfg(test)]
 pub(crate) async fn resolve_pending_peer_response_for_test(
