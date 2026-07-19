@@ -437,6 +437,7 @@ async function main() {
         hetznerClaudeTrustPrepared = true
       }
       await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
+      await ensureExecutionDirectory(options, true, remoteTempDir)
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
