@@ -409,6 +409,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     logoutProvider: (provider) => logoutProvider(client, provider),
     getRelayStatus: () => getRelayStatus(client),
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
+    sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
     getCloudRelayProfile: () => relayCloudProfile(preferencesState()),
     saveCloudRelayProfile: async (profile) => {

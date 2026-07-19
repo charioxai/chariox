@@ -156,6 +156,17 @@ export interface DeploymentSetupsResult {
   readonly setups: readonly DeploymentSetup[]
 }
 
+export class DeploymentSetupRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly payload: unknown,
+  ) {
+    super(message)
+    this.name = "DeploymentSetupRequestError"
+  }
+}
+
 export async function createDeploymentSetup(
   profile: RelayCloudProfile,
   input: CreateDeploymentSetupInput,
@@ -231,7 +242,7 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
     const message = typeof body?.error?.message === "string"
       ? body.error.message
       : `deployed workflow request failed with ${response.status}`
-    throw new Error(message)
+    throw new DeploymentSetupRequestError(message, response.status, body)
   }
   return body as TResponse
 }

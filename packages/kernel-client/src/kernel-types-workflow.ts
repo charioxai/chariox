@@ -5,6 +5,7 @@ import type { AgentInstance } from "./kernel-types-runtime.js"
 export type WorkflowDefinition = {
   id: string
   alias: string | null
+  revision?: number
   flush_agent_context_before_run?: boolean
   run_output_schema_ref?: string | null
   schemas?: WorkflowSchemaDefinition[]

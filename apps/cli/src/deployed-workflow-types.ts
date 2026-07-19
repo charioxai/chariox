@@ -72,6 +72,7 @@ export interface DeploymentEnvironmentSummary {
   readonly observedReleaseId?: string | null
   readonly desiredRevision: number
   readonly observedRevision: number
+  readonly operationalDeploymentId?: string | null
   readonly limits?: DeploymentRuntimeLimits | null
   readonly operationsPolicy?: DeploymentEnvironmentOperationsPolicy | null
   readonly operationsPolicyVersion?: number
