@@ -2,13 +2,15 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 241);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 242);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
             session_id: "session-1".to_string(),
             workflow_ref: "workflow-1".to_string(),
             endpoint_ref: "endpoint-1".to_string(),
+            expected_workflow_revision: Some(7),
+            operation_key: Some("publish-operation-1".to_string()),
             queue_ref: Some("priority".to_string()),
             alias: Some("public_qa".to_string()),
             kind: Some("ingress".to_string()),
@@ -173,10 +175,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let materialize_request = LocalDaemonRequest::MaterializeWorkflowPublication(
         crate::local::MaterializeWorkflowPublicationRequest {
             publication_id: "publication-1".to_string(),
-            snapshot,
+            snapshot: snapshot.clone(),
         },
     );
-    let publication = crate::session::WorkflowPublicationDefinition::new(
+    let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
         "publication-1",
         "session-1",
         "workflow-1",
@@ -197,6 +199,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some("async".to_string()),
         Some(240_000),
         Some(250),
+        7,
+        "sha256:publication-source-1".to_string(),
+        Some("publish-operation-1".to_string()),
+        Some("sha256:publication-request-1".to_string()),
         "local",
     );
     let session = crate::session::RuntimeSession::new(
@@ -398,6 +404,14 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some(&serde_json::json!("priority"))
     );
     assert_eq!(
+        snapshot.pointer("/0/CreateWorkflowPublication/expected_workflow_revision"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/CreateWorkflowPublication/operation_key"),
+        Some(&serde_json::json!("publish-operation-1"))
+    );
+    assert_eq!(
         snapshot.pointer("/0/CreateWorkflowPublication/kind"),
         Some(&serde_json::json!("ingress"))
     );
@@ -408,6 +422,18 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/6/WorkflowPublicationCreated/publication/kind"),
         Some(&serde_json::json!("ingress"))
+    );
+    assert_eq!(
+        snapshot.pointer("/6/WorkflowPublicationCreated/publication/source_workflow_revision"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        snapshot.pointer("/6/WorkflowPublicationCreated/publication/source_snapshot_digest"),
+        Some(&serde_json::json!("sha256:publication-source-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/6/WorkflowPublicationCreated/publication/creation_operation_key"),
+        Some(&serde_json::json!("publish-operation-1"))
     );
     assert_eq!(
         snapshot.pointer("/0/CreateWorkflowPublication/trace_exposure/nodes/node-1/1"),
@@ -531,13 +557,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "b4bd8f136e64232d065e97c007c25fff25d583436d6e3641004b8ce1cd395ce7"
+        "430e65137780e2fa9a2df9ff8828ebd7025a27a78dd2169bb78bd7ba6108b6cd"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 241);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 242);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

@@ -1,8 +1,12 @@
 use std::collections::BTreeSet;
 
+use crate::session::{
+    WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
+    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
+    WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+};
 use serde_json::Value;
-
-use crate::session::{WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY};
+use sha2::{Digest, Sha256};
 
 use super::*;
 
@@ -27,11 +31,107 @@ impl SessionService {
         poll_ms: Option<u64>,
         created_by_user_id: String,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let source_agents = self.get_session(session_id)?.agents().to_vec();
+        self.create_workflow_publication_idempotent(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            None,
+            None,
+            queue_ref,
+            alias,
+            kind,
+            route,
+            methods,
+            transport,
+            parser,
+            input_schema,
+            trace_exposure,
+            mode,
+            sync_timeout_ms,
+            poll_ms,
+            source_agents,
+            created_by_user_id,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_workflow_publication_idempotent(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        expected_workflow_revision: Option<u64>,
+        operation_key: Option<String>,
+        queue_ref: Option<String>,
+        alias: Option<String>,
+        kind: Option<String>,
+        route: Option<String>,
+        methods: Vec<String>,
+        transport: Option<Value>,
+        parser: Option<Value>,
+        input_schema: Option<Value>,
+        trace_exposure: Option<Value>,
+        mode: Option<String>,
+        sync_timeout_ms: Option<u64>,
+        poll_ms: Option<u64>,
+        source_agents: Vec<crate::agent::AgentInstance>,
+        created_by_user_id: String,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let operation_key = normalize_workflow_publication_operation_key(operation_key)?;
+        let publication_kind = resolve_workflow_publication_kind(kind.as_deref(), &transport)?;
+        let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
+        let alias = normalize_workflow_publication_alias(alias)?;
+        let creation_request_digest = workflow_publication_creation_request_digest(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            expected_workflow_revision,
+            &normalized_queue_ref,
+            alias.as_deref(),
+            &publication_kind,
+            route.as_deref(),
+            &methods,
+            transport.as_ref(),
+            parser.as_ref(),
+            input_schema.as_ref(),
+            trace_exposure.as_ref(),
+            mode.as_deref(),
+            sync_timeout_ms,
+            poll_ms,
+        )?;
+        if let Some(operation_key) = operation_key.as_deref() {
+            if let Some(existing) = self
+                .get_session(session_id)?
+                .workflow_publications()
+                .iter()
+                .find(|publication| {
+                    publication.creation_operation_key() == Some(operation_key)
+                        && publication.created_by_user_id() == created_by_user_id
+                })
+            {
+                if existing.creation_request_digest() == Some(creation_request_digest.as_str()) {
+                    return Ok(existing.clone());
+                }
+                return invalid_workflow_publication_option(
+                    "workflow publication operation key is already bound to different publication choices",
+                );
+            }
+        }
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
+        if let Some(expected_revision) = expected_workflow_revision {
+            if workflow.revision() != expected_revision {
+                return Err(DaemonError::WorkflowRevisionConflict {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow.id().to_string(),
+                    expected_revision,
+                    current_revision: workflow.revision(),
+                });
+            }
+        }
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_ref)?;
         validate_workflow_publication_trace_exposure(&trace_exposure, &workflow)?;
-        let publication_kind = resolve_workflow_publication_kind(kind.as_deref(), &transport)?;
         validate_workflow_publication_options(
             &publication_kind,
             &transport,
@@ -40,7 +140,6 @@ impl SessionService {
             &parser,
             mode.as_deref(),
         )?;
-        let normalized_queue_ref = normalize_workflow_publication_queue_ref(queue_ref);
         self.resolve_workflow_prompt_queue_ref(session_id, workflow.id(), &normalized_queue_ref)?;
         if publication_kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
             self.validate_schedule_only_workflow_publication(
@@ -50,11 +149,23 @@ impl SessionService {
                 &normalized_queue_ref,
             )?;
         }
-        let alias = normalize_workflow_publication_alias(alias)?;
         if let Some(alias) = alias.as_deref() {
             self.ensure_workflow_publication_alias_available(session_id, alias)?;
         }
-        let publication = WorkflowPublicationDefinition::new(
+        let source_snapshot = self.workflow_publication_source_snapshot(
+            session_id,
+            workflow.clone(),
+            endpoint.clone(),
+            source_agents,
+        )?;
+        let source_snapshot_digest =
+            source_snapshot
+                .digest()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "create workflow publication",
+                    message: format!("failed to encode workflow publication snapshot: {error}"),
+                })?;
+        let publication = WorkflowPublicationDefinition::new_immutable(
             self.next_workflow_publication_id(),
             session_id.to_string(),
             workflow.id().to_string(),
@@ -71,6 +182,10 @@ impl SessionService {
             mode,
             sync_timeout_ms,
             poll_ms,
+            workflow.revision(),
+            source_snapshot_digest,
+            operation_key,
+            Some(creation_request_digest),
             created_by_user_id,
         );
         let session =
@@ -79,7 +194,68 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.create_workflow_publication(publication))
+        Ok(session.create_workflow_publication(publication, Some(source_snapshot)))
+    }
+
+    fn workflow_publication_source_snapshot(
+        &self,
+        session_id: &str,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+        source_agents: Vec<crate::agent::AgentInstance>,
+    ) -> Result<WorkflowPublicationSnapshot, DaemonError> {
+        let session = self.get_session(session_id)?;
+        let node_agent_ids = workflow
+            .nodes()
+            .iter()
+            .map(|node| node.agent_id().to_string())
+            .collect::<BTreeSet<_>>();
+        let agents = source_agents
+            .into_iter()
+            .filter(|agent| node_agent_ids.contains(agent.id()))
+            .map(|agent| {
+                agent.canonicalized_for_publication_package(WORKFLOW_PUBLICATION_WORKSPACE_ROOT)
+            })
+            .collect::<Vec<_>>();
+        let missing_agent_ids = node_agent_ids
+            .iter()
+            .filter(|agent_id| !agents.iter().any(|agent| agent.id() == agent_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_agent_ids.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "create workflow publication",
+                message: format!(
+                    "workflow publication snapshot is missing agents: {}",
+                    missing_agent_ids.join(", ")
+                ),
+            });
+        }
+        Ok(WorkflowPublicationSnapshot {
+            schema_version: 1,
+            captured_at_ms: Some(unix_epoch_ms()),
+            source_session: Some(WorkflowPublicationSourceSessionSnapshot {
+                id: Some(session.id().to_string()),
+                alias: session.alias().map(str::to_string),
+                workspace_id: WORKFLOW_PUBLICATION_WORKSPACE_ROOT.to_string(),
+                worktree_id: WORKFLOW_PUBLICATION_WORKSPACE_ROOT.to_string(),
+            }),
+            workflow: workflow.clone(),
+            endpoint: Some(endpoint),
+            queues: session
+                .workflow_prompt_queues()
+                .iter()
+                .filter(|queue| queue.workflow_id() == workflow.id())
+                .cloned()
+                .collect(),
+            schedules: session
+                .workflow_schedules()
+                .iter()
+                .filter(|schedule| schedule.workflow_id() == workflow.id())
+                .cloned()
+                .collect(),
+            agents,
+        })
     }
 
     fn validate_schedule_only_workflow_publication(
@@ -164,6 +340,17 @@ impl SessionService {
             operation: "resolve workflow publication",
             message: format!("workflow publication `{publication_ref}` was not found"),
         })
+    }
+
+    pub(crate) fn resolve_workflow_publication_snapshot(
+        &self,
+        session_id: &str,
+        publication_id: &str,
+    ) -> Result<Option<WorkflowPublicationSnapshot>, DaemonError> {
+        Ok(self
+            .get_session(session_id)?
+            .workflow_publication_snapshot(publication_id)
+            .cloned())
     }
 
     pub fn disable_workflow_publication(
@@ -707,6 +894,96 @@ fn normalize_workflow_publication_queue_ref(queue_ref: Option<String>) -> String
         .filter(|value| !value.is_empty())
         .unwrap_or("default")
         .to_string()
+}
+
+fn normalize_workflow_publication_operation_key(
+    operation_key: Option<String>,
+) -> Result<Option<String>, DaemonError> {
+    let Some(operation_key) = operation_key else {
+        return Ok(None);
+    };
+    let operation_key = operation_key.trim();
+    if operation_key.is_empty() {
+        return Ok(None);
+    }
+    if operation_key.len() > 200 || operation_key.chars().any(char::is_control) {
+        return invalid_workflow_publication_option(
+            "workflow publication operation key must be at most 200 printable characters",
+        );
+    }
+    Ok(Some(operation_key.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn workflow_publication_creation_request_digest(
+    session_id: &str,
+    workflow_ref: &str,
+    endpoint_ref: &str,
+    expected_workflow_revision: Option<u64>,
+    queue_ref: &str,
+    alias: Option<&str>,
+    kind: &str,
+    route: Option<&str>,
+    methods: &[String],
+    transport: Option<&Value>,
+    parser: Option<&Value>,
+    input_schema: Option<&Value>,
+    trace_exposure: Option<&Value>,
+    mode: Option<&str>,
+    sync_timeout_ms: Option<u64>,
+    poll_ms: Option<u64>,
+) -> Result<String, DaemonError> {
+    workflow_publication_value_digest(&serde_json::json!({
+        "session_id": session_id.trim(),
+        "workflow_ref": workflow_ref.trim(),
+        "endpoint_ref": endpoint_ref.trim(),
+        "expected_workflow_revision": expected_workflow_revision,
+        "queue_ref": queue_ref,
+        "alias": alias,
+        "kind": kind,
+        "route": route,
+        "methods": methods,
+        "transport": transport,
+        "parser": parser,
+        "input_schema": input_schema,
+        "trace_exposure": trace_exposure,
+        "mode": mode,
+        "sync_timeout_ms": sync_timeout_ms,
+        "poll_ms": poll_ms,
+    }))
+}
+
+fn workflow_publication_value_digest(value: &Value) -> Result<String, DaemonError> {
+    let canonical = canonical_workflow_publication_value(value);
+    let encoded = serde_json::to_vec(&canonical).map_err(|error| DaemonError::LocalTransport {
+        operation: "create workflow publication",
+        message: format!("failed to encode workflow publication digest input: {error}"),
+    })?;
+    Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+}
+
+fn canonical_workflow_publication_value(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(canonical_workflow_publication_value)
+                .collect(),
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(
+                    key.clone(),
+                    canonical_workflow_publication_value(&values[key]),
+                );
+            }
+            Value::Object(canonical)
+        }
+        value => value.clone(),
+    }
 }
 
 fn validate_workflow_publication_options(

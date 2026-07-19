@@ -18,31 +18,59 @@ impl KernelRuntimeOwnedState {
         request: crate::local::CreateWorkflowPublicationRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_workflow_endpoint_owner(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.endpoint_ref,
-            caller_user_id,
-            "publish workflow endpoint",
-        )?;
-        let publication = self.session_store.write().create_workflow_publication(
-            &request.session_id,
-            &request.workflow_ref,
-            &request.endpoint_ref,
-            request.queue_ref,
-            request.alias,
-            request.kind,
-            request.route,
-            request.methods,
-            request.transport,
-            request.parser,
-            request.input_schema,
-            request.trace_exposure,
-            request.mode,
-            request.sync_timeout_ms,
-            request.poll_ms,
-            caller_user_id.to_string(),
-        )?;
+        let owned_idempotent_replay =
+            request
+                .operation_key
+                .as_deref()
+                .is_some_and(|operation_key| {
+                    let operation_key = operation_key.trim();
+                    !operation_key.is_empty()
+                        && self
+                            .session_store
+                            .read()
+                            .get_session(&request.session_id)
+                            .ok()
+                            .is_some_and(|session| {
+                                session.workflow_publications().iter().any(|publication| {
+                                    publication.creation_operation_key() == Some(operation_key)
+                                        && publication.created_by_user_id() == caller_user_id
+                                })
+                            })
+                });
+        if !owned_idempotent_replay {
+            self.ensure_workflow_endpoint_owner(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.endpoint_ref,
+                caller_user_id,
+                "publish workflow endpoint",
+            )?;
+        }
+        let source_agents = self.agent_store.get_session_agents(&request.session_id);
+        let publication = self
+            .session_store
+            .write()
+            .create_workflow_publication_idempotent(
+                &request.session_id,
+                &request.workflow_ref,
+                &request.endpoint_ref,
+                request.expected_workflow_revision,
+                request.operation_key,
+                request.queue_ref,
+                request.alias,
+                request.kind,
+                request.route,
+                request.methods,
+                request.transport,
+                request.parser,
+                request.input_schema,
+                request.trace_exposure,
+                request.mode,
+                request.sync_timeout_ms,
+                request.poll_ms,
+                source_agents,
+                caller_user_id.to_string(),
+            )?;
         let session = self.workflow_session(&request.session_id)?;
         Ok(LocalDaemonResponse::WorkflowPublicationCreated {
             publication,
@@ -82,10 +110,20 @@ impl KernelRuntimeOwnedState {
             .session_store
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
-        let session = self.workflow_session(&request.session_id)?;
+        let snapshot = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_snapshot(&request.session_id, publication.id())?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                    publication.id()
+                ),
+            })?;
         let package_files = workflow_publication_package_files(
             &publication,
-            &session,
+            &snapshot,
             request.kernel_url.as_deref(),
             request.agent_app.as_ref(),
             request.agent_app_assets_dir.as_deref(),
@@ -184,6 +222,14 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        let source_snapshot = request.snapshot.clone();
+        let source_snapshot_digest =
+            source_snapshot
+                .digest()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "materialize workflow publication",
+                    message: format!("failed to encode workflow snapshot: {error}"),
+                })?;
         let Some(source_session) = request.snapshot.source_session.as_ref() else {
             return Err(DaemonError::LocalTransport {
                 operation: "materialize workflow publication",
@@ -363,7 +409,7 @@ impl KernelRuntimeOwnedState {
             request.snapshot.queues,
             request.snapshot.schedules,
         )?;
-        let publication = crate::session::WorkflowPublicationDefinition::new(
+        let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
             request.publication_id.clone(),
             session_id.clone(),
             workflow_id.clone(),
@@ -380,11 +426,17 @@ impl KernelRuntimeOwnedState {
             None,
             None,
             None,
+            source_snapshot.workflow.revision(),
+            source_snapshot_digest,
+            None,
+            None,
             caller_user_id.to_string(),
         );
-        self.session_store
-            .write()
-            .restore_workflow_publication(&session_id, publication)?;
+        self.session_store.write().restore_workflow_publication(
+            &session_id,
+            publication,
+            Some(source_snapshot),
+        )?;
         let session = self.workflow_session(&session_id)?;
         Ok(LocalDaemonResponse::WorkflowPublicationMaterialized {
             publication_id: request.publication_id,

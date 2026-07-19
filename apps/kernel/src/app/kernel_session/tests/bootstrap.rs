@@ -47,15 +47,48 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
     let tunnel_id = "publication-durable-restart";
     let local_url = "http://127.0.0.1:43100/publications/runtime/public-api";
     let expires_at_ms = crate::session::unix_epoch_ms().saturating_add(60_000);
-    let (session_id, publication_id) = {
+    let (session_id, publication_id, source_digest) = {
         let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
-        let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
-        let mut publication = crate::session::WorkflowPublicationDefinition::new(
+        let mut workflow = crate::session::WorkflowDefinition::new(
+            "workflow-public-api",
+            Some("public-api".to_string()),
+        );
+        workflow.add_node(crate::session::WorkflowNodeDefinition::new(
+            "node-public-api",
+            agent.id(),
+        ));
+        let endpoint = workflow.add_endpoint(crate::session::WorkflowEndpointDefinition::new(
+            "endpoint-public-api",
+            Some("public-api".to_string()),
+            "node-public-api",
+        ));
+        let source_snapshot = crate::session::WorkflowPublicationSnapshot {
+            schema_version: 1,
+            captured_at_ms: Some(crate::session::unix_epoch_ms()),
+            source_session: Some(crate::session::WorkflowPublicationSourceSessionSnapshot {
+                id: Some(session.id().to_string()),
+                alias: session.alias().map(str::to_string),
+                workspace_id: crate::session::WORKFLOW_PUBLICATION_WORKSPACE_ROOT.to_string(),
+                worktree_id: crate::session::WORKFLOW_PUBLICATION_WORKSPACE_ROOT.to_string(),
+            }),
+            workflow: workflow.clone(),
+            endpoint: Some(endpoint),
+            queues: Vec::new(),
+            schedules: Vec::new(),
+            agents: vec![agent.canonicalized_for_publication_package(
+                crate::session::WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+            )],
+        };
+        let source_digest = source_snapshot
+            .digest()
+            .expect("publication source should hash");
+        let mut publication = crate::session::WorkflowPublicationDefinition::new_immutable(
             "publication-public-api",
             session.id(),
-            "workflow-public-api",
+            workflow.id(),
             "endpoint-public-api",
             None,
             Some("public-api".to_string()),
@@ -69,6 +102,10 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
             Some("async".to_string()),
             None,
             None,
+            workflow.revision(),
+            source_digest.clone(),
+            Some("bootstrap-publication".to_string()),
+            Some("sha256:bootstrap-request".to_string()),
             "owner-user",
         );
         let open_url = format!(
@@ -87,7 +124,7 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
         );
         app.sessions
             .write()
-            .restore_workflow_publication(session.id(), publication.clone())
+            .restore_workflow_publication(session.id(), publication.clone(), Some(source_snapshot))
             .expect("publication should restore into the live session");
         let session = app
             .sessions()
@@ -103,10 +140,25 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
                 }),
             )
             .expect("publication session should persist");
-        (session.id().to_string(), publication.id().to_string())
+        (
+            session.id().to_string(),
+            publication.id().to_string(),
+            source_digest,
+        )
     };
 
     let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
+    let restored_snapshot = app
+        .sessions()
+        .resolve_workflow_publication_snapshot(&session_id, &publication_id)
+        .expect("restored publication snapshot lookup should succeed")
+        .expect("restored publication should retain immutable source");
+    assert_eq!(
+        restored_snapshot
+            .digest()
+            .expect("restored publication source should hash"),
+        source_digest
+    );
     let relay_state = app
         .relay_client_state
         .try_read()

@@ -50,8 +50,16 @@ impl RuntimeSession {
     pub fn create_workflow_publication(
         &mut self,
         publication: WorkflowPublicationDefinition,
+        source_snapshot: Option<WorkflowPublicationSnapshot>,
     ) -> WorkflowPublicationDefinition {
-        self.workflow_publications.push(publication.clone());
+        if let Some(source_snapshot) = source_snapshot {
+            self.workflow_publication_state
+                .workflow_publication_snapshots
+                .insert(publication.id().to_string(), source_snapshot);
+        }
+        self.workflow_publication_state
+            .workflow_publications
+            .push(publication.clone());
         publication
     }
 
@@ -59,7 +67,8 @@ impl RuntimeSession {
         &self,
         publication_id: &str,
     ) -> Option<&WorkflowPublicationDefinition> {
-        self.workflow_publications
+        self.workflow_publication_state
+            .workflow_publications
             .iter()
             .find(|publication| publication.id() == publication_id)
     }
@@ -68,7 +77,8 @@ impl RuntimeSession {
         &mut self,
         publication_id: &str,
     ) -> Option<&mut WorkflowPublicationDefinition> {
-        self.workflow_publications
+        self.workflow_publication_state
+            .workflow_publications
             .iter_mut()
             .find(|publication| publication.id() == publication_id)
     }

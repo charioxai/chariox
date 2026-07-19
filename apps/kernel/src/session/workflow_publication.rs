@@ -1,11 +1,20 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::agent::AgentInstance;
 
 use super::types::unix_epoch_ms;
+use super::workflow_definition::WorkflowDefinition;
+use super::workflow_graph::WorkflowEndpointDefinition;
+use super::workflow_scheduling::{WorkflowPromptQueueDefinition, WorkflowScheduleDefinition};
 
 const MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS: usize = 20;
 pub const WORKFLOW_PUBLICATION_KIND_INGRESS: &str = "ingress";
 pub const WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY: &str = "schedule_only";
+pub const WORKFLOW_PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
 
 fn default_workflow_publication_kind() -> String {
     WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()
@@ -16,6 +25,58 @@ pub struct WorkflowPublicationRuntimeLogEntry {
     pub at_ms: u64,
     pub level: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationSourceSessionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    pub workspace_id: String,
+    pub worktree_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationSnapshot {
+    pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_session: Option<WorkflowPublicationSourceSessionSnapshot>,
+    pub workflow: WorkflowDefinition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<WorkflowEndpointDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queues: Vec<WorkflowPromptQueueDefinition>,
+    #[serde(default, alias = "watchdogs", skip_serializing_if = "Vec::is_empty")]
+    pub schedules: Vec<WorkflowScheduleDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<AgentInstance>,
+}
+
+impl WorkflowPublicationSnapshot {
+    pub fn digest(&self) -> Result<String, serde_json::Error> {
+        let value = serde_json::to_value(self)?;
+        let encoded = serde_json::to_vec(&canonical_json_value(&value))?;
+        Ok(format!("sha256:{:x}", Sha256::digest(encoded)))
+    }
+}
+
+fn canonical_json_value(value: &Value) -> Value {
+    match value {
+        Value::Array(values) => Value::Array(values.iter().map(canonical_json_value).collect()),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(key.clone(), canonical_json_value(&values[key]));
+            }
+            Value::Object(canonical)
+        }
+        value => value.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +139,14 @@ pub struct WorkflowPublicationDefinition {
     latest_output: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtime_logs: Vec<WorkflowPublicationRuntimeLogEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_workflow_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_snapshot_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_operation_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_request_digest: Option<String>,
     created_by_user_id: String,
     created_at_ms: u64,
     updated_at_ms: u64,
@@ -138,10 +207,64 @@ impl WorkflowPublicationDefinition {
             recent_runs: Vec::new(),
             latest_output: None,
             runtime_logs: Vec::new(),
+            source_workflow_revision: None,
+            source_snapshot_digest: None,
+            creation_operation_key: None,
+            creation_request_digest: None,
             created_by_user_id: created_by_user_id.into(),
             created_at_ms: now,
             updated_at_ms: now,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_immutable(
+        id: impl Into<String>,
+        session_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+        queue_ref: Option<String>,
+        alias: Option<String>,
+        kind: impl Into<String>,
+        route: Option<String>,
+        methods: Vec<String>,
+        transport: Option<Value>,
+        parser: Option<Value>,
+        input_schema: Option<Value>,
+        trace_exposure: Option<Value>,
+        mode: Option<String>,
+        sync_timeout_ms: Option<u64>,
+        poll_ms: Option<u64>,
+        source_workflow_revision: u64,
+        source_snapshot_digest: String,
+        creation_operation_key: Option<String>,
+        creation_request_digest: Option<String>,
+        created_by_user_id: impl Into<String>,
+    ) -> Self {
+        let mut publication = Self::new(
+            id,
+            session_id,
+            workflow_id,
+            endpoint_id,
+            queue_ref,
+            alias,
+            kind,
+            route,
+            methods,
+            transport,
+            parser,
+            input_schema,
+            trace_exposure,
+            mode,
+            sync_timeout_ms,
+            poll_ms,
+            created_by_user_id,
+        );
+        publication.source_workflow_revision = Some(source_workflow_revision);
+        publication.source_snapshot_digest = Some(source_snapshot_digest);
+        publication.creation_operation_key = creation_operation_key;
+        publication.creation_request_digest = creation_request_digest;
+        publication
     }
 
     pub fn id(&self) -> &str {
@@ -190,6 +313,143 @@ impl WorkflowPublicationDefinition {
 
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
+    }
+
+    pub fn source_workflow_revision(&self) -> Option<u64> {
+        self.source_workflow_revision
+    }
+
+    pub fn source_snapshot_digest(&self) -> Option<&str> {
+        self.source_snapshot_digest.as_deref()
+    }
+
+    pub fn validate_source_snapshot(
+        &self,
+        snapshot: &WorkflowPublicationSnapshot,
+    ) -> Result<(), String> {
+        let source_revision = self.source_workflow_revision.ok_or_else(|| {
+            format!(
+                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                self.id
+            )
+        })?;
+        let source_digest = self.source_snapshot_digest.as_deref().ok_or_else(|| {
+            format!(
+                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                self.id
+            )
+        })?;
+        if snapshot.workflow.id() != self.workflow_id {
+            return Err(format!(
+                "workflow publication `{}` snapshot workflow `{}` does not match `{}`",
+                self.id,
+                snapshot.workflow.id(),
+                self.workflow_id
+            ));
+        }
+        if snapshot.workflow.revision() != source_revision {
+            return Err(format!(
+                "workflow publication `{}` snapshot revision {} does not match {}",
+                self.id,
+                snapshot.workflow.revision(),
+                source_revision
+            ));
+        }
+        let actual_digest = snapshot
+            .digest()
+            .map_err(|error| format!("failed to hash publication snapshot: {error}"))?;
+        if actual_digest != source_digest {
+            return Err(format!(
+                "workflow publication `{}` snapshot digest does not match its immutable source digest",
+                self.id
+            ));
+        }
+        let endpoint = snapshot.endpoint.as_ref().ok_or_else(|| {
+            format!(
+                "workflow publication `{}` snapshot is missing endpoint `{}`",
+                self.id, self.endpoint_id
+            )
+        })?;
+        if endpoint.id() != self.endpoint_id
+            || snapshot.workflow.endpoint(&self.endpoint_id) != Some(endpoint)
+        {
+            return Err(format!(
+                "workflow publication `{}` snapshot endpoint does not match `{}`",
+                self.id, self.endpoint_id
+            ));
+        }
+        if snapshot
+            .queues
+            .iter()
+            .any(|queue| queue.workflow_id() != self.workflow_id)
+        {
+            return Err(format!(
+                "workflow publication `{}` snapshot contains a queue for another workflow",
+                self.id
+            ));
+        }
+        if snapshot.schedules.iter().any(|schedule| {
+            schedule.workflow_id() != self.workflow_id
+                || snapshot.workflow.endpoint(schedule.endpoint_id()).is_none()
+        }) {
+            return Err(format!(
+                "workflow publication `{}` snapshot contains an invalid schedule",
+                self.id
+            ));
+        }
+        let referenced_agents = snapshot
+            .workflow
+            .nodes()
+            .iter()
+            .map(|node| node.agent_id())
+            .collect::<BTreeSet<_>>();
+        let captured_agents = snapshot
+            .agents
+            .iter()
+            .map(|agent| agent.id())
+            .collect::<BTreeSet<_>>();
+        if captured_agents != referenced_agents || captured_agents.len() != snapshot.agents.len() {
+            return Err(format!(
+                "workflow publication `{}` snapshot agents do not exactly match workflow nodes",
+                self.id
+            ));
+        }
+        if snapshot.agents.iter().any(|agent| {
+            agent.workspace_id() != Some(WORKFLOW_PUBLICATION_WORKSPACE_ROOT)
+                || agent.worktree_id() != Some(WORKFLOW_PUBLICATION_WORKSPACE_ROOT)
+                || agent.remote_execution().is_some()
+                || !agent.provider_resume_state().is_empty()
+                || agent.external_provider_import().is_some()
+                || agent.remote_extension_manifest_sync().is_some()
+        }) {
+            return Err(format!(
+                "workflow publication `{}` snapshot contains non-portable agent runtime state",
+                self.id
+            ));
+        }
+        let source_session = snapshot.source_session.as_ref().ok_or_else(|| {
+            format!(
+                "workflow publication `{}` snapshot is missing source session metadata",
+                self.id
+            )
+        })?;
+        if source_session.workspace_id != WORKFLOW_PUBLICATION_WORKSPACE_ROOT
+            || source_session.worktree_id != WORKFLOW_PUBLICATION_WORKSPACE_ROOT
+        {
+            return Err(format!(
+                "workflow publication `{}` snapshot contains non-portable source paths",
+                self.id
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn creation_operation_key(&self) -> Option<&str> {
+        self.creation_operation_key.as_deref()
+    }
+
+    pub fn creation_request_digest(&self) -> Option<&str> {
+        self.creation_request_digest.as_deref()
     }
 
     pub fn status(&self) -> Option<&str> {

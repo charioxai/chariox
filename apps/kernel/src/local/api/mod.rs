@@ -30,6 +30,7 @@ use crate::session::{
     WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger, WorkflowWatchdogDefinition,
     WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
 };
+pub use crate::session::{WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot};
 use crate::session_history_page::SessionHistoryPageEntry;
 use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};
 #[cfg(test)]

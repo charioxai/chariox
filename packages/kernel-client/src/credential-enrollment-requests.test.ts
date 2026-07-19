@@ -12,8 +12,8 @@ import {
   type DeploymentCredentialEnrollmentArmedResponse,
 } from "./kernel-types.js"
 
-test("credential enrollment requests match protocol 241", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 241)
+test("credential enrollment requests match protocol 242", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 242)
   assert.equal(
     deploymentCredentialEnrollmentServiceSubject("enrollment-1"),
     "deployment-credential-enrollment:enrollment-1",

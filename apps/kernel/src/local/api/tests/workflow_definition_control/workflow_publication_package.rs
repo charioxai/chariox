@@ -1,6 +1,268 @@
 use super::*;
 
 #[test]
+fn publication_creation_is_revision_safe_idempotent_and_source_independent() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "immutable-source");
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::ResolveWorkflow(
+            ResolveWorkflowRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+            },
+        ))
+        .expect("workflow should resolve")
+    {
+        LocalDaemonResponse::WorkflowResolved { workflow } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+
+    let mut request = CreateWorkflowPublicationRequest {
+        session_id: graph.session_id.clone(),
+        workflow_ref: graph.workflow_id.clone(),
+        endpoint_ref: graph.endpoint_id.clone(),
+        expected_workflow_revision: Some(workflow.revision()),
+        operation_key: Some("publish-immutable-source".to_string()),
+        queue_ref: Some("default".to_string()),
+        alias: Some("immutable-source".to_string()),
+        kind: Some("ingress".to_string()),
+        route: Some("/immutable/*".to_string()),
+        methods: vec!["POST".to_string()],
+        transport: Some(serde_json::json!({ "kind": "human_http" })),
+        parser: None,
+        input_schema: None,
+        trace_exposure: None,
+        mode: Some("async".to_string()),
+        sync_timeout_ms: None,
+        poll_ms: None,
+    };
+    let mut stale_request = request.clone();
+    stale_request.expected_workflow_revision = Some(workflow.revision() + 1);
+    stale_request.operation_key = Some("publish-stale-source".to_string());
+    let stale_error = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(stale_request))
+        .expect_err("stale workflow publication should be rejected");
+    assert!(matches!(
+        stale_error,
+        DaemonError::WorkflowRevisionConflict {
+            expected_revision,
+            current_revision,
+            ..
+        } if expected_revision == workflow.revision() + 1
+            && current_revision == workflow.revision()
+    ));
+
+    let (publication, projected_session) = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            request.clone(),
+        ))
+        .expect("publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated {
+            publication,
+            session,
+        } => (publication, session),
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(
+        publication.source_workflow_revision(),
+        Some(workflow.revision())
+    );
+    assert!(publication
+        .source_snapshot_digest()
+        .is_some_and(|digest| digest.starts_with("sha256:")));
+    assert_eq!(
+        publication.creation_operation_key(),
+        Some("publish-immutable-source")
+    );
+    let projected_json =
+        serde_json::to_value(&projected_session).expect("projected session should serialize");
+    assert!(
+        projected_json
+            .get("workflow_publication_snapshots")
+            .is_none(),
+        "private publication snapshots leaked into response session: {projected_json}"
+    );
+
+    let export = || match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest,
+            package_archive_base64,
+            package_files,
+            ..
+        } => (package_digest, package_archive_base64, package_files),
+        _ => panic!("unexpected local response"),
+    };
+    let before_source_removal = export();
+
+    harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowDesignOp(
+            ApplyWorkflowDesignOpRequest {
+                session_id: graph.session_id.clone(),
+                origin_client_id: "immutable-source-test".to_string(),
+                op_id: "remove-source-workflow".to_string(),
+                op: WorkflowDesignOp::WorkflowRemove {
+                    workflow_id: graph.workflow_id.clone(),
+                },
+            },
+        ))
+        .expect("source workflow should be removable after publication");
+
+    let replayed = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            request.clone(),
+        ))
+        .expect("idempotent publication should replay after source removal")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(replayed.id(), publication.id());
+    let after_source_removal = export();
+    assert_eq!(after_source_removal.0, before_source_removal.0);
+    assert_eq!(after_source_removal.1, before_source_removal.1);
+    let frozen_snapshot = package_json_file(&after_source_removal.2, "workflow.snapshot.json");
+    assert_eq!(
+        frozen_snapshot["workflow"]["id"],
+        serde_json::json!(graph.workflow_id)
+    );
+    assert_eq!(
+        frozen_snapshot["workflow"]["revision"],
+        serde_json::json!(workflow.revision())
+    );
+
+    request.route = Some("/different/*".to_string());
+    let conflict = harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(request))
+        .expect_err("operation key reuse with different choices should fail");
+    assert!(conflict
+        .to_string()
+        .contains("operation key is already bound to different publication choices"));
+    let listed = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowPublications(
+            ListWorkflowPublicationsRequest {
+                session_id: graph.session_id.clone(),
+            },
+        ))
+        .expect("publication list should load")
+    {
+        LocalDaemonResponse::WorkflowPublicationsListed { publications } => publications,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(listed.len(), 1);
+
+    let durable_session = harness.with_app(|app| {
+        app.sessions()
+            .get_session(&graph.session_id)
+            .expect("durable session should load")
+    });
+    let durable_json = serde_json::to_value(&durable_session)
+        .expect("durable publication session should serialize");
+    assert!(durable_json
+        .get("workflow_publication_snapshots")
+        .and_then(|snapshots| snapshots.get(publication.id()))
+        .is_some());
+    let restored: crate::session::RuntimeSession = serde_json::from_value(durable_json)
+        .expect("durable publication session should deserialize");
+    let restored_snapshot = restored
+        .workflow_publication_snapshot(publication.id())
+        .expect("immutable source snapshot should survive restoration");
+    assert_eq!(
+        restored_snapshot
+            .digest()
+            .expect("restored snapshot should hash"),
+        publication
+            .source_snapshot_digest()
+            .expect("publication should expose a source digest")
+    );
+    assert!(
+        serde_json::to_value(restored.redacted_for_user(publication.created_by_user_id()))
+            .expect("redacted session should serialize")
+            .get("workflow_publication_snapshots")
+            .is_none()
+    );
+
+    let mut tampered_json =
+        serde_json::to_value(&durable_session).expect("durable session should serialize again");
+    tampered_json["workflow_publication_snapshots"][publication.id()]["workflow"]["alias"] =
+        serde_json::json!("tampered-after-publication");
+    let tampered_session: crate::session::RuntimeSession = serde_json::from_value(tampered_json)
+        .expect("tampered durable session should still decode");
+    harness.with_app_mut(|app| {
+        app.sessions_mut().restore_session(tampered_session);
+    });
+    let tampered_error = harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect_err("tampered immutable source should not export");
+    assert!(tampered_error
+        .to_string()
+        .contains("snapshot digest does not match its immutable source digest"));
+}
+
+#[test]
+fn legacy_publication_requires_republication_before_export() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "legacy-source");
+    let publication = crate::session::WorkflowPublicationDefinition::new(
+        "legacy-publication",
+        graph.session_id.clone(),
+        graph.workflow_id.clone(),
+        graph.endpoint_id.clone(),
+        Some("default".to_string()),
+        Some("legacy-source".to_string()),
+        "ingress",
+        Some("/legacy/*".to_string()),
+        vec!["POST".to_string()],
+        Some(serde_json::json!({ "kind": "human_http" })),
+        None,
+        None,
+        None,
+        Some("async".to_string()),
+        None,
+        None,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+    );
+    harness.with_app_mut(|app| {
+        app.sessions_mut()
+            .restore_workflow_publication(&graph.session_id, publication.clone(), None)
+            .expect("legacy publication should restore");
+    });
+    let error = harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id,
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect_err("legacy publication should not export mutable source");
+    assert!(error
+        .to_string()
+        .contains("predates immutable snapshots; republish it before exporting"));
+}
+
+#[test]
 fn publication_package_omits_runtime_agent_state_and_remains_stable() {
     let harness = LocalRouterTestHarness::new();
     let graph = create_publication_test_graph(&harness, "stable-runtime-state");
@@ -10,6 +272,8 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
                 session_id: graph.session_id.clone(),
                 workflow_ref: graph.workflow_id.clone(),
                 endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("stable-runtime-state".to_string()),
                 kind: Some("ingress".to_string()),
@@ -198,6 +462,8 @@ fn local_request_api_exports_agent_app_publication_package() {
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 endpoint_ref: endpoint.id().to_string(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("shopping-app".to_string()),
                 kind: Some("ingress".to_string()),
@@ -452,6 +718,8 @@ fn local_request_api_validates_publication_transport_options() {
                 session_id: graph.session_id.clone(),
                 workflow_ref: graph.workflow_id.clone(),
                 endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("human-defaults".to_string()),
                 kind: Some("ingress".to_string()),
@@ -525,6 +793,8 @@ fn local_request_api_validates_publication_transport_options() {
                     session_id: graph.session_id.clone(),
                     workflow_ref: graph.workflow_id.clone(),
                     endpoint_ref: graph.endpoint_id.clone(),
+                    expected_workflow_revision: None,
+                    operation_key: None,
                     queue_ref: Some("default".to_string()),
                     alias: Some(alias.to_string()),
                     kind: Some("ingress".to_string()),
@@ -547,6 +817,8 @@ fn local_request_api_validates_publication_transport_options() {
             session_id: graph.session_id.clone(),
             workflow_ref: graph.workflow_id.clone(),
             endpoint_ref: graph.endpoint_id.clone(),
+            expected_workflow_revision: None,
+            operation_key: None,
             queue_ref: Some("default".to_string()),
             alias: Some("human-regex-parser".to_string()),
             kind: Some("ingress".to_string()),
@@ -576,6 +848,8 @@ fn local_request_api_validates_publication_transport_options() {
                 session_id: graph.session_id.clone(),
                 workflow_ref: graph.workflow_id.clone(),
                 endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("api-default-route".to_string()),
                 kind: Some("ingress".to_string()),
@@ -641,6 +915,8 @@ fn local_request_api_validates_publication_transport_options() {
                 session_id: graph.session_id.clone(),
                 workflow_ref: graph.workflow_id.clone(),
                 endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("mcp-defaults".to_string()),
                 kind: Some("ingress".to_string()),
@@ -688,6 +964,8 @@ fn local_request_api_validates_publication_transport_options() {
             session_id: graph.session_id.clone(),
             workflow_ref: graph.workflow_id.clone(),
             endpoint_ref: graph.endpoint_id.clone(),
+            expected_workflow_revision: None,
+            operation_key: None,
             queue_ref: Some("default".to_string()),
             alias: Some("schedule-without-watchdog".to_string()),
             kind: Some("schedule_only".to_string()),
@@ -712,6 +990,8 @@ fn local_request_api_validates_publication_transport_options() {
             session_id: graph.session_id.clone(),
             workflow_ref: graph.workflow_id.clone(),
             endpoint_ref: graph.endpoint_id.clone(),
+            expected_workflow_revision: None,
+            operation_key: None,
             queue_ref: Some("default".to_string()),
             alias: Some("conflicting-publication-kind".to_string()),
             kind: Some("ingress".to_string()),
@@ -752,6 +1032,8 @@ fn local_request_api_validates_publication_transport_options() {
                 session_id: graph.session_id.clone(),
                 workflow_ref: graph.workflow_id.clone(),
                 endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("schedule-only".to_string()),
                 kind: Some("schedule_only".to_string()),
@@ -805,6 +1087,8 @@ fn local_request_api_validates_publication_transport_options() {
             session_id: graph.session_id.clone(),
             workflow_ref: graph.workflow_id.clone(),
             endpoint_ref: graph.endpoint_id.clone(),
+            expected_workflow_revision: None,
+            operation_key: None,
             queue_ref: Some("default".to_string()),
             alias: Some("api-sync".to_string()),
             kind: Some("ingress".to_string()),
@@ -829,6 +1113,8 @@ fn local_request_api_validates_publication_transport_options() {
             session_id: graph.session_id.clone(),
             workflow_ref: graph.workflow_id.clone(),
             endpoint_ref: graph.endpoint_id.clone(),
+            expected_workflow_revision: None,
+            operation_key: None,
             queue_ref: Some("default".to_string()),
             alias: Some("mcp-json".to_string()),
             kind: Some("ingress".to_string()),
@@ -854,6 +1140,8 @@ fn local_request_api_validates_publication_transport_options() {
                 session_id: graph.session_id,
                 workflow_ref: graph.workflow_id,
                 endpoint_ref: graph.endpoint_id,
+                expected_workflow_revision: None,
+                operation_key: None,
                 queue_ref: Some("default".to_string()),
                 alias: Some("custom-ws".to_string()),
                 kind: Some("ingress".to_string()),

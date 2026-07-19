@@ -560,6 +560,8 @@ test("executeShellCommand manages workflow publications", async () => {
         session_id: "session-1",
         workflow_ref: "workflow-1",
         endpoint_ref: "endpoint-1",
+        expected_workflow_revision: null,
+        operation_key: null,
         queue_ref: "priority",
         alias: "public_qa",
         kind: null,

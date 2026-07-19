@@ -611,6 +611,10 @@ export type WorkflowPublicationDefinition = {
   mode?: string | null
   sync_timeout_ms?: number | null
   poll_ms?: number | null
+  source_workflow_revision?: number | null
+  source_snapshot_digest?: string | null
+  creation_operation_key?: string | null
+  creation_request_digest?: string | null
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null

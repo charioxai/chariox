@@ -49,7 +49,14 @@
         "workflow_id": { "$ref": "#/definitions/non_empty_string" },
         "endpoint_id": { "$ref": "#/definitions/non_empty_string" },
         "creator_user_id": { "$ref": "#/definitions/non_empty_string" },
-        "captured_at_ms": { "type": ["integer", "null"], "minimum": 0 }
+        "captured_at_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "workflow_revision": { "type": ["integer", "null"], "minimum": 0 },
+        "snapshot_digest": {
+          "anyOf": [
+            { "$ref": "#/definitions/sha256" },
+            { "type": "null" }
+          ]
+        }
       }
     },
     "compatibility": {

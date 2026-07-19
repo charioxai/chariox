@@ -6,101 +6,28 @@ use super::*;
 
 mod deployment_contract;
 
-const PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
-
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
-    session: &crate::session::RuntimeSession,
+    snapshot: &crate::session::WorkflowPublicationSnapshot,
     kernel_url: Option<&str>,
     agent_app: Option<&serde_json::Value>,
     agent_app_assets_dir: Option<&str>,
 ) -> Result<Vec<crate::local::WorkflowPublicationPackageFile>, DaemonError> {
+    publication
+        .validate_source_snapshot(snapshot)
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message,
+        })?;
     let publication_value =
         serde_json::to_value(publication).map_err(|error| DaemonError::LocalTransport {
             operation: "export workflow publication package",
             message: format!("failed to encode publication: {error}"),
         })?;
-    let workflow = session
-        .workflows()
-        .iter()
-        .find(|candidate| candidate.id() == publication.workflow_id())
-        .cloned()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!(
-                "workflow `{}` was not found in session `{}`",
-                publication.workflow_id(),
-                session.id()
-            ),
-        })?;
-    let endpoint = workflow
-        .endpoints()
-        .iter()
-        .find(|candidate| candidate.id() == publication.endpoint_id())
-        .cloned()
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!(
-                "endpoint `{}` was not found in workflow `{}`",
-                publication.endpoint_id(),
-                workflow.id()
-            ),
-        })?;
-    let node_agent_ids = workflow
-        .nodes()
-        .iter()
-        .map(|node| node.agent_id().to_string())
-        .collect::<std::collections::BTreeSet<_>>();
-    let agents = session
-        .agents()
-        .iter()
-        .filter(|agent| node_agent_ids.contains(agent.id()))
-        .cloned()
-        .map(|agent| agent.canonicalized_for_publication_package(PUBLICATION_WORKSPACE_ROOT))
-        .collect::<Vec<_>>();
-    let missing_agent_ids = node_agent_ids
-        .iter()
-        .filter(|agent_id| !agents.iter().any(|agent| agent.id() == agent_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    if !missing_agent_ids.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "export workflow publication package",
-            message: format!(
-                "workflow publication snapshot is missing agents: {}",
-                missing_agent_ids.join(", ")
-            ),
-        });
-    }
-    let snapshot = crate::local::WorkflowPublicationSnapshot {
-        schema_version: 1,
-        captured_at_ms: Some(publication.created_at_ms()),
-        source_session: Some(crate::local::WorkflowPublicationSourceSessionSnapshot {
-            id: Some(session.id().to_string()),
-            alias: session.alias().map(str::to_string),
-            workspace_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
-            worktree_id: PUBLICATION_WORKSPACE_ROOT.to_string(),
-        }),
-        workflow: workflow.clone(),
-        endpoint: Some(endpoint),
-        queues: session
-            .workflow_prompt_queues()
-            .iter()
-            .filter(|queue| queue.workflow_id() == workflow.id())
-            .cloned()
-            .collect(),
-        schedules: session
-            .workflow_schedules()
-            .iter()
-            .filter(|schedule| schedule.workflow_id() == workflow.id())
-            .cloned()
-            .collect(),
-        agents,
-    };
     let publication_package =
         workflow_publication_package_json(publication, &publication_value, agent_app);
     let requirements = workflow_publication_requirements_json(&snapshot.agents);
-    let bindings = workflow_publication_bindings_json(&snapshot);
+    let bindings = workflow_publication_bindings_json(snapshot);
     let config =
         workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
     let mut files = vec![
@@ -109,7 +36,7 @@ pub(super) fn workflow_publication_package_files(
             pretty_json(&publication_package)?,
             false,
         ),
-        package_file("workflow.snapshot.json", pretty_json(&snapshot)?, false),
+        package_file("workflow.snapshot.json", pretty_json(snapshot)?, false),
         package_file("requirements.json", pretty_json(&requirements)?, false),
         package_file("bindings.example.json", pretty_json(&bindings)?, false),
         package_file("publication.config.json", pretty_json(&config)?, false),
@@ -152,7 +79,7 @@ pub(super) fn workflow_publication_package_files(
     let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
         publication,
         &publication_value,
-        &snapshot,
+        snapshot,
         agent_app,
         &requirements,
         &files,
@@ -241,6 +168,8 @@ fn workflow_publication_package_json(
         "alias": publication.alias(),
         "source_session_id": publication.session_id(),
         "workflow_id": publication.workflow_id(),
+        "source_workflow_revision": publication.source_workflow_revision(),
+        "source_snapshot_digest": publication.source_snapshot_digest(),
         "default_bindings_path": "bindings.local.json",
         "hooks": [hook],
         "assets": {

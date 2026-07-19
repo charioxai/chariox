@@ -46,6 +46,8 @@ pub(super) fn workflow_publication_deployment_contract_json(
             "endpoint_id": publication.endpoint_id(),
             "creator_user_id": publication.created_by_user_id(),
             "captured_at_ms": snapshot.captured_at_ms,
+            "workflow_revision": publication.source_workflow_revision(),
+            "snapshot_digest": publication.source_snapshot_digest(),
         },
         "compatibility": {
             "package_version": 3,

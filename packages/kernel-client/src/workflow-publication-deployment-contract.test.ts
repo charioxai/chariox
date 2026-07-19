@@ -29,12 +29,32 @@ test("publication deployment contract validates v3 provenance", () => {
     publication_id: "publication-1",
     source_session_id: "session-1",
     workflow_id: "workflow-1",
+    source_workflow_revision: 7,
+    source_snapshot_digest: `sha256:${"b".repeat(64)}`,
     deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
   }
+  const contract = fixture()
+  ;(contract.source as Record<string, unknown>).workflow_revision = 7
+  ;(contract.source as Record<string, unknown>).snapshot_digest = `sha256:${"b".repeat(64)}`
   assert.equal(workflowPublicationDeploymentContractPath(publicationPackage), "deployment-contract.json")
-  const resolution = resolveWorkflowPublicationDeploymentContract(publicationPackage, fixture())
+  const resolution = resolveWorkflowPublicationDeploymentContract(publicationPackage, contract)
   assert.equal(resolution.kind, "native")
   assert.equal(resolution.contract?.source.endpoint_id, "endpoint-1")
+
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract(
+      { ...publicationPackage, source_workflow_revision: 8 },
+      contract,
+    ),
+    /workflow_revision does not match/,
+  )
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract(
+      { ...publicationPackage, source_snapshot_digest: `sha256:${"c".repeat(64)}` },
+      contract,
+    ),
+    /snapshot_digest does not match/,
+  )
 })
 
 test("publication deployment contract rejects unsafe paths, mismatches, and secrets", () => {

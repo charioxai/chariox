@@ -91,8 +91,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
             .collect();
     }
     session
+        .workflow_publication_state
         .workflow_publications
         .retain(|publication| publication.created_by_user_id() == user_id);
+    session
+        .workflow_publication_state
+        .workflow_publication_snapshots
+        .clear();
     session.agent_output_read_state.clear();
     session
 }

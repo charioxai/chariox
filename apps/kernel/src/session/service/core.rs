@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowPublicationSnapshot;
 use std::path::Path;
 
 mod publication;
@@ -156,6 +157,7 @@ impl SessionService {
         &mut self,
         session_id: &str,
         publication: WorkflowPublicationDefinition,
+        source_snapshot: Option<WorkflowPublicationSnapshot>,
     ) -> Result<WorkflowPublicationDefinition, DaemonError> {
         if publication.session_id() != session_id {
             return Err(DaemonError::LocalTransport {
@@ -173,7 +175,7 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        Ok(session.create_workflow_publication(publication))
+        Ok(session.create_workflow_publication(publication, source_snapshot))
     }
 
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {

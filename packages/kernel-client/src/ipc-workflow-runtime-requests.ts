@@ -4,6 +4,8 @@ import type {
 } from "./kernel-types.js"
 
 export type CreateWorkflowPublicationOptions = {
+  expectedWorkflowRevision?: number | null
+  operationKey?: string | null
   alias?: string | null
   queueRef?: string | null
   kind?: "ingress" | "schedule_only" | string | null
@@ -29,6 +31,8 @@ export function createWorkflowPublicationRequest(
       session_id: sessionId,
       workflow_ref: workflowRef,
       endpoint_ref: endpointRef,
+      expected_workflow_revision: options.expectedWorkflowRevision ?? null,
+      operation_key: options.operationKey ?? null,
       queue_ref: options.queueRef ?? null,
       alias: options.alias ?? null,
       kind: options.kind ?? null,

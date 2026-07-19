@@ -30,6 +30,8 @@ export interface WorkflowPublicationPackageContractMetadata {
   readonly publication_id?: string
   readonly source_session_id?: string
   readonly workflow_id?: string
+  readonly source_workflow_revision?: number | null
+  readonly source_snapshot_digest?: string | null
   readonly deployment_contract?: {
     readonly path?: string
     readonly schema_version?: number
@@ -51,6 +53,8 @@ export interface WorkflowPublicationDeploymentContract {
     readonly endpoint_id: string
     readonly creator_user_id: string
     readonly captured_at_ms: number | null
+    readonly workflow_revision?: number | null
+    readonly snapshot_digest?: string | null
   }
   readonly compatibility: {
     readonly package_version: 3
@@ -125,6 +129,18 @@ export function resolveWorkflowPublicationDeploymentContract(
   if (publicationPackage.workflow_id && contract.source.workflow_id !== publicationPackage.workflow_id) {
     throw new Error("deployment contract workflow_id does not match publication package")
   }
+  if (
+    publicationPackage.source_workflow_revision != null &&
+    contract.source.workflow_revision !== publicationPackage.source_workflow_revision
+  ) {
+    throw new Error("deployment contract workflow_revision does not match publication package")
+  }
+  if (
+    publicationPackage.source_snapshot_digest &&
+    contract.source.snapshot_digest !== publicationPackage.source_snapshot_digest
+  ) {
+    throw new Error("deployment contract snapshot_digest does not match publication package")
+  }
   return { kind: "native", packageVersion, contract }
 }
 
@@ -147,6 +163,16 @@ export function validateWorkflowPublicationDeploymentContract(
   }
   if (source.captured_at_ms !== null && (!Number.isInteger(source.captured_at_ms) || Number(source.captured_at_ms) < 0)) {
     throw new Error("deployment contract source captured_at_ms must be a non-negative integer or null")
+  }
+  if (
+    source.workflow_revision !== undefined &&
+    source.workflow_revision !== null &&
+    (!Number.isInteger(source.workflow_revision) || Number(source.workflow_revision) < 0)
+  ) {
+    throw new Error("deployment contract source workflow_revision must be a non-negative integer or null")
+  }
+  if (source.snapshot_digest !== undefined && source.snapshot_digest !== null) {
+    requireSha256(source.snapshot_digest, "deployment contract source snapshot_digest")
   }
   const compatibility = objectRecord(contract.compatibility, "deployment contract compatibility")
   if (compatibility.package_version !== WORKFLOW_PUBLICATION_PACKAGE_VERSION) {

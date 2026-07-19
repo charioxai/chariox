@@ -7,7 +7,6 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
-
     let first = service
         .create_workflow(session.id(), Some("review_loop".to_string()))
         .expect("workflow should be created");
@@ -165,6 +164,7 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
     let workflow = service
         .create_workflow(session.id(), Some("review".to_string()))
         .expect("workflow should be created");
@@ -207,10 +207,64 @@ fn creates_lists_resolves_and_disables_workflow_publications() {
     assert_eq!(publication.alias(), Some("public_review"));
     assert!(publication.enabled());
 
+    let source_agents = service
+        .get_session(session.id())
+        .expect("source session should load")
+        .agents()
+        .to_vec();
+    let creator_a = service
+        .create_workflow_publication_idempotent(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            None,
+            Some("shared-operation-key".to_string()),
+            Some("default".to_string()),
+            Some("creator_a".to_string()),
+            Some("ingress".to_string()),
+            Some("/creator-a".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            source_agents.clone(),
+            "creator-a".to_string(),
+        )
+        .expect("first creator operation should publish");
+    let creator_b = service
+        .create_workflow_publication_idempotent(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            None,
+            Some("shared-operation-key".to_string()),
+            Some("default".to_string()),
+            Some("creator_b".to_string()),
+            Some("ingress".to_string()),
+            Some("/creator-b".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            source_agents,
+            "creator-b".to_string(),
+        )
+        .expect("another creator may reuse the same operation key");
+    assert_ne!(creator_a.id(), creator_b.id());
+
     let publications = service
         .list_workflow_publications(session.id())
         .expect("publication list should succeed");
-    assert_eq!(publications, vec![publication.clone()]);
+    assert_eq!(publications.len(), 3);
+    assert_eq!(publications[0], publication.clone());
     assert_eq!(
         service
             .resolve_workflow_publication_ref(session.id(), "public")

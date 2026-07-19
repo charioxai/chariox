@@ -254,6 +254,29 @@ pub(crate) fn redact_response_for_user(
                 workflow: workflow.redacted_for_user(caller_user_id),
             }
         }
+        LocalDaemonResponse::WorkflowPublicationCreated {
+            publication,
+            session,
+        } => LocalDaemonResponse::WorkflowPublicationCreated {
+            publication,
+            session: session.redacted_for_user(caller_user_id),
+        },
+        LocalDaemonResponse::WorkflowPublicationDisabled {
+            publication,
+            session,
+        } => LocalDaemonResponse::WorkflowPublicationDisabled {
+            publication,
+            session: session.redacted_for_user(caller_user_id),
+        },
+        LocalDaemonResponse::WorkflowPublicationMaterialized {
+            publication_id,
+            session,
+            agent_id_map,
+        } => LocalDaemonResponse::WorkflowPublicationMaterialized {
+            publication_id,
+            session: session.redacted_for_user(caller_user_id),
+            agent_id_map,
+        },
         LocalDaemonResponse::WorkflowEndpointCreated {
             endpoint,
             workflow,

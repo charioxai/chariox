@@ -24,7 +24,7 @@ use super::session_lifecycle::{
 use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
-use super::workflow_publication::WorkflowPublicationDefinition;
+use super::workflow_publication::{WorkflowPublicationDefinition, WorkflowPublicationSnapshot};
 use super::workflow_run_records::WorkflowNodeRun;
 use super::workflow_runs::WorkflowRun;
 use super::workflow_scheduling::{
@@ -50,6 +50,14 @@ pub struct AgentOutputReadState {
     latest_output_sequence: u64,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     seen_sequences_by_user: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct WorkflowPublicationState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_publications: Vec<WorkflowPublicationDefinition>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,8 +115,8 @@ pub struct RuntimeSession {
     workflow_schedules: Vec<WorkflowScheduleDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_consoles: Vec<WorkflowConsole>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    workflow_publications: Vec<WorkflowPublicationDefinition>,
+    #[serde(flatten)]
+    workflow_publication_state: Box<WorkflowPublicationState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_links: Vec<WorkspaceLinkDefinition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -183,7 +191,7 @@ impl RuntimeSession {
             workflow_queued_prompts: VecDeque::new(),
             workflow_schedules: Vec::new(),
             workflow_consoles: Vec::new(),
-            workflow_publications: Vec::new(),
+            workflow_publication_state: Box::default(),
             workspace_links: Vec::new(),
             external_provider_imports: Vec::new(),
             workspace_live_sync_mode: None,
@@ -761,7 +769,16 @@ impl RuntimeSession {
     }
 
     pub fn workflow_publications(&self) -> &[WorkflowPublicationDefinition] {
-        &self.workflow_publications
+        &self.workflow_publication_state.workflow_publications
+    }
+
+    pub(crate) fn workflow_publication_snapshot(
+        &self,
+        publication_id: &str,
+    ) -> Option<&WorkflowPublicationSnapshot> {
+        self.workflow_publication_state
+            .workflow_publication_snapshots
+            .get(publication_id)
     }
 
     pub fn workspace_links(&self) -> &[WorkspaceLinkDefinition] {

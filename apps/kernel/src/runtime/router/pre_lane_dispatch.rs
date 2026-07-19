@@ -182,17 +182,21 @@ impl CommandRouter {
             }
         }
         if let LocalDaemonRequest::CompletePrompt(request) = request {
-            return self
+            let response = self
                 .agent_runtime
                 .dispatch_prompt_complete(command, request.clone())
-                .await
+                .await?;
+            return self
+                .redact_result_for_user(Ok(response), caller_user_id)
                 .map(Some);
         }
         if is_workflow_command(request) {
-            return self
+            let response = self
                 .workflow_runtime
                 .dispatch_workflow_command(command.clone(), request.clone())
-                .await
+                .await?;
+            return self
+                .redact_result_for_user(Ok(response), caller_user_id)
                 .map(Some);
         }
         if let LocalDaemonRequest::GetProviderRun(request) = request {
