@@ -30,14 +30,43 @@ export type WaitingRoomInventoryCache = {
   persist(inventory: WaitingRoomInventory): void
 }
 
+type WaitingRoomInventoryCacheTimers = {
+  readonly setTimeout?: typeof setTimeout
+  readonly clearTimeout?: typeof clearTimeout
+}
+
 export function createWaitingRoomInventoryCache(
   directory = defaultWaitingRoomInventoryCacheDir(),
   nowMs: () => number = Date.now,
+  timers: WaitingRoomInventoryCacheTimers = {},
 ): WaitingRoomInventoryCache {
+  const scheduleTimeout = timers.setTimeout ?? setTimeout
+  const cancelTimeout = timers.clearTimeout ?? clearTimeout
   const versions = new Map<string, string>()
   const structuralVersions = new Map<string, string>()
   const pendingActivity = new Map<string, WaitingRoomInventory>()
   const activityTimers = new Map<string, NodeJS.Timeout>()
+  const trackedKernelIds = new Set<string>()
+
+  function rememberKernel(kernelId: string): void {
+    trackedKernelIds.delete(kernelId)
+    trackedKernelIds.add(kernelId)
+    while (trackedKernelIds.size > maximumCachedKernels) {
+      const oldestKernelId = trackedKernelIds.values().next().value
+      if (!oldestKernelId) {
+        break
+      }
+      trackedKernelIds.delete(oldestKernelId)
+      versions.delete(oldestKernelId)
+      structuralVersions.delete(oldestKernelId)
+      pendingActivity.delete(oldestKernelId)
+      const timer = activityTimers.get(oldestKernelId)
+      if (timer) {
+        cancelTimeout(timer)
+        activityTimers.delete(oldestKernelId)
+      }
+    }
+  }
 
   function load(): WaitingRoomInventory[] {
     const now = nowMs()
@@ -49,7 +78,7 @@ export function createWaitingRoomInventoryCache(
         // Best-effort bounded retention.
       }
     }
-    const inventories = files.slice(0, maximumCachedKernels).flatMap(({ path }) => {
+    const inventories = files.slice(0, maximumCachedKernels).reverse().flatMap(({ path }) => {
       try {
         const cached = JSON.parse(readFileSync(path, "utf8")) as CachedWaitingRoomInventory
         if (
@@ -62,6 +91,7 @@ export function createWaitingRoomInventoryCache(
         }
         versions.set(cached.inventory.kernelId, versionKey(cached.inventory))
         structuralVersions.set(cached.inventory.kernelId, cached.inventory.structuralVersion)
+        rememberKernel(cached.inventory.kernelId)
         return [cached.inventory]
       } catch {
         return []
@@ -81,7 +111,7 @@ export function createWaitingRoomInventoryCache(
     if (structuralVersions.get(inventory.kernelId) === inventory.structuralVersion) {
       pendingActivity.set(inventory.kernelId, inventory)
       if (!activityTimers.has(inventory.kernelId)) {
-        const timer = setTimeout(() => {
+        const timer = scheduleTimeout(() => {
           activityTimers.delete(inventory.kernelId)
           const pending = pendingActivity.get(inventory.kernelId)
           pendingActivity.delete(inventory.kernelId)
@@ -97,7 +127,7 @@ export function createWaitingRoomInventoryCache(
     pendingActivity.delete(inventory.kernelId)
     const timer = activityTimers.get(inventory.kernelId)
     if (timer) {
-      clearTimeout(timer)
+      cancelTimeout(timer)
       activityTimers.delete(inventory.kernelId)
     }
     writeNow(inventory)
@@ -118,6 +148,7 @@ export function createWaitingRoomInventoryCache(
       renameSync(temporaryPath, path)
       versions.set(inventory.kernelId, versionKey(inventory))
       structuralVersions.set(inventory.kernelId, inventory.structuralVersion)
+      rememberKernel(inventory.kernelId)
       pruneCache(directory)
     } catch {
       // Cache persistence must never prevent the TUI from reaching a kernel.

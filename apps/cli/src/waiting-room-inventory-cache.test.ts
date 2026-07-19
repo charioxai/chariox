@@ -30,6 +30,48 @@ test("waiting room inventory cache keeps one revisioned snapshot per kernel", ()
   }
 })
 
+test("waiting room inventory cache bounds revision and activity timer state", () => {
+  const directory = mkdtempSync(join(tmpdir(), "arroba-waiting-room-cache-bound-"))
+  const scheduled: Array<{ callback: () => void; cancelled: boolean }> = []
+  const timers = {
+    setTimeout: ((callback: () => void) => {
+      const pending = { callback, cancelled: false }
+      scheduled.push(pending)
+      return { unref() {} } as NodeJS.Timeout
+    }) as typeof setTimeout,
+    clearTimeout: (() => {
+      const pending = scheduled.find((candidate) => !candidate.cancelled)
+      if (pending) {
+        pending.cancelled = true
+      }
+    }) as typeof clearTimeout,
+  }
+  try {
+    let now = 1_000
+    const cache = createWaitingRoomInventoryCache(directory, () => now, timers)
+    cache.persist(inventory("kernel-0", "structure-1", "activity-1"))
+    cache.persist(inventory("kernel-0", "structure-1", "activity-2"))
+
+    for (let index = 1; index <= 64; index += 1) {
+      now += 1
+      cache.persist(inventory(`kernel-${index}`, "structure-1", "activity-1"))
+    }
+
+    assert.equal(scheduled[0]?.cancelled, true)
+    assert.ok(readdirSync(directory).length <= 64)
+    scheduled[0]?.callback()
+    assert.ok(readdirSync(directory).length <= 64)
+
+    now = 9_000
+    cache.persist(inventory("kernel-0", "structure-1", "activity-1"))
+    const revisited = JSON.parse(readFileSync(join(directory, "kernel-0.json"), "utf8"))
+    assert.equal(revisited.savedAtMs, 9_000)
+    assert.ok(readdirSync(directory).length <= 64)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 function inventory(
   kernelId: string,
   structuralVersion: string,
