@@ -161,6 +161,7 @@ function formatSetupOutcome(outcome: DeploymentSetupExecutionOutcome): Deploymen
 export function formatDeploymentSetup(setup: DeploymentSetup): string {
   return [
     `setup ${setup.id}`,
+    `request_id=${setup.clientRequestId}`,
     `origin ${setup.origin}`,
     `status ${setup.status}`,
     `stage ${setup.stage}`,

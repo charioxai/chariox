@@ -32,6 +32,7 @@ test("TUI deployment setup publishes a draft and binds a local runtime", async (
 
     assert.equal(output.footer, "deployment demo-local ready")
     assert.match(output.notice, /status completed/)
+    assert.match(output.notice, /^request_id=draft-local-request$/m)
     assert.match(output.notice, /deployment deployment-1/)
     assert.deepEqual(fixture.kernelVariants, [
       "ListWorkflowPublications",
@@ -59,6 +60,7 @@ test("TUI deployment setup deploys an immutable publication to a hosted containe
     ], fixture.runtime)
 
     assert.equal(output.footer, "deployment demo-hosted ready")
+    assert.match(output.notice, /^request_id=published-hosted-request$/m)
     assert.equal(fixture.kernelVariants.includes("CreateWorkflowPublication"), false)
     assert.deepEqual(fixture.kernelVariants, ["ExportWorkflowPublicationPackage"])
     assert.equal(fixture.cloud.setup?.origin, "publication")
