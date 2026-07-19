@@ -90,16 +90,10 @@ impl KernelRuntimeOwnedState {
     pub(super) fn workflow_dispatch_claim_id(
         &self,
         session_id: &str,
-        agent_id: &str,
-    ) -> Result<String, DaemonError> {
-        let agent = self.agent_store.get_agent(agent_id)?;
-        if let Some(remote_execution) = agent.remote_execution() {
-            return Ok(format!(
-                "remote-workflow:{}:{}",
-                remote_execution.worker_kernel_id, remote_execution.leased_agent_id
-            ));
-        }
-        self.workflow_ensure_provider_run(session_id, agent_id)
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> String {
+        format!("workflow-node:{session_id}:{workflow_run_id}:{workflow_node_run_id}")
     }
 
     pub(super) fn workflow_submit_prepared_prompt(
@@ -109,6 +103,15 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let mut dispatches = WorkflowPromptDispatches::default();
+        let target_agent = self
+            .agent_store
+            .get_agent(prepared.prompt.target_agent_id())?;
+        if target_agent.remote_execution().is_none() {
+            self.workflow_ensure_provider_run(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )?;
+        }
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
             Some(submission) => submission,
             None => match self.submit_remote_prepared_prompt(&prepared)? {

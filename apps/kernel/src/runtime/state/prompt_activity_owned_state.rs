@@ -427,12 +427,12 @@ impl KernelRuntimeOwnedState {
     pub(super) fn acquire_workflow_node_workspace_claim(
         &self,
         session_id: &str,
-        provider_run_id: &str,
+        claim_id: &str,
         agent_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
     ) -> Result<(), DaemonError> {
-        if self.prompt_workspace_claims.contains(provider_run_id) {
+        if self.prompt_workspace_claims.contains(claim_id) {
             return Ok(());
         }
         let session = self.session_store.get_session(session_id)?;
@@ -451,7 +451,7 @@ impl KernelRuntimeOwnedState {
             "workflow_node_dispatch",
         )?;
         self.prompt_workspace_claims
-            .insert(provider_run_id.to_string(), claim);
+            .insert(claim_id.to_string(), claim);
         Ok(())
     }
 }
