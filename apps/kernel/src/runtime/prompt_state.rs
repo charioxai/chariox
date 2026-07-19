@@ -249,7 +249,16 @@ impl PromptStateOwner {
                 None,
             );
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
-            state.queued_prompts.push_back(prompt.clone());
+            if prompt.workflow_run_id().is_some() {
+                state.queued_prompts.push_back(prompt.clone());
+            } else {
+                let insert_at = state
+                    .queued_prompts
+                    .iter()
+                    .position(|queued| queued.workflow_run_id().is_some())
+                    .unwrap_or(state.queued_prompts.len());
+                state.queued_prompts.insert(insert_at, prompt.clone());
+            }
             Ok(PromptSubmissionOutcome::Queued { prompt })
         }
     }
