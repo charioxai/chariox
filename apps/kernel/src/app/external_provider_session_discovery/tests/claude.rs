@@ -55,6 +55,35 @@ fn ignores_claude_internal_resume_pair_in_observed_history() {
 }
 
 #[test]
+fn preserves_claude_synthetic_api_errors_in_observed_history() {
+    let value = serde_json::json!({
+        "type": "assistant",
+        "uuid": "api-error-assistant",
+        "isApiErrorMessage": true,
+        "error": "authentication_failed",
+        "message": {
+            "id": "api-error-message",
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_reason": "stop_sequence",
+            "content": [{
+                "type": "text",
+                "text": "Login expired · Please run /login"
+            }]
+        },
+        "sessionId": "session-auth-error",
+        "timestamp": "2026-02-01T00:00:01.000Z"
+    });
+
+    let turns = claude_observed_turns_from_value(&value);
+
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::Assistant);
+    assert_eq!(turns[0].text, "Login expired · Please run /login");
+    assert!(turns[1].text.starts_with("claude message completed"));
+}
+
+#[test]
 fn reads_claude_observed_turns_preserves_latest_user_before_recent_jsonl_window() {
     let temp = temp_dir("claude-observed-window-user");
     let root = temp.path();
