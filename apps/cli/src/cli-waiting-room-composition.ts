@@ -26,6 +26,7 @@ import {
   createSession,
   deleteSessionByRef,
 } from "./session-api.js"
+import type { SessionListEntry } from "./sessions.js"
 import {
   createSlice,
   deleteSlice,
@@ -305,6 +306,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       })
       reconcileWaitingRoom(deps.waitingRoomState())
       return page.sessions.length
+    },
+    browseKernelInventory: async (kernelId, machineId) => {
+      await replaceClientForKernel(kernelId, machineId)
+      await refreshWaitingRoomDataNow()
+      return deps.availableSessions().filter((session: SessionListEntry) => {
+        return (session.kernel_id ?? session.host_daemon_id) === kernelId
+      }).length
     },
     createSlice: (options) => createSlice(deps.client, {
       name: options.name,

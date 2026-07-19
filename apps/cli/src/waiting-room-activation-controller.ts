@@ -53,6 +53,7 @@ export type WaitingRoomActivationControllerDeps = {
     externalSessionId: string,
   ) => Promise<{ session: RuntimeSession; agent?: unknown; providerRun?: unknown }>
   loadOlderExternalProviderSessions?: () => Promise<number>
+  browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   createSlice?: (options: {
     name: string
     displayMode: "headless" | "headed"
@@ -150,6 +151,18 @@ export function createWaitingRoomActivationController(
     }
     if (decision.action === "cloud") {
       await deps.handleCloudCommand()
+      return true
+    }
+    if (decision.action === "browse-kernel") {
+      if (!deps.browseKernelInventory) {
+        deps.flashFooter("kernel inventory browsing is unavailable", "error")
+        return true
+      }
+      const count = await deps.browseKernelInventory(decision.kernelId, decision.machineId)
+      deps.flashFooter(
+        `loaded ${count} session${count === 1 ? "" : "s"} from ${decision.label}`,
+        "info",
+      )
       return true
     }
     if (decision.action === "stage-command") {

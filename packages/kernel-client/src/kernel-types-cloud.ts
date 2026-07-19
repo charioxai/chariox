@@ -7,6 +7,7 @@ export type RelayStatus = {
   relay_url?: string | null
   relay_token_configured: boolean
   daemon_id: string
+  daemon_alias?: string | null
   machine_id: string
   machine_alias?: string | null
 }

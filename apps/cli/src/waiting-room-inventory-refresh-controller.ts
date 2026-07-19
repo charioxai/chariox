@@ -4,7 +4,7 @@ import {
 } from "@arroba/kernel-client/external-provider-sessions"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
 import type { LocalKernelPresence } from "./local-kernel-presence.js"
 import { waitingRoomRemoteKernelCanDelete } from "./waiting-room-remote-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -21,7 +21,7 @@ type WaitingRoomRowsChangedPatch = {
   inventoryVersion: string
   structuralVersion: string
   activityRevision: string
-  sessions: SessionListEntry[]
+  sessions: WaitingRoomPublicSessionSummary[]
   removedSessionIds: string[]
 }
 
@@ -178,9 +178,9 @@ export function createWaitingRoomInventoryRefreshController(
           patch.sessions.map((session) => ({
             ...session,
             kernel_id: activeInventory.kernelId,
-            kernel_alias: activeInventory.kernelAlias,
+            kernel_alias: activeInventory.kernelAlias ?? null,
             machine_id: activeInventory.machineId,
-            machine_alias: activeInventory.machineAlias,
+            machine_alias: activeInventory.machineAlias ?? null,
           })),
           patch.removedSessionIds,
         )
@@ -247,7 +247,7 @@ function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): Sess
   return Array.from(inventories)
     .flatMap((inventory) => inventory.sessions)
     .sort((left, right) => (
-      (right.last_used_at_ms ?? right.created_at_ms) - (left.last_used_at_ms ?? left.created_at_ms)
+      (right.last_used_at_ms ?? right.created_at_ms ?? 0) - (left.last_used_at_ms ?? left.created_at_ms ?? 0)
     ))
 }
 
@@ -266,9 +266,9 @@ function mergeLocalKernelPresence(
     }
     kernelsById.set(presence.kernelId, {
       kernel_id: presence.kernelId,
-      kernel_alias: presence.kernelAlias,
+      kernel_alias: presence.kernelAlias ?? null,
       machine_id: presence.machineId,
-      machine_alias: presence.machineAlias,
+      machine_alias: presence.machineAlias ?? null,
       capabilities: ["kernel_ws", "local_presence"],
       local_session_count: inventoriesByKernel.get(presence.kernelId)?.sessions.length ?? 0,
     })
@@ -289,7 +289,7 @@ function mergeLocalKernelPresence(
       ? { ...existing, online: true, kernel_count: Math.max(existing.kernel_count, localKernelCount) }
       : {
           machine_id: presence.machineId,
-          machine_alias: presence.machineAlias,
+          machine_alias: presence.machineAlias ?? null,
           display_name: presence.machineAlias ?? presence.machineId,
           trust_status: "approved",
           online: true,
@@ -300,11 +300,11 @@ function mergeLocalKernelPresence(
   return { machines: [...machinesById.values()], kernels: [...kernelsById.values()] }
 }
 
-function mergeWaitingRoomSessionRows(
-  current: SessionListEntry[],
-  changed: SessionListEntry[],
+function mergeWaitingRoomSessionRows<T extends SessionListEntry>(
+  current: T[],
+  changed: T[],
   removedIds: string[],
-): SessionListEntry[] {
+): T[] {
   const removed = new Set(removedIds)
   const changedById = new Map(changed.map((session) => [session.id, session]))
   const merged = current

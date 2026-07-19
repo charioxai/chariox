@@ -63,9 +63,9 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
     }
     return [{
       kernelId: record.kernel_id.trim(),
-      kernelAlias: record.kernel_alias?.trim() || undefined,
+      kernelAlias: record.kernel_alias?.trim() || null,
       machineId: record.machine_id.trim(),
-      machineAlias: record.machine_alias?.trim() || undefined,
+      machineAlias: record.machine_alias?.trim() || null,
       host: record.host.trim(),
       port: record.port as number,
       heartbeatAtMs: record.heartbeat_at_ms,

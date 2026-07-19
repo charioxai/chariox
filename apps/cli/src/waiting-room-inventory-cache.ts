@@ -145,7 +145,7 @@ function safeKernelId(kernelId: string): string {
 }
 
 function newestSessionAt(inventory: WaitingRoomInventory): number {
-  return Math.max(0, ...inventory.sessions.map((session) => session.last_used_at_ms ?? session.created_at_ms))
+  return Math.max(0, ...inventory.sessions.map((session) => session.last_used_at_ms ?? session.created_at_ms ?? 0))
 }
 
 function cacheFiles(directory: string): string[] {

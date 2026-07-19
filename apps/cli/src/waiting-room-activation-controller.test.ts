@@ -53,6 +53,25 @@ test("waiting room activation stages prompt commands from control rows", async (
   ])
 })
 
+test("waiting room activation hydrates a selected kernel inventory", async () => {
+  const harness = createHarness({
+    controlDecision: {
+      action: "browse-kernel",
+      kernelId: "kernel-2",
+      machineId: "machine-1",
+      label: "builder-b",
+    },
+    browseKernelInventory: async () => 3,
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.calls, [
+    "browseKernelInventory:kernel-2@machine-1",
+    "flash:info:loaded 3 sessions from builder-b",
+  ])
+})
+
 test("waiting room activation creates and attaches sessions with launch defaults", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -320,6 +339,7 @@ function createHarness(options: {
   sessionOverrides?: Partial<RuntimeSession>
   importSession?: RuntimeSession
   loadOlderExternalProviderSessions?: () => Promise<number>
+  browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
 }) {
   const calls: string[] = []
@@ -393,6 +413,10 @@ function createHarness(options: {
     loadOlderExternalProviderSessions: async () => {
       calls.push("loadOlderExternalProviderSessions")
       return await (options.loadOlderExternalProviderSessions?.() ?? Promise.resolve(0))
+    },
+    browseKernelInventory: async (kernelId, machineId) => {
+      calls.push(`browseKernelInventory:${kernelId}@${machineId}`)
+      return await (options.browseKernelInventory?.(kernelId, machineId) ?? Promise.resolve(0))
     },
     createSlice: async (slice) => {
       calls.push("createSlice")

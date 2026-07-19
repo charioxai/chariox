@@ -66,6 +66,8 @@ type KernelEventDispatchControllerDeps = {
   refreshWaitingRoomData: () => Promise<unknown> | unknown
   applyWaitingRoomRowsChanged: (patch: {
     inventoryVersion: string
+    structuralVersion: string
+    activityRevision: string
     sessions: WaitingRoomPublicSessionSummary[]
     removedSessionIds: string[]
   }) => Promise<unknown> | unknown
