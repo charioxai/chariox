@@ -237,4 +237,36 @@ mod tests {
             vec!["/attach ", "/stop", "/waiting", "/exit"]
         );
     }
+
+    #[test]
+    fn terminal_command_catalog_registers_workflow_publication_lifecycle() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let workflow = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "workflow")
+            .expect("workflow command should be present");
+        let publication = workflow
+            .children
+            .iter()
+            .find(|node| node.id == "workflow-publication")
+            .expect("workflow publication commands should be present");
+
+        assert_eq!(publication.value, "/workflow publication ");
+        assert_eq!(
+            publication
+                .children
+                .iter()
+                .map(|node| node.value.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/workflow publication list",
+                "/workflow publication create ",
+                "/workflow publication show ",
+                "/workflow publication export ",
+                "/workflow publication config ",
+                "/workflow publication disable ",
+            ]
+        );
+    }
 }
