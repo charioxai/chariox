@@ -333,15 +333,10 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(provider_prompt_dispatch_failure_notice);
+        project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         if let Some(message) = terminal_failure.as_ref() {
             recorded_notice_messages.insert(message.clone());
-            owned.record_notice(
-                session_id,
-                Some(provider_run_id),
-                recipient_attachment_ids.clone(),
-                message.clone(),
-            );
         }
         for notice in &poll_result.notices {
             let message = provider_notice_message(notice);
@@ -513,6 +508,25 @@ fn provider_prompt_dispatch_failure_notice(message: &str) -> String {
     )
 }
 
+fn project_terminal_failure_chunk(
+    poll_result: &mut crate::provider::ProviderPromptSignalBatch,
+    message: Option<&str>,
+) {
+    let Some(message) = message else {
+        return;
+    };
+    poll_result
+        .chunks
+        .retain(|chunk| chunk.kind != crate::terminal::TerminalOutputKind::ProviderError);
+    poll_result
+        .chunks
+        .push(crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderError,
+            merge_key: None,
+            bytes: message.as_bytes().to_vec(),
+        });
+}
+
 fn provider_notice_message(message: &str) -> String {
     provider_error_message(message)
         .map(|message| format!("Provider prompt dispatch failed: {message}"))
@@ -539,4 +553,57 @@ fn compact_provider_notice_message(message: &str) -> String {
         compact.push_str("...");
     }
     compact
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn representative_provider_exhaustion_envelopes_project_one_canonical_error() {
+        let cases = [
+            (
+                "Codex",
+                r#"{"error":{"type":"usage_limit_reached","message":"You have no weighted tokens left"}}"#,
+                "You have no weighted tokens left",
+            ),
+            (
+                "Claude",
+                "You've hit your usage limit. Your limit will reset later.",
+                "You've hit your usage limit. Your limit will reset later.",
+            ),
+            (
+                "OpenCode",
+                "Insufficient balance. Manage your billing to continue.",
+                "Insufficient balance. Manage your billing to continue.",
+            ),
+        ];
+
+        for (provider, envelope, expected) in cases {
+            let mut batch = crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderError,
+                    merge_key: None,
+                    bytes: format!("provider-specific rendering for {provider}").into_bytes(),
+                }],
+                terminal_failure: Some(envelope.to_string()),
+                ..Default::default()
+            };
+            let message = provider_prompt_dispatch_failure_notice(envelope);
+
+            project_terminal_failure_chunk(&mut batch, Some(&message));
+
+            let errors = batch
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ProviderError)
+                .collect::<Vec<_>>();
+            assert_eq!(errors.len(), 1, "{provider} should project one error");
+            assert_eq!(
+                String::from_utf8_lossy(&errors[0].bytes),
+                format!("Provider prompt dispatch failed: {expected}"),
+                "{provider} should preserve the provider explanation",
+            );
+        }
+    }
 }
