@@ -280,6 +280,10 @@ fn suppress_arroba_owned_external_prompt_echoes(
         .iter()
         .filter_map(|text| workflow_handoff_payload(text))
         .collect::<Vec<_>>();
+    let arroba_owned_workflow_endpoint_prompts = arroba_owned_prompts
+        .iter()
+        .filter_map(|text| workflow_endpoint_prompt(text))
+        .collect::<BTreeSet<_>>();
     if arroba_owned_prompt_texts.is_empty() {
         return Ok(());
     }
@@ -289,6 +293,7 @@ fn suppress_arroba_owned_external_prompt_echoes(
             &arroba_owned_prompt_texts,
             &arroba_owned_workflow_delivery_tokens,
             &arroba_owned_workflow_handoff_payloads,
+            &arroba_owned_workflow_endpoint_prompts,
         )
     });
     Ok(())
@@ -299,6 +304,7 @@ fn external_prompt_matches_arroba_owned_text(
     arroba_owned_prompt_texts: &BTreeSet<String>,
     arroba_owned_workflow_delivery_tokens: &BTreeSet<String>,
     arroba_owned_workflow_handoff_payloads: &[serde_json::Value],
+    arroba_owned_workflow_endpoint_prompts: &BTreeSet<String>,
 ) -> bool {
     if prompt.kind != HistoryEventKind::UserPrompt {
         return false;
@@ -317,6 +323,16 @@ fn external_prompt_matches_arroba_owned_text(
             .is_some_and(|token| arroba_owned_workflow_delivery_tokens.contains(&token))
         || workflow_handoff_payload(&entry.text)
             .is_some_and(|payload| arroba_owned_workflow_handoff_payloads.contains(&payload))
+        || workflow_endpoint_prompt(&entry.text)
+            .is_some_and(|endpoint| arroba_owned_workflow_endpoint_prompts.contains(&endpoint))
+}
+
+fn workflow_endpoint_prompt(text: &str) -> Option<String> {
+    const OPEN: &str = "<endpoint-prompt>";
+    const CLOSE: &str = "</endpoint-prompt>";
+    let start = text.find(OPEN)?.saturating_add(OPEN.len());
+    let end = text[start..].find(CLOSE)?.saturating_add(start);
+    normalized_observed_prompt_text(&text[start..end])
 }
 
 fn workflow_handoff_payload(text: &str) -> Option<serde_json::Value> {
