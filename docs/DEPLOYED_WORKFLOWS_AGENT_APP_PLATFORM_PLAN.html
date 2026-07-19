@@ -808,8 +808,8 @@
         <span>OSS branch: codex/deployed-workflows-console-wizard-workos</span>
         <span>Cloud branch: codex/deployed-workflows-console-wizard-workos</span>
         <span>Integrated mains: OSS f63226b6f; Cloud 6bc2aabfa</span>
-        <span>Implementation heads: OSS 827ef9267; Cloud 25269426f</span>
-        <span>Status: the dedicated Deployed route, durable draft/publication wizard, recoverable local-ingress binding, WorkOS browser sessions and organization management, customer claim destination controls, and server-enforced WorkOS audience grants are implemented and pushed; exact-head hosted configuration and two-terminal acceptance remain</span>
+        <span>Implementation heads: OSS 9d56519d5; Cloud 0139d3ea1</span>
+        <span>Status: the dedicated Deployed route, durable draft/publication wizard, recoverable local-ingress binding, WorkOS browser and browser-approved CLI sessions, organization management, customer claim destination controls, and server-enforced WorkOS audience grants are implemented and pushed; exact-head hosted configuration and two-terminal acceptance remain</span>
       </div>
     </header>
 
@@ -942,8 +942,8 @@
                 </tr>
                 <tr>
                   <td>Human identity</td>
-                  <td><span class="status have">Foundation landed</span> Cloud has a provider-neutral verified identity shape, official WorkOS adapter, sealed browser sessions, Auth0/WorkOS dual mode, explicit organization bindings, durable membership tombstones, and signed idempotent lifecycle webhooks. Arroba accounts and roles remain authoritative.</td>
-                  <td>Configure and prove the real Scalingo/WorkOS environment, then add customer-facing organization selection, invitation, Admin Portal, role mapping, handoff/audience integration, browser-approved CLI sessions, and enterprise E2E evidence.</td>
+                  <td><span class="status have">Core controls landed</span> Cloud has a provider-neutral verified identity shape, official WorkOS adapter, sealed browser sessions, exact-session browser-approved CLI exchange, Auth0/WorkOS dual mode, organization controls, handoff/audience enforcement, durable membership tombstones, and signed idempotent lifecycle webhooks. Arroba accounts and roles remain authoritative.</td>
+                  <td>Configure and prove the real Scalingo/WorkOS environment, then complete customer role/group mapping, deployed-app interactive login, mobile session design, and enterprise cross-surface E2E evidence.</td>
                   <td><code>arroba-cloud</code></td>
                 </tr>
                 <tr>
@@ -1276,7 +1276,12 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
 
           <div class="callout success">
             <strong>Enterprise handoff and audience checkpoint / Cloud 25269426f</strong>
-            <p>The Deployed sidebar and full management route now expose WorkOS organization creation and switching, invitations, SSO and Directory readiness, Admin Portal entry, session inspection and revocation, customer claim destination review, and WorkOS-backed audience controls. Verified organization domains are projected separately from pending domains. WorkOS sessions can grant only their authenticated Arroba account or a domain WorkOS currently reports as verified; the API enforces this rule and fails closed when WorkOS domain verification is unavailable, while bounded Auth0 migration and non-WorkOS local/self-hosted behavior remain compatible. Cloud web build and lint pass; focused web tests pass <code>44/44</code>, audience and enterprise route tests pass <code>9/9</code>, and WorkOS adapter tests pass <code>4/4</code>. Browser-approved CLI sessions, deployed-app interactive login, role/group mapping, hosted configuration, disruption drills, and cross-surface E2E remain pending.</p>
+            <p>The Deployed sidebar and full management route now expose WorkOS organization creation and switching, invitations, SSO and Directory readiness, Admin Portal entry, session inspection and revocation, customer claim destination review, and WorkOS-backed audience controls. Verified organization domains are projected separately from pending domains. WorkOS sessions can grant only their authenticated Arroba account or a domain WorkOS currently reports as verified; the API enforces this rule and fails closed when WorkOS domain verification is unavailable, while bounded Auth0 migration and non-WorkOS local/self-hosted behavior remain compatible. Cloud web build and lint pass; focused web tests pass <code>44/44</code>, audience and enterprise route tests pass <code>9/9</code>, and WorkOS adapter tests pass <code>4/4</code>. Deployed-app interactive login, role/group mapping, hosted configuration, disruption drills, and cross-surface E2E remain pending.</p>
+          </div>
+
+          <div class="callout success">
+            <strong>Browser-approved CLI session checkpoint / Cloud 0139d3ea1</strong>
+            <p>The web activation controller now establishes an Arroba Cloud browser session before approving a CLI/TUI device code. The public approval body accepts only the one-time user code; the API derives email, provider identity, organization, exact WorkOS session, local account, and membership from the authenticated browser and Cloud sessions. Any provider/user/organization/session mismatch fails closed, and WorkOS cookies, authorization codes, access tokens, and refresh tokens never enter terminal state. The CLI continues to receive only short-lived Arroba Cloud session and machine credentials through the existing device poll. Authorization policy was moved out of route wiring into named HTTP modules. Cloud API build, web build and lint pass; focused authorization/architecture tests pass <code>28/28</code>, browser controller tests pass <code>5/5</code>, and the complete API suite passes <code>353/353</code>.</p>
           </div>
 
           <h3>Environment and URL contract</h3>
@@ -1339,7 +1344,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li data-status="done">Complete WorkOS browser Authorization Code login with signed state, strict callback origin/path validation, secure sealed host-only sessions, transparent refresh, provider logout, invalid-session clearing, and exact provider-session revocation.</li>
             <li>Register distinct iOS and Android applications and use the system browser with Authorization Code plus PKCE, Universal Links/App Links or validated custom schemes, and OS secure storage. Do not embed a password form or share web cookies.</li>
             <li>Define one mobile session contract for foreground/background refresh, offline expiry, account/organization switching, lost-device revocation, biometric gate policy, and logout across all devices.</li>
-            <li>Keep TUI/CLI authorization as a browser approval exchange: WorkOS authenticates the browser user, Cloud binds the approved account and scopes, then returns a short-lived local Arroba CLI session. Do not place a WorkOS refresh token in terminal state.</li>
+            <li data-status="done">Keep TUI/CLI authorization as a browser approval exchange: WorkOS authenticates the browser user, Cloud binds the exact browser provider/user/organization/session and current Arroba account, then returns only a short-lived Arroba CLI session and machine credential. The approval body accepts only the one-time user code; no WorkOS token enters terminal state. Cloud <code>0139d3ea1</code>.</li>
             <li>Project identity, selected organization, session expiry, reauthentication requests, permission prompts, and revocation consistently to web terminal and TUI without exposing provider token payloads.</li>
           </ul>
 
