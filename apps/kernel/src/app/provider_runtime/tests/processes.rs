@@ -484,6 +484,7 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         ))
         .expect("replacement client should attach");
 
+    let promoted_at_ms = crate::session::unix_epoch_ms();
     let completion = app
         .complete_active_prompt(session.id(), agent.id(), Some(run.id()))
         .expect("queued prompt should promote through the replacement attachment");
@@ -525,9 +526,9 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         1,
         "promoted queued prompt must have one canonical operational history event"
     );
-    assert_eq!(
-        operational_prompts[0].timestamp_ms, queued_created_at_ms,
-        "promoted prompt history must include time spent waiting in the queue"
+    assert!(
+        operational_prompts[0].timestamp_ms >= promoted_at_ms,
+        "promoted prompt history must start when the queued prompt becomes active"
     );
 
     let legacy_prompts = std::fs::read_to_string(app.history_store().path_for_session(&session))
@@ -541,9 +542,9 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         1,
         "promoted queued prompt must be written once to legacy compatibility history"
     );
-    assert_eq!(
-        legacy_prompts[0].timestamp_ms, queued_created_at_ms,
-        "legacy compatibility history must retain the queued acceptance timestamp"
+    assert!(
+        legacy_prompts[0].timestamp_ms >= promoted_at_ms,
+        "legacy compatibility history must use the queued prompt activation timestamp"
     );
 }
 

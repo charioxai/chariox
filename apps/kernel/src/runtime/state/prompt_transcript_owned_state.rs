@@ -615,7 +615,10 @@ impl KernelRuntimeOwnedState {
         source_attachment_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<u64, DaemonError> {
-        let prompt_sent_at_ms = prompt.created_at_ms();
+        // A queued prompt's creation time is its queue-admission time, not its
+        // turn start. Persist the activation time here so history hydration
+        // cannot place a promoted prompt inside the preceding active turn.
+        let prompt_sent_at_ms = crate::session::unix_epoch_ms();
         let prompt_text = crate::prompt_transcript::workflow_prompt_history_text(prompt);
         self.append_user_prompt_history(
             session_id,
