@@ -258,6 +258,11 @@ impl KernelRuntimeState {
                 ),
             }
         }
+        if owned.prompt_completion_settlement_pending(provider_run_id) {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, false)
+                .await?;
+        }
         Ok(records)
     }
 

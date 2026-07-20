@@ -87,10 +87,7 @@ pub fn drain_codex_events(
             &mut terminal_failure,
         )?;
     }
-    let terminal_waiting_for_backfill = state.active_turn_id.is_some()
-        && state.turn_tracker.has_pending_terminal()
-        && !prompt_completed;
-    if drained_to_quiet && !prompt_completed && !terminal_waiting_for_backfill {
+    if drained_to_quiet && !prompt_completed {
         maybe_finalize_terminal_signal(
             &mut state.active_turn_id,
             &mut state.turn_tracker,

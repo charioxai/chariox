@@ -763,6 +763,84 @@ fn streamed_assistant_content_after_tools_does_not_infer_prompt_completion() {
 }
 
 #[test]
+fn terminal_with_final_assistant_text_settles_despite_stale_tool_tracking() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ExecCommandStarted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::AgentMessageDelta {
+            item_id: "msg-1".to_string(),
+            delta: "```json\n{\"summary\":\"done\"}\n```".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+}
+
+#[test]
 fn tool_start_after_assistant_content_still_requires_terminal_completion() {
     let mut active_turn_id = Some("turn-1".to_string());
     let mut turn_tracker = CodexTurnTracker::default();

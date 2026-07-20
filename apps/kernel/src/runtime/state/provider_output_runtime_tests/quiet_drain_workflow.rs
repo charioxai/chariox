@@ -275,7 +275,7 @@ async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
 }
 
 #[tokio::test]
-async fn workflow_prompt_waits_for_late_structured_output_after_completion_signal() {
+async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -311,6 +311,9 @@ async fn workflow_prompt_waits_for_late_structured_output_after_completion_signa
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), first_agent.id())
         .expect("first node should be added");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), first_node.id(), true)
+        .expect("first node should complete the workflow run");
     let second_node = app
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), second_agent.id())
@@ -451,16 +454,36 @@ async fn workflow_prompt_waits_for_late_structured_output_after_completion_signa
         provider_output,
         "```json\n{\"summary\":\"sent\",\"output\":{\"message\":\"{\\\"value\\\":1842}\"}}\n```"
     );
+    runtime
+        .owned
+        .session_store
+        .write()
+        .submit_workflow_run_final_output(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            crate::session::WorkflowOutputPayload::new(
+                r#"{"summary":"sent","output":{"message":"done"}}"#,
+                Vec::new(),
+            ),
+            true,
+            None,
+        )
+        .expect("workflow final output should be accepted");
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     runtime
-        .apply_owned_structured_output_batch(
-            session.id(),
-            run.id(),
-            Vec::new(),
-            crate::provider::ProviderPromptSignalBatch::default(),
-        )
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(run.id(), Some("prompt-1".to_string()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(run.id().to_string(), Ok(None));
+    runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
         .await
-        .expect("quiet poll should settle the complete workflow output");
+        .expect("output pump should settle after consuming the completion signal");
 
     let session_state = runtime
         .owned
@@ -479,11 +502,11 @@ async fn workflow_prompt_waits_for_late_structured_output_after_completion_signa
         resolved_run.node_runs()[0].status(),
         crate::session::WorkflowNodeRunStatus::Completed
     );
-    assert_eq!(resolved_run.node_runs().len(), 2);
     assert_eq!(
-        resolved_run.node_runs()[1].status(),
-        crate::session::WorkflowNodeRunStatus::Ready
+        resolved_run.status(),
+        crate::session::WorkflowRunStatus::Completed
     );
+    assert_eq!(resolved_run.node_runs().len(), 1);
 
     let durable_session = runtime
         .owned
@@ -513,11 +536,11 @@ async fn workflow_prompt_waits_for_late_structured_output_after_completion_signa
         crate::session::WorkflowNodeRunStatus::Completed,
         "a kernel restart must not restore the completed node as running"
     );
-    assert_eq!(durable_run.node_runs().len(), 2);
     assert_eq!(
-        durable_run.node_runs()[1].status(),
-        crate::session::WorkflowNodeRunStatus::Ready
+        durable_run.status(),
+        crate::session::WorkflowRunStatus::Completed
     );
+    assert_eq!(durable_run.node_runs().len(), 1);
 }
 
 #[tokio::test]
