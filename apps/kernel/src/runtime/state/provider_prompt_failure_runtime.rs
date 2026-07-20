@@ -22,6 +22,7 @@ impl KernelRuntimeState {
             .forward_leased_workflow_provider_failure(provider_run_id, message)
             .await?
         {
+            self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
             return Ok(());
         }
 
@@ -38,6 +39,7 @@ impl KernelRuntimeState {
             let _ = owned.session_snapshot(session_id);
             return Ok(());
         }
+        self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,
@@ -78,6 +80,22 @@ impl KernelRuntimeState {
             .await;
         }
         Ok(())
+    }
+
+    fn end_owned_provider_run_after_terminal_failure(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) {
+        let owned = &self.owned;
+        let Ok(outcome) = owned
+            .provider_store
+            .terminate_run_provider_only(session_id, provider_run_id)
+        else {
+            return;
+        };
+        let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+        owned.provider_run_projection.update(outcome.into_run());
     }
 
     async fn forward_leased_workflow_provider_failure(

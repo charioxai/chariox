@@ -158,6 +158,17 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             self.clear_prompt_activity(provider_run_id);
             return Ok(());
         };
+        if let Ok(outcome) = self
+            .provider_store
+            .terminate_run_provider_only(session_id, provider_run_id)
+        {
+            let _ = super::provider_liveness::clear_active_provider_run_session_pointer(
+                self.app,
+                session_id,
+                outcome.run().id(),
+            );
+            self.app.update_provider_run_projection(outcome.into_run());
+        }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
@@ -359,6 +370,96 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_failure_ends_provider_run_before_settling_prompt() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-terminal-failure-settlement",
+                "worktree-terminal-failure-settlement",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-terminal-failure-settlement",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.3-codex-spark",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-terminal-failure-settlement",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-codex-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+        app.update_provider_run_projection(run.clone());
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "trigger usage limit\n",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start");
+
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        ProviderOutputPromptSettlement::new(
+            &mut app,
+            provider_store.clone(),
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .fail_for_terminal_failure(session.id(), run.id(), "usage limit reached")
+        .expect("terminal failure should settle");
+
+        assert_eq!(
+            provider_store
+                .get_run(run.id())
+                .expect("provider run should remain recorded")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("active prompt should load")
+            .is_none());
+        assert_eq!(
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should exist")
+                .active_provider_run_id(),
+            None
+        );
+    }
 
     #[test]
     fn claude_native_composer_quiet_does_not_settle_the_active_prompt() {

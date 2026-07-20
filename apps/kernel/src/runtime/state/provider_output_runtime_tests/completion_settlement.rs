@@ -638,6 +638,16 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
         &external_prompt_id,
         &queued_prompt_id,
     );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("external provider run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Running,
+        "observed external prompt failures must not mutate provider-owned lifecycle state"
+    );
 }
 
 #[tokio::test]

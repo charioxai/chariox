@@ -234,6 +234,23 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
         )
     );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("provider run should exist")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert_eq!(
+        runtime
+            .agent_activity_for_session(&session_state)
+            .get(agent.id())
+            .expect("agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
 }
 
 #[tokio::test]
