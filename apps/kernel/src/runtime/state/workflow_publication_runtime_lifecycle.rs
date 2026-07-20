@@ -2,14 +2,16 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
 use base64::Engine;
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -22,6 +24,8 @@ use super::KernelRuntimeState;
 
 const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
+const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(10);
+const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Default)]
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
@@ -275,7 +279,7 @@ async fn start_publication_runtime(
         .arg(&host)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     command.arg("--kernel-url").arg(&kernel_url);
     let mut child = command.spawn().map_err(|error| {
         let message = format!("failed to launch arroba publication gateway: {error}");
@@ -291,20 +295,9 @@ async fn start_publication_runtime(
         }
     })?;
     let process_id = child.id();
-    if let Some(status) = child.try_wait().map_err(|error| {
-        let message = format!("failed to inspect launched publication gateway: {error}");
-        let _ = mark_publication_runtime_error(
-            runtime_state,
-            &request.session_id,
-            publication.id(),
-            &message,
-        );
-        DaemonError::LocalTransport {
-            operation: "start workflow publication runtime",
-            message,
-        }
-    })? {
-        let message = format!("publication gateway exited immediately with status {status}");
+    if let Err(message) =
+        wait_for_publication_runtime_start(&mut child, &host, port, is_schedule_only).await
+    {
         let _ = mark_publication_runtime_error(
             runtime_state,
             &request.session_id,
@@ -359,6 +352,57 @@ async fn start_publication_runtime(
         process_id,
         message: Some(launched_publication_runtime_message(is_schedule_only).to_string()),
     })
+}
+
+async fn wait_for_publication_runtime_start(
+    child: &mut Child,
+    host: &str,
+    port: u16,
+    is_schedule_only: bool,
+) -> Result<(), String> {
+    let deadline = Instant::now() + PUBLICATION_RUNTIME_START_TIMEOUT;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to inspect launched publication gateway: {error}"))?
+        {
+            let stderr = publication_runtime_stderr(child).await;
+            return Err(format!(
+                "publication gateway exited before becoming ready with status {status}{}",
+                stderr_suffix(&stderr),
+            ));
+        }
+        if is_schedule_only || TcpStream::connect((host, port)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill().await;
+            let stderr = publication_runtime_stderr(child).await;
+            return Err(format!(
+                "publication gateway did not listen on {host}:{port} within {}s{}",
+                PUBLICATION_RUNTIME_START_TIMEOUT.as_secs(),
+                stderr_suffix(&stderr),
+            ));
+        }
+        sleep(PUBLICATION_RUNTIME_START_POLL).await;
+    }
+}
+
+async fn publication_runtime_stderr(child: &mut Child) -> String {
+    let Some(mut stderr) = child.stderr.take() else {
+        return String::new();
+    };
+    let mut output = String::new();
+    let _ = stderr.read_to_string(&mut output).await;
+    output.trim().to_string()
+}
+
+fn stderr_suffix(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
+    }
 }
 
 async fn stop_publication_runtime(
