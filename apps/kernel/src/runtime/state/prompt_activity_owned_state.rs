@@ -128,7 +128,8 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_abort_jobs()
         {
-            if let Err(error) = finished.result {
+            let abort_error = finished.result.err().map(|error| error.to_string());
+            if let Some(error) = abort_error.as_deref() {
                 let recipients = self
                     .attachment_store
                     .list_session_attachment_ids(&finished.session_id);
@@ -138,6 +139,27 @@ impl KernelRuntimeOwnedState {
                     recipients,
                     format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
                 );
+                if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id) {
+                    if let Some(agent_id) = provider_run.agent_instance_id() {
+                        if let Ok(session) = self.session_store.get_session(&finished.session_id) {
+                            if let Some(prompt) = self
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, agent_id)
+                                .filter(|prompt| {
+                                    prompt.status() == crate::session::PromptStatus::Cancelling
+                                })
+                            {
+                                let _ = self.settle_failed_local_prompt_without_advance(
+                                    &finished.session_id,
+                                    agent_id,
+                                    prompt.id(),
+                                    &finished.provider_run_id,
+                                    &format!("Provider prompt cancellation failed: {error}"),
+                                );
+                            }
+                        }
+                    }
+                }
             } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
             {
                 // A successful structured-provider abort RPC is the

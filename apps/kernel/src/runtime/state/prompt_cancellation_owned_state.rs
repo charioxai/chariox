@@ -265,7 +265,9 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
-        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+            let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
