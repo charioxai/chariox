@@ -781,6 +781,12 @@ test("human HTTP status page renders resizable per-node traces and sandboxed app
     assert.match(response.body, /frame\.srcdoc = renderable\.html/)
     assert.match(response.body, /frame\.src = publicationAppAssetUrl\(renderable\.src\)/)
     assert.match(response.body, /parsed\.kind === 'response'/)
+    assert.match(response.body, /renderTraceContent\(item, trace\)/)
+    assert.match(response.body, /trace\.level === 'tool_use'/)
+    assert.match(response.body, /Generated an interactive HTML workflow update\./)
+    assert.match(response.body, /className = 'trace-prose'/)
+    assert.match(response.body, /className = 'trace-code'/)
+    assert.doesNotMatch(response.body, /item\.innerHTML = .*<pre><\/pre>/)
   } finally {
     await app.close()
   }

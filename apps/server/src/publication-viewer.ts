@@ -555,12 +555,131 @@ function renderTrace(trace) {
   const item = document.createElement('article');
   item.className = 'trace-item trace-' + String(trace.level || 'event').replace(/[^a-z0-9_-]/gi, '-');
   const label = traceLevelLabel(trace.level);
-  item.innerHTML = '<div class="trace-meta"><strong>' + escapeText(label) + '</strong><time></time></div><pre></pre>';
+  const meta = document.createElement('div');
+  meta.className = 'trace-meta';
+  const title = document.createElement('strong');
+  title.textContent = label;
+  const timestamp = document.createElement('time');
   const time = Number(trace.timestamp_ms);
-  item.querySelector('time').textContent = Number.isFinite(time) ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  item.querySelector('pre').textContent = trace.message || JSON.stringify(trace.data ?? trace, null, 2);
+  timestamp.textContent = Number.isFinite(time) ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  meta.append(title, timestamp);
+  item.append(meta);
+  renderTraceContent(item, trace);
   feed.append(item);
   feed.scrollTop = feed.scrollHeight;
+}
+
+function renderTraceContent(item, trace) {
+  const message = traceDisplayMessage(trace);
+  if (trace.level === 'tool_use') {
+    const code = document.createElement('pre');
+    code.className = 'trace-code';
+    code.textContent = message;
+    item.append(code);
+    return;
+  }
+  const prose = document.createElement('div');
+  prose.className = 'trace-prose';
+  renderTraceProse(prose, message);
+  item.append(prose);
+}
+
+function traceDisplayMessage(trace) {
+  const fallback = trace.message || JSON.stringify(trace.data ?? trace, null, 2);
+  if (trace.level === 'tool_use' || typeof fallback !== 'string') return String(fallback ?? '');
+  return naturalTraceMessage(fallback);
+}
+
+function naturalTraceMessage(message) {
+  const trimmed = message.trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = JSON.parse(trimmed);
+    const natural = naturalStructuredMessage(parsed);
+    return natural || 'Produced a structured workflow update.';
+  } catch {}
+  return message;
+}
+
+function naturalStructuredMessage(value) {
+  if (typeof value === 'string') return naturalTraceMessage(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.kind === 'html' && typeof value.html === 'string') return 'Generated an interactive HTML workflow update.';
+  if (value.kind === 'response' && value.response?.mode === 'html') return 'Generated an interactive HTML workflow update.';
+  for (const key of ['summary', 'text', 'content', 'message']) {
+    if (typeof value[key] === 'string') return naturalTraceMessage(value[key]);
+  }
+  if (value.output && typeof value.output === 'object') return naturalStructuredMessage(value.output);
+  return null;
+}
+
+function renderTraceProse(container, message) {
+  const lines = String(message || '').replace(/\r\n/g, '\n').split('\n');
+  let paragraph = [];
+  let list = null;
+  let code = null;
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const element = document.createElement('p');
+    appendInlineTraceFormatting(element, paragraph.join(' '));
+    container.append(element);
+    paragraph = [];
+  };
+  const flushList = () => { list = null; };
+  for (const line of lines) {
+    if (line.trim().startsWith(String.fromCharCode(96).repeat(3))) {
+      flushParagraph(); flushList();
+      if (code) { container.append(code); code = null; }
+      else { code = document.createElement('pre'); code.className = 'trace-code'; }
+      continue;
+    }
+    if (code) { code.textContent += (code.textContent ? '\n' : '') + line; continue; }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      flushParagraph(); flushList();
+      const element = document.createElement('h' + Math.min(heading[1].length + 2, 5));
+      appendInlineTraceFormatting(element, heading[2]);
+      container.append(element);
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*]\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      if (!list || list.tagName !== 'UL') { list = document.createElement('ul'); container.append(list); }
+      const item = document.createElement('li');
+      appendInlineTraceFormatting(item, bullet[1]);
+      list.append(item);
+      continue;
+    }
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      flushParagraph();
+      if (!list || list.tagName !== 'OL') { list = document.createElement('ol'); container.append(list); }
+      const item = document.createElement('li');
+      appendInlineTraceFormatting(item, ordered[1]);
+      list.append(item);
+      continue;
+    }
+    if (!line.trim()) { flushParagraph(); flushList(); continue; }
+    flushList();
+    paragraph.push(line.trim());
+  }
+  flushParagraph();
+  if (code) container.append(code);
+}
+
+function appendInlineTraceFormatting(container, text) {
+  const pattern = /(\x60[^\x60]+\x60|\*\*[^*]+\*\*|_[^_]+_)/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index > cursor) container.append(document.createTextNode(text.slice(cursor, match.index)));
+    const token = match[0];
+    const element = document.createElement(token.charCodeAt(0) === 96 ? 'code' : token.startsWith('**') ? 'strong' : 'em');
+    element.textContent = token.startsWith('**') ? token.slice(2, -2) : token.slice(1, -1);
+    container.append(element);
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) container.append(document.createTextNode(text.slice(cursor)));
 }
 
 function traceLevelLabel(level) {
@@ -618,9 +737,6 @@ function publicationIngressPrefix() {
   return '/' + parts[0];
 }
 
-function escapeText(value) {
-  return String(value).replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[ch]));
-}
 })();
 `
 }
@@ -708,7 +824,14 @@ function htmlDocument(title: string, body: string) {
     "    .trace-meta strong { color: #c3c9c0; }",
     "    .trace-tool_use .trace-meta strong { color: var(--accent); }",
     "    .trace-output_summary .trace-meta strong { color: var(--green); }",
-    "    .trace-item pre { margin: 0; padding: 8px; font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #d9ded6; }",
+    "    .trace-prose { padding: 10px; font: 12px/1.55 ui-sans-serif, system-ui, sans-serif; color: #dfe4dc; overflow-wrap: anywhere; }",
+    "    .trace-prose p { margin: 0 0 8px; }",
+    "    .trace-prose p:last-child { margin-bottom: 0; }",
+    "    .trace-prose h3, .trace-prose h4, .trace-prose h5 { margin: 2px 0 8px; font: 600 12px/1.35 ui-sans-serif, system-ui, sans-serif; color: var(--text); }",
+    "    .trace-prose ul, .trace-prose ol { margin: 0 0 8px; padding-left: 20px; }",
+    "    .trace-prose li + li { margin-top: 4px; }",
+    "    .trace-prose code { padding: 1px 4px; border: 1px solid #303630; border-radius: 3px; background: #0b0e0c; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #f0c2a5; }",
+    "    .trace-code { margin: 0; padding: 9px; background: #0b0e0c; font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #d9ded6; }",
     "    .invoke-form { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 9px; border-top: 1px solid var(--line); background: #121512; }",
     "    .composer-under-traces { grid-column: 3; grid-row: 2; }",
     "    .composer-under-output { grid-column: 1; grid-row: 2; }",
