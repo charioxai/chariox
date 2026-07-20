@@ -94,6 +94,13 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
         .source
         .contains("alias: \"filter\", provider: \"claude\", model: \"haiku\""));
 
+    let parallelization = registry
+        .resolve("parallelization")
+        .expect("parallelization workflow registry entry should resolve");
+    assert!(parallelization
+        .source
+        .contains("model: provider === \"claude\" ? \"haiku\" : \"default\""));
+
     let error = registry
         .delete("prompt-chaining", None)
         .expect_err("builtin registry entries must not be deleted");
