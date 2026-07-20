@@ -99,7 +99,7 @@ for (let index = 0; index < params.critic_count; index += 1) {
     handle,
     agent: workflow.newAgent({ alias: handle, provider: "claude", model: "default" }),
     publicLabel: params.critic_count === 1 ? "Critic" : `Critic ${number}`,
-    instructions: "Find flaws. Route back to proposer for revision or forward to judge when ready.",
+    instructions: `Find flaws. Route to exactly one outgoing edge: when revision is needed, select only the edge targeting Proposer; when the proposal is ready, select only the edge targeting Judge. Put that single selected edge in output.message.workflow_handoffs using its exact edge_id. Never emit a plain handoff here because plain output fans out to both routes.`,
     canvas: { x: 300, y: branchY(index, params.critic_count) },
   });
   workflow.edge(proposer, critic, { handle: `proposal_to_${handle}`, handoffSchema: proposal });

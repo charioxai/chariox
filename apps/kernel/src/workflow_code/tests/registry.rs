@@ -72,6 +72,16 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
     );
     assert!(resolved.source.contains("workflow.define"));
 
+    let adversarial = registry
+        .resolve("adversarial-verification")
+        .expect("adversarial workflow registry entry should resolve");
+    assert!(adversarial
+        .source
+        .contains("output.message.workflow_handoffs"));
+    assert!(adversarial
+        .source
+        .contains("Never emit a plain handoff here"));
+
     let error = registry
         .delete("prompt-chaining", None)
         .expect_err("builtin registry entries must not be deleted");
