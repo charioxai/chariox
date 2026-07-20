@@ -315,15 +315,26 @@ function resetForInvocation() {
 }
 
 function subscribeHumanHttpEvents(path) {
+  let eventStreamSettled = false;
+  let reconnectScheduled = false;
   const events = new EventSource(publicationUrl(path));
+  const reconnect = () => {
+    if (eventStreamSettled || reconnectScheduled) return;
+    reconnectScheduled = true;
+    events.close();
+    setTimeout(() => subscribeHumanHttpEvents(path), 1_000);
+  };
   events.addEventListener('queued', (event) => applyPublicationEvent('queued', parseEventData(event)));
   events.addEventListener('status', (event) => applyPublicationEvent('status', parseEventData(event)));
   events.addEventListener('started', (event) => applyPublicationEvent('started', parseEventData(event)));
   events.addEventListener('partial', (event) => applyPublicationEvent('partial', parseEventData(event)));
   events.addEventListener('trace', (event) => applyPublicationEvent('trace', parseEventData(event)));
-  events.addEventListener('final', (event) => { applyPublicationEvent('final', parseEventData(event)); events.close(); });
-  events.addEventListener('timeout', (event) => { applyPublicationEvent('timeout', parseEventData(event)); events.close(); });
-  events.addEventListener('error', () => setStatus('Connection interrupted', true));
+  events.addEventListener('final', (event) => { eventStreamSettled = true; applyPublicationEvent('final', parseEventData(event)); events.close(); });
+  events.addEventListener('timeout', (event) => { applyPublicationEvent('timeout', parseEventData(event)); reconnect(); });
+  events.addEventListener('error', () => {
+    if (!eventStreamSettled) setStatus('Still running · reconnecting');
+    reconnect();
+  });
 }
 
 async function consumeSseStream(body) {
@@ -601,7 +612,7 @@ function publicationIngressPrefix() {
   if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
   if (['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
   const directRouteRoots = Array.isArray(viewerConfig.directRouteRoots) ? viewerConfig.directRouteRoots : [];
-  if (directRouteRoots.includes(parts[0])) return '';
+  if (directRouteRoots.includes('*') || directRouteRoots.includes(parts[0])) return '';
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
   if (routeFirst && parts[0] === routeFirst) return '';
   return '/' + parts[0];
