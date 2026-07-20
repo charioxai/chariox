@@ -386,6 +386,17 @@ test("visible workflow run hides unexposed trace levels", () => {
   const workflowRun = {
     id: "run-visibility",
     status: "Completed",
+    created_at_ms: 9,
+    publication_invocation: {
+      publication_id: "publication-1",
+      invocation_id: "request-1",
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      input: { prompt: "TRACE_PROMPT visible prompt" },
+      artifacts: [],
+      mode: "async" as const,
+      caller: {},
+    },
     final_output: { message: "TRACE_FINAL visible" },
     intermediate_outputs: [{ id: "partial-1", output: { message: "partial visible" }, valid: true }],
     node_runs: [{
@@ -437,6 +448,8 @@ test("visible workflow run hides unexposed trace levels", () => {
   assert.doesNotMatch(exposedText, /arguments_json|result_json|TRACE_TOOL/)
   assert.doesNotMatch(exposedText, /TRACE_SUMMARY hidden handoff/)
   assert.match(exposedText, /TRACE_ASSISTANT hidden/)
+  assert.match(exposedText, /"message_type":"user_prompt"/)
+  assert.match(exposedText, /TRACE_PROMPT visible prompt/)
 })
 
 test("publication trace events omit empty output summaries", () => {

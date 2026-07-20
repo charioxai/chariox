@@ -315,6 +315,31 @@ impl SessionService {
         }
         Ok(publication.clone())
     }
+
+    pub fn set_workflow_publication_runtime_run_observability(
+        &mut self,
+        session_id: &str,
+        publication_ref: &str,
+        latest_run: Option<Value>,
+        recent_runs: Vec<Value>,
+        latest_output: Option<Value>,
+    ) -> Result<WorkflowPublicationDefinition, DaemonError> {
+        let publication_id = self
+            .resolve_workflow_publication_ref(session_id, publication_ref)?
+            .id()
+            .to_string();
+        let session = self.store.get_mut(session_id).ok_or_else(|| DaemonError::SessionNotFound {
+            session_id: session_id.to_string(),
+        })?;
+        let publication = session.workflow_publication_mut(&publication_id).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "set workflow publication runtime run observability",
+                message: format!("workflow publication `{publication_ref}` was not found"),
+            }
+        })?;
+        publication.set_runtime_run_observability(latest_run, recent_runs, latest_output);
+        Ok(publication.clone())
+    }
 }
 
 fn validate_workflow_publication_trace_exposure(

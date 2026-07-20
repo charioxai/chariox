@@ -209,8 +209,13 @@ if (viewerConfig.permalink) {
 }
 setupTraceRail();
 setupRailResize();
-renderRun(viewerConfig.initialResult?.workflow_run);
+let latestWorkflowRun = viewerConfig.initialResult?.workflow_run || null;
+renderRun(latestWorkflowRun);
+if (latestWorkflowRun && isTerminalStatus(latestWorkflowRun.status)) {
+  setTimeout(() => postSettledRun(latestWorkflowRun.status, latestWorkflowRun), 250);
+}
 for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
+if (!latestWorkflowRun) void hydrateLatestRun();
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
 if (viewerConfig.initialResult?.queued) renderQueueStatus(viewerConfig.initialResult.response || viewerConfig.initialResult);
 
@@ -227,7 +232,14 @@ formEl?.addEventListener('submit', async (event) => {
 });
 
 window.addEventListener('message', (event) => {
-  if (event.source !== window.parent || event.data?.type !== 'arroba:publication:invoke') return;
+  if (event.source !== window.parent) return;
+  if (event.data?.type === 'arroba:publication:snapshot') {
+    if (latestWorkflowRun && isTerminalStatus(latestWorkflowRun.status)) {
+      postSettledRun(latestWorkflowRun.status, latestWorkflowRun);
+    }
+    return;
+  }
+  if (event.data?.type !== 'arroba:publication:invoke') return;
   const prompt = String(event.data.prompt ?? '').trim();
   const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
   if (!prompt && artifacts.length === 0) return;
@@ -246,6 +258,20 @@ async function invokePublication(prompt, artifacts) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function hydrateLatestRun() {
+  try {
+    const response = await fetch(publicationUrl('/.well-known/arroba/publication/status'), {
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) return;
+    const status = await response.json();
+    if (status.latest_run) renderRun(status.latest_run);
+    for (const trace of status.latest_traces || []) renderTrace(trace);
+  } catch {
+    // A missing history snapshot must not prevent a new invocation.
   }
 }
 
@@ -412,14 +438,15 @@ function applyPublicationEvent(type, payload) {
     if (finalMessage !== null) renderOutput(finalMessage, 'final');
     else if (payload.message !== undefined) renderOutput(payload.message, 'final');
     else renderRun(payload.workflow_run);
-    setStatus(payload.workflow_run?.status || 'Completed');
+    setStatus(payload.workflow_run?.status || 'Completed', false, payload.workflow_run);
   }
   if (type === 'timeout') setStatus('Still running', true);
 }
 
 function renderRun(run) {
   if (!run) return false;
-  setStatus(run.status || 'Accepted');
+  latestWorkflowRun = run;
+  setStatus(run.status || 'Accepted', false, run);
   if (queueStatusEl) { queueStatusEl.hidden = true; queueStatusEl.textContent = ''; }
   const finalMessage = outputMessage(run.final_output);
   if (finalMessage !== null) {
@@ -454,18 +481,27 @@ function renderQueueStatus(payload) {
   queueStatusEl.textContent = details.length ? 'Queued · ' + details.join(' · ') : '';
 }
 
-function setStatus(status, warning = false) {
+function setStatus(status, warning = false, workflowRun = null) {
   if (statusEl) statusEl.textContent = status;
   const normalized = String(status || '').toLowerCase();
-  const terminal = ['completed', 'complete', 'done', 'failed', 'cancelled', 'canceled'].some((value) => normalized.includes(value));
+  const terminal = isTerminalStatus(normalized);
   if (runDotEl) runDotEl.dataset.state = warning ? 'warning' : terminal ? 'terminal' : normalized === 'ready' ? 'ready' : 'active';
-  if (terminal && window.parent !== window) {
-    window.parent.postMessage({
-      type: 'arroba:publication:settled',
-      publicationId: viewerConfig.publicationId,
-      status: String(status || ''),
-    }, '*');
-  }
+  if (terminal) postSettledRun(status, workflowRun);
+}
+
+function isTerminalStatus(status) {
+  const normalized = String(status || '').toLowerCase();
+  return ['completed', 'complete', 'done', 'failed', 'cancelled', 'canceled'].some((value) => normalized.includes(value));
+}
+
+function postSettledRun(status, workflowRun) {
+  if (window.parent === window) return;
+  window.parent.postMessage({
+    type: 'arroba:publication:settled',
+    publicationId: viewerConfig.publicationId,
+    status: String(status || ''),
+    workflowRun,
+  }, '*');
 }
 
 function showEmptyOutput(message) {
