@@ -99,7 +99,7 @@ const filter = workflow.node({
 
 const finisher = workflow.node({
   handle: "finisher",
-  agent: workflow.newAgent({ alias: "finisher", provider: "opencode", model: "default" }),
+  agent: workflow.newAgent({ alias: "finisher", provider: "opencode", model: "kimi-k2.6" }),
   publicLabel: "Finisher",
   instructions: "Turn the filtered candidates into the final result.",
   canCompleteWorkflowRun: true,

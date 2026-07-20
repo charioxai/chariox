@@ -99,7 +99,18 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
         .expect("parallelization workflow registry entry should resolve");
     assert!(parallelization
         .source
-        .contains("model: provider === \"claude\" ? \"haiku\" : \"default\""));
+        .contains("model: provider === \"claude\" ? \"haiku\" : \"deepseek-v4-pro\""));
+    for workflow_ref in [
+        "adversarial-verification",
+        "generate-filter",
+        "orchestrator-workers",
+    ] {
+        assert!(registry
+            .resolve(workflow_ref)
+            .expect("OpenCode workflow registry entry should resolve")
+            .source
+            .contains("provider: \"opencode\", model: \"kimi-k2.6\""));
+    }
 
     let error = registry
         .delete("prompt-chaining", None)

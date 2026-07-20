@@ -83,7 +83,7 @@ const proposer = workflow.node({
 
 const judge = workflow.node({
   handle: "judge",
-  agent: workflow.newAgent({ alias: "judge", provider: "opencode", model: "default" }),
+  agent: workflow.newAgent({ alias: "judge", provider: "opencode", model: "kimi-k2.6" }),
   publicLabel: "Judge",
   instructions: `Decide whether the proposal survives critique from ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"} and submit final output.`,
   canCompleteWorkflowRun: true,
