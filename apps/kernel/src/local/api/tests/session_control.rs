@@ -78,6 +78,22 @@ fn session_attach_clears_a_missing_active_provider_run() {
             },
         ))
         .expect("initial attachment should succeed");
+    harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("remote-worker".to_string()),
+            provider: Some("opencode".to_string()),
+            model: Some("kimi-k2.6".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("second agent should make stale-run recovery exercise the multi-agent path");
     harness.with_app_mut(|app| {
         app.sessions_mut()
             .set_active_provider_run(session.id(), Some("provider-run-missing".to_string()))
