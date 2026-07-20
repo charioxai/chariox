@@ -29,15 +29,18 @@ export function collectPublicationTraceEvents(
     const levels = new Set(policy[nodeRun.node_id] ?? [])
     if (levels.size === 0) continue
     if (levels.has("output_summary")) {
-      pushTraceEvent(events, state, publication, workflowRun, nodeRun, "output_summary", {
-        key: `summary:${nodeRun.id}:${nodeRun.summary ?? ""}:${nodeRun.completion?.summary ?? ""}`,
-        timestampMs: completedTimestamp(nodeRun, workflowRun),
-        message: nodeRun.completion?.summary ?? nodeRun.summary ?? "",
-        data: {
-          summary: nodeRun.summary ?? null,
-          completion_summary: nodeRun.completion?.summary ?? null,
-        },
-      })
+      const summary = nodeRun.completion?.summary?.trim() || nodeRun.summary?.trim()
+      if (summary) {
+        pushTraceEvent(events, state, publication, workflowRun, nodeRun, "output_summary", {
+          key: `summary:${nodeRun.id}:${nodeRun.summary ?? ""}:${nodeRun.completion?.summary ?? ""}`,
+          timestampMs: completedTimestamp(nodeRun, workflowRun),
+          message: summary,
+          data: {
+            summary: nodeRun.summary ?? null,
+            completion_summary: nodeRun.completion?.summary ?? null,
+          },
+        })
+      }
     }
     if (levels.has("assistant_messages")) {
       for (const message of workflowRun.messages ?? []) {
@@ -88,6 +91,8 @@ export function collectPublicationTraceEvents(
       }
     }
   }
+  events.sort((left, right) => left.timestamp_ms - right.timestamp_ms)
+  for (const event of events) event.sequence = state.nextSequence++
   return events
 }
 
@@ -118,7 +123,7 @@ function pushTraceEvent(
     agent_id: nodeRun.agent_id,
     agent_alias: nodeContext?.agent_alias ?? nodeRun.agent_id,
     level,
-    sequence: state.nextSequence++,
+    sequence: 0,
     timestamp_ms: options.timestampMs,
     message: options.message,
     data: options.data,

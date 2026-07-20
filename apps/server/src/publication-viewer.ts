@@ -22,6 +22,7 @@ type ViewerReply = {
 }
 
 export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
+export const PUBLICATION_VIEWER_INVOCATION_PATH = "/.well-known/arroba/publication/viewer/invocations"
 
 export function installPublicationViewerRoutes(app: ViewerApp, publication: WorkflowPublicationConfig) {
   app.get("/", async (_request, reply) => {
@@ -65,6 +66,9 @@ export function publicationViewerPage(
     showForm: !hasInitialRun,
     initialResult: options.result ?? null,
     invocationRequestId: options.invocationRequestId ?? null,
+    permalink: options.invocationRequestId
+      ? `${PUBLICATION_VIEWER_INVOCATION_PATH}/${encodeURIComponent(options.invocationRequestId)}`
+      : null,
     initialTraces: options.result?.workflow_run
       ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
       : [],
@@ -132,6 +136,10 @@ const traceFeedEl = document.querySelector('#trace-feed');
 const partialOutputs = [];
 
 if (!viewerConfig.showForm && formEl) formEl.hidden = true;
+if (viewerConfig.permalink) {
+  const permalink = publicationUrl(viewerConfig.permalink);
+  if (window.location.pathname !== permalink) window.history.replaceState(null, '', permalink);
+}
 renderRun(viewerConfig.initialResult?.workflow_run);
 for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
@@ -461,12 +469,11 @@ function publicationIngressPrefix() {
   if (parts[0] === '~d' && parts[1] && parts[2]) return '/' + parts.slice(0, 3).join('/');
   if (parts[0] === 'publication-ingress' && parts[1] === '~d' && parts[2] && parts[3]) return '/' + parts.slice(0, 4).join('/');
   if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
+  if (['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
   const directRouteRoots = Array.isArray(viewerConfig.directRouteRoots) ? viewerConfig.directRouteRoots : [];
   if (directRouteRoots.includes(parts[0])) return '';
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';
   if (routeFirst && parts[0] === routeFirst) return '';
-  if (!routeFirst && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
-  if (viewerConfig.transport !== 'human_http' && ['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
   return '/' + parts[0];
 }
 
@@ -493,6 +500,13 @@ function promptTargetParts(route: string) {
     return {
       prefix: route.slice(0, wildcardIndex),
       suffix: route.slice(wildcardIndex + 1),
+    }
+  }
+  const parameter = route.match(/:[A-Za-z_][A-Za-z0-9_]*/)
+  if (parameter?.index !== undefined) {
+    return {
+      prefix: route.slice(0, parameter.index),
+      suffix: route.slice(parameter.index + parameter[0].length),
     }
   }
   const prefix = route.endsWith("/") ? route : `${route}/`

@@ -347,18 +347,18 @@ test("publication trace events honor per-node level policy", () => {
 
   assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
     ["node-a", "summary", "output_summary", "A completion"],
-    ["node-b", "researcher", "output_summary", "B completion"],
     ["node-b", "researcher", "assistant_messages", "B handoff"],
+    ["node-b", "researcher", "output_summary", "B completion"],
     ["node-b", "researcher", "assistant_messages", "B assistant output"],
-    ["node-c", "planner", "output_summary", "C summary"],
-    ["node-c", "planner", "assistant_messages", "C handoff"],
-    ["node-c", "planner", "assistant_messages", "{\"message\":{\"kind\":\"html\",\"html\":\"<main>C assistant output</main>\"}}"],
     ["node-c", "planner", "thinking", "C thinking"],
-    ["node-d", "builder", "output_summary", "D summary"],
-    ["node-d", "builder", "assistant_messages", "D handoff"],
-    ["node-d", "builder", "assistant_messages", "D assistant output"],
+    ["node-c", "planner", "assistant_messages", "C handoff"],
+    ["node-c", "planner", "output_summary", "C summary"],
+    ["node-c", "planner", "assistant_messages", "{\"message\":{\"kind\":\"html\",\"html\":\"<main>C assistant output</main>\"}}"],
     ["node-d", "builder", "thinking", "D thinking"],
     ["node-d", "builder", "tool_use", "lookup ok"],
+    ["node-d", "builder", "assistant_messages", "D handoff"],
+    ["node-d", "builder", "output_summary", "D summary"],
+    ["node-d", "builder", "assistant_messages", "D assistant output"],
   ])
   assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
   assert.equal(JSON.stringify(firstPass).includes("TRACE_SUMMARY B hidden"), false)
@@ -423,4 +423,24 @@ test("visible workflow run hides unexposed trace levels", () => {
   assert.doesNotMatch(exposedText, /arguments_json|result_json|TRACE_TOOL/)
   assert.doesNotMatch(exposedText, /TRACE_SUMMARY hidden handoff/)
   assert.match(exposedText, /TRACE_ASSISTANT hidden/)
+})
+
+test("publication trace events omit empty output summaries", () => {
+  const events = collectPublicationTraceEvents({
+    ...baseConfig,
+    trace_exposure: { nodes: { "node-empty": ["output_summary"] } },
+  }, {
+    id: "run-empty-summary",
+    status: "Stopped",
+    node_runs: [{
+      id: "run-node-empty",
+      node_id: "node-empty",
+      agent_id: "agent-empty",
+      status: "Stopped",
+      summary: "   ",
+      completion: { summary: "" },
+    }],
+  }, createPublicationTraceStreamState())
+
+  assert.deepEqual(events, [])
 })

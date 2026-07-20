@@ -27,6 +27,7 @@ import type {
 } from "./publication-types.js"
 import {
   PUBLICATION_VIEWER_FORM_INVOKE_PATH,
+  PUBLICATION_VIEWER_INVOCATION_PATH,
   publicationViewerResultPage,
 } from "./publication-viewer.js"
 import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
@@ -108,6 +109,29 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
       return { error: "invocation request id is required" }
     }
     await streamInvocationEvents(reply, publication, requestId)
+  })
+
+  app.get(`${PUBLICATION_VIEWER_INVOCATION_PATH}/:requestId`, async (request, reply) => {
+    const params = request.params as { requestId?: string }
+    const requestId = params.requestId
+    if (!requestId) {
+      reply.code(400)
+      return { error: "invocation request id is required" }
+    }
+    const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+    try {
+      const runtimePublication = publicationForAgentAppInvocation(publication, requestId)
+      const workflowRun = await findWorkflowRunByInvocationRequestId(client, runtimePublication, requestId)
+      const result = visibleWorkflowInvocationResult(publication, {
+        accepted: true,
+        queued: !workflowRun,
+        ...(workflowRun ? { workflow_run: workflowRun } : {}),
+      })
+      reply.code(200).type("text/html; charset=utf-8")
+      return publicationViewerResultPage(publication, result, requestId)
+    } finally {
+      await client.close().catch(() => {})
+    }
   })
 }
 

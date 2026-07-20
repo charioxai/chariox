@@ -78,7 +78,41 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     "/publication-ingress/demo",
   )
   assert.equal(resolvePrefix({ location: { pathname: "/final/hello" } }, viewerConfig), "")
+  assert.equal(
+    resolvePrefix({ location: { pathname: "/.well-known/arroba/publication/viewer/invocations/request-1" } }, viewerConfig),
+    "",
+  )
   assert.match(html, /window\.location\.href = publicationUrl\(viewerConfig\.humanPromptTarget\.prefix/)
+
+  const namedRouteHtml = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/viewer/:prompt/result",
+    methods: ["GET"],
+  })
+  const namedRouteConfig = JSON.parse(
+    namedRouteHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.deepEqual(namedRouteConfig.humanPromptTarget, {
+    prefix: "/viewer/",
+    suffix: "/result",
+  })
+
+  const invocationHtml = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+  }, {
+    result: { accepted: true, queued: true },
+    invocationRequestId: "request-1",
+  })
+  const invocationConfig = JSON.parse(
+    invocationHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.equal(
+    invocationConfig.permalink,
+    "/.well-known/arroba/publication/viewer/invocations/request-1",
+  )
+  assert.match(invocationHtml, /window\.history\.replaceState/)
 
   const agentAppHtml = publicationViewerPage({
     ...baseConfig,
