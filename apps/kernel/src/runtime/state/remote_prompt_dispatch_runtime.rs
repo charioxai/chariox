@@ -776,6 +776,40 @@ impl KernelRuntimeState {
                     Ok(true)
                 }
                 Err(error) => {
+                    let message =
+                        format!("Remote prompt dispatch failed after acknowledgement: {error}");
+                    let provider_run_id = format!("remote-dispatch:{}", dispatch.prompt_id);
+                    let merge_key = Some(format!("remote-dispatch-error:{}", dispatch.prompt_id));
+                    let recipients = owned
+                        .attachment_store
+                        .list_session_attachment_ids(&dispatch.session_id);
+                    owned.fan_out_terminal_outputs_to_recipients(
+                        &dispatch.session_id,
+                        recipients,
+                        vec![
+                            super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                                provider_run_id: provider_run_id.clone(),
+                                agent_id: Some(dispatch.agent_id.clone()),
+                                kind: crate::terminal::TerminalOutputKind::ProviderError,
+                                merge_key: merge_key.clone(),
+                                bytes: message.as_bytes().to_vec(),
+                                history_text: None,
+                            },
+                        ],
+                    );
+                    owned.append_history_entry(
+                        &dispatch.session_id,
+                        SessionHistoryEntry::provider_output(
+                            &dispatch.session_id,
+                            &provider_run_id,
+                            Some(&dispatch.agent_id),
+                            crate::terminal::TerminalOutputKind::ProviderError,
+                            merge_key,
+                            message,
+                        )
+                        .with_prompt_origin(dispatch.prompt_origin)
+                        .with_source_attachment_id(Some(dispatch.source_attachment_id.clone())),
+                    );
                     owned.update_metaagent_event_prompt_delivery_for_prompt(
                         &dispatch.prompt_id,
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
@@ -796,16 +830,6 @@ impl KernelRuntimeState {
                         .agent_store
                         .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error);
                     let _ = owned.session_snapshot(&dispatch.session_id);
-                    let recipients = owned
-                        .attachment_store
-                        .list_session_attachment_ids(&dispatch.session_id);
-                    owned.record_notice_for_agent(
-                        &dispatch.session_id,
-                        None,
-                        Some(&dispatch.agent_id),
-                        recipients,
-                        format!("Remote prompt dispatch failed after acknowledgement: {error}"),
-                    );
                     Err(error)
                 }
             }
