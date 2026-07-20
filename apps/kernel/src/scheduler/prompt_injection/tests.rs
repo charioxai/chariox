@@ -343,6 +343,9 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
     assert!(assembly
         .hidden_system_context
         .contains("do not validate the outer routing wrapper"));
+    assert!(assembly.hidden_system_context.contains(
+        "schema ref inside `workflow-handoff-payloads` belongs to a completed incoming edge"
+    ));
     assert!(assembly
         .hidden_system_context
         .contains("edge edge-1 -> node-2 (Reviewer)"));
@@ -412,6 +415,43 @@ fn workflow_outgoing_edge_contract_line_includes_target_label_and_policy() {
         line,
         "- edge edge-1 -> node-2 (Reviewer), target_instructions: \"Review legal and policy risk before accepting a candidate.\", handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
     );
+}
+
+#[test]
+fn workflow_outgoing_edge_contract_line_includes_resolved_schema() {
+    let mut workflow = WorkflowDefinition::new("workflow-1", Some("routing".to_string()));
+    workflow.add_node(crate::session::WorkflowNodeDefinition::new(
+        "node-1", "agent-1",
+    ));
+    workflow.add_node(crate::session::WorkflowNodeDefinition::new(
+        "node-2", "agent-2",
+    ));
+    workflow.add_schema(crate::session::WorkflowSchemaDefinition::new(
+        "schema:review",
+        Some("review".to_string()),
+        None,
+        serde_json::json!({
+            "type": "object",
+            "required": ["recommendation"],
+            "properties": {
+                "recommendation": { "type": "string" }
+            }
+        }),
+    ));
+    let edge = WorkflowEdgeDefinition::new(
+        "edge-1",
+        "node-1",
+        "node-2",
+        Some("schema:review".to_string()),
+        Some(WorkflowHandoffValidationPolicy::Halt),
+    );
+
+    let line = workflow_outgoing_edge_contract_line(&workflow, &edge);
+
+    assert!(line.contains("handoff_schema_ref: schema:review"));
+    assert!(line.contains(
+        r#"handoff_schema: {"properties":{"recommendation":{"type":"string"}},"required":["recommendation"],"type":"object"}"#
+    ));
 }
 
 #[test]

@@ -615,7 +615,7 @@ pub(crate) fn workflow_handoff_payloads_from_prompt(prompt: &str) -> Option<Stri
         })
 }
 
-fn workflow_outgoing_edge_contract_line(
+pub(crate) fn workflow_outgoing_edge_contract_line(
     workflow: &WorkflowDefinition,
     edge: &WorkflowEdgeDefinition,
 ) -> String {
@@ -645,6 +645,14 @@ fn workflow_outgoing_edge_contract_line(
             WorkflowHandoffValidationPolicy::Halt => "halt",
         };
         line.push_str(&format!(", validation_policy: {validation_policy}"));
+    }
+    if let Some(schema) = edge
+        .handoff_schema_ref()
+        .and_then(|schema_ref| workflow.schema(schema_ref))
+    {
+        if let Ok(schema_json) = serde_json::to_string(schema.schema()) {
+            line.push_str(&format!(", handoff_schema: {schema_json}"));
+        }
     }
     line
 }

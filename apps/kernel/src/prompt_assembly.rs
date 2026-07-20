@@ -50,6 +50,7 @@ const WORKFLOW_TURN: &str = concat!(
     "- Use the edge ids and target node ids exactly as listed in the outgoing edge contracts.\n\n",
     "When routing to selected edges, put the routing object inside the required final JSON block as `output.message`, for example:\n",
     "{\"summary\":\"human-facing summary\",\"output\":{\"message\":{\"workflow_handoffs\":[{\"edge_id\":\"edge-id-from-contract\",\"summary\":\"route summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}]}}}\n\n",
+    "Only `handoff_schema_ref` values listed in this turn's `outgoing-edge-contracts` are valid for validation. Any schema ref inside `workflow-handoff-payloads` belongs to a completed incoming edge and MUST NOT be used for this turn.\n\n",
     "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, validation is required before finalizing. For a plain `output.message`, validate that value by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above and the edge's `handoff_schema_ref`. If you use `workflow_handoffs`, do not validate the outer routing wrapper; validate only the routed message inside each selected edge entry with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
     "If your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\n",
     "Do not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Arroba runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\n",
@@ -711,6 +712,7 @@ mod tests {
 
         let body = fs::read_to_string(path).expect("updated default should read");
         assert!(body.contains("do not validate the outer routing wrapper"));
+        assert!(body.contains("completed incoming edge and MUST NOT be used"));
     }
 
     #[test]
