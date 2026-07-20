@@ -1,4 +1,5 @@
 import type {
+  PublicationTraceLevel,
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
@@ -7,9 +8,7 @@ import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
 } from "./publication-trace-events.js"
-import {
-  isTerminalWorkflowRunStatus,
-} from "./workflow-run-status.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 import { websocketInvokePath } from "./publication-websocket.js"
 
 type ViewerApp = {
@@ -19,6 +18,13 @@ type ViewerApp = {
 type ViewerReply = {
   code: (code: number) => ViewerReply
   type: (contentType: string) => ViewerReply
+}
+
+type ViewerTraceNode = {
+  nodeId: string
+  nodeLabel: string
+  agentAlias: string
+  levels: PublicationTraceLevel[]
 }
 
 export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
@@ -43,9 +49,9 @@ export function publicationViewerResultPage(
   const workflowRunId = result.workflow_run?.id ?? null
   const terminal = isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
   const eventsUrl = invocationRequestId && (result.queued || (workflowRunId && !terminal))
-      ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
-      : workflowRunId && !terminal
-        ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
+    ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
+    : workflowRunId && !terminal
+      ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
       : null
   return publicationViewerPage(publication, { result, eventsUrl, invocationRequestId: invocationRequestId ?? null })
 }
@@ -59,11 +65,11 @@ export function publicationViewerPage(
   } = {},
 ) {
   const transport = viewerTransport(publication) ?? "human_http"
-  const hasInitialRun = Boolean(options.result?.workflow_run || options.eventsUrl)
+  const traceNodes = viewerTraceNodes(publication)
   const config = {
     transport,
     title: "Workflow Run",
-    showForm: !hasInitialRun,
+    showComposer: viewerComposerEnabled(publication),
     initialResult: options.result ?? null,
     invocationRequestId: options.invocationRequestId ?? null,
     permalink: options.invocationRequestId
@@ -72,6 +78,7 @@ export function publicationViewerPage(
     initialTraces: options.result?.workflow_run
       ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
       : [],
+    traceNodes,
     eventsUrl: options.eventsUrl ?? null,
     apiSseInvokePath: apiSseInvokePath(publication),
     websocketInvokePath: websocketInvokePath(publication),
@@ -79,40 +86,56 @@ export function publicationViewerPage(
     humanPromptTarget: promptTargetParts(publication.route ?? "/*"),
     directRouteRoots: publicationDirectRouteRoots(publication),
   }
+  const hasTraces = traceNodes.length > 0
+  const showComposer = viewerComposerEnabled(publication)
   return htmlDocument(
     "Workflow Run",
     [
-      "<main class=\"split-viewer\">",
+      `<main class="publication-viewer${hasTraces ? " has-traces" : ""}${showComposer ? " has-composer" : ""}">`,
       "  <section class=\"output-pane\">",
-      "    <header class=\"pane-header\">",
-      "      <h1>Workflow Run</h1>",
-      "      <p id=\"status\">Ready</p>",
+      "    <header class=\"viewer-bar\">",
+      "      <div><span class=\"eyebrow\">Published workflow</span><h1>Workflow Run</h1></div>",
+      "      <div class=\"run-state\"><span id=\"run-dot\"></span><span id=\"status\">Ready</span></div>",
       "      <p id=\"queue-status\" hidden></p>",
       "    </header>",
-      "    <form id=\"invoke-form\" class=\"invoke-form\">",
-      "      <textarea name=\"prompt\" rows=\"7\" autofocus></textarea>",
-      "      <div class=\"actions\">",
-      "        <input type=\"file\" name=\"artifact\" multiple>",
-      "        <button type=\"submit\">Run</button>",
-      "      </div>",
-      "    </form>",
-      "    <pre id=\"output\"></pre>",
-      "    <div id=\"html-output\" class=\"html-output\" hidden></div>",
+      "    <section id=\"output-surface\" class=\"output-surface\" aria-live=\"polite\">",
+      "      <div id=\"empty-output\" class=\"empty-state\"><span>Output</span><p>The latest workflow update will appear here.</p></div>",
+      "      <pre id=\"output\" hidden></pre>",
+      "      <div id=\"html-output\" class=\"html-output\" hidden></div>",
+      "    </section>",
       "  </section>",
-      "  <aside class=\"trace-pane\">",
-      "    <header class=\"pane-header\">",
-      "      <h2>Traces</h2>",
-      "      <p id=\"trace-status\">No exposed traces</p>",
-      "    </header>",
-      "    <div id=\"trace-feed\"></div>",
-      "  </aside>",
+      hasTraces ? "  <div id=\"rail-resizer\" class=\"rail-resizer\" role=\"separator\" aria-label=\"Resize traces\" aria-orientation=\"vertical\" tabindex=\"0\"></div>" : "",
+      hasTraces ? traceRailMarkup(traceNodes) : "",
+      showComposer ? composerMarkup(hasTraces) : "",
       "</main>",
       "<script>",
       `window.__arrobaPublicationViewerConfig = ${safeJson(config)};`,
       viewerScript(),
       "</script>",
-    ].join("\n"),
+    ].filter(Boolean).join("\n"),
   )
+}
+
+export function viewerTraceNodes(publication: WorkflowPublicationConfig): ViewerTraceNode[] {
+  const exposure = publication.trace_exposure?.nodes ?? {}
+  return Object.entries(exposure)
+    .filter(([, levels]) => levels.length > 0)
+    .map(([nodeId, levels]) => {
+      const context = publication.trace_context?.nodes[nodeId]
+      return {
+        nodeId,
+        nodeLabel: context?.node_label?.trim() || nodeId,
+        agentAlias: context?.agent_alias?.trim() || context?.agent_id?.trim() || nodeId,
+        levels,
+      }
+    })
+}
+
+export function viewerComposerEnabled(publication: WorkflowPublicationConfig): boolean {
+  const transport = viewerTransport(publication)
+  if (transport === "api_sse_json" || transport === "websocket_json") return true
+  if (transport !== "human_http") return false
+  return (publication.methods ?? ["GET", "POST"]).includes("POST")
 }
 
 function viewerTransport(publication: WorkflowPublicationConfig) {
@@ -122,24 +145,60 @@ function viewerTransport(publication: WorkflowPublicationConfig) {
     : null
 }
 
+function traceRailMarkup(nodes: ViewerTraceNode[]) {
+  return [
+    "  <aside id=\"trace-rail\" class=\"trace-rail\">",
+    "    <header class=\"trace-bar\"><div><span class=\"eyebrow\">Live detail</span><h2>Traces</h2></div><span id=\"trace-status\">Waiting</span></header>",
+    "    <nav id=\"trace-selector\" class=\"trace-selector\" aria-label=\"Trace pane\">",
+    ...nodes.map((node, index) => `      <button type="button" data-trace-select="${escapeHtml(node.nodeId)}" aria-pressed="${index === 0 ? "true" : "false"}">${escapeHtml(node.nodeLabel)}</button>`),
+    "    </nav>",
+    "    <div id=\"trace-grid\" class=\"trace-grid\">",
+    ...nodes.map((node, index) => [
+      `      <section class="trace-agent-pane${index === 0 ? " is-selected" : ""}" data-trace-node="${escapeHtml(node.nodeId)}">`,
+      `        <header><strong>${escapeHtml(node.nodeLabel)}</strong><span>${node.levels.length} ${node.levels.length === 1 ? "trace" : "traces"}</span></header>`,
+      "        <div class=\"trace-feed\"><div class=\"trace-empty\">No trace activity yet.</div></div>",
+      `        <footer>${escapeHtml(node.agentAlias)}</footer>`,
+      "      </section>",
+    ].join("\n")),
+    "    </div>",
+    "  </aside>",
+  ].join("\n")
+}
+
+function composerMarkup(hasTraces: boolean) {
+  return [
+    `  <form id="invoke-form" class="invoke-form ${hasTraces ? "composer-under-traces" : "composer-under-output"}">`,
+    "    <label for=\"prompt\" class=\"sr-only\">Prompt</label>",
+    "    <textarea id=\"prompt\" name=\"prompt\" rows=\"2\" placeholder=\"Send a prompt…\"></textarea>",
+    "    <label class=\"attach-button\" title=\"Attach files\"><input type=\"file\" name=\"artifact\" multiple><span aria-hidden=\"true\">＋</span><span class=\"sr-only\">Attach files</span></label>",
+    "    <button type=\"submit\" aria-label=\"Send prompt\">↑</button>",
+    "  </form>",
+  ].join("\n")
+}
+
 function viewerScript() {
   return String.raw`
 (() => {
 const viewerConfig = window.__arrobaPublicationViewerConfig || {};
+const rootEl = document.querySelector('.publication-viewer');
 const formEl = document.querySelector('#invoke-form');
 const statusEl = document.querySelector('#status');
+const runDotEl = document.querySelector('#run-dot');
 const queueStatusEl = document.querySelector('#queue-status');
 const outputEl = document.querySelector('#output');
+const emptyOutputEl = document.querySelector('#empty-output');
 const htmlOutputEl = document.querySelector('#html-output');
+const traceRailEl = document.querySelector('#trace-rail');
 const traceStatusEl = document.querySelector('#trace-status');
-const traceFeedEl = document.querySelector('#trace-feed');
-const partialOutputs = [];
+const traceKeys = new Set();
 
-if (!viewerConfig.showForm && formEl) formEl.hidden = true;
+if (!viewerConfig.showComposer && formEl) formEl.hidden = true;
 if (viewerConfig.permalink) {
   const permalink = publicationUrl(viewerConfig.permalink);
   if (window.location.pathname !== permalink) window.history.replaceState(null, '', permalink);
 }
+setupTraceRail();
+setupRailResize();
 renderRun(viewerConfig.initialResult?.workflow_run);
 for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
@@ -154,29 +213,21 @@ formEl?.addEventListener('submit', async (event) => {
   if (!prompt && files.length === 0) return;
   const button = form.querySelector('button[type="submit"]');
   if (button) button.disabled = true;
-  statusEl.textContent = 'Submitting';
+  setStatus('Submitting');
   try {
     const artifacts = await Promise.all(files.map(readArtifact));
-    if (viewerConfig.transport === 'human_http') {
-      await invokeHumanHttp(prompt, artifacts);
-    } else if (viewerConfig.transport === 'api_sse_json') {
-      await invokeApiSse(prompt, artifacts);
-    } else if (viewerConfig.transport === 'websocket_json') {
-      await invokeWebSocket(prompt, artifacts);
-    }
+    if (viewerConfig.transport === 'human_http') await invokeHumanHttp(prompt, artifacts);
+    if (viewerConfig.transport === 'api_sse_json') await invokeApiSse(prompt, artifacts);
+    if (viewerConfig.transport === 'websocket_json') await invokeWebSocket(prompt, artifacts);
   } catch (error) {
-    statusEl.textContent = error instanceof Error ? error.message : String(error);
+    setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     if (button) button.disabled = false;
   }
 });
 
 async function invokeHumanHttp(prompt, artifacts) {
-  if (!artifacts.length) {
-    const encoded = encodeURIComponent(prompt);
-    window.location.href = publicationUrl(viewerConfig.humanPromptTarget.prefix + encoded + viewerConfig.humanPromptTarget.suffix);
-    return;
-  }
+  resetForInvocation();
   const response = await fetch(publicationUrl(viewerConfig.humanFormInvokePath), {
     method: 'POST',
     headers: { accept: 'text/html', 'content-type': 'application/json' },
@@ -208,10 +259,7 @@ async function invokeWebSocket(prompt, artifacts) {
     let invoked = false;
     socket.addEventListener('message', (event) => {
       const payload = JSON.parse(String(event.data || '{}'));
-      if (payload.type === 'ready') {
-        void sendArtifacts().catch(reject);
-        return;
-      }
+      if (payload.type === 'ready') { void sendArtifacts().catch(reject); return; }
       if (payload.type === 'artifact' && payload.artifact?.artifact_id) {
         readyArtifacts.add(payload.artifact.artifact_id);
         if (!invoked && readyArtifacts.size >= artifacts.length) {
@@ -222,10 +270,7 @@ async function invokeWebSocket(prompt, artifacts) {
       }
       if (payload.type === 'error') reject(new Error(payload.error || 'websocket error'));
       applyPublicationEvent(payload.type, payload);
-      if (payload.type === 'final' || payload.type === 'timeout') {
-        socket.close();
-        resolve();
-      }
+      if (payload.type === 'final' || payload.type === 'timeout') { socket.close(); resolve(); }
     });
     socket.addEventListener('error', () => reject(new Error('websocket connection failed')));
     socket.addEventListener('close', () => {
@@ -239,13 +284,7 @@ async function invokeWebSocket(prompt, artifacts) {
       }
       for (const artifact of artifacts) {
         const artifactId = 'artifact_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-        socket.send(JSON.stringify({
-          type: 'artifact_begin',
-          artifact_id: artifactId,
-          name: artifact.name,
-          mime_type: artifact.type,
-          size_bytes: artifact.size_bytes,
-        }));
+        socket.send(JSON.stringify({ type: 'artifact_begin', artifact_id: artifactId, name: artifact.name, mime_type: artifact.type, size_bytes: artifact.size_bytes }));
         socket.send(JSON.stringify({ type: 'artifact_chunk', artifact_id: artifactId, data: artifact.base64 }));
         socket.send(JSON.stringify({ type: 'artifact_end', artifact_id: artifactId }));
       }
@@ -258,15 +297,13 @@ function inputPayload(prompt, artifacts) {
 }
 
 function resetForInvocation() {
-  if (formEl) formEl.hidden = true;
-  outputEl.hidden = false;
-  outputEl.textContent = '';
-  htmlOutputEl.hidden = true;
-  htmlOutputEl.innerHTML = '';
-  partialOutputs.length = 0;
-  traceFeedEl.innerHTML = '';
-  traceStatusEl.textContent = 'No exposed traces';
-  statusEl.textContent = 'Queued';
+  showEmptyOutput('Waiting for the first workflow update.');
+  traceKeys.clear();
+  document.querySelectorAll('.trace-feed').forEach((feed) => {
+    feed.innerHTML = '<div class="trace-empty">No trace activity yet.</div>';
+  });
+  if (traceStatusEl) traceStatusEl.textContent = 'Waiting';
+  setStatus('Queued');
   renderQueueStatus(null);
 }
 
@@ -279,7 +316,7 @@ function subscribeHumanHttpEvents(path) {
   events.addEventListener('trace', (event) => applyPublicationEvent('trace', parseEventData(event)));
   events.addEventListener('final', (event) => { applyPublicationEvent('final', parseEventData(event)); events.close(); });
   events.addEventListener('timeout', (event) => { applyPublicationEvent('timeout', parseEventData(event)); events.close(); });
-  events.addEventListener('error', () => { statusEl.textContent = 'Connection interrupted'; });
+  events.addEventListener('error', () => setStatus('Connection interrupted', true));
 }
 
 async function consumeSseStream(body) {
@@ -316,78 +353,114 @@ function parseEventData(event) {
 
 function applyPublicationEvent(type, payload) {
   if (type === 'queued') renderQueueStatus(payload);
-  if (type === 'started') renderRun(payload.workflow_run);
-  if (type === 'status') renderRun(payload.workflow_run);
-  if (type === 'partial') renderPartialOutput(payload.message || '');
+  if (type === 'started' || type === 'status') renderRun(payload.workflow_run);
+  if (type === 'partial') renderOutput(payload.message ?? '', 'progress');
   if (type === 'trace') renderTrace(payload);
   if (type === 'final') {
-    if (payload.workflow_run) renderRun(payload.workflow_run);
-    else if (typeof payload.message === 'string') renderFinalOutput(payload.message);
-    statusEl.textContent = payload.workflow_run?.status || 'Completed';
+    const finalMessage = outputMessage(payload.workflow_run?.final_output);
+    if (finalMessage !== null) renderOutput(finalMessage, 'final');
+    else if (payload.message !== undefined) renderOutput(payload.message, 'final');
+    else renderRun(payload.workflow_run);
+    setStatus(payload.workflow_run?.status || 'Completed');
   }
-  if (type === 'timeout') statusEl.textContent = 'Still running';
+  if (type === 'timeout') setStatus('Still running', true);
 }
 
 function renderRun(run) {
-  if (!run) return;
-  statusEl.textContent = run.status || 'accepted';
-  if (queueStatusEl) {
-    queueStatusEl.hidden = true;
-    queueStatusEl.textContent = '';
+  if (!run) return false;
+  setStatus(run.status || 'Accepted');
+  if (queueStatusEl) { queueStatusEl.hidden = true; queueStatusEl.textContent = ''; }
+  const finalMessage = outputMessage(run.final_output);
+  if (finalMessage !== null) {
+    renderOutput(finalMessage, 'final');
+    return true;
   }
-  if (run.final_output) renderFinalOutput(run.final_output.message);
+  const intermediate = Array.isArray(run.intermediate_outputs) ? run.intermediate_outputs.at(-1) : null;
+  const intermediateMessage = outputMessage(intermediate?.output);
+  if (intermediateMessage !== null) {
+    renderOutput(intermediateMessage, 'progress');
+    return true;
+  }
+  return false;
+}
+
+function outputMessage(output) {
+  if (typeof output === 'string') return output;
+  if (!output || typeof output !== 'object') return null;
+  if (typeof output.message === 'string') return output.message;
+  if (output.output && typeof output.output === 'object') return outputMessage(output.output);
+  try { return JSON.stringify(output); } catch { return String(output); }
 }
 
 function renderQueueStatus(payload) {
-  statusEl.textContent = 'Queued';
+  setStatus('Queued');
   if (!queueStatusEl) return;
   const position = payload?.queue_position ?? payload?.position ?? payload?.queued_prompt?.position ?? payload?.response?.queued_prompt?.position;
-  const id = payload?.invocation_id ?? payload?.queued_prompt?.id ?? payload?.response?.queued_prompt?.id;
-  const queue = payload?.queue_ref ?? payload?.queued_prompt?.queue_ref ?? payload?.response?.queued_prompt?.queue_ref;
   const details = [];
   if (typeof position === 'number') details.push('position ' + position);
-  if (queue) details.push('queue ' + queue);
-  if (id) details.push('id ' + id);
+  if (payload?.queue_ref) details.push(payload.queue_ref);
   queueStatusEl.hidden = details.length === 0;
-  queueStatusEl.textContent = details.length ? 'Queued: ' + details.join(' / ') : '';
+  queueStatusEl.textContent = details.length ? 'Queued · ' + details.join(' · ') : '';
 }
 
-function renderPartialOutput(message) {
-  if (typeof message !== 'string' || !message) return;
-  partialOutputs.push(message);
-  if (!htmlOutputEl.hidden) return;
-  outputEl.textContent = partialOutputs.join('\n\n');
+function setStatus(status, warning = false) {
+  if (statusEl) statusEl.textContent = status;
+  const normalized = String(status || '').toLowerCase();
+  const terminal = ['completed', 'complete', 'done', 'failed', 'cancelled', 'canceled'].some((value) => normalized.includes(value));
+  if (runDotEl) runDotEl.dataset.state = warning ? 'warning' : terminal ? 'terminal' : normalized === 'ready' ? 'ready' : 'active';
 }
 
-function renderFinalOutput(message) {
-  if (typeof message !== 'string') {
-    outputEl.textContent = JSON.stringify(message, null, 2);
-    return;
-  }
-  const renderable = renderableOutput(message);
-  if (renderable !== null) {
-    outputEl.hidden = true;
+function showEmptyOutput(message) {
+  htmlOutputEl.hidden = true;
+  htmlOutputEl.replaceChildren();
+  outputEl.hidden = true;
+  outputEl.textContent = '';
+  emptyOutputEl.hidden = false;
+  emptyOutputEl.querySelector('p').textContent = message;
+}
+
+function renderOutput(message, phase) {
+  const normalizedMessage = normalizeViewerMessage(message);
+  emptyOutputEl.hidden = true;
+  htmlOutputEl.hidden = true;
+  htmlOutputEl.replaceChildren();
+  outputEl.hidden = true;
+  outputEl.textContent = '';
+  const renderable = renderableOutput(normalizedMessage);
+  if (renderable) {
     htmlOutputEl.hidden = false;
-    htmlOutputEl.innerHTML = '';
     const frame = document.createElement('iframe');
-    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+    frame.title = phase === 'final' ? 'Workflow result' : 'Workflow progress';
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
     if (renderable.html !== null) frame.srcdoc = renderable.html;
     if (renderable.src !== null) frame.src = publicationAppAssetUrl(renderable.src);
     htmlOutputEl.append(frame);
     return;
   }
-  htmlOutputEl.hidden = true;
-  htmlOutputEl.innerHTML = '';
   outputEl.hidden = false;
-  outputEl.textContent = message;
+  outputEl.textContent = typeof normalizedMessage === 'string' ? normalizedMessage : JSON.stringify(normalizedMessage, null, 2);
+}
+
+function normalizeViewerMessage(message) {
+  if (typeof message !== 'string') return outputMessage(message) ?? message;
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed && (parsed.kind === 'html' || parsed.kind === 'response')) return message;
+    if (parsed && parsed.output && typeof parsed.output === 'object') {
+      const nested = outputMessage(parsed.output);
+      return nested === null ? message : normalizeViewerMessage(nested);
+    }
+    if (parsed && typeof parsed.message === 'string') return normalizeViewerMessage(parsed.message);
+  } catch {}
+  return message;
 }
 
 function renderableOutput(message) {
+  if (typeof message !== 'string') return null;
   try {
     const parsed = JSON.parse(message);
-    if (parsed && parsed.kind === 'html' && typeof parsed.html === 'string') {
-      return { html: parsed.html, src: null };
-    }
+    if (parsed && parsed.kind === 'html' && typeof parsed.html === 'string') return { html: parsed.html, src: null };
     if (parsed && parsed.kind === 'response' && parsed.response) {
       const mode = parsed.response.mode;
       if (mode === 'html') {
@@ -395,48 +468,98 @@ function renderableOutput(message) {
           ? parsed.response.html
           : typeof parsed.response.body === 'string'
             ? parsed.response.body
-            : typeof parsed.html === 'string'
-              ? parsed.html
-              : null;
+            : typeof parsed.html === 'string' ? parsed.html : null;
         if (html !== null) return { html, src: null };
       }
-      if (mode === 'serve' && typeof parsed.response.entry === 'string') {
-        return { html: null, src: parsed.response.entry };
-      }
+      if (mode === 'serve' && typeof parsed.response.entry === 'string') return { html: null, src: parsed.response.entry };
     }
-  } catch {
-  }
+  } catch {}
   return null;
 }
 
+function setupTraceRail() {
+  document.querySelectorAll('[data-trace-select]').forEach((button) => {
+    button.addEventListener('click', () => selectTraceNode(button.dataset.traceSelect));
+  });
+  const observer = traceRailEl && typeof ResizeObserver === 'function'
+    ? new ResizeObserver(([entry]) => {
+        traceRailEl.classList.toggle('is-narrow', entry.contentRect.width < 560);
+      })
+    : null;
+  if (traceRailEl) observer?.observe(traceRailEl);
+}
+
+function selectTraceNode(nodeId) {
+  document.querySelectorAll('[data-trace-select]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.traceSelect === nodeId));
+  });
+  document.querySelectorAll('[data-trace-node]').forEach((pane) => {
+    pane.classList.toggle('is-selected', pane.dataset.traceNode === nodeId);
+  });
+}
+
+function setupRailResize() {
+  const separator = document.querySelector('#rail-resizer');
+  if (!separator || !rootEl) return;
+  const resize = (clientX) => {
+    const bounds = rootEl.getBoundingClientRect();
+    const next = Math.max(300, Math.min(bounds.width - 360, bounds.right - clientX));
+    rootEl.style.setProperty('--trace-width', next + 'px');
+  };
+  separator.addEventListener('pointerdown', (event) => {
+    separator.setPointerCapture(event.pointerId);
+    const move = (moveEvent) => resize(moveEvent.clientX);
+    const done = () => {
+      separator.removeEventListener('pointermove', move);
+      separator.removeEventListener('pointerup', done);
+    };
+    separator.addEventListener('pointermove', move);
+    separator.addEventListener('pointerup', done);
+  });
+  separator.addEventListener('keydown', (event) => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const current = traceRailEl?.getBoundingClientRect().width || 480;
+    rootEl.style.setProperty('--trace-width', Math.max(300, current + (event.key === 'ArrowLeft' ? 32 : -32)) + 'px');
+  });
+}
+
 function renderTrace(trace) {
-  if (!traceFeedEl) return;
-  traceStatusEl.textContent = 'Live traces';
+  const nodeId = String(trace.node_id || '');
+  const pane = document.querySelector('[data-trace-node="' + cssEscape(nodeId) + '"]');
+  if (!pane) return;
+  const key = [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.sequence, trace.timestamp_ms, trace.message].join(':');
+  if (traceKeys.has(key)) return;
+  traceKeys.add(key);
+  if (traceStatusEl) traceStatusEl.textContent = 'Live';
+  const feed = pane.querySelector('.trace-feed');
+  feed.querySelector('.trace-empty')?.remove();
   const item = document.createElement('article');
-  item.className = 'trace-item';
-  const alias = trace.agent_alias || trace.agent_id || 'agent';
-  const label = trace.node_label || trace.node_id || 'node';
-  item.innerHTML = '<div class="trace-meta"><span>' + escapeText(alias) + '</span><span>' + escapeText(label) + '</span><span>' + escapeText(trace.level || '') + '</span></div><pre></pre>';
+  item.className = 'trace-item trace-' + String(trace.level || 'event').replace(/[^a-z0-9_-]/gi, '-');
+  const label = traceLevelLabel(trace.level);
+  item.innerHTML = '<div class="trace-meta"><strong>' + escapeText(label) + '</strong><time></time></div><pre></pre>';
+  const time = Number(trace.timestamp_ms);
+  item.querySelector('time').textContent = Number.isFinite(time) ? new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   item.querySelector('pre').textContent = trace.message || JSON.stringify(trace.data ?? trace, null, 2);
-  traceFeedEl.append(item);
-  traceFeedEl.scrollTop = traceFeedEl.scrollHeight;
+  feed.append(item);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function traceLevelLabel(level) {
+  return ({ output_summary: 'Summary', assistant_messages: 'Assistant', thinking: 'Thinking', tool_use: 'Tool call' })[level] || 'Trace';
+}
+
+function cssEscape(value) {
+  return window.CSS?.escape ? window.CSS.escape(value) : value.replace(/["\\]/g, '\\$&');
 }
 
 async function readArtifact(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = '';
   const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
-  }
+  for (let index = 0; index < bytes.length; index += chunkSize) binary += String.fromCharCode(...bytes.slice(index, index + chunkSize));
   const base64 = btoa(binary);
-  return {
-    name: file.name,
-    type: file.type || 'application/octet-stream',
-    size_bytes: file.size,
-    data_url: 'data:' + (file.type || 'application/octet-stream') + ';base64,' + base64,
-    base64,
-  };
+  return { name: file.name, type: file.type || 'application/octet-stream', size_bytes: file.size, data_url: 'data:' + (file.type || 'application/octet-stream') + ';base64,' + base64, base64 };
 }
 
 function publicationUrl(path) {
@@ -496,18 +619,10 @@ function publicationDirectRouteRoots(publication: WorkflowPublicationConfig): st
 
 function promptTargetParts(route: string) {
   const wildcardIndex = route.indexOf("*")
-  if (wildcardIndex >= 0) {
-    return {
-      prefix: route.slice(0, wildcardIndex),
-      suffix: route.slice(wildcardIndex + 1),
-    }
-  }
+  if (wildcardIndex >= 0) return { prefix: route.slice(0, wildcardIndex), suffix: route.slice(wildcardIndex + 1) }
   const parameter = route.match(/:[A-Za-z_][A-Za-z0-9_]*/)
   if (parameter?.index !== undefined) {
-    return {
-      prefix: route.slice(0, parameter.index),
-      suffix: route.slice(parameter.index + parameter[0].length),
-    }
+    return { prefix: route.slice(0, parameter.index), suffix: route.slice(parameter.index + parameter[0].length) }
   }
   const prefix = route.endsWith("/") ? route : `${route}/`
   return { prefix, suffix: "" }
@@ -523,37 +638,86 @@ function htmlDocument(title: string, body: string) {
     "  <link rel=\"icon\" href=\"data:,\">",
     `  <title>${escapeHtml(title)}</title>`,
     "  <style>",
-    "    :root { color-scheme: light; }",
+    "    :root { color-scheme: dark; --bg: #0c0e0d; --panel: #111411; --panel-2: #171a17; --line: #2b302b; --muted: #8d958b; --text: #ecf0e9; --accent: #f39a62; --green: #84d497; --trace-width: min(44vw, 720px); }",
     "    * { box-sizing: border-box; }",
-    "    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; background: #f5f6f2; color: #1f2328; }",
-    "    main { max-width: 780px; margin: 0 auto; padding: 32px 20px; }",
-    "    .split-viewer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 34%); gap: 0; max-width: none; width: 100vw; min-height: 100vh; margin: 0; padding: 0; }",
-    "    .output-pane, .trace-pane { min-width: 0; min-height: 100vh; padding: 20px; overflow: auto; }",
-    "    .output-pane { background: #ffffff; border-right: 1px solid #d7dbd2; }",
-    "    .trace-pane { background: #f1f3ed; }",
-    "    .pane-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 14px; }",
-    "    h1, h2 { margin: 0; font-size: 18px; line-height: 1.2; letter-spacing: 0; }",
-    "    h2 { font-size: 14px; text-transform: uppercase; color: #4d564b; }",
-    "    #status, #trace-status, #queue-status { margin: 0; color: #586069; font-size: 13px; }",
-    "    .invoke-form { border: 1px solid #d0d0c8; background: #fafbf8; border-radius: 8px; padding: 14px; margin-bottom: 16px; }",
-    "    textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #bbb; border-radius: 6px; font: inherit; resize: vertical; background: #fff; }",
-    "    .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }",
-    "    button { padding: 9px 14px; border: 0; border-radius: 6px; background: #1f2328; color: #fff; font: inherit; }",
-    "    button:disabled { opacity: .55; }",
-    "    pre { white-space: pre-wrap; overflow-wrap: anywhere; }",
-    "    #output { margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }",
-    "    .html-output { width: 100%; height: calc(100vh - 76px); border: 1px solid #d7dbd2; background: #fff; }",
+    "    [hidden] { display: none !important; }",
+    "    html, body { height: 100%; }",
+    "    body { margin: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: var(--bg); color: var(--text); }",
+    "    button, textarea, input { font: inherit; }",
+    "    button { cursor: pointer; }",
+    "    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }",
+    "    .publication-viewer { display: grid; grid-template: minmax(0,1fr) / minmax(0,1fr); width: 100vw; height: 100vh; background: var(--bg); }",
+    "    .publication-viewer.has-traces { grid-template-columns: minmax(360px,1fr) 7px minmax(300px,var(--trace-width)); }",
+    "    .publication-viewer.has-traces.has-composer { grid-template-rows: minmax(0,1fr) auto; }",
+    "    .output-pane { grid-column: 1; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #080a09; }",
+    "    .viewer-bar, .trace-bar { min-height: 58px; padding: 11px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent); }",
+    "    .viewer-bar > div:first-child, .trace-bar > div:first-child { display: flex; align-items: baseline; gap: 11px; min-width: 0; }",
+    "    .eyebrow { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; white-space: nowrap; }",
+    "    h1, h2 { margin: 0; font-size: 14px; line-height: 1.2; }",
+    "    .run-state { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }",
+    "    #run-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px #252925; }",
+    "    #run-dot[data-state=active] { background: var(--accent); box-shadow: 0 0 0 3px #4a2c1e; animation: pulse 1.6s ease-in-out infinite; }",
+    "    #run-dot[data-state=terminal], #run-dot[data-state=ready] { background: var(--green); box-shadow: 0 0 0 3px #1d3a25; }",
+    "    #run-dot[data-state=warning] { background: #f16d6d; box-shadow: 0 0 0 3px #431e1e; }",
+    "    #queue-status { position: absolute; top: 58px; left: 16px; z-index: 2; margin: 0; padding: 5px 8px; background: #211b16; border: 1px solid #503520; color: #eeb185; font-size: 11px; }",
+    "    .output-surface { min-height: 0; flex: 1; position: relative; overflow: auto; }",
+    "    .empty-state { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--muted); }",
+    "    .empty-state span { color: #c8cec5; font-size: 13px; }",
+    "    .empty-state p { margin: 7px 0 0; max-width: 320px; font: 12px/1.5 ui-sans-serif, system-ui, sans-serif; }",
+    "    #output { margin: 0; min-height: 100%; padding: 22px; font: 14px/1.58 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #e4e9e0; }",
+    "    .html-output { width: 100%; height: 100%; min-height: 0; background: #fff; }",
     "    .html-output iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }",
-    "    #trace-feed { display: flex; flex-direction: column; gap: 10px; }",
-    "    .trace-item { border: 1px solid #d7dbd2; background: #fff; border-radius: 6px; padding: 10px; }",
-    "    .trace-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }",
-    "    .trace-meta span { border: 1px solid #d7dbd2; border-radius: 999px; padding: 2px 7px; color: #3f4b3c; font-size: 12px; line-height: 1.4; }",
-    "    .trace-item pre { margin: 0; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #22272e; }",
+    "    .rail-resizer { grid-column: 2; grid-row: 1 / -1; position: relative; background: var(--line); cursor: col-resize; touch-action: none; z-index: 3; }",
+    "    .rail-resizer::after { content: ''; position: absolute; inset: 0 -4px; }",
+    "    .rail-resizer:focus-visible, .rail-resizer:hover { background: var(--accent); outline: none; }",
+    "    .trace-rail { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }",
+    "    .trace-bar { flex: 0 0 auto; }",
+    "    #trace-status { color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }",
+    "    .trace-selector { display: none; gap: 5px; padding: 7px; border-bottom: 1px solid var(--line); overflow-x: auto; }",
+    "    .trace-selector button { border: 1px solid var(--line); border-radius: 3px; padding: 6px 9px; background: #101310; color: var(--muted); font-size: 11px; white-space: nowrap; }",
+    "    .trace-selector button[aria-pressed=true] { border-color: var(--accent); color: var(--text); background: #261b15; }",
+    "    .trace-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2,minmax(250px,1fr)); gap: 7px; padding: 7px; overflow: auto; }",
+    "    .trace-agent-pane { min-height: 270px; display: grid; grid-template-rows: auto minmax(0,1fr) auto; border: 1px solid var(--line); background: #0d100e; overflow: hidden; }",
+    "    .trace-agent-pane > header, .trace-agent-pane > footer { min-height: 35px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 9px; background: var(--panel-2); }",
+    "    .trace-agent-pane > header { border-bottom: 1px solid var(--line); font-size: 11px; }",
+    "    .trace-agent-pane > header span { color: var(--muted); font-size: 10px; }",
+    "    .trace-agent-pane > footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }",
+    "    .trace-agent-pane > footer::before { content: ''; width: 6px; height: 6px; margin-right: 7px; border-radius: 50%; background: var(--green); }",
+    "    .trace-feed { min-height: 0; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 7px; }",
+    "    .trace-empty { margin: auto; color: #666e65; font-size: 11px; }",
+    "    .trace-item { border: 1px solid #282d28; background: #141714; }",
+    "    .trace-meta { padding: 6px 8px; border-bottom: 1px solid #282d28; display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }",
+    "    .trace-meta strong { color: #c3c9c0; }",
+    "    .trace-tool_use .trace-meta strong { color: var(--accent); }",
+    "    .trace-output_summary .trace-meta strong { color: var(--green); }",
+    "    .trace-item pre { margin: 0; padding: 8px; font: 11px/1.48 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: #d9ded6; }",
+    "    .invoke-form { min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 7px; padding: 9px; border-top: 1px solid var(--line); background: #121512; }",
+    "    .composer-under-traces { grid-column: 3; grid-row: 2; }",
+    "    .composer-under-output { grid-column: 1; grid-row: 2; }",
+    "    .publication-viewer:not(.has-traces).has-composer { grid-template-rows: minmax(0,1fr) auto; }",
+    "    textarea { min-height: 44px; max-height: 140px; resize: vertical; padding: 11px 12px; border: 1px solid #343a34; border-radius: 4px; outline: none; background: #0b0e0c; color: var(--text); }",
+    "    textarea:focus { border-color: var(--accent); }",
+    "    .attach-button, .invoke-form button { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid #343a34; border-radius: 4px; background: #171b17; color: var(--text); }",
+    "    .attach-button input { display: none; }",
+    "    .attach-button:hover { border-color: #626962; }",
+    "    .invoke-form button { border-color: #a55d37; background: #a95f39; font-size: 22px; }",
+    "    .invoke-form button:disabled { opacity: .45; }",
+    "    .trace-rail.is-narrow .trace-selector { display: flex; }",
+    "    .trace-rail.is-narrow .trace-grid { display: block; overflow: hidden; }",
+    "    .trace-rail.is-narrow .trace-agent-pane { display: none; height: 100%; min-height: 0; }",
+    "    .trace-rail.is-narrow .trace-agent-pane.is-selected { display: grid; }",
+    "    @keyframes pulse { 50% { opacity: .45; } }",
     "    @media (max-width: 760px) {",
-    "      .split-viewer { grid-template-columns: 1fr; }",
-    "      .output-pane, .trace-pane { min-height: 50vh; }",
-    "      .output-pane { border-right: 0; border-bottom: 1px solid #d7dbd2; }",
-    "      .html-output { height: 54vh; }",
+    "      body { overflow: auto; }",
+    "      .publication-viewer, .publication-viewer.has-traces, .publication-viewer.has-traces.has-composer { height: auto; min-height: 100vh; grid-template-columns: 1fr; grid-template-rows: minmax(56vh,1fr) minmax(380px,44vh) auto; }",
+    "      .output-pane { grid-column: 1; grid-row: 1; min-height: 56vh; }",
+    "      .rail-resizer { display: none; }",
+    "      .trace-rail { grid-column: 1; grid-row: 2; min-height: 380px; border-top: 1px solid var(--line); }",
+    "      .composer-under-traces, .composer-under-output { grid-column: 1; grid-row: 3; position: sticky; bottom: 0; }",
+    "      .trace-selector { display: flex; }",
+    "      .trace-grid { display: block; overflow: hidden; }",
+    "      .trace-agent-pane { display: none; height: 100%; min-height: 0; }",
+    "      .trace-agent-pane.is-selected { display: grid; }",
     "    }",
     "  </style>",
     "</head>",
