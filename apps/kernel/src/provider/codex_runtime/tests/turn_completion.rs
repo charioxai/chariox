@@ -1,3 +1,4 @@
+use super::super::drain::codex_turn_should_backfill;
 use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
 use super::*;
@@ -1232,5 +1233,28 @@ fn completed_turn_backfill_requires_final_answer_or_error_evidence() {
     assert!(codex_completed_turn_has_settlement_evidence(
         Some(&empty_items),
         Some("model rejected")
+    ));
+}
+
+#[test]
+fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal_notification() {
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("workflow-ack-call");
+    turn_tracker.note_tool_completed("workflow-ack-call");
+    turn_tracker.note_assistant_content();
+
+    assert_eq!(turn_tracker.active_tool_count(), 0);
+    assert!(!turn_tracker.has_pending_terminal());
+    assert!(!codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        false,
+    ));
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
     ));
 }

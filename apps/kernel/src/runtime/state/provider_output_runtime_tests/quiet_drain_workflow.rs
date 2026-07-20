@@ -275,7 +275,8 @@ async fn provider_quiet_gap_does_not_settle_without_completion_signal() {
 }
 
 #[tokio::test]
-async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal() {
+async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_completion_signal()
+{
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -311,9 +312,6 @@ async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal()
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), first_agent.id())
         .expect("first node should be added");
-    app.sessions_mut()
-        .set_workflow_node_can_complete_run(session.id(), workflow.id(), first_node.id(), true)
-        .expect("first node should complete the workflow run");
     let second_node = app
         .sessions_mut()
         .add_workflow_node(session.id(), workflow.id(), second_agent.id())
@@ -381,11 +379,25 @@ async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal()
             run.id(),
             Vec::new(),
             crate::provider::ProviderPromptSignalBatch {
-                chunks: vec![crate::provider::ProviderPromptChunk {
-                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
-                    merge_key: Some("assistant-final".to_string()),
-                    bytes: b"```".to_vec(),
-                }],
+                chunks: vec![
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key: Some("workflow-ack-call".to_string()),
+                        bytes: br#"{"id":"workflow-ack-call","tool":"ack_workflow_turn","status":"running"}"#
+                            .to_vec(),
+                    },
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key: Some("workflow-ack-call".to_string()),
+                        bytes: br#"{"id":"workflow-ack-call","tool":"ack_workflow_turn","status":"completed"}"#
+                            .to_vec(),
+                    },
+                    crate::provider::ProviderPromptChunk {
+                        kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                        merge_key: Some("assistant-final".to_string()),
+                        bytes: b"```".to_vec(),
+                    },
+                ],
                 completions: vec![crate::provider::ProviderAssistantCompletion {
                     message_id: "assistant-final".to_string(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
@@ -454,22 +466,6 @@ async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal()
         provider_output,
         "```json\n{\"summary\":\"sent\",\"output\":{\"message\":\"{\\\"value\\\":1842}\"}}\n```"
     );
-    runtime
-        .owned
-        .session_store
-        .write()
-        .submit_workflow_run_final_output(
-            session.id(),
-            workflow_run.id(),
-            &node_run_id,
-            crate::session::WorkflowOutputPayload::new(
-                r#"{"summary":"sent","output":{"message":"done"}}"#,
-                Vec::new(),
-            ),
-            true,
-            None,
-        )
-        .expect("workflow final output should be accepted");
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     runtime
         .owned
@@ -504,9 +500,13 @@ async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal()
     );
     assert_eq!(
         resolved_run.status(),
-        crate::session::WorkflowRunStatus::Completed
+        crate::session::WorkflowRunStatus::Waiting
     );
-    assert_eq!(resolved_run.node_runs().len(), 1);
+    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert_eq!(
+        resolved_run.node_runs()[1].status(),
+        crate::session::WorkflowNodeRunStatus::Ready
+    );
 
     let durable_session = runtime
         .owned
@@ -538,9 +538,14 @@ async fn workflow_prompt_finalizes_when_output_pump_consumed_completion_signal()
     );
     assert_eq!(
         durable_run.status(),
-        crate::session::WorkflowRunStatus::Completed
+        crate::session::WorkflowRunStatus::Waiting
     );
-    assert_eq!(durable_run.node_runs().len(), 1);
+    assert_eq!(durable_run.node_runs().len(), 2);
+    assert_eq!(
+        durable_run.node_runs()[1].status(),
+        crate::session::WorkflowNodeRunStatus::Ready,
+        "a kernel restart must preserve the advanced downstream node"
+    );
 }
 
 #[tokio::test]
