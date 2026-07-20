@@ -52,7 +52,7 @@ type StreamState = {
   traces: PublicationTraceStreamState
 }
 
-export const API_SSE_INVOKE_PATH = "/invoke"
+export const API_SSE_INVOKE_PATH = "/"
 
 export function apiSseInvokePath(publication: WorkflowPublicationConfig) {
   return publication.route?.trim() || API_SSE_INVOKE_PATH

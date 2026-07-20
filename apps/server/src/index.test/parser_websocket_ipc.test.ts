@@ -279,7 +279,7 @@ test("gateway reports WebSocket input validation errors", async () => {
     await app.listen({ host: "127.0.0.1", port: 0 })
     const address = app.server.address()
     const port = typeof address === "object" && address ? address.port : 0
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/.well-known/arroba/publication/ws`)
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/`)
     const reader = createWebSocketReader(socket)
     try {
       await reader.read()

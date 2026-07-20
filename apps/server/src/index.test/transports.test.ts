@@ -186,6 +186,13 @@ test("publication viewer derives composer capability and one pane per exposed no
 
   const html = publicationViewerPage(publication)
   assert.match(html, /class="publication-viewer has-traces has-composer"/)
+  assert.match(html, /new URLSearchParams\(window\.location\.search\)\.get\('arroba_embed'\) === 'output'/)
+  assert.match(html, /rootEl\?\.classList\.add\('is-output-only'\)/)
+  assert.match(html, /\.publication-viewer\.is-output-only \.trace-rail/)
+  assert.match(html, /event\.data\?\.type !== 'arroba:publication:invoke'/)
+  assert.match(html, /void invokePublication\(prompt, artifacts\)/)
+  assert.match(html, /type: 'arroba:publication:settled'/)
+  assert.match(html, /publicationId: viewerConfig\.publicationId/)
   assert.match(html, /id="rail-resizer"/)
   assert.match(html, /data-trace-node="node-a"/)
   assert.match(html, /data-trace-node="node-b"/)
@@ -351,7 +358,7 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   }
 })
 
-test("api_sse_json defaults to /invoke when no route is configured", async () => {
+test("api_sse_json defaults to / when no route is configured", async () => {
   const { route: _route, ...configWithoutRoute } = baseConfig
   const { app } = buildServer({
     ...configWithoutRoute,
@@ -371,7 +378,7 @@ test("api_sse_json defaults to /invoke when no route is configured", async () =>
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/invoke",
+      url: "/",
       headers: { accept: "text/event-stream" },
       payload: { prompt: "ship" },
     })

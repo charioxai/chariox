@@ -152,7 +152,7 @@ export function publishedHttpConfig(
 export function publishedTransportConfig(input: {
   readonly id: string
   readonly transport: string
-  readonly route: string
+  readonly route?: string
   readonly methods?: string[]
   readonly parser?: NonNullable<WorkflowPublicationConfig["parser"]>
   readonly inputSchema?: WorkflowPublicationConfig["input_schema"]
@@ -168,7 +168,7 @@ export function publishedTransportConfig(input: {
       id: `hook-${input.id}`,
       transport: input.transport,
       endpoint_id: "endpoint-1",
-      route: input.route,
+      ...(input.route ? { route: input.route } : {}),
       ...(input.methods ? { methods: input.methods } : {}),
       ...(input.parser ? { parser: input.parser } : {}),
       ...(input.inputSchema ? { input_schema: input.inputSchema } : {}),
@@ -429,7 +429,7 @@ test("gateway reports WebSocket input validation errors", async () => {
     await app.listen({ host: "127.0.0.1", port: 0 })
     const address = app.server.address()
     const port = typeof address === "object" && address ? address.port : 0
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/.well-known/arroba/publication/ws`)
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/`)
     const reader = createWebSocketReader(socket)
     try {
       await reader.read()

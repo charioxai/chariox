@@ -74,6 +74,7 @@ export function publicationViewerPage(
   const transport = viewerTransport(publication) ?? "human_http"
   const traceNodes = viewerTraceNodes(publication)
   const config = {
+    publicationId: publication.publication_id,
     transport,
     title: "Workflow Run",
     showComposer: viewerComposerEnabled(publication),
@@ -90,7 +91,7 @@ export function publicationViewerPage(
     apiSseInvokePath: apiSseInvokePath(publication),
     websocketInvokePath: websocketInvokePath(publication),
     humanFormInvokePath: PUBLICATION_VIEWER_FORM_INVOKE_PATH,
-    humanPromptTarget: promptTargetParts(publication.route ?? "/*"),
+    humanPromptTarget: promptTargetParts(publication.route ?? "/"),
     directRouteRoots: publicationDirectRouteRoots(publication),
   }
   const hasTraces = traceNodes.length > 0
@@ -198,7 +199,9 @@ const htmlOutputEl = document.querySelector('#html-output');
 const traceRailEl = document.querySelector('#trace-rail');
 const traceStatusEl = document.querySelector('#trace-status');
 const traceKeys = new Set();
+const outputOnlyEmbed = new URLSearchParams(window.location.search).get('arroba_embed') === 'output';
 
+if (outputOnlyEmbed) rootEl?.classList.add('is-output-only');
 if (!viewerConfig.showComposer && formEl) formEl.hidden = true;
 if (viewerConfig.permalink) {
   const permalink = publicationUrl(viewerConfig.permalink);
@@ -219,11 +222,23 @@ formEl?.addEventListener('submit', async (event) => {
   const files = data.getAll('artifact').filter((item) => item instanceof File && item.size > 0);
   if (!prompt && files.length === 0) return;
   form.reset();
-  const button = form.querySelector('button[type="submit"]');
+  const artifacts = await Promise.all(files.map(readArtifact));
+  await invokePublication(prompt, artifacts);
+});
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent || event.data?.type !== 'arroba:publication:invoke') return;
+  const prompt = String(event.data.prompt ?? '').trim();
+  const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
+  if (!prompt && artifacts.length === 0) return;
+  void invokePublication(prompt, artifacts);
+});
+
+async function invokePublication(prompt, artifacts) {
+  const button = formEl?.querySelector('button[type="submit"]');
   if (button) button.disabled = true;
   setStatus('Submitting');
   try {
-    const artifacts = await Promise.all(files.map(readArtifact));
     if (viewerConfig.transport === 'human_http') await invokeHumanHttp(prompt, artifacts);
     if (viewerConfig.transport === 'api_sse_json') await invokeApiSse(prompt, artifacts);
     if (viewerConfig.transport === 'websocket_json') await invokeWebSocket(prompt, artifacts);
@@ -232,7 +247,7 @@ formEl?.addEventListener('submit', async (event) => {
   } finally {
     if (button) button.disabled = false;
   }
-});
+}
 
 async function invokeHumanHttp(prompt, artifacts) {
   resetForInvocation(prompt);
@@ -444,6 +459,13 @@ function setStatus(status, warning = false) {
   const normalized = String(status || '').toLowerCase();
   const terminal = ['completed', 'complete', 'done', 'failed', 'cancelled', 'canceled'].some((value) => normalized.includes(value));
   if (runDotEl) runDotEl.dataset.state = warning ? 'warning' : terminal ? 'terminal' : normalized === 'ready' ? 'ready' : 'active';
+  if (terminal && window.parent !== window) {
+    window.parent.postMessage({
+      type: 'arroba:publication:settled',
+      publicationId: viewerConfig.publicationId,
+      status: String(status || ''),
+    }, '*');
+  }
 }
 
 function showEmptyOutput(message) {
@@ -811,6 +833,9 @@ function htmlDocument(title: string, body: string) {
     "    .publication-viewer { display: grid; grid-template: minmax(0,1fr) / minmax(0,1fr); width: 100vw; height: 100vh; background: var(--bg); }",
     "    .publication-viewer.has-traces { grid-template-columns: minmax(360px,1fr) 7px minmax(300px,var(--trace-width)); }",
     "    .publication-viewer.has-traces.has-composer { grid-template-rows: minmax(0,1fr) auto; }",
+    "    .publication-viewer.is-output-only, .publication-viewer.is-output-only.has-traces, .publication-viewer.is-output-only.has-traces.has-composer { grid-template: minmax(0,1fr) / minmax(0,1fr); }",
+    "    .publication-viewer.is-output-only .output-pane { grid-column: 1; grid-row: 1; }",
+    "    .publication-viewer.is-output-only .rail-resizer, .publication-viewer.is-output-only .trace-rail, .publication-viewer.is-output-only .invoke-form { display: none; }",
     "    .output-pane { grid-column: 1; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #080a09; }",
     "    .viewer-bar, .trace-bar { min-height: 58px; padding: 11px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 14px; background: color-mix(in srgb, var(--panel) 92%, transparent); }",
     "    .viewer-bar > div:first-child, .trace-bar > div:first-child { display: flex; align-items: baseline; gap: 11px; min-width: 0; }",

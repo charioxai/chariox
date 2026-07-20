@@ -56,7 +56,7 @@ import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
 import { publicationStatusPayload } from "./publication-status.js"
-import { installPublicationViewerRoutes } from "./publication-viewer.js"
+import { installPublicationViewerRoutes, publicationViewerPage } from "./publication-viewer.js"
 import type {
   GatewayDeps,
   GatewayRequest,
@@ -99,7 +99,8 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   if (!scheduleOnly) {
     installHumanHttpRoutes(app, publication)
   }
-  if (!scheduleOnly && !isAgentAppPublication(publication)) {
+  const humanRootHandlesViewer = isHumanRootGetPublication(publication)
+  if (!scheduleOnly && !isAgentAppPublication(publication) && !humanRootHandlesViewer) {
     installPublicationViewerRoutes(app, publication)
   }
   if (!scheduleOnly && isApiSseJsonPublication(publication)) {
@@ -149,13 +150,21 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     // Schedule-only publications have no ingress route; lifecycle APIs start the scheduler runtime.
   } else if (isAgentAppPublication(publication)) {
     installAgentAppRoutes(app, publication, deps)
-  } else if (!isApiSseJsonPublication(publication) && !isMcpPublication(publication)) {
+  } else if (
+    !isApiSseJsonPublication(publication)
+    && publication.transport !== "websocket_json"
+    && !isMcpPublication(publication)
+  ) {
     const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
     for (const method of methods) {
       app.route({
         method,
-        url: publication.route ?? "/*",
+        url: publication.route ?? "/",
         handler: async (request, reply) => {
+          if (humanRootHandlesViewer && shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)) {
+            reply.type("text/html; charset=utf-8")
+            return publicationViewerPage(publication)
+          }
           const parsed = await parseAndValidateRequest(request as unknown as GatewayRequest, publication).catch((error) => {
             reply.code(400).headers({ "content-type": "application/json" })
             return { __arroba_parse_error: error instanceof Error ? error.message : String(error) }
@@ -195,6 +204,12 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
 
 function isScheduleOnlyPublication(publication: WorkflowPublicationConfig) {
   return publication.transport === "schedule_only"
+}
+
+function isHumanRootGetPublication(publication: WorkflowPublicationConfig) {
+  const transport = publication.transport ?? "human_http"
+  const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
+  return transport === "human_http" && (publication.route ?? "/") === "/" && methods.includes("GET")
 }
 
 function parseHumanHttpFormBody(body: unknown): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {

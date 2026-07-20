@@ -489,21 +489,18 @@ fn local_request_api_validates_publication_transport_options() {
         _ => panic!("unexpected local response"),
     };
     let human_json = package_json_file(&exported_human, "publication.json");
-    assert_eq!(
-        human_json["hooks"][0]["route"],
-        serde_json::json!("/prompt/*")
-    );
+    assert_eq!(human_json["hooks"][0]["route"], serde_json::json!("/"));
     assert_eq!(
         human_json["hooks"][0]["methods"],
         serde_json::json!(["GET", "POST"])
     );
     assert_eq!(
         human_json["hooks"][0]["parser"],
-        serde_json::json!({"kind": "path_template", "template": "/prompt/:prompt"})
+        serde_json::json!({"kind": "query_params"})
     );
     assert_eq!(human_json["hooks"][0]["mode"], serde_json::json!("async"));
     let human_app_js = package_text_file(&exported_human, "public/app.js");
-    assert!(human_app_js.contains("const routePattern = \"/prompt/*\""));
+    assert!(human_app_js.contains("const routePattern = \"/\""));
     assert!(human_app_js.contains("routePattern.indexOf('*')"));
     assert!(human_app_js.contains("window.location.href = invocationUrl(prompt)"));
     assert!(!human_app_js.contains("window.location.href = `/${encodeURIComponent(prompt)}`"));
@@ -617,7 +614,7 @@ fn local_request_api_validates_publication_transport_options() {
     assert_eq!(publication_json["kind"], serde_json::json!("ingress"));
     assert_eq!(
         publication_json["hooks"][0]["route"],
-        serde_json::json!("/invoke")
+        serde_json::json!("/")
     );
     assert_eq!(
         publication_json["hooks"][0]["queue_ref"],
@@ -678,10 +675,55 @@ fn local_request_api_validates_publication_transport_options() {
         _ => panic!("unexpected local response"),
     };
     let mcp_json = package_json_file(&exported_mcp, "publication.json");
-    assert_eq!(mcp_json["hooks"][0]["route"], serde_json::json!("/mcp"));
+    assert_eq!(mcp_json["hooks"][0]["route"], serde_json::json!("/"));
     assert_eq!(mcp_json["hooks"][0]["methods"], serde_json::json!(["POST"]));
     assert_eq!(mcp_json["hooks"][0]["mode"], serde_json::json!("sync"));
     assert!(mcp_json["hooks"][0].get("parser").is_none());
+
+    let websocket_publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                queue_ref: Some("default".to_string()),
+                alias: Some("websocket-defaults".to_string()),
+                kind: Some("ingress".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: Some(serde_json::json!({ "kind": "websocket_json" })),
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("websocket publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        _ => panic!("unexpected local response"),
+    };
+    let exported_websocket = match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: websocket_publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("websocket publication package should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported { package_files, .. } => {
+            package_files
+        }
+        _ => panic!("unexpected local response"),
+    };
+    let websocket_json = package_json_file(&exported_websocket, "publication.json");
+    assert_eq!(websocket_json["hooks"][0]["route"], serde_json::json!("/"));
 
     let schedule_without_watchdog = harness.dispatch(
         LocalDaemonRequest::CreateWorkflowPublication(CreateWorkflowPublicationRequest {

@@ -57,7 +57,7 @@ type JsonRpcRequest = {
 
 const JSON_RPC_VERSION = "2.0"
 const MCP_PROTOCOL_VERSION = "2025-03-26"
-export const PUBLICATION_MCP_PATH = "/mcp"
+export const PUBLICATION_MCP_PATH = "/"
 
 export function mcpInvokePath(publication: WorkflowPublicationConfig) {
   return publication.route?.trim() || PUBLICATION_MCP_PATH
