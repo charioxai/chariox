@@ -193,6 +193,13 @@ test("publication viewer derives composer capability and one pane per exposed no
   assert.match(html, /class="invoke-form composer-under-traces"/)
   assert.match(html, /ResizeObserver/)
   assert.match(html, /traceKeys\.has\(key\)/)
+  assert.match(html, /resetForInvocation\(prompt\)/)
+  assert.match(html, /renderOptimisticPrompt\(prompt\)/)
+  assert.match(html, /window\.addEventListener\('pointermove', move\)/)
+  assert.match(html, /window\.addEventListener\('pointerup', done\)/)
+  assert.match(html, /startWidth \+ startX - moveEvent\.clientX/)
+  assert.match(html, /is-resizing-rail/)
+  assert.match(html, /\.trace-agent-pane:only-child \{ grid-column: 1 \/ -1; \}/)
 })
 
 test("publication viewer replaces progress output and hydrates only the latest update", () => {

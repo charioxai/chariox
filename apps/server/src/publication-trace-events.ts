@@ -25,9 +25,18 @@ export function collectPublicationTraceEvents(
 ): PublicationTraceEvent[] {
   const policy = publication.trace_exposure?.nodes ?? {}
   const events: PublicationTraceEvent[] = []
+  const prompt = publicationPrompt(workflowRun)
   for (const nodeRun of workflowRun.node_runs ?? []) {
     const levels = new Set(policy[nodeRun.node_id] ?? [])
     if (levels.size === 0) continue
+    if (prompt) {
+      pushTraceEvent(events, state, publication, workflowRun, nodeRun, "user_prompt", {
+        key: `prompt:${nodeRun.id}:${prompt}`,
+        timestampMs: workflowRun.created_at_ms ?? 0,
+        message: prompt,
+        data: { source: "publication_input" },
+      })
+    }
     if (levels.has("output_summary")) {
       const summary = nodeRun.completion?.summary?.trim() || nodeRun.summary?.trim()
       if (summary) {
@@ -100,7 +109,31 @@ export function collectPublicationTraceEvents(
 }
 
 function traceLevelOrder(level: PublicationTraceLevel) {
-  return level === "output_summary" ? 1 : 0
+  if (level === "user_prompt") return 0
+  if (level === "output_summary") return 2
+  return 1
+}
+
+function publicationPrompt(workflowRun: WorkflowRun): string | null {
+  const input = workflowRun.publication_invocation?.input
+  if (typeof input === "string") return input.trim() || null
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const prompt = (input as Record<string, unknown>).prompt
+    if (typeof prompt === "string") return prompt.trim() || null
+  }
+  const fallback = workflowRun.invocation_prompt?.trim()
+  if (!fallback) return null
+  try {
+    const parsed = JSON.parse(fallback) as unknown
+    if (typeof parsed === "string") return parsed.trim() || null
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const prompt = (parsed as Record<string, unknown>).prompt
+      return typeof prompt === "string" ? prompt.trim() || null : null
+    }
+    return null
+  } catch {
+    return fallback
+  }
 }
 
 function pushTraceEvent(

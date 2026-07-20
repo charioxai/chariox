@@ -256,6 +256,16 @@ test("publication trace events honor per-node level policy", () => {
   const workflowRun = {
     id: "run-1",
     status: "Completed",
+    publication_invocation: {
+      publication_id: "publication-1",
+      invocation_id: "invocation-1",
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      input: { prompt: "Build the requested dashboard" },
+      artifacts: [],
+      mode: "async" as const,
+      caller: {},
+    },
     node_runs: [{
       id: "run-node-a",
       node_id: "node-a",
@@ -346,6 +356,10 @@ test("publication trace events honor per-node level policy", () => {
   const secondPass = collectPublicationTraceEvents(publication, workflowRun, state)
 
   assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
+    ["node-a", "summary", "user_prompt", "Build the requested dashboard"],
+    ["node-b", "researcher", "user_prompt", "Build the requested dashboard"],
+    ["node-c", "planner", "user_prompt", "Build the requested dashboard"],
+    ["node-d", "builder", "user_prompt", "Build the requested dashboard"],
     ["node-b", "researcher", "assistant_messages", "B handoff"],
     ["node-b", "researcher", "assistant_messages", "B assistant output"],
     ["node-c", "planner", "thinking", "C thinking"],
@@ -364,7 +378,7 @@ test("publication trace events honor per-node level policy", () => {
   assert.equal(JSON.stringify(firstPass).includes("TRACE_SUMMARY B hidden"), false)
   assert.match(JSON.stringify(firstPass), /B assistant output/)
   assert.doesNotMatch(JSON.stringify(firstPass), /arguments_json|result_json/)
-  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
   assert.deepEqual(secondPass, [])
 })
 

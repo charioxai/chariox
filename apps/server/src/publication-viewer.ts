@@ -235,7 +235,7 @@ formEl?.addEventListener('submit', async (event) => {
 });
 
 async function invokeHumanHttp(prompt, artifacts) {
-  resetForInvocation();
+  resetForInvocation(prompt);
   const response = await fetch(publicationUrl(viewerConfig.humanFormInvokePath), {
     method: 'POST',
     headers: { accept: 'text/html', 'content-type': 'application/json' },
@@ -248,7 +248,7 @@ async function invokeHumanHttp(prompt, artifacts) {
 }
 
 async function invokeApiSse(prompt, artifacts) {
-  resetForInvocation();
+  resetForInvocation(prompt);
   const response = await fetch(publicationUrl(viewerConfig.apiSseInvokePath), {
     method: 'POST',
     headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
@@ -260,7 +260,7 @@ async function invokeApiSse(prompt, artifacts) {
 }
 
 async function invokeWebSocket(prompt, artifacts) {
-  resetForInvocation();
+  resetForInvocation(prompt);
   const socket = new WebSocket(publicationWebSocketUrl(viewerConfig.websocketInvokePath));
   const readyArtifacts = new Set();
   await new Promise((resolve, reject) => {
@@ -304,15 +304,32 @@ function inputPayload(prompt, artifacts) {
   return artifacts.length ? { prompt, artifacts } : { prompt };
 }
 
-function resetForInvocation() {
+function resetForInvocation(prompt) {
   showEmptyOutput('Waiting for the first workflow update.');
   traceKeys.clear();
   document.querySelectorAll('.trace-feed').forEach((feed) => {
     feed.innerHTML = '<div class="trace-empty">No trace activity yet.</div>';
   });
   if (traceStatusEl) traceStatusEl.textContent = 'Waiting';
+  renderOptimisticPrompt(prompt);
   setStatus('Queued');
   renderQueueStatus(null);
+}
+
+function renderOptimisticPrompt(prompt) {
+  if (!prompt) return;
+  for (const node of viewerConfig.traceNodes || []) {
+    renderTrace({
+      workflow_run_id: 'pending',
+      workflow_node_run_id: 'pending:' + node.nodeId,
+      node_id: node.nodeId,
+      level: 'user_prompt',
+      sequence: 0,
+      timestamp_ms: Date.now(),
+      message: prompt,
+      data: { source: 'publication_input' },
+    });
+  }
 }
 
 function subscribeHumanHttpEvents(path) {
@@ -520,26 +537,34 @@ function selectTraceNode(nodeId) {
 function setupRailResize() {
   const separator = document.querySelector('#rail-resizer');
   if (!separator || !rootEl) return;
-  const resize = (clientX) => {
+  const setWidth = (width) => {
     const bounds = rootEl.getBoundingClientRect();
-    const next = Math.max(300, Math.min(bounds.width - 360, bounds.right - clientX));
+    const separatorWidth = separator.getBoundingClientRect().width;
+    const next = Math.max(300, Math.min(bounds.width - separatorWidth - 360, width));
     rootEl.style.setProperty('--trace-width', next + 'px');
+    separator.setAttribute('aria-valuenow', String(Math.round(next)));
   };
   separator.addEventListener('pointerdown', (event) => {
-    separator.setPointerCapture(event.pointerId);
-    const move = (moveEvent) => resize(moveEvent.clientX);
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = traceRailEl?.getBoundingClientRect().width || 480;
+    document.body.classList.add('is-resizing-rail');
+    const move = (moveEvent) => setWidth(startWidth + startX - moveEvent.clientX);
     const done = () => {
-      separator.removeEventListener('pointermove', move);
-      separator.removeEventListener('pointerup', done);
+      document.body.classList.remove('is-resizing-rail');
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
     };
-    separator.addEventListener('pointermove', move);
-    separator.addEventListener('pointerup', done);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
   });
   separator.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
     const current = traceRailEl?.getBoundingClientRect().width || 480;
-    rootEl.style.setProperty('--trace-width', Math.max(300, current + (event.key === 'ArrowLeft' ? 32 : -32)) + 'px');
+    setWidth(current + (event.key === 'ArrowLeft' ? 32 : -32));
   });
 }
 
@@ -547,7 +572,9 @@ function renderTrace(trace) {
   const nodeId = String(trace.node_id || '');
   const pane = document.querySelector('[data-trace-node="' + cssEscape(nodeId) + '"]');
   if (!pane) return;
-  const key = [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.sequence, trace.timestamp_ms, trace.message].join(':');
+  const key = trace.level === 'user_prompt'
+    ? ['user_prompt', nodeId, trace.message].join(':')
+    : [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.sequence, trace.timestamp_ms, trace.message].join(':');
   if (traceKeys.has(key)) return;
   traceKeys.add(key);
   if (traceStatusEl) traceStatusEl.textContent = 'Live';
@@ -684,7 +711,7 @@ function appendInlineTraceFormatting(container, text) {
 }
 
 function traceLevelLabel(level) {
-  return ({ output_summary: 'Summary', assistant_messages: 'Assistant', thinking: 'Thinking', tool_use: 'Tool call' })[level] || 'Trace';
+  return ({ user_prompt: 'Prompt', output_summary: 'Summary', assistant_messages: 'Assistant', thinking: 'Thinking', tool_use: 'Tool call' })[level] || 'Trace';
 }
 
 function cssEscape(value) {
@@ -805,6 +832,8 @@ function htmlDocument(title: string, body: string) {
     "    .rail-resizer { grid-column: 2; grid-row: 1 / -1; position: relative; background: var(--line); cursor: col-resize; touch-action: none; z-index: 3; }",
     "    .rail-resizer::after { content: ''; position: absolute; inset: 0 -4px; }",
     "    .rail-resizer:focus-visible, .rail-resizer:hover { background: var(--accent); outline: none; }",
+    "    body.is-resizing-rail { cursor: col-resize; user-select: none; }",
+    "    body.is-resizing-rail iframe { pointer-events: none; }",
     "    .trace-rail { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }",
     "    .trace-bar { flex: 0 0 auto; }",
     "    #trace-status { color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }",
@@ -813,6 +842,7 @@ function htmlDocument(title: string, body: string) {
     "    .trace-selector button[aria-pressed=true] { border-color: var(--accent); color: var(--text); background: #261b15; }",
     "    .trace-grid { min-height: 0; flex: 1; display: grid; grid-template-columns: repeat(2,minmax(250px,1fr)); gap: 7px; padding: 7px; overflow: auto; }",
     "    .trace-agent-pane { min-height: 270px; display: grid; grid-template-rows: auto minmax(0,1fr) auto; border: 1px solid var(--line); background: #0d100e; overflow: hidden; }",
+    "    .trace-agent-pane:only-child { grid-column: 1 / -1; }",
     "    .trace-agent-pane > header, .trace-agent-pane > footer { min-height: 35px; padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 9px; background: var(--panel-2); }",
     "    .trace-agent-pane > header { border-bottom: 1px solid var(--line); font-size: 11px; }",
     "    .trace-agent-pane > header span { color: var(--muted); font-size: 10px; }",
@@ -823,6 +853,8 @@ function htmlDocument(title: string, body: string) {
     "    .trace-item { border: 1px solid #282d28; background: #141714; }",
     "    .trace-meta { padding: 6px 8px; border-bottom: 1px solid #282d28; display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }",
     "    .trace-meta strong { color: #c3c9c0; }",
+    "    .trace-user_prompt { border-color: #3b403b; background: #191c19; }",
+    "    .trace-user_prompt .trace-meta strong { color: var(--text); }",
     "    .trace-tool_use .trace-meta strong { color: var(--accent); }",
     "    .trace-output_summary .trace-meta strong { color: var(--green); }",
     "    .trace-prose { padding: 10px; font: 12px/1.55 ui-sans-serif, system-ui, sans-serif; color: #dfe4dc; overflow-wrap: anywhere; }",
