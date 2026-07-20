@@ -525,9 +525,10 @@ fn outline_turn_from_events_with_lifecycle(
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
     let events = suppress_sparse_legacy_transcript_duplicates(events);
-    let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
+    let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
+    project_workflow_user_prompt(&mut user_prompt, prompt_origin);
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms);
@@ -599,6 +600,22 @@ fn outline_turn_from_events_with_lifecycle(
         summary,
         blobs,
     })
+}
+
+fn project_workflow_user_prompt(
+    user_prompt: &mut crate::session_history_page::SessionHistoryPageEntry,
+    prompt_origin: PromptOrigin,
+) {
+    if prompt_origin != PromptOrigin::Arroba {
+        return;
+    }
+    let Some(endpoint_prompt) = workflow_endpoint_prompt(&user_prompt.entry.text) else {
+        return;
+    };
+    user_prompt.entry.text = endpoint_prompt;
+    user_prompt.fragment_start = 0;
+    user_prompt.total_chars = user_prompt.entry.text.chars().count();
+    user_prompt.fragment_end = user_prompt.total_chars;
 }
 
 fn trailing_provider_output_group(

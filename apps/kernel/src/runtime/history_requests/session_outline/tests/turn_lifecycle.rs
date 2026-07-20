@@ -1411,7 +1411,21 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:node-run-1"}.
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "prompt-77");
     assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
-    assert_eq!(outline.turns[0].user_prompt.entry.text, owned_prompt);
+    assert_eq!(
+        outline.turns[0].user_prompt.entry.text,
+        "Inspect the lifecycle and report one concise result."
+    );
+    assert_eq!(outline.turns[0].user_prompt.fragment_start, 0);
+    assert_eq!(
+        outline.turns[0].user_prompt.fragment_end,
+        "Inspect the lifecycle and report one concise result."
+            .chars()
+            .count()
+    );
+    assert_eq!(
+        outline.turns[0].user_prompt.total_chars,
+        outline.turns[0].user_prompt.fragment_end
+    );
 
     drop(store);
     let _ = std::fs::remove_file(&path);
