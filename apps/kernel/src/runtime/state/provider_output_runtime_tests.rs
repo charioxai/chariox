@@ -152,6 +152,7 @@ mod diagnostics_timeouts;
 mod external_queue;
 mod history_projection;
 mod prompt_cancellation;
+mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_output;

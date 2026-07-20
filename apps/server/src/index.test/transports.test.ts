@@ -48,6 +48,7 @@ import {
 } from "../publication-caller-claims.js"
 import {
   publicationViewerPage,
+  publicationViewerResultPage,
   viewerComposerEnabled,
   viewerTraceNodes,
 } from "../publication-viewer.js"
@@ -117,6 +118,17 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     "/.well-known/arroba/publication/viewer/invocations/request-1",
   )
   assert.match(invocationHtml, /window\.history\.replaceState/)
+
+  const directGetHtml = publicationViewerResultPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/final/*",
+    methods: ["GET"],
+  }, { accepted: true, queued: true }, "request-2", true)
+  const directGetConfig = JSON.parse(
+    directGetHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.equal(directGetConfig.permalink, null)
 
   const agentAppHtml = publicationViewerPage({
     ...baseConfig,
@@ -673,6 +685,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
+    assert.match(response.body, /"permalink":"\/.well-known\/arroba\/publication\/viewer\/invocations\//)
     assert.deepEqual(seenInput, {
       prompt: "read image",
       artifacts: [{
@@ -720,6 +733,7 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /subscribeHumanHttpEvents\(viewerConfig\.eventsUrl\)/)
+    assert.match(response.body, /"permalink":null/)
     assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
     assert.match(response.body, /parts\[0\] === 'publication-ingress'/)
     assert.match(response.body, /run-1/)

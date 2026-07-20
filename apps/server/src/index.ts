@@ -177,7 +177,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
             ? await deps.invokeWorkflow(invocation)
             : await invokeKernelWorkflow(publication, invocation)
           if (shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)) {
-            return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
+            return forwardHumanHttpResult(reply, publication, result, invocation.request_id, true)
           }
           return forwardWorkflowResult(reply, publication, result)
         },

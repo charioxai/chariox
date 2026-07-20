@@ -45,6 +45,7 @@ export function publicationViewerResultPage(
   publication: WorkflowPublicationConfig,
   result: WorkflowInvocationResult,
   invocationRequestId?: string,
+  preserveRequestUrl = false,
 ) {
   const workflowRunId = result.workflow_run?.id ?? null
   const terminal = isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
@@ -53,7 +54,12 @@ export function publicationViewerResultPage(
     : workflowRunId && !terminal
       ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
       : null
-  return publicationViewerPage(publication, { result, eventsUrl, invocationRequestId: invocationRequestId ?? null })
+  return publicationViewerPage(publication, {
+    result,
+    eventsUrl,
+    invocationRequestId: invocationRequestId ?? null,
+    preserveRequestUrl,
+  })
 }
 
 export function publicationViewerPage(
@@ -62,6 +68,7 @@ export function publicationViewerPage(
     result?: WorkflowInvocationResult
     eventsUrl?: string | null
     invocationRequestId?: string | null
+    preserveRequestUrl?: boolean
   } = {},
 ) {
   const transport = viewerTransport(publication) ?? "human_http"
@@ -72,7 +79,7 @@ export function publicationViewerPage(
     showComposer: viewerComposerEnabled(publication),
     initialResult: options.result ?? null,
     invocationRequestId: options.invocationRequestId ?? null,
-    permalink: options.invocationRequestId
+    permalink: options.invocationRequestId && !options.preserveRequestUrl
       ? `${PUBLICATION_VIEWER_INVOCATION_PATH}/${encodeURIComponent(options.invocationRequestId)}`
       : null,
     initialTraces: options.result?.workflow_run
