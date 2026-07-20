@@ -96,7 +96,7 @@ for (let index = 0; index < params.critic_count; index += 1) {
   const handle = params.critic_count === 1 ? "critic" : `critic_${pad2(number)}`;
   const critic = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle, provider: "claude", model: "default" }),
+    agent: workflow.newAgent({ alias: handle, provider: "claude", model: "sonnet" }),
     publicLabel: params.critic_count === 1 ? "Critic" : `Critic ${number}`,
     instructions: "Find flaws, set recommendation to revise or judge, and hand the critique to Judge.",
     canvas: { x: 300, y: branchY(index, params.critic_count) },

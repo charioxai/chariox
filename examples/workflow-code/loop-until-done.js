@@ -75,7 +75,7 @@ const worker = workflow.node({
 
 const checker = workflow.node({
   handle: "checker",
-  agent: workflow.newAgent({ alias: "checker", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "checker", provider: "claude", model: "haiku" }),
   publicLabel: "Checker",
   instructions: "If work is insufficient, route feedback back to the worker. If accepted, submit final output.",
   canCompleteWorkflowRun: true,

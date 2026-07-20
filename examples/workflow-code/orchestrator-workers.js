@@ -83,7 +83,7 @@ const orchestrator = workflow.node({
 
 const synthesizer = workflow.node({
   handle: "synthesizer",
-  agent: workflow.newAgent({ alias: "orchestrated-synthesizer", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "orchestrated-synthesizer", provider: "claude", model: "sonnet" }),
   publicLabel: "Synthesizer",
   instructions: `Combine orchestration context and all ${params.worker_count} worker result${params.worker_count === 1 ? "" : "s"} into final output.`,
   canCompleteWorkflowRun: true,

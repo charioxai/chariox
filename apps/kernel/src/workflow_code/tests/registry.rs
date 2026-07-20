@@ -81,6 +81,19 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
         .source
         .contains("workflow.edge(critic, proposer"));
 
+    let generate_filter = registry
+        .resolve("generate-filter")
+        .expect("generate-filter workflow registry entry should resolve");
+    assert!(generate_filter
+        .source
+        .contains("Route this request through every outgoing workflow edge"));
+    assert!(generate_filter
+        .source
+        .contains("Do not create or spawn provider-native agents"));
+    assert!(generate_filter
+        .source
+        .contains("alias: \"filter\", provider: \"claude\", model: \"haiku\""));
+
     let error = registry
         .delete("prompt-chaining", None)
         .expect_err("builtin registry entries must not be deleted");
