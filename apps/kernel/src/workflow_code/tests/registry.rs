@@ -75,12 +75,11 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
     let adversarial = registry
         .resolve("adversarial-verification")
         .expect("adversarial workflow registry entry should resolve");
-    assert!(adversarial
+    assert!(adversarial.source.contains("hand the critique to Judge"));
+    assert!(adversarial.source.contains("workflow.edge(critic, judge"));
+    assert!(!adversarial
         .source
-        .contains("output.message.workflow_handoffs"));
-    assert!(adversarial
-        .source
-        .contains("Never emit a plain handoff here"));
+        .contains("workflow.edge(critic, proposer"));
 
     let error = registry
         .delete("prompt-chaining", None)

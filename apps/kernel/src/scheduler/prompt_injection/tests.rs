@@ -339,7 +339,10 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
         .contains("the runtime sends handoffs only to the matching outgoing edges"));
     assert!(assembly
         .hidden_system_context
-        .contains("validate the routed message for each selected edge"));
+        .contains("validate only the routed message inside each selected edge entry"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("do not validate the outer routing wrapper"));
     assert!(assembly
         .hidden_system_context
         .contains("edge edge-1 -> node-2 (Reviewer)"));
@@ -380,7 +383,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
     ));
     assert!(assembly
         .hidden_system_context
-        .contains("validate the routed message for each selected edge"));
+        .contains("validate only the routed message inside each selected edge entry"));
 }
 
 #[test]

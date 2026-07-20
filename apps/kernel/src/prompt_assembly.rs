@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,11 @@ use crate::provider::RuntimeProviderRun;
 use crate::session::PromptAttachment;
 
 const PROMPT_REGISTRY_VERSION: &str = "2";
+const PROMPT_DEFAULTS_STATE_FILE: &str = ".bundled-defaults.json";
+const LEGACY_WORKFLOW_TURN_HASHES: &[&str] = &[
+    "ac2ffb8b8e5542bfbeda71eb61a89938215dbf2d5b2027545256d81f19c3b87e",
+    "c5867472e1017d69c9426244ea9da5f5a1b03e86054fc3c6416442e55f518e4b",
+];
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
@@ -44,7 +50,7 @@ const WORKFLOW_TURN: &str = concat!(
     "- Use the edge ids and target node ids exactly as listed in the outgoing edge contracts.\n\n",
     "When routing to selected edges, put the routing object inside the required final JSON block as `output.message`, for example:\n",
     "{\"summary\":\"human-facing summary\",\"output\":{\"message\":{\"workflow_handoffs\":[{\"edge_id\":\"edge-id-from-contract\",\"summary\":\"route summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}]}}}\n\n",
-    "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, you MUST validate your proposed `output.message` before finalizing by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above, that `handoff_schema_ref`, and your proposed `output.message` JSON. If you use `workflow_handoffs`, validate the routed message for each selected edge with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
+    "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, validation is required before finalizing. For a plain `output.message`, validate that value by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above and the edge's `handoff_schema_ref`. If you use `workflow_handoffs`, do not validate the outer routing wrapper; validate only the routed message inside each selected edge entry with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
     "If your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\n",
     "Do not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Arroba runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\n",
     "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n",
@@ -135,6 +141,12 @@ pub(crate) struct PromptTemplateRegistry {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct BundledPromptDefaultsState {
+    version: String,
+    template_sha256: BTreeMap<String, String>,
+}
+
 impl PromptTemplateRegistry {
     pub(crate) fn from_env() -> Self {
         let arroba_home = std::env::var_os("ARROBA_HOME")
@@ -158,18 +170,55 @@ impl PromptTemplateRegistry {
     }
 
     pub(crate) fn materialize_bundled_defaults(&self) -> Result<(), DaemonError> {
+        let state_path = self.root.join(PROMPT_DEFAULTS_STATE_FILE);
+        let previous_state = fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|body| serde_json::from_str::<BundledPromptDefaultsState>(&body).ok());
+        let mut template_sha256 = BTreeMap::new();
         for template in bundled_templates() {
             let path = self.path_for(template.id);
-            if path.exists() {
-                continue;
-            }
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .map_err(|error| prompt_io_error("create", &path, error))?;
             }
-            fs::write(&path, template.body.trim_end())
-                .map_err(|error| prompt_io_error("write", &path, error))?;
+            let bundled_body = template.body.trim_end();
+            let bundled_hash = sha256_hex(bundled_body);
+            template_sha256.insert(template.id.to_string(), bundled_hash);
+            let existing_body = fs::read_to_string(&path).ok();
+            let existing_hash = existing_body
+                .as_deref()
+                .map(|body| sha256_hex(body.trim_end()));
+            let previous_bundled_hash = previous_state
+                .as_ref()
+                .and_then(|state| state.template_sha256.get(template.id));
+            let is_known_legacy_default = existing_hash.as_deref().is_some_and(|hash| {
+                template.id == "workflow/turn" && LEGACY_WORKFLOW_TURN_HASHES.contains(&hash)
+            });
+            let should_materialize = existing_body.is_none()
+                || previous_bundled_hash
+                    .zip(existing_hash.as_ref())
+                    .is_some_and(|(previous, existing)| previous == existing)
+                || (previous_state.is_none() && is_known_legacy_default);
+            if should_materialize && existing_body.as_deref() != Some(bundled_body) {
+                fs::write(&path, bundled_body)
+                    .map_err(|error| prompt_io_error("write", &path, error))?;
+            }
         }
+        fs::create_dir_all(&self.root)
+            .map_err(|error| prompt_io_error("create", &self.root, error))?;
+        let state = BundledPromptDefaultsState {
+            version: PROMPT_REGISTRY_VERSION.to_string(),
+            template_sha256,
+        };
+        let state_body = serde_json::to_string_pretty(&state).map_err(|error| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: "prompt-assembly".to_string(),
+                operation: "prompt_defaults_state_serialize",
+                message: error.to_string(),
+            }
+        })?;
+        fs::write(&state_path, state_body)
+            .map_err(|error| prompt_io_error("write", &state_path, error))?;
         Ok(())
     }
 
@@ -621,12 +670,47 @@ mod tests {
             .expect("defaults should materialize");
         fs::write(root.join("runtime").join("base.md"), "USER EDITED TOKEN")
             .expect("user edit should write");
+        registry
+            .materialize_bundled_defaults()
+            .expect("rematerializing should preserve user edits");
 
         let template = registry
             .read_required("runtime/base")
             .expect("template should read");
 
         assert_eq!(template.body, "USER EDITED TOKEN");
+    }
+
+    #[test]
+    fn prompt_registry_updates_unchanged_bundled_defaults() {
+        let root = temp_prompt_root("updates-defaults");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("workflow").join("turn.md");
+        fs::write(&path, "PREVIOUS BUNDLED DEFAULT").expect("old default should write");
+        let mut template_sha256 = BTreeMap::new();
+        template_sha256.insert(
+            "workflow/turn".to_string(),
+            sha256_hex("PREVIOUS BUNDLED DEFAULT"),
+        );
+        let state = BundledPromptDefaultsState {
+            version: "previous".to_string(),
+            template_sha256,
+        };
+        fs::write(
+            root.join(PROMPT_DEFAULTS_STATE_FILE),
+            serde_json::to_string(&state).expect("state should serialize"),
+        )
+        .expect("state should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("unchanged old defaults should update");
+
+        let body = fs::read_to_string(path).expect("updated default should read");
+        assert!(body.contains("do not validate the outer routing wrapper"));
     }
 
     #[test]

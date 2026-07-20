@@ -78,7 +78,6 @@ const proposer = workflow.node({
   agent: workflow.newAgent({ alias: "proposer", provider: "codex", model: "default" }),
   publicLabel: "Proposer",
   instructions: `Produce a proposal with evidence and hand it to ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"}.`,
-  maxTurns: 4,
   canvas: { x: 0, y: centerY },
 });
 
@@ -99,11 +98,10 @@ for (let index = 0; index < params.critic_count; index += 1) {
     handle,
     agent: workflow.newAgent({ alias: handle, provider: "claude", model: "default" }),
     publicLabel: params.critic_count === 1 ? "Critic" : `Critic ${number}`,
-    instructions: `Find flaws. Route to exactly one outgoing edge: when revision is needed, select only the edge targeting Proposer; when the proposal is ready, select only the edge targeting Judge. Put that single selected edge in output.message.workflow_handoffs using its exact edge_id. Never emit a plain handoff here because plain output fans out to both routes.`,
+    instructions: "Find flaws, set recommendation to revise or judge, and hand the critique to Judge.",
     canvas: { x: 300, y: branchY(index, params.critic_count) },
   });
   workflow.edge(proposer, critic, { handle: `proposal_to_${handle}`, handoffSchema: proposal });
-  workflow.edge(critic, proposer, { handle: `${handle}_loop`, handoffSchema: critique, validationPolicy: "warn" });
   workflow.edge(critic, judge, { handle: `${handle}_to_judge`, handoffSchema: critique, validationPolicy: "halt" });
 }
 

@@ -838,7 +838,8 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
     assert!(prompt.contains("workflow_handoffs"));
     assert!(prompt.contains("edge_id"));
     assert!(prompt.contains("to_node_id"));
-    assert!(prompt.contains("validate the routed message for each selected edge"));
+    assert!(prompt.contains("validate only the routed message inside each selected edge entry"));
+    assert!(prompt.contains("do not validate the outer routing wrapper"));
     if let Some(previous_arroba_home) = previous_arroba_home {
         std::env::set_var("ARROBA_HOME", previous_arroba_home);
     } else {
