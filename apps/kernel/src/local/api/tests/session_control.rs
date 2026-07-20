@@ -130,6 +130,105 @@ fn session_attach_clears_a_missing_active_provider_run() {
 }
 
 #[test]
+fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, focused_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-projected-run", "worktree-projected-run"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-after-projected-worker-run".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("initial attachment should succeed");
+    let remote_agent = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            session_id: session.id().to_string(),
+            alias: Some("remote-worker".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5.6-sol".to_string()),
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("second agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.sessions_mut()
+            .set_focused_agent(session.id(), Some(focused_agent.id().to_string()))
+            .expect("first agent should be focused");
+        let request =
+            LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.6-sol")
+                .with_agent_id(remote_agent.id());
+        let worker_run = RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let (_, projected_run) = worker_run.project_leased_for_home_agent(
+            "leased-agent-1",
+            session.id(),
+            remote_agent.id(),
+        );
+        let projected_run_id = projected_run.id().to_string();
+        app.update_provider_run_projection(projected_run);
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(projected_run_id))
+            .expect("projected run pointer should be installed");
+    });
+
+    harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "client-after-projected-worker-run".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("attach should not try to park a projected worker run locally");
+
+    let attached = match harness
+        .dispatch(LocalDaemonRequest::GetSessionState(
+            GetSessionStateRequest {
+                session_id: session.id().to_string(),
+            },
+        ))
+        .expect("session state should load")
+    {
+        LocalDaemonResponse::SessionState { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(attached.active_provider_run_id(), None);
+}
+
+#[test]
 fn local_request_api_resolves_and_deletes_sessions_by_ref() {
     let harness = LocalRouterTestHarness::new();
     let (session, _agent) = match harness

@@ -183,16 +183,24 @@ impl DaemonApp {
                                     && !self
                                         .provider_run_has_active_prompt(session_id, &active_run)?
                                 {
-                                    let outcome = self.providers.park_run_provider_only(
-                                        session_id,
-                                        current_active_run_id,
-                                    )?;
-                                    clear_active_provider_run_session_pointer(
-                                        self,
-                                        session_id,
-                                        outcome.run().id(),
-                                    )?;
-                                    self.update_provider_run_projection(outcome.into_run());
+                                    match self
+                                        .providers
+                                        .park_run_provider_only(session_id, current_active_run_id)
+                                    {
+                                        Ok(outcome) => {
+                                            clear_active_provider_run_session_pointer(
+                                                self,
+                                                session_id,
+                                                outcome.run().id(),
+                                            )?;
+                                            self.update_provider_run_projection(outcome.into_run());
+                                        }
+                                        Err(DaemonError::ProviderRunNotFound { .. }) => {
+                                            self.sessions
+                                                .set_active_provider_run(session_id, None)?;
+                                        }
+                                        Err(error) => return Err(error),
+                                    }
                                 }
                             }
                             Err(DaemonError::ProviderRunNotFound { .. }) => {
