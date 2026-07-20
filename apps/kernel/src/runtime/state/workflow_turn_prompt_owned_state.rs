@@ -124,6 +124,7 @@ impl KernelRuntimeOwnedState {
                             turn_index,
                             max_turns: node.max_turns(),
                             can_complete_workflow_run: node.can_complete_workflow_run(),
+                            run_output_contract: crate::scheduler::prompt_injection::workflow_run_output_contract_block(&workflow),
                             can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
                             wait_for_all_inputs: node.wait_for_all_inputs(),
                         }

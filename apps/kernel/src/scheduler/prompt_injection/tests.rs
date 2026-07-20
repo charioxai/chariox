@@ -133,6 +133,9 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
         turn_index: 2,
         max_turns: Some(3),
         can_complete_workflow_run: true,
+        run_output_contract: Some(
+            "Final workflow run output contract:\n- workflow_run_output_schema_ref: schema:final\n- workflow_run_output_schema: {\"type\":\"object\"}\n\n".to_string(),
+        ),
         can_emit_intermediate_output: true,
         wait_for_all_inputs: false,
     });
@@ -181,6 +184,9 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
             "legacy title remained: {title}"
         );
     }
+    assert!(assembly
+        .hidden_system_context
+        .contains("workflow_run_output_schema_ref: schema:final"));
 }
 
 #[test]
@@ -362,6 +368,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
         turn_index: 1,
         max_turns: None,
         can_complete_workflow_run: false,
+        run_output_contract: None,
         can_emit_intermediate_output: true,
         wait_for_all_inputs: false,
     });
@@ -455,6 +462,35 @@ fn workflow_outgoing_edge_contract_line_includes_resolved_schema() {
 }
 
 #[test]
+fn workflow_run_output_contract_includes_resolved_schema_and_value_guidance() {
+    let mut workflow = WorkflowDefinition::new("workflow-1", Some("completion".to_string()));
+    workflow.add_schema(crate::session::WorkflowSchemaDefinition::new(
+        "schema:final",
+        Some("final".to_string()),
+        None,
+        serde_json::json!({
+            "type": "object",
+            "required": ["answer"],
+            "properties": {
+                "answer": { "type": "string" }
+            }
+        }),
+    ));
+    workflow.set_run_output_schema_ref(Some("schema:final".to_string()));
+
+    let contract = workflow_run_output_contract_block(&workflow)
+        .expect("resolved run output contract should render");
+
+    assert!(contract.contains("workflow_run_output_schema_ref: schema:final"));
+    assert!(contract.contains(
+        r#"workflow_run_output_schema: {"properties":{"answer":{"type":"string"}},"required":["answer"],"type":"object"}"#
+    ));
+    assert!(
+        contract.contains("Do not wrap that value in the turn-level `summary`/`output` envelope")
+    );
+}
+
+#[test]
 fn workflow_prompt_assembly_reads_user_edited_registry_template() {
     let _guard = env_lock::lock();
     let home = temp_arroba_home("registry-edit");
@@ -524,6 +560,7 @@ fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
         turn_index: 1,
         max_turns: Some(2),
         can_complete_workflow_run: true,
+        run_output_contract: None,
         can_emit_intermediate_output: true,
         wait_for_all_inputs: false,
     });
