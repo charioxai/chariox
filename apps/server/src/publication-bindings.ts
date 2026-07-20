@@ -138,7 +138,7 @@ function bindingForAgent(
 }
 
 function availableProviderProfile(catalog: ProviderCatalogIndex, profile: PublicationProviderModelProfile): PublicationProviderModelProfile | null {
-  const models = catalog.providers.get(profile.provider)
+  const models = providerFamilyModels(catalog, profile.provider)
   if (!models) return null
   if (profile.model === "default" || profile.model === `${profile.provider}/default`) {
     return { ...profile, model: null }
@@ -156,6 +156,17 @@ function availableProviderProfile(catalog: ProviderCatalogIndex, profile: Public
     }
   }
   return null
+}
+
+function providerFamilyModels(catalog: ProviderCatalogIndex, provider: string): Set<string> | null {
+  const direct = catalog.providers.get(provider)
+  if (direct) return direct
+  if (provider !== "claude") return null
+  const models = new Set<string>()
+  for (const alias of ["claude-headless", "claude-p"]) {
+    for (const model of catalog.providers.get(alias) ?? []) models.add(model)
+  }
+  return models.size > 0 ? models : null
 }
 
 function canonicalProviderModelProfile(profile: PublicationProviderModelProfile): PublicationProviderModelProfile {
