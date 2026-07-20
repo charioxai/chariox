@@ -787,6 +787,9 @@ test("human HTTP status page renders resizable per-node traces and sandboxed app
     assert.match(response.body, /className = 'trace-prose'/)
     assert.match(response.body, /className = 'trace-code'/)
     assert.doesNotMatch(response.body, /item\.innerHTML = .*<pre><\/pre>/)
+    assert.match(response.body, /const files = data\.getAll\('artifact'\)/)
+    assert.match(response.body, /form\.reset\(\);/)
+    assert.ok(response.body.indexOf("form.reset();") < response.body.indexOf("setStatus('Submitting');"))
   } finally {
     await app.close()
   }

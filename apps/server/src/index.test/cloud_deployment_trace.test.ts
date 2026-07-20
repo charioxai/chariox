@@ -295,7 +295,7 @@ test("publication trace events honor per-node level policy", () => {
           arguments_json: "{\"q\":\"d\"}",
           result_json: "{\"ok\":true}",
           ok: true,
-          timestamp_ms: 42,
+          timestamp_ms: 52,
         }],
       },
       completed_at_ms: 50,
@@ -346,19 +346,19 @@ test("publication trace events honor per-node level policy", () => {
   const secondPass = collectPublicationTraceEvents(publication, workflowRun, state)
 
   assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
-    ["node-a", "summary", "output_summary", "A completion"],
     ["node-b", "researcher", "assistant_messages", "B handoff"],
-    ["node-b", "researcher", "output_summary", "B completion"],
     ["node-b", "researcher", "assistant_messages", "B assistant output"],
     ["node-c", "planner", "thinking", "C thinking"],
     ["node-c", "planner", "assistant_messages", "C handoff"],
-    ["node-c", "planner", "output_summary", "C summary"],
     ["node-c", "planner", "assistant_messages", "{\"message\":{\"kind\":\"html\",\"html\":\"<main>C assistant output</main>\"}}"],
     ["node-d", "builder", "thinking", "D thinking"],
-    ["node-d", "builder", "tool_use", "lookup ok"],
     ["node-d", "builder", "assistant_messages", "D handoff"],
-    ["node-d", "builder", "output_summary", "D summary"],
     ["node-d", "builder", "assistant_messages", "D assistant output"],
+    ["node-d", "builder", "tool_use", "lookup ok"],
+    ["node-a", "summary", "output_summary", "A completion"],
+    ["node-b", "researcher", "output_summary", "B completion"],
+    ["node-c", "planner", "output_summary", "C summary"],
+    ["node-d", "builder", "output_summary", "D summary"],
   ])
   assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
   assert.equal(JSON.stringify(firstPass).includes("TRACE_SUMMARY B hidden"), false)

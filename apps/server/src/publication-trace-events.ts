@@ -91,9 +91,16 @@ export function collectPublicationTraceEvents(
       }
     }
   }
-  events.sort((left, right) => left.timestamp_ms - right.timestamp_ms)
+  events.sort((left, right) => {
+    const levelOrder = traceLevelOrder(left.level) - traceLevelOrder(right.level)
+    return levelOrder || left.timestamp_ms - right.timestamp_ms
+  })
   for (const event of events) event.sequence = state.nextSequence++
   return events
+}
+
+function traceLevelOrder(level: PublicationTraceLevel) {
+  return level === "output_summary" ? 1 : 0
 }
 
 function pushTraceEvent(

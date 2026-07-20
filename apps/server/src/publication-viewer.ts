@@ -218,6 +218,7 @@ formEl?.addEventListener('submit', async (event) => {
   const prompt = String(data.get('prompt') ?? '').trim();
   const files = data.getAll('artifact').filter((item) => item instanceof File && item.size > 0);
   if (!prompt && files.length === 0) return;
+  form.reset();
   const button = form.querySelector('button[type="submit"]');
   if (button) button.disabled = true;
   setStatus('Submitting');
