@@ -373,12 +373,19 @@ impl SessionService {
         let mut validation_warnings = Vec::new();
         let completion = completion.cloned();
         let mut emitted_messages = Vec::new();
-        for edge in context
+        let outgoing_edges = context
             .workflow
             .edges()
             .iter()
             .filter(|edge| edge.from_node_id() == context.source_node_run.node_id())
-        {
+            .collect::<Vec<_>>();
+        Self::validate_workflow_handoff_selectors(
+            session_id,
+            &context.workflow,
+            &outgoing_edges,
+            completion.as_ref(),
+        )?;
+        for edge in outgoing_edges {
             let Some(edge_completion) = Self::workflow_edge_completion(edge, completion.as_ref())
             else {
                 continue;
@@ -438,6 +445,48 @@ impl SessionService {
             emitted_messages.push(message);
         }
         Ok((emitted_messages, validation_warnings))
+    }
+
+    fn validate_workflow_handoff_selectors(
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+        outgoing_edges: &[&WorkflowEdgeDefinition],
+        completion: Option<&WorkflowCompletionSnapshot>,
+    ) -> Result<(), DaemonError> {
+        let Some(output) = completion.and_then(|snapshot| snapshot.output()) else {
+            return Ok(());
+        };
+        let Ok(value) = serde_json::from_str::<Value>(output.message()) else {
+            return Ok(());
+        };
+        let Some(handoffs) = value
+            .get("workflow_handoffs")
+            .and_then(Value::as_array)
+            .filter(|handoffs| !handoffs.is_empty())
+        else {
+            return Ok(());
+        };
+
+        for handoff in handoffs {
+            let edge_id = handoff.get("edge_id").and_then(Value::as_str);
+            let to_node_id = handoff.get("to_node_id").and_then(Value::as_str);
+            let matches_outgoing_edge = outgoing_edges.iter().any(|edge| {
+                edge_id.is_some_and(|candidate| candidate == edge.id())
+                    || to_node_id.is_some_and(|candidate| candidate == edge.to_node_id())
+            });
+            if matches_outgoing_edge {
+                continue;
+            }
+
+            let selector = edge_id.or(to_node_id).unwrap_or("<missing selector>");
+            return Err(DaemonError::WorkflowHandoffValidationFailed {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                edge_id: selector.to_string(),
+                message: "selected handoff does not match any outgoing workflow edge".to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn workflow_edge_completion(
