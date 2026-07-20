@@ -14,6 +14,9 @@ pub(crate) const CLAUDE_HEADLESS_PROVIDER_ID: &str = "claude-headless";
 pub(crate) const CLAUDE_PRINT_PROVIDER_ID: &str = "claude-p";
 
 const CLAUDE_KNOWN_MODELS: &[(&str, &str)] = &[
+    ("haiku", "Claude Haiku (latest)"),
+    ("sonnet", "Claude Sonnet (latest)"),
+    ("opus", "Claude Opus (latest)"),
     ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
     ("claude-opus-4-7", "Claude Opus 4.7"),
 ];
@@ -44,7 +47,7 @@ pub fn claude_provider_catalog() -> OpenCodeProviderCatalog {
             .collect(),
         default: providers
             .iter()
-            .map(|(id, _)| ((*id).to_string(), "claude-sonnet-4-6".to_string()))
+            .map(|(id, _)| ((*id).to_string(), "sonnet".to_string()))
             .collect(),
         connected,
     }
