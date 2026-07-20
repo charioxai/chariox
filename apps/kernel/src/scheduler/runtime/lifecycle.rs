@@ -120,43 +120,11 @@ pub fn on_workflow_prompt_completed(
         workflow_run,
         dispatches,
         validation_warnings,
+        handoff_validation_failure,
         missing_output_failure,
         run_output_validation_failure,
     } = match completion_result {
         Ok(update) => update,
-        Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
-            edge_id,
-            message,
-            ..
-        }) => {
-            record_and_route_workflow_failure(
-                app,
-                session_id,
-                workflow_run_id,
-                &WorkflowFailureEvent::new(
-                    WorkflowFailureKind::OutputValidationFailed,
-                    workflow_node_run_id,
-                    vec![edge_id.clone()],
-                    message.clone(),
-                ),
-            );
-            app.sessions_mut().stop_workflow_node_run(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            app.record_notice(
-                session_id,
-                None,
-                app.attachments().list_session_attachment_ids(session_id),
-                format!(
-                    "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
-                ),
-            );
-            maybe_start_next_queued_workflow_prompt(app, session_id);
-            persist_workflow_session_state(app, session_id, "workflow_prompt_completed")?;
-            return Ok(());
-        }
         Err(error) => return Err(error),
     };
     if !validation_warnings.is_empty() {
@@ -199,6 +167,35 @@ pub fn on_workflow_prompt_completed(
                 Vec::new(),
                 "workflow run stopped after a node exhausted its turn budget",
             ),
+        );
+    }
+    if let Some(failure) = handoff_validation_failure.as_ref() {
+        record_and_route_workflow_failure(
+            app,
+            session_id,
+            workflow_run_id,
+            &WorkflowFailureEvent::new(
+                WorkflowFailureKind::OutputValidationFailed,
+                workflow_node_run_id,
+                vec![failure.edge_id.clone()],
+                failure.message.clone(),
+            ),
+        );
+        app.record_notice(
+            session_id,
+            provider_run_id,
+            app.attachments().list_session_attachment_ids(session_id),
+            if failure.retry_scheduled {
+                format!(
+                    "Workflow handoff on edge `{}` failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                    failure.edge_id, failure.attempt, failure.max_attempts, failure.message
+                )
+            } else {
+                format!(
+                    "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}` after attempt {}/{}: {}",
+                    failure.edge_id, failure.attempt, failure.max_attempts, failure.message
+                )
+            },
         );
     }
     if let Some(failure) = run_output_validation_failure.as_ref() {
@@ -260,6 +257,7 @@ pub fn on_workflow_prompt_completed(
         );
     }
     if validation_warnings.is_empty()
+        && handoff_validation_failure.is_none()
         && missing_output_failure.is_none()
         && run_output_validation_failure.is_none()
     {

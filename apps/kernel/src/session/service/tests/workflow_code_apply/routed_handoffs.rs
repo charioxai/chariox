@@ -274,7 +274,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             "output": { "message": { "event": "not-a-task", "status": "wrong-channel" } }
         }]
     });
-    let error = service
+    let invalid = service
         .complete_workflow_node_run(
             session.id(),
             workflow_run.id(),
@@ -282,11 +282,42 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             Some(completion_with_message(invalid_handoff.to_string())),
             None,
         )
-        .expect_err("edge handoff schema should reject progress-shaped routed output");
-    assert!(matches!(
-        error,
-        DaemonError::WorkflowHandoffValidationFailed { .. }
-    ));
+        .expect("edge handoff schema failure should schedule correction");
+    let failure = invalid
+        .handoff_validation_failure
+        .as_ref()
+        .expect("handoff validation failure should be reported");
+    let correction_prompt = invalid.dispatches[0]
+        .endpoint_prompt
+        .as_deref()
+        .expect("correction should include a prompt");
+    assert_eq!(correction_prompt.matches("classify this task").count(), 1);
+    assert!(invalid.dispatches[0].messages.is_empty());
+    assert_eq!(
+        invalid
+            .workflow_run
+            .messages()
+            .iter()
+            .filter(|message| message.message_type() == "handoff")
+            .count(),
+        0
+    );
+    service
+        .record_workflow_failure_event(
+            session.id(),
+            workflow_run.id(),
+            crate::session::WorkflowFailureEvent::new(
+                crate::session::WorkflowFailureKind::OutputValidationFailed,
+                node_run_id,
+                vec![edge_a_id.clone()],
+                failure.message.clone(),
+            ),
+        )
+        .expect("handoff validation failure should be recorded");
+    let correction_node_run_id = invalid.dispatches[0].node_run.id().to_string();
+    service
+        .start_workflow_node_run(session.id(), workflow_run.id(), &correction_node_run_id)
+        .expect("correction turn should start");
     let routed = serde_json::json!({
         "workflow_handoffs": [{
             "edge_id": edge_a_id,
@@ -299,7 +330,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
         .complete_workflow_node_run(
             session.id(),
             workflow_run.id(),
-            &node_run_id,
+            &correction_node_run_id,
             Some(completion_with_message(routed.to_string())),
             None,
         )
@@ -325,6 +356,33 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
     assert!(!output.message().contains("started"));
     assert!(!output.message().contains("routing"));
     assert_eq!(completion.workflow_run.intermediate_outputs().len(), 2);
+    assert_eq!(
+        completion
+            .workflow_run
+            .messages()
+            .iter()
+            .filter(|message| message.message_type() == "handoff")
+            .count(),
+        1
+    );
+    assert_eq!(
+        completion
+            .workflow_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == router_node_id)
+            .count(),
+        2
+    );
+    assert_eq!(
+        completion
+            .workflow_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == worker_a_node_id)
+            .count(),
+        1
+    );
 
     let second_run = service
         .invoke_workflow_endpoint(

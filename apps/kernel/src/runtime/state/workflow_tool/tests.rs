@@ -230,7 +230,7 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
     assert_eq!(option_b["validation_policy"], "warn");
     assert_eq!(
         result.payload["handoff_routing"]["final_json_field"],
-        "workflow_handoffs"
+        "output.message.workflow_handoffs"
     );
     assert!(result.payload["handoff_routing"]["select_by"]
         .as_array()

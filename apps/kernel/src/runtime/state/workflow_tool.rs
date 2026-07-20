@@ -401,7 +401,7 @@ impl KernelRuntimeOwnedState {
                 "messages": messages,
                 "outgoing_edges": outgoing_edges,
                 "handoff_routing": {
-                    "final_json_field": "workflow_handoffs",
+                    "final_json_field": "output.message.workflow_handoffs",
                     "select_by": ["edge_id", "to_node_id"],
                     "message_fields": ["output.message", "message"],
                 },

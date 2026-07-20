@@ -813,6 +813,201 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
 }
 
 #[tokio::test]
+async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, classifier_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let specialist_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "codex").with_alias("specialist"),
+        )
+        .expect("specialist should spawn");
+    let provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(classifier_agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(provider_run.clone());
+
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("runtime-handoff-correction".to_string()))
+        .expect("workflow should be created");
+    let classifier = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), classifier_agent.id())
+        .expect("classifier node should be added");
+    let specialist = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), specialist_agent.id())
+        .expect("specialist node should be added");
+    let schema = std::env::temp_dir().join(format!(
+        "arroba-runtime-owned-handoff-{}-{}.json",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::write(
+        &schema,
+        r#"{"type":"object","required":["task"],"properties":{"task":{"type":"string"}},"additionalProperties":false}"#,
+    )
+    .expect("schema should write");
+    let edge = app
+        .sessions_mut()
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            classifier.id(),
+            specialist.id(),
+            Some(schema.to_string_lossy().to_string()),
+            Some(crate::session::WorkflowHandoffValidationPolicy::Halt),
+        )
+        .expect("classifier should connect to specialist");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            classifier.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("classify runtime task".to_string()),
+        )
+        .expect("workflow run should be created");
+    let first_node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &first_node_run_id,
+            format!("workflow-ack:{first_node_run_id}"),
+            "workflow classifier prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("classifier turn should be prepared");
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), &first_node_run_id)
+        .expect("classifier should start");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        classifier_agent.id(),
+        "workflow classifier prompt".to_string(),
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &first_node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("classifier prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, provider_run.id());
+
+    let output = format!(
+        "```json\n{{\"summary\":\"classified\",\"workflow_handoffs\":[{{\"edge_id\":\"{}\",\"output\":{{\"message\":{{\"wrong\":true}}}}}}],\"output\":{{\"message\":\"plain classifier note\"}}}}\n```",
+        edge.id()
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            provider_run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("invalid-handoff-output".to_string()),
+                    bytes: output.into_bytes(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "invalid-handoff-output".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("invalid handoff output should begin settling");
+    runtime
+        .settle_owned_provider_prompt(session.id(), provider_run.id(), true, false, false)
+        .await
+        .expect("invalid handoff completion should request settlement");
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::app::provider_output::STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS + 75,
+    ))
+    .await;
+    runtime
+        .settle_owned_provider_prompt(session.id(), provider_run.id(), false, false, true)
+        .await
+        .expect("invalid handoff should settle into correction");
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let resolved_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should exist");
+    assert_eq!(
+        resolved_run.status(),
+        crate::session::WorkflowRunStatus::Running
+    );
+    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert_eq!(
+        resolved_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Failed
+    );
+    assert_eq!(resolved_run.node_runs()[1].node_id(), classifier.id());
+    assert_eq!(
+        resolved_run
+            .node_runs()
+            .iter()
+            .filter(|node_run| node_run.node_id() == specialist.id())
+            .count(),
+        0
+    );
+    assert_eq!(
+        resolved_run
+            .messages()
+            .iter()
+            .filter(|message| message.message_type() == "handoff")
+            .count(),
+        0
+    );
+    let correction_prompt = session_state
+        .active_prompt_for_agent(classifier_agent.id())
+        .expect("classifier correction should be active")
+        .prompt();
+    assert_eq!(
+        correction_prompt.matches("classify runtime task").count(),
+        1
+    );
+    assert!(resolved_run.failure_events().iter().any(|event| {
+        event.kind() == crate::session::WorkflowFailureKind::OutputValidationFailed
+            && event.source_node_run_id() == first_node_run_id
+    }));
+    std::fs::remove_file(schema).ok();
+}
+
+#[tokio::test]
 async fn workflow_reasoning_records_thinking_from_prompt_owner_context() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

@@ -13,10 +13,25 @@ use crate::session::{
 
 const WORKFLOW_COMPLETION_SUMMARY_LIMIT: usize = 160;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct WorkflowStructuredOutputEnvelope {
     summary: Option<String>,
     output: Option<WorkflowStructuredOutputValue>,
+    #[serde(default)]
+    workflow_handoffs: Vec<Value>,
+}
+
+impl WorkflowStructuredOutputEnvelope {
+    fn output_message(&self) -> Option<String> {
+        if !self.workflow_handoffs.is_empty() {
+            return Some(
+                serde_json::json!({ "workflow_handoffs": self.workflow_handoffs }).to_string(),
+            );
+        }
+        self.output
+            .clone()
+            .and_then(WorkflowStructuredOutputValue::into_output_message)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -225,8 +240,7 @@ pub(crate) fn build_workflow_completion_snapshot_from_history(
     let artifacts = collect_workflow_artifact_refs(session_id, workflow_run_id, started_at_ms);
     let output_message = structured_output
         .as_ref()
-        .and_then(|value| value.output.clone())
-        .and_then(WorkflowStructuredOutputValue::into_output_message);
+        .and_then(WorkflowStructuredOutputEnvelope::output_message);
     let output = match (output_message, artifacts) {
         (Some(message), artifacts) => Some(WorkflowOutputPayload::new(message, artifacts)),
         (None, artifacts) if !artifacts.is_empty() => {
@@ -379,6 +393,33 @@ fn collect_workflow_artifacts_from_dir(
 #[cfg(test)]
 mod tests {
     use super::parse_workflow_structured_output;
+
+    #[test]
+    fn workflow_structured_output_preserves_top_level_routing_over_plain_output() {
+        let parsed = parse_workflow_structured_output(
+            r#"
+```json
+{"summary":"classified","workflow_handoffs":[{"edge_id":"code-edge","output":{"message":{"task":"fix routing"}}}],"output":{"message":"plain classifier note"}}
+```
+"#,
+        )
+        .expect("structured output should parse");
+
+        let output: serde_json::Value = serde_json::from_str(
+            &parsed
+                .output_message()
+                .expect("top-level routing should become the output message"),
+        )
+        .expect("routing output should stay valid JSON");
+        assert_eq!(
+            output["workflow_handoffs"].as_array().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            output["workflow_handoffs"][0]["output"]["message"]["task"],
+            "fix routing"
+        );
+    }
 
     #[test]
     fn workflow_structured_output_accepts_json_message_values() {
