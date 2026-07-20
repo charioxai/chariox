@@ -71,7 +71,11 @@ for (let index = 0; index < params.refinement_passes; index += 1) {
   const handle = params.refinement_passes === 1 ? "refiner" : `refiner_${pad2(pass)}`;
   const refiner = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    agent: workflow.newAgent({
+      alias: handle.replaceAll("_", "-"),
+      provider: index % 2 === 0 ? "claude" : "opencode",
+      model: index % 2 === 0 ? "haiku" : "deepseek-v4-pro",
+    }),
     publicLabel: params.refinement_passes === 1 ? "Refiner" : `Refiner ${pass}`,
     instructions: isFinal
       ? "Refine the draft and submit final output that matches final_output."

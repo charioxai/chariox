@@ -111,6 +111,19 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
             .source
             .contains("provider: \"opencode\", model: \"kimi-k2.6\""));
     }
+    let prompt_chaining = registry
+        .resolve("prompt-chaining")
+        .expect("prompt chaining registry entry should resolve");
+    assert!(prompt_chaining
+        .source
+        .contains("model: index % 2 === 0 ? \"haiku\" : \"deepseek-v4-pro\""));
+    for workflow_ref in ["fan-out-synthesize", "routing", "tournament"] {
+        assert!(registry
+            .resolve(workflow_ref)
+            .expect("mixed-provider workflow registry entry should resolve")
+            .source
+            .contains("kimi-k2.6"));
+    }
 
     let error = registry
         .delete("prompt-chaining", None)

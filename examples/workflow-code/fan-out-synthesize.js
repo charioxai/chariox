@@ -98,7 +98,11 @@ for (let index = 0; index < params.worker_count; index += 1) {
   const handle = params.worker_count === 2 ? defaultHandles[index] : `worker_${pad2(number)}`;
   const worker = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    agent: workflow.newAgent({
+      alias: handle.replaceAll("_", "-"),
+      provider: index % 2 === 0 ? "claude" : "opencode",
+      model: index % 2 === 0 ? "haiku" : "kimi-k2.6",
+    }),
     publicLabel: params.worker_count === 2 ? `Worker ${number === 1 ? "A" : "B"}` : `Worker ${number}`,
     instructions: "Work your assigned angle and hand findings to the synthesizer.",
     canvas: { x: 300, y: branchY(index, params.worker_count) },
