@@ -257,7 +257,7 @@ pub(super) fn workflow_code_definition_from_session_workflow(
         });
     }
 
-    Ok(WorkflowCodeDefinition {
+    let mut definition = WorkflowCodeDefinition {
         schema_version: WORKFLOW_CODE_SCHEMA_VERSION,
         parameters_schema: None,
         workflow: WorkflowCodeWorkflow {
@@ -366,7 +366,29 @@ pub(super) fn workflow_code_definition_from_session_workflow(
                 max_runs: schedule.max_runs(),
             })
             .collect(),
-    })
+    };
+    strip_invalid_export_canvas_layout(&mut definition);
+    Ok(definition)
+}
+
+pub(super) fn strip_invalid_export_canvas_layout(definition: &mut WorkflowCodeDefinition) {
+    let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+    if !report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "canvas_overlap")
+    {
+        return;
+    }
+    for node in &mut definition.nodes {
+        node.canvas = None;
+    }
+    for edge in &mut definition.edges {
+        edge.canvas = None;
+    }
+    for endpoint in &mut definition.endpoints {
+        endpoint.canvas = None;
+    }
 }
 
 fn workflow_code_export_handle(

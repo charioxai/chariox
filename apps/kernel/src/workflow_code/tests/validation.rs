@@ -73,6 +73,31 @@ fn rejects_explicit_canvas_box_collisions() {
 }
 
 #[test]
+fn source_export_drops_a_legacy_canvas_layout_that_cannot_be_reused() {
+    let mut definition = minimal_definition();
+    definition.nodes[0].canvas = Some(WorkflowCodeCanvasPoint { x: 229, y: 121 });
+    definition.nodes[0].can_complete_workflow_run = Some(true);
+    definition.endpoints[0].canvas = Some(WorkflowCodeCanvasPoint { x: 540, y: 120 });
+
+    let before = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+    assert!(before
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == "canvas_overlap"));
+
+    strip_invalid_export_canvas_layout(&mut definition);
+
+    assert!(definition.nodes.iter().all(|node| node.canvas.is_none()));
+    assert!(definition.edges.iter().all(|edge| edge.canvas.is_none()));
+    assert!(definition
+        .endpoints
+        .iter()
+        .all(|endpoint| endpoint.canvas.is_none()));
+    let after = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+    assert!(after.ok, "{:?}", after.diagnostics);
+}
+
+#[test]
 fn rejects_exit_marker_canvas_collisions() {
     let mut definition = minimal_definition();
     definition.nodes.push(WorkflowCodeNodeDefinition {
