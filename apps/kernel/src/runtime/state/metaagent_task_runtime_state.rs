@@ -447,6 +447,47 @@ impl KernelRuntimeState {
                     MetaagentTaskStatus::Active,
                 )?;
                 drop(session);
+                let queued_prompt = self.owned.prompt_state_owner.peek_next_queued_prompt(
+                    &self.owned.session_store.get_session(&request.session_id)?,
+                    &request.metaagent_id,
+                );
+                if queued_prompt.is_some() {
+                    if metaagent.remote_execution().is_some() {
+                        if let Some(mut submission) =
+                            self.owned.advance_next_queued_remote_prompt_dispatch(
+                                &request.session_id,
+                                &request.metaagent_id,
+                            )?
+                        {
+                            self.finish_owned_prompt_submission_workflow_start(&mut submission)
+                                .await?;
+                            self.spawn_remote_prompt_projection_drain_if_needed(&submission);
+                            if let Some(dispatch) = submission.remote_dispatch.take() {
+                                self.spawn_remote_prompt_dispatch(dispatch);
+                            }
+                        }
+                    } else {
+                        let provider_run_id = self
+                            .owned
+                            .provider_store
+                            .get_run_for_agent(&request.session_id, &request.metaagent_id)
+                            .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                                session_id: request.session_id.clone(),
+                            })?
+                            .id()
+                            .to_string();
+                        if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+                            &request.session_id,
+                            &request.metaagent_id,
+                            &provider_run_id,
+                        )? {
+                            self.spawn_prompt_dispatch(
+                                dispatch,
+                                self.provider_runtime_lanes.clone(),
+                            );
+                        }
+                    }
+                }
                 self.notify_metaagent_task_changed(
                     &request.session_id,
                     &metaagent,

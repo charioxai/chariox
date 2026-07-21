@@ -510,6 +510,104 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
     );
 }
 
+#[test]
+fn resumed_metaagent_task_prioritizes_preserved_user_prompt() {
+    run_large_stack_async_test(
+        "resumed-metaagent-task-prioritizes-preserved-user-prompt",
+        resumed_metaagent_task_prioritizes_preserved_user_prompt_inner,
+    );
+}
+
+async fn resumed_metaagent_task_prioritizes_preserved_user_prompt_inner() {
+    let env = TestMetaRuntimeEnv::new("paused-task-queue");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "# Active task")
+        .expect("task should start");
+    app.sessions_mut()
+        .set_metaagent_task_status(
+            session.id(),
+            metaagent.id(),
+            crate::session::MetaagentTaskStatus::Paused,
+        )
+        .expect("task should pause");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "paused-queue-user",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            metaagent.owner_user_id(),
+        ))
+        .expect("user attachment should attach");
+    let queued_text = "user follow-up must wait while paused";
+    let queued = crate::session::PromptQueueItem::new(
+        "pending:paused-user-followup",
+        attachment.id(),
+        metaagent.id(),
+        queued_text,
+        crate::session::PromptStatus::Queued,
+    );
+    let queued = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued, true)
+        .expect("user follow-up should submit");
+    assert!(matches!(
+        queued,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let resume =
+        LocalDaemonRequest::ResumeMetaagentTask(crate::local::ResumeMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+        });
+    let resumed = router
+        .dispatch(
+            KernelCommand::from_local_request("resume-meta-task-with-queue", None, None, &resume),
+            resume,
+        )
+        .await
+        .expect("resume should dispatch");
+    let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = resumed else {
+        panic!("unexpected resume response: {resumed:?}");
+    };
+    assert_eq!(
+        task.as_ref().map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Active)
+    );
+    let active = session
+        .active_prompt_for_agent(metaagent.id())
+        .expect("resume should promote the preserved user prompt");
+    assert_eq!(active.prompt(), queued_text);
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(metaagent.id())
+            .map(|prompts| prompts.len()),
+        Some(1)
+    );
+}
+
 #[tokio::test]
 async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     let env = TestMetaRuntimeEnv::new("shared-token-tool-visibility");

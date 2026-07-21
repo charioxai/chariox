@@ -6,6 +6,84 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn advance_next_queued_remote_prompt_dispatch(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.session_id() != session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(None);
+        };
+        let session = self.session_store.get_session(session_id)?;
+        let Some(next_prompt) = self
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+        else {
+            return Ok(None);
+        };
+        let started = self
+            .prompt_state_owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                agent_id,
+                Some(next_prompt.id()),
+                self.session_store.reserve_prompt_id(),
+            )?
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "advance remote queued prompt",
+                message: format!(
+                    "expected queued prompt `{}` but no queued prompt was available",
+                    next_prompt.id()
+                ),
+            })?;
+        let _ =
+            self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
+        self.persist_prompt_session_state(&self.session_store.get_session(session_id)?, agent_id)?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        let remote_dispatch = crate::app::KernelRemotePromptDispatch {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
+            prompt_id: started.id().to_string(),
+            worker_kernel_id: remote_execution.worker_kernel_id,
+            leased_agent_id: remote_execution.leased_agent_id,
+            relay_url: remote_execution.relay_url,
+            relay_token: remote_execution.relay_token,
+            source_attachment_id: started.source_attachment_id().to_string(),
+            prompt: started.prompt().to_string(),
+            attachments: started.attachments().to_vec(),
+            workspace_live_sync_mode: Some(
+                crate::provider::provider_workspace_live_sync_mode_for_session(
+                    agent.provider(),
+                    &self.config_projection.snapshot(),
+                    Some(&session),
+                ),
+            ),
+            prompt_origin: started.prompt_origin(),
+            external_provider: started.external_provider().map(str::to_string),
+            external_provider_session_id: started
+                .external_provider_session_id()
+                .map(str::to_string),
+            external_provider_turn_id: started.external_provider_turn_id().map(str::to_string),
+            workflow_context: None,
+        };
+        let session = self.session_snapshot(session_id)?;
+        Ok(Some(crate::app::KernelPromptSubmission {
+            outcome: crate::session::PromptSubmissionOutcome::Started { prompt: started },
+            session,
+            dispatch: None,
+            remote_dispatch: Some(remote_dispatch),
+        }))
+    }
+
     pub(super) fn submit_remote_prepared_prompt(
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,

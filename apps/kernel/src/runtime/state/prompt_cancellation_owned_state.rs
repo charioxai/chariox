@@ -77,10 +77,16 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
             .unwrap_or(false);
-        let started_next = if self
-            .prompt_state_owner
-            .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
-            .is_none()
+        let hold_queued_prompts = self
+            .session_store
+            .get_session(session_id)?
+            .metaagent_task(agent_id)
+            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
+        let started_next = if !hold_queued_prompts
+            && self
+                .prompt_state_owner
+                .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
+                .is_none()
         {
             let next_prompt = self
                 .prompt_state_owner
