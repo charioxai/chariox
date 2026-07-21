@@ -280,13 +280,36 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> WorkflowPromptDispatches {
         loop {
-            let (queued_prompt, workflow_run, workflow, endpoint) = match self
-                .session_store
-                .write()
-                .dequeue_next_workflow_prompt_and_create_run(session_id)
-            {
+            let next_workflow = {
+                self.session_store
+                    .write()
+                    .dequeue_next_workflow_prompt_and_create_run(session_id)
+            };
+            let (queued_prompt, workflow_run, workflow, endpoint) = match next_workflow {
                 Ok(Some(claimed)) => claimed,
-                Ok(None) => return WorkflowPromptDispatches::default(),
+                Ok(None) => {
+                    let queued_metaagent_task = self
+                        .session_store
+                        .write()
+                        .pop_next_queued_metaagent_task(session_id);
+                    return match queued_metaagent_task {
+                        Ok(Some(task)) => WorkflowPromptDispatches {
+                            starting_metaagent_tasks: vec![task],
+                            ..WorkflowPromptDispatches::default()
+                        },
+                        Ok(None) => WorkflowPromptDispatches::default(),
+                        Err(error) => {
+                            self.record_notice(
+                                session_id,
+                                None,
+                                self.attachment_store
+                                    .list_session_attachment_ids(session_id),
+                                format!("Failed to start queued Meta task: {error}"),
+                            );
+                            WorkflowPromptDispatches::default()
+                        }
+                    };
+                }
                 Err(error) => {
                     self.record_notice(
                         session_id,

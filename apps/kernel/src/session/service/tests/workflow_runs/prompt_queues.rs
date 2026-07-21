@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn metaagent_and_workflow_tasks_share_one_serial_task_lane() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = workflow_with_endpoint(&mut service, session.id(), "after-meta", "agent-1");
+
+    let meta = service
+        .enqueue_metaagent_task(
+            session.id(),
+            "agent-1",
+            "attachment-1",
+            "inspect the task lane",
+            Vec::new(),
+        )
+        .expect("Meta task should queue");
+    let (_, claimed) = service
+        .enqueue_workflow_prompt_and_maybe_create_run(
+            session.id(),
+            workflow.workflow.id(),
+            workflow.endpoint.id(),
+            Some("run after Meta".to_string()),
+            Some("default"),
+            WorkflowQueuedPromptSource::Manual,
+            None,
+            None,
+        )
+        .expect("workflow task should queue");
+    assert!(
+        claimed.is_none(),
+        "workflow must not overtake the older Meta task"
+    );
+
+    let popped = service
+        .pop_next_queued_metaagent_task(session.id())
+        .expect("Meta queue should be readable")
+        .expect("Meta task should be selected first");
+    assert_eq!(popped.id(), meta.id());
+    service
+        .start_or_update_metaagent_task(session.id(), "agent-1", popped.task_markdown())
+        .expect("Meta task should become active");
+    assert!(service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("workflow queue should remain readable")
+        .is_none());
+
+    service
+        .complete_metaagent_task(session.id(), "agent-1", Some("done".to_string()))
+        .expect("Meta task should complete");
+    assert!(service
+        .dequeue_next_workflow_prompt(session.id())
+        .expect("workflow should dequeue after Meta completion")
+        .is_some());
+}
+
+#[test]
 fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
     let mut service = SessionService::new(&test_config());
     let session = service

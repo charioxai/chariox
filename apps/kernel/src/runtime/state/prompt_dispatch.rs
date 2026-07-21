@@ -361,6 +361,9 @@ impl KernelRuntimeState {
                         target_agent_id,
                         &completion.completion,
                     )?;
+                    self.spawn_workflow_prompt_dispatches(
+                        owned.workflow_maybe_start_next_queued_prompt(session_id),
+                    );
                     return Ok(completion.completion);
                 }
             }
@@ -403,6 +406,9 @@ impl KernelRuntimeState {
                     target_agent_id,
                     &completion_result,
                 )?;
+                self.spawn_workflow_prompt_dispatches(
+                    owned.workflow_maybe_start_next_queued_prompt(session_id),
+                );
                 return Ok(completion_result);
             }
         }

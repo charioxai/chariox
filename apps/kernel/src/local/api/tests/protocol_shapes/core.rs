@@ -1,8 +1,37 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    session.enqueue_metaagent_task(crate::session::QueuedMetaagentTask::new(
+        "session-task:prompt-2",
+        "agent-1",
+        "attachment-1",
+        "coordinate the queued work",
+        Vec::new(),
+    ));
+    let snapshot = serde_json::to_value(session).expect("queued Meta task should encode");
+    assert_eq!(
+        snapshot.pointer("/queued_metaagent_tasks/0/id"),
+        Some(&serde_json::json!("session-task:prompt-2")),
+    );
+    assert_eq!(
+        snapshot.pointer("/queued_metaagent_tasks/0/task_markdown"),
+        Some(&serde_json::json!("coordinate the queued work")),
+    );
+}
+
+#[test]
 fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let request = LocalDaemonRequest::PauseWorkflowRun(PauseWorkflowRunRequest {
         session_id: "session-1".to_string(),
@@ -52,7 +81,7 @@ fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
         session_id: "session-1".to_string(),
@@ -91,7 +120,7 @@ fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
     assert_eq!(
@@ -168,7 +197,7 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -204,7 +233,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -252,7 +281,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let active_cancel_request =
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
@@ -408,7 +437,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(8),
@@ -492,7 +521,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 245);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 246);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),

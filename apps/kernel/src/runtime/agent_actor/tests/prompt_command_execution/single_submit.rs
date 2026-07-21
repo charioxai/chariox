@@ -240,9 +240,18 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         panic!("replacement meta slash prompt should queue behind active meta turn");
     };
     assert_eq!(prompt.prompt(), "Expand the delegation plan.");
+    assert!(prompt.id().starts_with("session-task:"));
     assert_eq!(
         replacement_session
             .metaagent_task(&agent_id)
+            .map(|task| task.task_markdown()),
+        Some("Inspect the repo by delegation.")
+    );
+    assert_eq!(replacement_session.queued_metaagent_tasks().len(), 1);
+    assert_eq!(
+        replacement_session
+            .queued_metaagent_tasks()
+            .front()
             .map(|task| task.task_markdown()),
         Some("Expand the delegation plan.")
     );
@@ -267,14 +276,17 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     assert!(specs
         .iter()
         .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL));
-    let completion = runtime_state
-        .dispatch_authenticated_runtime_tool_call(
+    let completion = timeout(
+        Duration::from_secs(5),
+        runtime_state.dispatch_authenticated_runtime_tool_call(
             &auth_token,
             crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
             serde_json::json!({ "summary": "delegation complete" }),
-        )
-        .await
-        .expect("complete_task should dispatch");
+        ),
+    )
+    .await
+    .expect("meta task completion should not hang")
+    .expect("complete_task should dispatch");
     assert!(completion.ok);
     let completed_agent = runtime_state
         .list_agents()

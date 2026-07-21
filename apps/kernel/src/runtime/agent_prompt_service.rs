@@ -159,6 +159,33 @@ impl AgentPromptCommandService {
             .await
     }
 
+    pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
+        self.state.session_task_lane_busy(session_id)
+    }
+
+    pub(crate) fn enqueue_metaagent_task(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        source_attachment_id: &str,
+        task_markdown: &str,
+        attachments: Vec<crate::session::PromptAttachment>,
+    ) -> Result<
+        (
+            crate::session::QueuedMetaagentTask,
+            crate::session::RuntimeSession,
+        ),
+        DaemonError,
+    > {
+        self.state.enqueue_metaagent_task(
+            session_id,
+            metaagent_id,
+            source_attachment_id,
+            task_markdown,
+            attachments,
+        )
+    }
+
     pub(crate) fn meta_mode_entered_hidden_context(&self) -> Result<String, DaemonError> {
         crate::runtime::state::KernelRuntimeState::meta_mode_entered_hidden_context()
     }

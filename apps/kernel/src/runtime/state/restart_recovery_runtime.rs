@@ -110,7 +110,8 @@ impl KernelRuntimeState {
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
     ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
-        for session in self.owned.session_store.list_all_sessions() {
+        let sessions = self.owned.session_store.list_all_sessions();
+        for session in &sessions {
             for (agent_id, prompt_state) in session.prompt_states() {
                 let Some(prompt) = prompt_state.active_prompt().cloned() else {
                     continue;
@@ -225,6 +226,12 @@ impl KernelRuntimeState {
                     None => summary.uncertain_local_prompts_preserved += 1,
                 }
             }
+        }
+        for session in sessions {
+            self.spawn_workflow_prompt_dispatches(
+                self.owned
+                    .workflow_maybe_start_next_queued_prompt(session.id()),
+            );
         }
         summary
     }
@@ -631,6 +638,73 @@ mod tests {
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
         );
         (router.runtime_state(), session_id, agent_id, prompt_id)
+    }
+
+    fn runtime_with_queued_metaagent_task() -> (KernelRuntimeState, String, String) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-restart-meta-queue",
+                "worktree-restart-meta-queue",
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-restart-meta-queue",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.launch_provider(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+        app.sessions_mut()
+            .enqueue_metaagent_task(
+                session.id(),
+                agent.id(),
+                attachment.id(),
+                "resume queued Meta work",
+                Vec::new(),
+            )
+            .expect("Meta task should queue");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        (router.runtime_state(), session_id, agent_id)
+    }
+
+    #[tokio::test]
+    async fn queued_metaagent_task_starts_after_restart_without_an_active_prompt() {
+        let (runtime, session_id, agent_id) = runtime_with_queued_metaagent_task();
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary, DurableRestartRecoverySummary::default());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should remain available");
+                if session.queued_metaagent_tasks().is_empty()
+                    && session.metaagent_task(&agent_id).is_some_and(|task| {
+                        task.status() == crate::session::MetaagentTaskStatus::Active
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("queued Meta task should restart");
     }
 
     #[tokio::test]

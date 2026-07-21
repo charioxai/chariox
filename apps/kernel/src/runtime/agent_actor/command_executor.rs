@@ -94,7 +94,57 @@ impl AgentRuntimeCommandExecutor {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "no target agent".to_string(),
                 })?;
+        let materialized_attachments = materialize_inline_prompt_attachments(
+            &request.session_id,
+            &target_agent_id,
+            request.attachments,
+        )?;
         let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
+        if let Some(meta_slash) = meta_slash.as_ref() {
+            if self
+                .prompt_commands
+                .session_task_lane_busy(&request.session_id)?
+            {
+                let (task, session) = self.prompt_commands.enqueue_metaagent_task(
+                    &request.session_id,
+                    &target_agent_id,
+                    &request.attachment_id,
+                    &meta_slash.task_prompt,
+                    materialized_attachments,
+                )?;
+                let queued_prompt = PromptQueueItem::new(
+                    task.id(),
+                    task.source_attachment_id(),
+                    task.metaagent_id(),
+                    task.task_markdown(),
+                    PromptStatus::Queued,
+                )
+                .with_attachments(task.attachments().to_vec());
+                if response_mode == PromptSubmitResponseMode::Full {
+                    publish_session_runtime_projection(
+                        &self.session_projection,
+                        &self.agent_runtime_projection,
+                        &session,
+                    );
+                }
+                return Ok(LocalDaemonResponse::PromptSubmitted {
+                    outcome: crate::session::PromptSubmissionOutcome::Queued {
+                        prompt: queued_prompt,
+                    },
+                    agent_activity: if response_mode == PromptSubmitResponseMode::Full {
+                        self.prompt_commands.agent_activity_for_session(&session)
+                    } else {
+                        Default::default()
+                    },
+                    agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
+                        self.session_projection.change_sequence()
+                    } else {
+                        0
+                    },
+                    session,
+                });
+            }
+        }
         let consumed_meta_slash = meta_slash.is_some();
         let (provider_prompt, hidden_system_context) = if let Some(meta_slash) = meta_slash {
             self.prompt_commands
@@ -120,11 +170,7 @@ impl AgentRuntimeCommandExecutor {
         )
         .with_hidden_system_context(hidden_system_context)
         .with_durable_operation(operation_id, operation_fingerprint)
-        .with_attachments(materialize_inline_prompt_attachments(
-            &request.session_id,
-            &target_agent_id,
-            request.attachments,
-        )?);
+        .with_attachments(materialized_attachments);
         let prepared = self
             .prompt_commands
             .submit_prepared_prompt(KernelPreparedPromptSubmission {

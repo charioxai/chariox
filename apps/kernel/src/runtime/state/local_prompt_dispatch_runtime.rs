@@ -1012,6 +1012,42 @@ impl KernelRuntimeState {
     }
 
     pub(super) fn spawn_workflow_prompt_dispatches(&self, dispatches: WorkflowPromptDispatches) {
+        for task in dispatches.starting_metaagent_tasks {
+            let state = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = state.start_queued_metaagent_task(task.clone()).await {
+                    let session_id = state
+                        .owned
+                        .agent_store
+                        .get_agent(task.metaagent_id())
+                        .map(|agent| agent.session_id().to_string())
+                        .unwrap_or_default();
+                    if !session_id.is_empty() {
+                        let mut sessions = state.owned.session_store.write();
+                        let _ = sessions.block_metaagent_task(
+                            &session_id,
+                            task.metaagent_id(),
+                            format!("queued Meta task failed to start: {error}"),
+                        );
+                        let _ = sessions.requeue_metaagent_task_front(&session_id, task.clone());
+                        drop(sessions);
+                        let _ = state.owned.persist_workflow_runtime_session(
+                            &session_id,
+                            "metaagent_task_start_failed",
+                        );
+                    }
+                    state.owned.record_notice(
+                        &session_id,
+                        None,
+                        state
+                            .owned
+                            .attachment_store
+                            .list_session_attachment_ids(&session_id),
+                        format!("Queued Meta task `{}` failed to start: {error}", task.id()),
+                    );
+                }
+            });
+        }
         for provider_run_id in dispatches.starting_provider_runs {
             self.spawn_detached_workflow_provider_launch(provider_run_id);
         }
@@ -1021,6 +1057,66 @@ impl KernelRuntimeState {
         for dispatch in dispatches.remote {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
+    }
+
+    async fn start_queued_metaagent_task(
+        &self,
+        task: crate::session::QueuedMetaagentTask,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(task.metaagent_id())?;
+        let session_id = agent.session_id().to_string();
+        self.activate_meta_mode_for_prompt(&session_id, agent.id(), task.task_markdown())
+            .await?;
+        let prompt = crate::session::PromptQueueItem::new(
+            format!("pending-draft:{}", task.id()),
+            task.source_attachment_id(),
+            agent.id(),
+            task.task_markdown(),
+            crate::session::PromptStatus::Queued,
+        )
+        .with_hidden_system_context(Self::meta_mode_entered_hidden_context()?)
+        .with_attachments(task.attachments().to_vec());
+        let mut submission = self
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await?;
+        if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
+            (&submission.outcome, submission.dispatch.as_ref())
+        {
+            self.start_active_turn_with_trace_id(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                prompt.id(),
+                &dispatch.provider_run_id,
+                task.id(),
+            );
+        }
+        if let Some(dispatch) = submission.dispatch.take() {
+            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+        }
+        if let Some(dispatch) = submission.remote_dispatch.take() {
+            self.spawn_remote_prompt_dispatch(dispatch);
+        }
+        if let Err(error) = self
+            .owned
+            .persist_workflow_runtime_session(&session_id, "metaagent_task_started")
+        {
+            self.owned.record_notice(
+                &session_id,
+                None,
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(&session_id),
+                format!(
+                    "Meta task started, but its session snapshot could not be persisted: {error}"
+                ),
+            );
+        }
+        Ok(())
     }
 
     fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {

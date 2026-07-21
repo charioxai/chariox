@@ -22,6 +22,44 @@ pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand>
 }
 
 impl KernelRuntimeState {
+    pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        Ok(session.has_active_session_task() || session.has_pending_session_task())
+    }
+
+    pub(crate) fn enqueue_metaagent_task(
+        &self,
+        session_id: &str,
+        metaagent_id: &str,
+        source_attachment_id: &str,
+        task_markdown: &str,
+        attachments: Vec<crate::session::PromptAttachment>,
+    ) -> Result<
+        (
+            crate::session::QueuedMetaagentTask,
+            crate::session::RuntimeSession,
+        ),
+        DaemonError,
+    > {
+        let task = self.owned.session_store.write().enqueue_metaagent_task(
+            session_id,
+            metaagent_id,
+            source_attachment_id,
+            task_markdown,
+            attachments,
+        )?;
+        let session = self.owned.session_snapshot(session_id)?;
+        self.owned.durable_state_store.append_event(
+            "session.updated",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "session": &session,
+                "reason": "metaagent_task_queued",
+            }),
+        )?;
+        Ok((task, session))
+    }
+
     pub(crate) async fn activate_meta_mode_for_prompt(
         &self,
         session_id: &str,
@@ -527,6 +565,10 @@ impl KernelRuntimeState {
                         "meta task abort",
                     )
                     .await?;
+                self.spawn_workflow_prompt_dispatches(
+                    self.owned
+                        .workflow_maybe_start_next_queued_prompt(&request.session_id),
+                );
                 let session = self.project_metaagent_task_session(session);
                 Ok(metaagent_task_response(session, &request.metaagent_id))
             }

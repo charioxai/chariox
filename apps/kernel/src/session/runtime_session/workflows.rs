@@ -420,6 +420,20 @@ impl RuntimeSession {
         Some(item)
     }
 
+    pub fn next_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
+        self.workflow_queued_prompts
+            .iter()
+            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter_map(|item| {
+                let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
+                queue
+                    .enabled()
+                    .then_some((queue.priority(), item.created_at_ms()))
+            })
+            .min_by_key(|(priority, created_at_ms)| (std::cmp::Reverse(*priority), *created_at_ms))
+            .map(|(_, created_at_ms)| created_at_ms)
+    }
+
     pub fn workflow_run(&self, workflow_run_id: &str) -> Option<&WorkflowRun> {
         self.workflow_runs
             .iter()

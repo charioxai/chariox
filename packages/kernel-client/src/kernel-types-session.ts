@@ -44,6 +44,7 @@ export type RuntimeSession = {
   agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
   metaagent_tasks?: MetaagentTask[]
+  queued_metaagent_tasks?: QueuedMetaagentTask[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -77,6 +78,15 @@ export type MetaagentTask = {
   blocked_reason?: string | null
   aborted_reason?: string | null
   completion_summary?: string | null
+}
+
+export type QueuedMetaagentTask = {
+  id: string
+  metaagent_id: string
+  source_attachment_id: string
+  task_markdown: string
+  attachments?: PromptQueueItem["attachments"]
+  created_at_ms: number
 }
 
 export type ExternalProviderObservedCursor = {

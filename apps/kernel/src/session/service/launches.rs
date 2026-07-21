@@ -485,7 +485,17 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        if session.has_active_workflow_run() {
+        if session.has_active_session_task() {
+            return Ok(None);
+        }
+        if let (Some(meta_task), Some(workflow_created_at_ms)) = (
+            session.queued_metaagent_tasks().front(),
+            session.next_workflow_queued_prompt_created_at_ms(),
+        ) {
+            if meta_task.created_at_ms() <= workflow_created_at_ms {
+                return Ok(None);
+            }
+        } else if !session.queued_metaagent_tasks().is_empty() {
             return Ok(None);
         }
         Ok(session.pop_next_workflow_queued_prompt())

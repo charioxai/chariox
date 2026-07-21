@@ -3,6 +3,7 @@ mod metaagent_task;
 mod owner;
 mod prompt_queue;
 mod prompt_runtime;
+mod queued_metaagent_task;
 mod runtime_interactions;
 mod runtime_session;
 mod runtime_worktrees;
@@ -43,10 +44,10 @@ pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, MetaagentTask,
     MetaagentTaskStatus, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptDetachEffect, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
-    RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
-    RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment, SchedulerState,
-    SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
+    QueuedMetaagentTask, RuntimeInteraction, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeSession, RuntimeWorktreeAssignment,
+    SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,

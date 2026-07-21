@@ -11,6 +11,7 @@ use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
 use super::prompt_runtime::PromptRuntimeState;
+use super::queued_metaagent_task::QueuedMetaagentTask;
 use super::runtime_interactions::RuntimeInteraction;
 use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};
 use super::session_config::SessionConfigState;
@@ -97,6 +98,8 @@ pub struct RuntimeSession {
     active_interactions: Vec<RuntimeInteraction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -177,6 +180,7 @@ impl RuntimeSession {
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
+            queued_metaagent_tasks: VecDeque::new(),
             agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
@@ -501,6 +505,41 @@ impl RuntimeSession {
 
     pub fn metaagent_tasks(&self) -> &[MetaagentTask] {
         &self.metaagent_tasks
+    }
+
+    pub fn queued_metaagent_tasks(&self) -> &VecDeque<QueuedMetaagentTask> {
+        &self.queued_metaagent_tasks
+    }
+
+    pub fn enqueue_metaagent_task(&mut self, task: QueuedMetaagentTask) -> QueuedMetaagentTask {
+        self.queued_metaagent_tasks.push_back(task.clone());
+        task
+    }
+
+    pub fn pop_next_queued_metaagent_task(&mut self) -> Option<QueuedMetaagentTask> {
+        self.queued_metaagent_tasks.pop_front()
+    }
+
+    pub fn requeue_metaagent_task_front(&mut self, task: QueuedMetaagentTask) {
+        self.queued_metaagent_tasks.push_front(task);
+    }
+
+    pub fn has_active_metaagent_task(&self) -> bool {
+        self.metaagent_tasks.iter().any(|task| {
+            matches!(
+                task.status(),
+                MetaagentTaskStatus::Active | MetaagentTaskStatus::Paused
+            )
+        })
+    }
+
+    pub fn has_active_session_task(&self) -> bool {
+        self.has_active_workflow_run() || self.has_active_metaagent_task()
+    }
+
+    pub fn has_pending_session_task(&self) -> bool {
+        !self.queued_metaagent_tasks.is_empty()
+            || self.next_workflow_queued_prompt_created_at_ms().is_some()
     }
 
     pub fn metaagent_task(&self, metaagent_id: &str) -> Option<&MetaagentTask> {

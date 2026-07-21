@@ -485,6 +485,10 @@ impl KernelRuntimeState {
                     "complete_metaagent_task",
                 )
                 .await?;
+                self.spawn_workflow_prompt_dispatches(
+                    self.owned
+                        .workflow_maybe_start_next_queued_prompt(updated.id()),
+                );
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),
@@ -512,6 +516,10 @@ impl KernelRuntimeState {
                     "block_metaagent_task",
                 )
                 .await?;
+                self.spawn_workflow_prompt_dispatches(
+                    self.owned
+                        .workflow_maybe_start_next_queued_prompt(updated.id()),
+                );
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_task_payload(&projected, agent),

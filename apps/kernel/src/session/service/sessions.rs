@@ -270,6 +270,66 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub fn enqueue_metaagent_task(
+        &mut self,
+        session_id: &str,
+        metaagent_id: &str,
+        source_attachment_id: &str,
+        task_markdown: impl Into<String>,
+        attachments: Vec<crate::session::PromptAttachment>,
+    ) -> Result<crate::session::QueuedMetaagentTask, DaemonError> {
+        let id = format!("session-task:{}", self.reserve_prompt_id());
+        let task = crate::session::QueuedMetaagentTask::new(
+            id,
+            metaagent_id,
+            source_attachment_id,
+            task_markdown,
+            attachments,
+        );
+        let session = self.get_session_mut_for_operation(session_id, "enqueue metaagent task")?;
+        let task = session.enqueue_metaagent_task(task);
+        session.touch();
+        Ok(task)
+    }
+
+    pub fn pop_next_queued_metaagent_task(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::QueuedMetaagentTask>, DaemonError> {
+        let session =
+            self.get_session_mut_for_operation(session_id, "start queued metaagent task")?;
+        if session.has_active_session_task() {
+            return Ok(None);
+        }
+        if let Some(task) = session.queued_metaagent_tasks().front() {
+            if session
+                .prompt_states()
+                .get(task.metaagent_id())
+                .is_some_and(|state| {
+                    state.active_prompt().is_some() || !state.queued_prompts().is_empty()
+                })
+            {
+                return Ok(None);
+            }
+        }
+        let task = session.pop_next_queued_metaagent_task();
+        if task.is_some() {
+            session.touch();
+        }
+        Ok(task)
+    }
+
+    pub fn requeue_metaagent_task_front(
+        &mut self,
+        session_id: &str,
+        task: crate::session::QueuedMetaagentTask,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "requeue metaagent task")?;
+        session.requeue_metaagent_task_front(task);
+        session.touch();
+        Ok(session.clone())
+    }
+
     pub fn start_metaagent_task_if_needed(
         &mut self,
         session_id: &str,

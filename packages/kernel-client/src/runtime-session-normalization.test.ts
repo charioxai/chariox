@@ -16,6 +16,7 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
     queued_prompts: null as never,
     active_interactions: null as never,
     metaagent_tasks: null as never,
+    queued_metaagent_tasks: null as never,
     workflows: null as never,
     workflow_publications: null as never,
     workflow_runs: null as never,
@@ -40,6 +41,7 @@ test("runtime session normalization fills missing runtime arrays and prompt stat
   assert.deepEqual(normalized.queued_prompts, [])
   assert.deepEqual(normalized.active_interactions, [])
   assert.deepEqual(normalized.metaagent_tasks, [])
+  assert.deepEqual(normalized.queued_metaagent_tasks, [])
   assert.deepEqual(normalized.workflows, [])
   assert.deepEqual(normalized.workflow_publications, [])
   assert.deepEqual(normalized.workflow_runs, [])
