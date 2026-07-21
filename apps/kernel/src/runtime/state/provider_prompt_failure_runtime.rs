@@ -67,6 +67,16 @@ impl KernelRuntimeState {
         {
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
+        let queued_prompt_pending = owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
+            .is_some();
+        if queued_prompt_pending {
+            self.with_app_side_effect(|app| {
+                app.ensure_prompt_provider_run_for_agent(session_id, &agent_id)
+            })
+            .await?;
+        }
         if let Some(reason) = crate::provider::classify_provider_substitutable_failure_text(
             provider_run.adapter_key(),
             message,

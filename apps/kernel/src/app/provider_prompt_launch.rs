@@ -11,19 +11,17 @@ impl DaemonApp {
         agent_id: &str,
     ) -> Result<String, DaemonError> {
         if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
-            return match agent_run.state() {
+            match agent_run.state() {
                 ProviderRunState::Running | ProviderRunState::Starting => {
-                    Ok(agent_run.id().to_string())
+                    return Ok(agent_run.id().to_string());
                 }
                 ProviderRunState::Parked => {
                     let resumed = self.providers.resume_run_detached(agent_run.id())?;
                     self.update_provider_run_projection(resumed.clone());
-                    Ok(resumed.id().to_string())
+                    return Ok(resumed.id().to_string());
                 }
-                ProviderRunState::Ended => Err(DaemonError::NoActiveProviderRun {
-                    session_id: session_id.to_string(),
-                }),
-            };
+                ProviderRunState::Ended => {}
+            }
         }
 
         let agent = self.agents.get_agent(agent_id)?;

@@ -48,6 +48,26 @@ impl ProviderRunOperationLanes {
         }
     }
 
+    pub(crate) fn try_acquire(&self, provider_run_id: &str) -> Option<ProviderRunOperationPermit> {
+        let semaphore = {
+            let mut lanes = self
+                .lanes
+                .lock()
+                .expect("provider run operation lane map poisoned");
+            Arc::clone(
+                lanes
+                    .entry(provider_run_id.to_string())
+                    .or_insert_with(|| Arc::new(Semaphore::new(1))),
+            )
+        };
+        let permit = semaphore.try_acquire_owned().ok()?;
+        Some(ProviderRunOperationPermit {
+            permit: Some(permit),
+            lanes: self.clone(),
+            provider_run_id: provider_run_id.to_string(),
+        })
+    }
+
     pub(super) fn forget(&self, provider_run_id: &str) {
         let mut lanes = self
             .lanes

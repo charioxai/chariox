@@ -106,7 +106,14 @@ impl TerminalOutputExecutor {
 
         let mut permits = Vec::new();
         for provider_run_id in &provider_run_ids {
-            permits.push(self.provider_runtime_lanes.acquire(provider_run_id).await);
+            let Some(permit) = self.provider_runtime_lanes.try_acquire(provider_run_id) else {
+                return Ok(LocalDaemonResponse::TerminalOutput {
+                    records: self
+                        .terminal_stream
+                        .drain_output_records(&request.session_id, &request.attachment_id),
+                });
+            };
+            permits.push(permit);
         }
         let records = self
             .terminal_output_store

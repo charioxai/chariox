@@ -11,7 +11,7 @@
     "lint": "pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
     "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 run test",
-    "test:daemon": "cargo test --manifest-path apps/kernel/Cargo.toml",
+    "test:daemon": "RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --manifest-path apps/kernel/Cargo.toml",
     "perf:drills": "node scripts/performance-drills.mjs",
     "validation:suite": "node apps/cli/scripts/drill-validation-suite.mjs",
     "validation:focused-runtime-gate": "pnpm --filter @arroba/cli run validation:focused-runtime-gate",

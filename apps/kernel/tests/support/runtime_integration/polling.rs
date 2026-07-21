@@ -171,6 +171,57 @@ where
 
         assert!(
             Instant::now() < deadline,
+            "timed out waiting for provider output after {timeout_ms}ms: {output_text}; runs={:?}; session={:?}",
+            app.providers()
+                .list_runs()
+                .into_iter()
+                .map(|run| (run.id().to_string(), run.state()))
+                .collect::<Vec<_>>(),
+            app.sessions().get_session(session_id),
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+pub fn collect_provider_output_for_agent_until<F>(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    initial_provider_run_id: &str,
+    recipient_attachment_ids: Vec<String>,
+    done: F,
+) -> String
+where
+    F: Fn(&str, &DaemonApp) -> bool,
+{
+    let timeout_ms = output_timeout_ms().max(8_000);
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut output = Vec::new();
+
+    loop {
+        let provider_run_id = app
+            .providers()
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string())
+            .unwrap_or_else(|| initial_provider_run_id.to_string());
+        let records = arroba_kernel::transport::TransportService::pump_provider_output(
+            app,
+            session_id,
+            &provider_run_id,
+            recipient_attachment_ids.clone(),
+        )
+        .expect("provider output should fan out");
+        for record in records {
+            output.extend(record.bytes);
+        }
+
+        let output_text = String::from_utf8_lossy(&output).into_owned();
+        if done(&output_text, app) {
+            return output_text;
+        }
+
+        assert!(
+            Instant::now() < deadline,
             "timed out waiting for provider output after {timeout_ms}ms: {output_text}"
         );
         thread::sleep(Duration::from_millis(25));

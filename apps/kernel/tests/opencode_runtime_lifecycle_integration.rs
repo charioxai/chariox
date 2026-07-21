@@ -10,9 +10,10 @@ use arroba_kernel::{DaemonApp, DaemonConfig};
 
 mod support;
 use support::runtime_integration::{
-    collect_provider_output_until, collect_provider_records_until, create_opencode_fixture_script,
-    opencode_env_guard, output_timeout_ms, wait_for_mock_opencode_event_subscription,
-    wait_for_provider_runtime_state, MockOpenCodeServer,
+    collect_provider_output_for_agent_until, collect_provider_output_until,
+    collect_provider_records_until, create_opencode_fixture_script, opencode_env_guard,
+    output_timeout_ms, wait_for_mock_opencode_event_subscription, wait_for_provider_runtime_state,
+    MockOpenCodeServer,
 };
 
 #[test]
@@ -316,9 +317,14 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
     .expect("second prompt should queue");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let output = collect_provider_output_until(
+    let agent_id = run
+        .agent_instance_id()
+        .expect("provider run should be attached to an agent")
+        .to_string();
+    let output = collect_provider_output_for_agent_until(
         &mut app,
         session.id(),
+        &agent_id,
         run.id(),
         recipients,
         |output, app| {
@@ -339,6 +345,12 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
     );
 
     assert!(output.contains("fixture response: second prompt should run"));
+    let replacement_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("queued prompt should use a replacement provider run");
+    assert_ne!(replacement_run.id(), run.id());
+    assert_eq!(replacement_run.state(), ProviderRunState::Running);
     assert!(app
         .terminal()
         .notice_records()

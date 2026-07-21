@@ -262,7 +262,7 @@ async fn append_native_provider_output_does_not_refresh_session_projection_inner
 }
 
 #[tokio::test]
-async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
+async fn terminal_output_with_active_run_does_not_wait_for_busy_provider_runtime_lane() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -311,17 +311,12 @@ async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
     let pump_task =
         tokio::spawn(async move { pump_router.dispatch(pump_command, pump_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        !pump_task.is_finished(),
-        "active terminal output pumping should wait behind the provider-run runtime lane"
-    );
-
-    drop(permit);
-    let pump_response = pump_task
+    let pump_response = timeout(Duration::from_millis(100), pump_task)
         .await
+        .expect("terminal output polling should not wait behind a busy provider lane")
         .expect("pump task should join")
         .expect("pump should succeed");
+    drop(permit);
     match pump_response {
         LocalDaemonResponse::TerminalOutput { records } => {
             assert!(records.is_empty());

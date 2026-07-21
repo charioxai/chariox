@@ -104,8 +104,12 @@ impl LocalRouterTestHarness {
             None,
             &request,
         );
-        self.runtime
-            .block_on(self.router.dispatch(command, request))
+        let router = self.router.clone();
+        self.runtime.block_on(async move {
+            tokio::spawn(async move { router.dispatch(command, request).await })
+                .await
+                .expect("test dispatch task should join")
+        })
     }
 
     pub(crate) fn with_app<R>(&self, f: impl FnOnce(&DaemonApp) -> R) -> R {

@@ -104,7 +104,9 @@ pub async fn wait_for_response(
         }
     })
     .await
-    .expect("timed out waiting for kernel websocket response")
+    .unwrap_or_else(|_| {
+        panic!("timed out waiting for kernel websocket response `{request_id}` after {deadline:?}")
+    })
 }
 
 pub async fn wait_for_response_and_event(
@@ -210,7 +212,9 @@ pub async fn wait_for_response_with_timeout(
         }
     })
     .await
-    .expect("timed out waiting for kernel websocket response")
+    .unwrap_or_else(|_| {
+        panic!("timed out waiting for kernel websocket response `{request_id}` after {deadline:?}")
+    })
 }
 
 pub async fn wait_for_error_response(

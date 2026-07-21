@@ -89,7 +89,7 @@ pnpm lint
 pnpm build
 pnpm test
 pnpm smoke:daemon
-cargo test --manifest-path apps/kernel/Cargo.toml
+pnpm test:daemon
 ```
 
 Recommended Rust quality checks:

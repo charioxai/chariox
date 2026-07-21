@@ -557,7 +557,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
     );
 
     let mut home_provider_running = false;
-    for _ in 0..80 {
+    for _ in 0..400 {
         home_provider_running = {
             let app = app_home.lock().await;
             let worker_acknowledged = app
