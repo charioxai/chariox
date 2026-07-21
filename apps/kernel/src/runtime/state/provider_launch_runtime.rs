@@ -349,6 +349,20 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         binding: Option<crate::provider::ProviderRuntimeBinding>,
     ) {
+        if let Ok(run) = self.owned.provider_store.get_run(started.run.id()) {
+            if provider_launch_completion_is_stale(run.state()) {
+                crate::logging::info_with_fields(
+                    "daemon.provider",
+                    "ignoring stale provider runtime launch completion",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "state": format!("{:?}", run.state()),
+                    }),
+                );
+                return;
+            }
+        }
         let mut durable_agent_update = None;
         let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
         {
@@ -400,5 +414,29 @@ impl KernelRuntimeState {
                 self.fail_provider_launch_in_lane(started, &error).await;
             }
         }
+    }
+}
+
+fn provider_launch_completion_is_stale(state: crate::provider::ProviderRunState) -> bool {
+    state != crate::provider::ProviderRunState::Starting
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_launch_completion_is_stale;
+    use crate::provider::ProviderRunState;
+
+    #[test]
+    fn duplicate_or_cancelled_provider_launch_completion_is_stale() {
+        assert!(!provider_launch_completion_is_stale(
+            ProviderRunState::Starting
+        ));
+        assert!(provider_launch_completion_is_stale(
+            ProviderRunState::Running
+        ));
+        assert!(provider_launch_completion_is_stale(
+            ProviderRunState::Parked
+        ));
+        assert!(provider_launch_completion_is_stale(ProviderRunState::Ended));
     }
 }
