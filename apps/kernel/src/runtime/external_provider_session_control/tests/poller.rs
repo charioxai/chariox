@@ -126,7 +126,7 @@ fn resume_state_without_attachment_or_running_run_is_not_observed() {
         .expect("agent runtime profile should update");
 
     assert!(
-        attached_external_observer_targets(&app).is_empty(),
+        attached_external_observer_targets(&app, false).is_empty(),
         "idle persisted resume state must not create observer work"
     );
 
@@ -173,6 +173,10 @@ fn attached_resume_state_is_observed() {
         !target.needs_responsive_refresh,
         "an idle Arroba-owned session only needs explicit attach-time catch-up"
     );
+    assert!(
+        attached_external_observer_targets(&app, true).is_empty(),
+        "responsive polling must not clone or inspect idle Arroba-owned agents"
+    );
 }
 
 #[test]
@@ -213,7 +217,7 @@ fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files()
     ));
 
     assert!(
-        attached_external_observer_targets(&app).is_empty(),
+        attached_external_observer_targets(&app, false).is_empty(),
         "the home kernel must receive remote-agent history from the worker, not scan local provider transcripts"
     );
 
@@ -768,7 +772,7 @@ fn running_provider_run_without_attachment_is_observed() {
     let run = test_codex_run(session.id(), agent.id(), "run-live", "thread-live");
     app.providers_mut().insert_run_for_test(run.clone());
 
-    let target = single_attached_target(&app);
+    let target = single_responsive_attached_target(&app);
 
     assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
     assert_eq!(target.provider_session_id, "thread-live");
@@ -789,7 +793,7 @@ fn starting_provider_run_without_attachment_is_observed() {
     app.providers_mut()
         .insert_run_for_test(starting_run.clone());
 
-    let target = single_attached_target(&app);
+    let target = single_responsive_attached_target(&app);
 
     assert_eq!(target.provider_run_id.as_deref(), Some(starting_run.id()));
     assert_eq!(target.provider_session_id, "thread-starting");
@@ -806,7 +810,7 @@ fn parked_provider_run_without_attachment_is_not_observed() {
     app.providers_mut().insert_run_for_test(run);
 
     assert!(
-        attached_external_observer_targets(&app).is_empty(),
+        attached_external_observer_targets(&app, false).is_empty(),
         "parked detached runs must not keep observer polling hot"
     );
 }

@@ -359,22 +359,23 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
     changed_transcripts_only: bool,
     responsive_targets_only: bool,
 ) {
-    let targets = attached_external_observer_targets_for_runtime(app, runtime_state)
-        .await
-        .into_iter()
-        .filter(|target| {
-            attached_external_observer_target_matches_refresh_filters(
-                target,
-                provider_filter,
-                session_filter,
-            ) && (!responsive_targets_only || target.needs_responsive_refresh)
-                && (!changed_transcripts_only
-                    || crate::app::external_provider_session_transcript_needs_refresh(
-                        &target.provider,
-                        &target.provider_session_id,
-                    ))
-        })
-        .collect::<Vec<_>>();
+    let targets =
+        attached_external_observer_targets_for_runtime(app, runtime_state, responsive_targets_only)
+            .await
+            .into_iter()
+            .filter(|target| {
+                attached_external_observer_target_matches_refresh_filters(
+                    target,
+                    provider_filter,
+                    session_filter,
+                ) && (!responsive_targets_only || target.needs_responsive_refresh)
+                    && (!changed_transcripts_only
+                        || crate::app::external_provider_session_transcript_needs_refresh(
+                            &target.provider,
+                            &target.provider_session_id,
+                        ))
+            })
+            .collect::<Vec<_>>();
     for target in targets {
         let provider = target.provider.clone();
         let provider_session_id = target.provider_session_id.clone();
@@ -443,16 +444,19 @@ async fn external_provider_session_index_store(
 async fn attached_external_observer_targets_for_runtime(
     app: &Arc<Mutex<DaemonApp>>,
     runtime_state: Option<&KernelRuntimeState>,
+    responsive_targets_only: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
     if let Some(runtime_state) = runtime_state {
         return runtime_state
-            .with_app_side_effect(|app| attached_external_observer_targets(app))
+            .with_app_side_effect(|app| {
+                attached_external_observer_targets(app, responsive_targets_only)
+            })
             .await;
     }
     let app = app
         .try_lock()
         .expect("legacy external-provider tests should not hold the daemon app lock");
-    attached_external_observer_targets(&app)
+    attached_external_observer_targets(&app, responsive_targets_only)
 }
 
 async fn attached_external_provider_session_refs_for_runtime(

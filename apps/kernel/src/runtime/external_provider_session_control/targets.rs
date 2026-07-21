@@ -2,11 +2,17 @@ use super::*;
 
 pub(super) fn attached_external_observer_targets(
     app: &DaemonApp,
+    responsive_targets_only: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
     let cursor_store = app.attached_provider_transcript_cursor_store();
     let session_store = app.session_state_store();
     let mut targets = BTreeMap::<String, AttachedExternalObserverTarget>::new();
-    for agent in app.agents().list_agents() {
+    let agents = if responsive_targets_only {
+        app.agents().list_external_provider_import_agents()
+    } else {
+        app.agents().list_agents()
+    };
+    for agent in agents {
         let session_id = agent.session_id();
         if !session_store.has_session(session_id) || agent.remote_execution().is_some() {
             continue;

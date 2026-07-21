@@ -113,11 +113,21 @@ pub(super) fn test_starting_codex_run(
 }
 
 pub(super) fn single_attached_target(app: &DaemonApp) -> AttachedExternalObserverTarget {
-    let targets = attached_external_observer_targets(app);
+    let targets = attached_external_observer_targets(app, false);
     assert_eq!(
         targets.len(),
         1,
         "expected exactly one attached observer target"
+    );
+    targets.into_iter().next().expect("target should exist")
+}
+
+pub(super) fn single_responsive_attached_target(app: &DaemonApp) -> AttachedExternalObserverTarget {
+    let targets = attached_external_observer_targets(app, true);
+    assert_eq!(
+        targets.len(),
+        1,
+        "expected exactly one responsive attached observer target"
     );
     targets.into_iter().next().expect("target should exist")
 }
