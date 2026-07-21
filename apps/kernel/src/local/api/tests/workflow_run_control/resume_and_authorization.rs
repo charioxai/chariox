@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn local_request_api_resumes_stopped_active_workflow_node_runs() {
+fn local_request_api_pauses_and_resumes_active_workflow_node_runs() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -69,22 +69,19 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
         _ => panic!("unexpected local response"),
     };
 
-    let cancelled = match harness
-        .dispatch(LocalDaemonRequest::CancelWorkflowRun(
-            CancelWorkflowRunRequest {
+    let paused = match harness
+        .dispatch(LocalDaemonRequest::PauseWorkflowRun(
+            PauseWorkflowRunRequest {
                 session_id: session.id().to_string(),
                 workflow_run_ref: workflow_run.id().to_string(),
             },
         ))
-        .expect("workflow run should stop")
+        .expect("workflow run should pause")
     {
-        LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. } => workflow_run,
+        LocalDaemonResponse::WorkflowRunPaused { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
     };
-    assert_eq!(
-        cancelled.status(),
-        crate::session::WorkflowRunStatus::Stopped
-    );
+    assert_eq!(paused.status(), crate::session::WorkflowRunStatus::Paused);
     assert_eq!(
         harness.with_app(|app| {
             app.sessions()
@@ -96,32 +93,8 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
         }),
         crate::session::PromptStatus::Cancelling
     );
-    harness.with_app_mut(|app| {
-        app.finalize_active_prompt_cancellation(session.id(), agent.id(), None)
-            .expect("workflow cancellation should finalize");
-    });
-    assert!(harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_prompt()
-            .is_none()
-    }));
-    let stopped_run = harness.with_app(|app| {
-        app.sessions()
-            .resolve_workflow_run_ref(session.id(), workflow_run.id())
-            .expect("workflow run should resolve after cancellation")
-            .clone()
-    });
-    assert!(stopped_run.failure_events().iter().any(|event| {
-        matches!(
-            event.kind(),
-            crate::session::WorkflowFailureKind::RunStopped
-        ) && event
-            .message()
-            .contains("workflow node run was stopped before validated completion")
-    }));
-
+    // Resume immediately. The request must wait for the provider cancellation to settle so the
+    // old cancellation callback cannot stop the newly resumed workflow generation.
     let resumed = match harness
         .dispatch(LocalDaemonRequest::ResumeWorkflowRun(
             ResumeWorkflowRunRequest {
@@ -140,6 +113,10 @@ fn local_request_api_resumes_stopped_active_workflow_node_runs() {
             | crate::session::WorkflowRunStatus::Running
             | crate::session::WorkflowRunStatus::Completed
     ));
+    assert!(resumed.failure_events().iter().all(|event| !matches!(
+        event.kind(),
+        crate::session::WorkflowFailureKind::RunStopped
+    )));
     let active_prompt = harness.with_app(|app| {
         app.sessions()
             .get_session(session.id())

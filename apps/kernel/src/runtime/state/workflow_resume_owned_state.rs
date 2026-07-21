@@ -8,6 +8,22 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_ref: &str,
     ) -> Result<(crate::session::WorkflowRun, WorkflowPromptDispatches), DaemonError> {
+        let resumable_node_ids = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+            .node_runs()
+            .iter()
+            .filter(|node_run| {
+                node_run.status() == crate::session::WorkflowNodeRunStatus::Stopped
+                    && node_run.completion().is_none()
+                    && node_run
+                        .turn_envelope()
+                        .and_then(|envelope| envelope.rendered_prompt())
+                        .is_some()
+            })
+            .map(|node_run| node_run.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
         let workflow_run = self
             .session_store
             .write()
@@ -15,6 +31,7 @@ impl KernelRuntimeOwnedState {
         let resumable = workflow_run
             .node_runs()
             .iter()
+            .filter(|node_run| resumable_node_ids.contains(node_run.id()))
             .filter_map(|node_run| {
                 let prompt = node_run.turn_envelope()?.rendered_prompt()?.to_string();
                 Some((

@@ -1,6 +1,62 @@
 use super::*;
 
 impl SessionService {
+    pub fn pause_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let workflow_run_id = self
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let paused = {
+            let workflow_run = session.workflow_run_mut(&workflow_run_id).ok_or_else(|| {
+                DaemonError::WorkflowRunNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_run_id: workflow_run_id.clone(),
+                }
+            })?;
+            if matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Paused
+                    | WorkflowRunStatus::Completed
+                    | WorkflowRunStatus::Failed
+                    | WorkflowRunStatus::Stopped
+            ) {
+                return Err(DaemonError::InvalidWorkflowRunState {
+                    workflow_run_id: workflow_run_id.clone(),
+                    status: workflow_run.status(),
+                    operation: "pause workflow run",
+                });
+            }
+            workflow_run.set_status(WorkflowRunStatus::Paused);
+            workflow_run.clear_active_node_run();
+            for node_run in workflow_run.node_runs_mut() {
+                if !matches!(
+                    node_run.status(),
+                    WorkflowNodeRunStatus::Completed
+                        | WorkflowNodeRunStatus::Failed
+                        | WorkflowNodeRunStatus::Stopped
+                ) {
+                    node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                    if let Some(envelope) = node_run.turn_envelope_mut() {
+                        envelope.mark_cancelled();
+                    }
+                }
+            }
+            workflow_run.clone()
+        };
+        session.remove_queued_prompts_by_workflow_run(&workflow_run_id);
+        Ok(paused)
+    }
+
     pub fn cancel_workflow_run(
         &mut self,
         session_id: &str,

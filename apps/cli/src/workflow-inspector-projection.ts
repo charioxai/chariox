@@ -251,7 +251,7 @@ function buildRuntimeSummary(input: WorkflowInspectorProjectionInput): WorkflowI
     title: "Workflow Runtime",
     meta,
     body: lines.join("\n"),
-    hint: "Use /workflow runs, /workflow cancel, and /workflow resume to manage the current run.",
+    hint: "Use /workflow runs, /workflow pause, /workflow resume, and /workflow cancel to manage the current run.",
   }
 }
 
@@ -277,7 +277,7 @@ function buildLogsInspector(
       body.length > 0 ? body : "No workflow logs captured yet.",
       runtimeSummary?.body ? `\n${runtimeSummary.body}` : "",
     ].join(""),
-    hint: "Use /workflow run, /workflow runs, /workflow cancel, and /workflow resume to manage runs.",
+    hint: "Use /workflow run, /workflow runs, /workflow pause, /workflow resume, and /workflow cancel to manage runs.",
   }
 }
 

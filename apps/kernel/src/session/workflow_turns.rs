@@ -11,6 +11,7 @@ pub enum WorkflowRunStatus {
     Running,
     Waiting,
     Completing,
+    Paused,
     Completed,
     Failed,
     Stopped,

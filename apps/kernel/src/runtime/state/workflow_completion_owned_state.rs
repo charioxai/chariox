@@ -7,9 +7,10 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    fn persist_workflow_completion_session(
+    pub(super) fn persist_workflow_runtime_session(
         &self,
         session_id: &str,
+        reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session = self.session_snapshot(session_id)?;
         self.durable_state_store.append_event(
@@ -17,7 +18,7 @@ impl KernelRuntimeOwnedState {
             Some(session_id.to_string()),
             serde_json::json!({
                 "session": &session,
-                "reason": "workflow_prompt_completed",
+                "reason": reason,
             }),
         )?;
         Ok(session)
@@ -80,7 +81,10 @@ impl KernelRuntimeOwnedState {
                     ),
                 );
                 self.workflow_maybe_start_next_queued_prompt(session_id);
-                self.persist_workflow_completion_session(session_id)?;
+                self.persist_workflow_runtime_session(
+                    session_id,
+                    "workflow_provider_prompt_failed",
+                )?;
                 return Ok(WorkflowPromptDispatches::default());
             }
         }
@@ -327,7 +331,7 @@ impl KernelRuntimeOwnedState {
         ) {
             dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         }
-        self.persist_workflow_completion_session(session_id)?;
+        self.persist_workflow_runtime_session(session_id, "workflow_prompt_completed")?;
         Ok(dispatches)
     }
 

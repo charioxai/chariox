@@ -452,6 +452,22 @@ pub(crate) fn redact_response_for_user(
                 session: session.redacted_for_user(caller_user_id),
             }
         }
+        LocalDaemonResponse::WorkflowRunPaused {
+            workflow_run,
+            session,
+        } => {
+            let redacted_run = {
+                let workflow = session
+                    .workflows()
+                    .iter()
+                    .find(|workflow| workflow.id() == workflow_run.workflow_id());
+                workflow_run.redacted_for_user(workflow, caller_user_id)
+            };
+            LocalDaemonResponse::WorkflowRunPaused {
+                workflow_run: redacted_run,
+                session: session.redacted_for_user(caller_user_id),
+            }
+        }
         LocalDaemonResponse::WorkflowRunResumed {
             workflow_run,
             session,

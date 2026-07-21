@@ -390,6 +390,7 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::AckWorkflowTurn(request) => request.session_id.clone(),
         LocalDaemonRequest::ValidateWorkflowHandoff(request) => request.session_id.clone(),
         LocalDaemonRequest::CancelWorkflowRun(request) => request.session_id.clone(),
+        LocalDaemonRequest::PauseWorkflowRun(request) => request.session_id.clone(),
         LocalDaemonRequest::ResumeWorkflowRun(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowPromptQueues(request) => request.session_id.clone(),
         LocalDaemonRequest::CreateWorkflowPromptQueue(request) => request.session_id.clone(),

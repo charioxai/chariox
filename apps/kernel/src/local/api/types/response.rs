@@ -417,6 +417,7 @@ pub enum LocalDaemonResponse {
     WorkflowRunsListed { workflow_runs: Vec<WorkflowRun>, },
     WorkflowRun { workflow_run: WorkflowRun, },
     WorkflowRunCancelled { workflow_run: WorkflowRun, session: RuntimeSession, },
+    WorkflowRunPaused { workflow_run: WorkflowRun, session: RuntimeSession, },
     WorkflowRunResumed { workflow_run: WorkflowRun, session: RuntimeSession, },
     WorkflowWatchdogCreated {
         watchdog: WorkflowWatchdogDefinition,

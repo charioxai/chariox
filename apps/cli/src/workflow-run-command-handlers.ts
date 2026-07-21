@@ -15,12 +15,39 @@ export type WorkflowRunResumePayload = {
   session: RuntimeSession
 }
 
+export type WorkflowRunPausePayload = {
+  workflow_run: WorkflowRun
+  session: RuntimeSession
+}
+
 export type WorkflowRunCommandDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   applySessionState: (session: RuntimeSession) => void
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
+  pauseWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunPausePayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
+}
+
+export async function handleWorkflowRunPauseCommand(
+  deps: WorkflowRunCommandDeps,
+  args: readonly string[],
+): Promise<void> {
+  const workflowRunRef = args[1]
+  if (!workflowRunRef) {
+    deps.flashFooter("usage: /workflow pause <run-ref>", "error")
+    return
+  }
+  if (!deps.pauseWorkflowRun) {
+    deps.flashFooter("workflow runtime commands unavailable", "error")
+    return
+  }
+  const payload = await deps.pauseWorkflowRun(workflowRunRef)
+  deps.applySessionState(payload.session)
+  deps.flashFooter(
+    `paused workflow run ${payload.workflow_run.id} [${String(payload.workflow_run.status).toLowerCase()}]`,
+    "info",
+  )
 }
 
 export async function handleWorkflowRunsCommand(

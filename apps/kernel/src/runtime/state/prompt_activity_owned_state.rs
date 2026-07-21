@@ -83,6 +83,12 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
+                    self.record_prompt_dispatch_failure_output(
+                        &finished.session_id,
+                        &finished.provider_run_id,
+                        &finished.agent_id,
+                        &diagnostic,
+                    );
                     match self.settle_failed_local_prompt_without_advance(
                         &finished.session_id,
                         &finished.agent_id,
@@ -168,18 +174,19 @@ impl KernelRuntimeOwnedState {
                 // terminal event afterwards, so settle the cancelling prompt
                 // from this acknowledgement instead of leaving it WORKING.
                 if let Some(agent_id) = provider_run.agent_instance_id() {
-                    if let Ok(cancellation) = self
-                        .finalize_local_prompt_cancellation_with_queued_advance(
-                            &finished.session_id,
-                            agent_id,
-                            Some(&finished.provider_run_id),
-                        )
-                    {
-                        let _ = self.workflow_cancel_prompt(
-                            &finished.session_id,
-                            &cancellation.cancellation.prompt,
-                        );
+                    if let Ok(session) = self.session_store.get_session(&finished.session_id) {
+                        if let Some(prompt) = self
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                        {
+                            let _ = self.workflow_cancel_prompt(&finished.session_id, &prompt);
+                        }
                     }
+                    let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
+                        &finished.session_id,
+                        agent_id,
+                        Some(&finished.provider_run_id),
+                    );
                 }
             }
         }

@@ -18,6 +18,41 @@ pub(super) struct ActivePromptTranscriptMetadata {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn record_prompt_dispatch_failure_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        message: &str,
+    ) {
+        let prompt_metadata =
+            self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
+        self.fan_out_terminal_outputs(
+            session_id,
+            vec![TerminalOutputBatchAppend {
+                provider_run_id: provider_run_id.to_string(),
+                agent_id: Some(agent_id.to_string()),
+                kind: crate::terminal::TerminalOutputKind::ProviderError,
+                merge_key: None,
+                bytes: message.as_bytes().to_vec(),
+                history_text: Some(message.to_string()),
+            }],
+        );
+        self.append_history_entries(
+            session_id,
+            vec![crate::history::SessionHistoryEntry::provider_output(
+                session_id,
+                provider_run_id,
+                Some(agent_id),
+                crate::terminal::TerminalOutputKind::ProviderError,
+                None,
+                message,
+            )
+            .with_prompt_origin(prompt_metadata.prompt_origin)
+            .with_source_attachment_id(prompt_metadata.source_attachment_id)],
+        );
+    }
+
     pub(super) fn other_attachment_ids(
         &self,
         session_id: &str,

@@ -30,6 +30,7 @@ test("workflow command opens the workflow screen and manages local workflows", a
   let workflowNodeMaxTurns: number | null = null
   let removedQueuedPromptRef: string | null = null
   let cancelledWorkflowRunRef: string | null = null
+  let pausedWorkflowRunRef: string | null = null
   let resumedWorkflowRunRef: string | null = null
   let openedWorkflowTerminalId: string | null = null
   const selectedWorkflowIds: string[] = []
@@ -368,6 +369,20 @@ test("workflow command opens the workflow screen and manages local workflows", a
         ...(workflowRuns.find((candidate) => candidate.id === workflowRunRef) ?? workflowRuns[0]!),
         id: workflowRunRef,
         status: "Stopped",
+        active_node_run_id: null,
+      }
+      workflowRuns.splice(0, workflowRuns.length, workflow_run)
+      return {
+        workflow_run,
+        session: makeSession({ workflows: [...workflows.values()], workflow_runs: workflowRuns }),
+      }
+    },
+    pauseWorkflowRun: async (workflowRunRef) => {
+      pausedWorkflowRunRef = workflowRunRef
+      const workflow_run = {
+        ...(workflowRuns.find((candidate) => candidate.id === workflowRunRef) ?? workflowRuns[0]!),
+        id: workflowRunRef,
+        status: "Paused",
         active_node_run_id: null,
       }
       workflowRuns.splice(0, workflowRuns.length, workflow_run)
@@ -810,6 +825,14 @@ test("workflow command opens the workflow screen and manages local workflows", a
   })
   assert.equal(cancelledWorkflowRunRef, "run-1")
   assert.equal(flashedMessage, "cancelled workflow run run-1 [stopped]")
+
+  await handlers.handleWorkflowCommand({
+    kind: "workflow",
+    raw: "/workflow pause run-1",
+    args: ["pause", "run-1"],
+  })
+  assert.equal(pausedWorkflowRunRef, "run-1")
+  assert.equal(flashedMessage, "paused workflow run run-1 [paused]")
 
   await handlers.handleWorkflowCommand({
     kind: "workflow",

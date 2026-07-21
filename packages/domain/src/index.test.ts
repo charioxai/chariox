@@ -52,7 +52,7 @@ test('runtime enum constants stay aligned with the workflow-oriented domain mode
     'automation_only',
   ])
   assert.deepEqual(WORKFLOW_TOPOLOGIES, ['circular', 'hierarchical'])
-  assert.deepEqual(WORKFLOW_RUN_STATUSES, ['created', 'running', 'waiting', 'completed', 'failed', 'stopped'])
+  assert.deepEqual(WORKFLOW_RUN_STATUSES, ['created', 'running', 'waiting', 'paused', 'completed', 'failed', 'stopped'])
   assert.deepEqual(NODE_RUN_STATUSES, ['created', 'ready', 'running', 'waiting', 'completed', 'failed', 'stopped'])
   assert.deepEqual(AGGREGATION_STATUSES, ['idle', 'waiting', 'ready', 'completed', 'failed'])
   assert.deepEqual(NODE_MESSAGE_DELIVERY_STATUSES, ['pending', 'delivered', 'consumed', 'failed'])

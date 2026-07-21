@@ -17,6 +17,7 @@ export const WORKFLOW_RUN_STATUSES = [
   'created',
   'running',
   'waiting',
+  'paused',
   'completed',
   'failed',
   'stopped',

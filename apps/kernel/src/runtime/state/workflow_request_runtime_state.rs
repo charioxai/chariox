@@ -394,8 +394,11 @@ impl KernelRuntimeState {
             LocalDaemonRequest::CancelWorkflowRun(request) => {
                 self.execute_workflow_cancel_run_request(request).await
             }
+            LocalDaemonRequest::PauseWorkflowRun(request) => {
+                self.execute_workflow_pause_run_request(request).await
+            }
             LocalDaemonRequest::ResumeWorkflowRun(request) => {
-                self.execute_workflow_resume_run_request(request)
+                self.execute_workflow_resume_run_request(request).await
             }
             LocalDaemonRequest::ValidateWorkflowHandoff(request) => {
                 let result = owned.workflow_validate_handoff(request);
@@ -459,6 +462,7 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowRunInvoked { session, .. }
         | LocalDaemonResponse::WorkflowPromptEnqueued { session, .. }
         | LocalDaemonResponse::WorkflowRunCancelled { session, .. }
+        | LocalDaemonResponse::WorkflowRunPaused { session, .. }
         | LocalDaemonResponse::WorkflowRunResumed { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogCreated { session, .. }
         | LocalDaemonResponse::WorkflowWatchdogUpdated { session, .. }

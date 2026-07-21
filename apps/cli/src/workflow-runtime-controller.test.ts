@@ -103,6 +103,43 @@ test("workflow runtime controller cancels runs through the kernel request path",
   })
 })
 
+test("workflow runtime controller pauses and resumes runs through the kernel request path", async () => {
+  const refreshedSessions: RuntimeSession[] = []
+  const pausedSession = session("session-paused")
+  const resumedSession = session("session-resumed")
+  const harness = createHarness({
+    PauseWorkflowRun: {
+      WorkflowRunPaused: {
+        workflow_run: workflowRun("run-1"),
+        session: pausedSession,
+      },
+    },
+    ResumeWorkflowRun: {
+      WorkflowRunResumed: {
+        workflow_run: workflowRun("run-1"),
+        session: resumedSession,
+      },
+    },
+  }, refreshedSessions)
+
+  await harness.controller.pauseWorkflowRun("run-1")
+  assert.deepEqual(harness.requests.at(-1), {
+    PauseWorkflowRun: {
+      session_id: "session-1",
+      workflow_run_ref: "run-1",
+    },
+  })
+
+  await harness.controller.resumeWorkflowRun("run-1")
+  assert.deepEqual(harness.requests.at(-1), {
+    ResumeWorkflowRun: {
+      session_id: "session-1",
+      workflow_run_ref: "run-1",
+    },
+  })
+  assert.deepEqual(refreshedSessions, [pausedSession, resumedSession])
+})
+
 function createHarness(
   responses: Record<string, Record<string, unknown>>,
   refreshedSessions: RuntimeSession[],

@@ -582,6 +582,12 @@ pub struct CancelWorkflowRunRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeWorkflowRunRequest {
     pub session_id: String,
     pub workflow_run_ref: String,

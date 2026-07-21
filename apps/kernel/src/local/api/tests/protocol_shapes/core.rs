@@ -1,8 +1,58 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
+
+    let request = LocalDaemonRequest::PauseWorkflowRun(PauseWorkflowRunRequest {
+        session_id: "session-1".to_string(),
+        workflow_run_ref: "run-1".to_string(),
+    });
+    assert_eq!(
+        serde_json::to_value(request).expect("pause workflow run request should encode"),
+        serde_json::json!({
+            "PauseWorkflowRun": {
+                "session_id": "session-1",
+                "workflow_run_ref": "run-1"
+            }
+        })
+    );
+
+    let response = LocalDaemonResponse::WorkflowRunPaused {
+        workflow_run: crate::session::WorkflowRun::new(
+            "run-1",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("pause this run".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        ),
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+    let snapshot =
+        serde_json::to_value(response).expect("pause workflow run response should encode");
+    assert_eq!(
+        snapshot.pointer("/WorkflowRunPaused/workflow_run/id"),
+        Some(&serde_json::json!("run-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/WorkflowRunPaused/session/id"),
+        Some(&serde_json::json!("session-1"))
+    );
+}
+
+#[test]
 fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
         session_id: "session-1".to_string(),
@@ -41,7 +91,7 @@ fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
     assert_eq!(
@@ -118,7 +168,7 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -154,7 +204,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -202,7 +252,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let active_cancel_request =
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
@@ -358,7 +408,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(8),
@@ -442,7 +492,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 243);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 244);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),

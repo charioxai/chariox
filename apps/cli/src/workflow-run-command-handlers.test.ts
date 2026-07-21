@@ -5,6 +5,7 @@ import type { RuntimeSession, WorkflowRun } from "./cli-types.js"
 import {
   formatWorkflowRunSummary,
   handleWorkflowRunCancelCommand,
+  handleWorkflowRunPauseCommand,
   handleWorkflowRunResumeCommand,
   handleWorkflowRunsCommand,
   type WorkflowRunCommandDeps,
@@ -53,12 +54,16 @@ test("workflow runs command reports empty and unavailable runtime states", async
   assert.deepEqual(unavailableCalls, ["footer:error:workflow runtime commands unavailable"])
 })
 
-test("workflow cancel and resume commands apply returned sessions", async () => {
+test("workflow cancel, pause, and resume commands apply returned sessions", async () => {
   const calls: string[] = []
   const deps = createDeps(calls, {
     cancelWorkflowRun: async (runRef) => ({
       workflow_run: workflowRun({ id: runRef, status: "Stopped" }),
       session: runtimeSession({ id: "session-cancelled" }),
+    }),
+    pauseWorkflowRun: async (runRef) => ({
+      workflow_run: workflowRun({ id: runRef, status: "Paused" }),
+      session: runtimeSession({ id: "session-paused" }),
     }),
     resumeWorkflowRun: async (runRef) => ({
       workflow_run: workflowRun({ id: runRef, status: "Running" }),
@@ -67,27 +72,34 @@ test("workflow cancel and resume commands apply returned sessions", async () => 
   })
 
   await handleWorkflowRunCancelCommand(deps, ["cancel", "run-1"])
+  await handleWorkflowRunPauseCommand(deps, ["pause", "run-1"])
   await handleWorkflowRunResumeCommand(deps, ["resume", "run-1"])
 
   assert.deepEqual(calls, [
     "session:session-cancelled",
     "footer:info:cancelled workflow run run-1 [stopped]",
+    "session:session-paused",
+    "footer:info:paused workflow run run-1 [paused]",
     "session:session-resumed",
     "footer:info:resumed workflow run run-1 [running]",
   ])
 })
 
-test("workflow cancel and resume commands validate usage and runtime support", async () => {
+test("workflow cancel, pause, and resume commands validate usage and runtime support", async () => {
   const calls: string[] = []
   const deps = createDeps(calls)
 
   await handleWorkflowRunCancelCommand(deps, ["cancel"])
   await handleWorkflowRunCancelCommand(deps, ["cancel", "run-1"])
+  await handleWorkflowRunPauseCommand(deps, ["pause"])
+  await handleWorkflowRunPauseCommand(deps, ["pause", "run-1"])
   await handleWorkflowRunResumeCommand(deps, ["resume"])
   await handleWorkflowRunResumeCommand(deps, ["resume", "run-1"])
 
   assert.deepEqual(calls, [
     "footer:error:usage: /workflow cancel <run-ref>",
+    "footer:error:workflow runtime commands unavailable",
+    "footer:error:usage: /workflow pause <run-ref>",
     "footer:error:workflow runtime commands unavailable",
     "footer:error:usage: /workflow resume <run-ref>",
     "footer:error:workflow runtime commands unavailable",

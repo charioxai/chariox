@@ -228,6 +228,10 @@ fn summarize_meta_command_response(
             "type": "WorkflowRunCancelled",
             "workflow_run": summarize_meta_workflow_run(workflow_run),
         }),
+        LocalDaemonResponse::WorkflowRunPaused { workflow_run, .. } => serde_json::json!({
+            "type": "WorkflowRunPaused",
+            "workflow_run": summarize_meta_workflow_run(workflow_run),
+        }),
         LocalDaemonResponse::WorkflowRunResumed { workflow_run, .. } => serde_json::json!({
             "type": "WorkflowRunResumed",
             "workflow_run": summarize_meta_workflow_run(workflow_run),

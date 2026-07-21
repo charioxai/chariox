@@ -387,6 +387,14 @@ pub fn on_workflow_prompt_cancelled(
     else {
         return Ok(());
     };
+    let paused = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)
+        .is_ok_and(|run| run.status() == crate::session::WorkflowRunStatus::Paused);
+    if paused {
+        persist_workflow_session_state(app, session_id, "workflow_prompt_paused")?;
+        return Ok(());
+    }
     let workflow_run = app.sessions_mut().stop_workflow_node_run(
         session_id,
         workflow_run_id,

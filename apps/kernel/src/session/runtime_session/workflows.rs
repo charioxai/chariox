@@ -95,6 +95,7 @@ impl RuntimeSession {
                 WorkflowRunStatus::Created
                     | WorkflowRunStatus::Running
                     | WorkflowRunStatus::Waiting
+                    | WorkflowRunStatus::Paused
             )
         })
     }
@@ -120,6 +121,7 @@ impl RuntimeSession {
                     WorkflowRunStatus::Completed
                         | WorkflowRunStatus::Failed
                         | WorkflowRunStatus::Stopped
+                        | WorkflowRunStatus::Paused
                 )
             })
             .count();
@@ -202,6 +204,7 @@ impl RuntimeSession {
                 WorkflowRunStatus::Completed
                     | WorkflowRunStatus::Failed
                     | WorkflowRunStatus::Stopped
+                    | WorkflowRunStatus::Paused
             );
             if !should_stop {
                 continue;

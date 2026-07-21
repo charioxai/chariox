@@ -13,6 +13,20 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
+        let paused = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .is_ok_and(|run| run.status() == crate::session::WorkflowRunStatus::Paused);
+        if paused {
+            let _ = self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+            let _ = self.session_snapshot(session_id)?;
+            return Ok(());
+        }
         let workflow_run = self.session_store.write().stop_workflow_node_run(
             session_id,
             workflow_run_id,
@@ -41,7 +55,7 @@ impl KernelRuntimeOwnedState {
             format!("Workflow run `{}` was stopped.", workflow_run.id()),
         );
         self.workflow_maybe_start_next_queued_prompt(session_id);
-        let _ = self.session_snapshot(session_id)?;
+        self.persist_workflow_runtime_session(session_id, "workflow_prompt_cancelled")?;
         Ok(())
     }
 
@@ -89,7 +103,175 @@ impl KernelRuntimeOwnedState {
             ),
         );
         self.workflow_maybe_start_next_queued_prompt(session_id);
-        let _ = self.session_snapshot(session_id)?;
+        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::KernelSessionService;
+    use crate::config::DaemonConfig;
+    use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app = app.lock().await;
+            (
+                app.config_projection_store(),
+                app.session_state_store(),
+                app.agents().clone(),
+                app.attachments().clone(),
+                app.providers().clone(),
+                app.provider_process_tracking_store(),
+                app.slices(),
+                app.session_state_projection_store(),
+                app.provider_run_projection_store(),
+                app.history_store(),
+                app.operational_history_store(),
+                app.durable_state_store(),
+                app.prompt_state_owner(),
+                app.active_turn_store(),
+                app.prompt_activity_store(),
+                app.prompt_workspace_claim_store(),
+                app.structured_output_record_store(),
+                app.terminal_stream_store(),
+                app.workflow_design_event_store(),
+                app.metaagent_event_store(),
+                app.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            history_store,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+
+    #[tokio::test]
+    async fn workflow_provider_failure_persists_terminal_run_state_for_restart() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-workflow-failure",
+                "worktree-workflow-failure",
+            ))
+            .expect("session should create");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("failure-test".to_string()))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should create");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("fail visibly".to_string()),
+            )
+            .expect("workflow run should create");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        let prompt = PromptQueueItem::new(
+            "prompt-failure",
+            "attachment-failure",
+            agent.id(),
+            "fail visibly",
+            PromptStatus::Running,
+        )
+        .with_workflow_context(workflow_run.id(), &node_run_id);
+        let session_id = session.id().to_string();
+        let workflow_run_id = workflow_run.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+
+        runtime
+            .owned
+            .workflow_fail_provider_prompt(&session_id, &prompt, None, "provider unavailable")
+            .expect("provider failure should settle workflow");
+
+        let durable_session = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.updated")
+            .expect("durable session events should load")
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.subject_id.as_deref() == Some(session_id.as_str())
+                    && event
+                        .payload
+                        .get("reason")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("workflow_provider_prompt_failed")
+            })
+            .and_then(|event| event.payload.get("session").cloned())
+            .map(serde_json::from_value::<crate::session::RuntimeSession>)
+            .transpose()
+            .expect("durable workflow session should decode")
+            .expect("workflow provider failure should persist its session");
+        assert_eq!(
+            durable_session
+                .workflow_run(&workflow_run_id)
+                .expect("durable workflow run should exist")
+                .status(),
+            crate::session::WorkflowRunStatus::Failed,
+        );
     }
 }

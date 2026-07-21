@@ -514,6 +514,17 @@ mod tests {
             "failed dispatch must leave the agent idle"
         );
 
+        let provider_errors = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id)
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .collect::<Vec<_>>();
+        assert_eq!(provider_errors.len(), 1);
+        assert!(String::from_utf8_lossy(&provider_errors[0].bytes)
+            .contains("Provider prompt dispatch failed"));
+
         let completions = runtime
             .owned
             .terminal_stream
@@ -915,13 +926,22 @@ impl KernelRuntimeState {
                 );
             }
             let failed_prompt_matches = failed_prompt.is_some();
+            let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
+            if failed_prompt_matches {
+                owned.record_prompt_dispatch_failure_output(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.agent_id,
+                    &dispatch_failure,
+                );
+            }
             let (should_advance, released_claim) = match owned
                 .settle_failed_local_prompt_without_advance(
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
-                    &error.to_string(),
+                    &dispatch_failure,
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -1188,7 +1208,37 @@ impl KernelRuntimeState {
                     .map(|signal| signal.sequence())
                     .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
-                    Ok(()) if !structured => PromptAbortDispatchOutcome::Done,
+                    Ok(()) if !structured => {
+                        if let Ok(provider_run) = state
+                            .owned
+                            .provider_store
+                            .get_run(&dispatch.provider_run_id)
+                        {
+                            if let Some(agent_id) = provider_run.agent_instance_id() {
+                                if let Ok(session) =
+                                    state.owned.session_store.get_session(&dispatch.session_id)
+                                {
+                                    if let Some(prompt) = state
+                                        .owned
+                                        .prompt_state_owner
+                                        .active_prompt_for_agent(&session, agent_id)
+                                    {
+                                        let _ = state
+                                            .owned
+                                            .workflow_cancel_prompt(&dispatch.session_id, &prompt);
+                                    }
+                                }
+                                let _ = state
+                                    .owned
+                                    .finalize_local_prompt_cancellation_with_queued_advance(
+                                        &dispatch.session_id,
+                                        agent_id,
+                                        Some(&dispatch.provider_run_id),
+                                    );
+                            }
+                        }
+                        PromptAbortDispatchOutcome::Done
+                    }
                     Ok(()) => loop {
                         let completion_signal = completion_signal
                             .as_ref()

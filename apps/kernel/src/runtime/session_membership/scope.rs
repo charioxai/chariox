@@ -374,6 +374,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::ResumeWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

@@ -433,6 +433,15 @@ export function cancelWorkflowRunRequest(sessionId: string, workflowRunRef: stri
   }
 }
 
+export function pauseWorkflowRunRequest(sessionId: string, workflowRunRef: string) {
+  return {
+    PauseWorkflowRun: {
+      session_id: sessionId,
+      workflow_run_ref: workflowRunRef,
+    },
+  }
+}
+
 export function resumeWorkflowRunRequest(sessionId: string, workflowRunRef: string) {
   return {
     ResumeWorkflowRun: {

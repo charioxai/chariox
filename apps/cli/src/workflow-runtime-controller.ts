@@ -15,6 +15,7 @@ import {
   listQueuedWorkflowPromptsRequest,
   listWorkflowPromptQueuesRequest,
   listWorkflowRunsRequest,
+  pauseWorkflowRunRequest,
   removeQueuedWorkflowPromptRequest,
   removeWorkflowPromptQueueRequest,
   resumeWorkflowRunRequest,
@@ -199,6 +200,16 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     return payload
   }
 
+  const pauseWorkflowRun = async (workflowRunRef: string) => {
+    const response = await deps.sendRequest(pauseWorkflowRunRequest(deps.sessionId(), workflowRunRef))
+    const payload = expectVariant<{ workflow_run: WorkflowRun; session: RuntimeSession }>(
+      response,
+      "WorkflowRunPaused",
+    )
+    deps.applyWorkflowSessionRefresh(payload.session)
+    return payload
+  }
+
   const resumeWorkflowRun = async (workflowRunRef: string) => {
     const response = await deps.sendRequest(resumeWorkflowRunRequest(deps.sessionId(), workflowRunRef))
     const payload = expectVariant<{ workflow_run: WorkflowRun; session: RuntimeSession }>(
@@ -223,6 +234,7 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
     listWorkflowRuns,
     getWorkflowRun,
     cancelWorkflowRun,
+    pauseWorkflowRun,
     resumeWorkflowRun,
   }
 }

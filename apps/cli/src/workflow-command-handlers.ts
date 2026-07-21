@@ -51,9 +51,11 @@ import {
 } from "./workflow-queue-command-handlers.js"
 import {
   handleWorkflowRunCancelCommand,
+  handleWorkflowRunPauseCommand,
   handleWorkflowRunResumeCommand,
   handleWorkflowRunsCommand,
   type WorkflowRunCancelPayload,
+  type WorkflowRunPausePayload,
   type WorkflowRunResumePayload,
 } from "./workflow-run-command-handlers.js"
 import {
@@ -166,6 +168,7 @@ export type WorkflowCommandHandlerDeps = {
   clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
+  pauseWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunPausePayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
   updateWorkflowNodeInstructions?: (
     workflowRef: string,
@@ -273,6 +276,11 @@ export async function handleWorkflowSlashCommand(
 
   if (subcommand === "cancel") {
     await handleWorkflowRunCancelCommand(deps, args)
+    return
+  }
+
+  if (subcommand === "pause") {
+    await handleWorkflowRunPauseCommand(deps, args)
     return
   }
 

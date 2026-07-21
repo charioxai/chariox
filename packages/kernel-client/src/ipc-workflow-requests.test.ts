@@ -14,11 +14,21 @@ import {
   exportWorkflowPublicationPackageRequest,
   importWorkflowCodeArtifactRequest,
   listWorkflowCodeArtifactsRequest,
+  pauseWorkflowRunRequest,
   runWorkflowCodeArtifactRequest,
   runWorkflowCodeRequest,
   runWorkflowRegistryEntryRequest,
   setWorkflowNodeWaitForAllInputsRequest,
 } from "./ipc-workflow-requests.js"
+
+test("pause workflow run request matches kernel shape", () => {
+  assert.deepEqual(pauseWorkflowRunRequest("session-1", "run-1"), {
+    PauseWorkflowRun: {
+      session_id: "session-1",
+      workflow_run_ref: "run-1",
+    },
+  })
+})
 
 test("export workflow publication package request matches kernel shape", () => {
   assert.deepEqual(exportWorkflowPublicationPackageRequest("session-1", "publication-1", {

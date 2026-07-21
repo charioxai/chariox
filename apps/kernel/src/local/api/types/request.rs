@@ -266,6 +266,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowRuns(ListWorkflowRunsRequest),
     GetWorkflowRun(GetWorkflowRunRequest),
     CancelWorkflowRun(CancelWorkflowRunRequest),
+    PauseWorkflowRun(PauseWorkflowRunRequest),
     ResumeWorkflowRun(ResumeWorkflowRunRequest),
     CreateWorkflowWatchdog(CreateWorkflowWatchdogRequest),
     ListWorkflowWatchdogs(ListWorkflowWatchdogsRequest),
