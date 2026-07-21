@@ -405,13 +405,16 @@ impl KernelRuntimeState {
                         )?;
                     }
                 }
-                self.notify_metaagent_task_changed(
-                    &session_id,
-                    &metaagent,
-                    metaagent_task_update_notification(task_updated, plan_updated),
-                    true,
-                )
-                .await;
+                let notification = {
+                    let session = self.owned.session_store.get_session(&session_id)?;
+                    metaagent_task_update_notification(
+                        task_updated,
+                        plan_updated,
+                        session.metaagent_task(&metaagent_id),
+                    )
+                };
+                self.notify_metaagent_task_changed(&session_id, &metaagent, &notification, true)
+                    .await;
                 let session = self.owned.session_store.get_session(&session_id)?;
                 let session = self.project_metaagent_task_session(session);
                 Ok(metaagent_task_response(session, &metaagent_id))
@@ -710,8 +713,12 @@ fn metaagent_task_response(
     LocalDaemonResponse::MetaagentTaskUpdated { session, task }
 }
 
-fn metaagent_task_update_notification(task_updated: bool, plan_updated: bool) -> &'static str {
-    match (task_updated, plan_updated) {
+fn metaagent_task_update_notification(
+    task_updated: bool,
+    plan_updated: bool,
+    task: Option<&crate::session::MetaagentTask>,
+) -> String {
+    let lead = match (task_updated, plan_updated) {
         (true, true) => {
             "The user edited your task and plan. Re-read both, revise your approach as needed, and continue."
         }
@@ -722,6 +729,30 @@ fn metaagent_task_update_notification(task_updated: bool, plan_updated: bool) ->
             "The user edited your plan. Re-read it and continue from the updated plan."
         }
         (false, false) => "The user edited your task state. Re-read it and continue.",
+    };
+    let Some(task) = task else {
+        return lead.to_string();
+    };
+    format!(
+        "{lead}\n\nUpdated task:\n{}\n\nUpdated plan:\n{}",
+        task.task_markdown(),
+        task.plan_markdown(),
+    )
+}
+
+#[cfg(test)]
+mod task_notification_tests {
+    use super::metaagent_task_update_notification;
+    use crate::session::MetaagentTask;
+
+    #[test]
+    fn task_edit_notification_carries_the_authoritative_task_and_plan() {
+        let mut task = MetaagentTask::new("task-1", "meta-1", "Build the viewer");
+        task.update_plan_markdown("1. Inspect\n2. Fix");
+        let notification = metaagent_task_update_notification(true, false, Some(&task));
+
+        assert!(notification.contains("Updated task:\nBuild the viewer"));
+        assert!(notification.contains("Updated plan:\n1. Inspect\n2. Fix"));
     }
 }
 

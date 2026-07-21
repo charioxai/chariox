@@ -140,7 +140,30 @@ impl KernelRuntimeState {
         }
         let completion_recorded = owned.prompt_completion_recorded(provider_run_id);
         let settlement_pending = owned.prompt_completion_settlement_pending(provider_run_id);
-        if !force && (prompt_completed || settlement_pending) {
+        let codex_provider = provider_run.adapter_key() == "codex";
+        if !force && codex_provider && !prompt_completed {
+            owned.schedule_provider_output_check_after(
+                provider_run_id,
+                STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+            );
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "codex prompt settlement waits for authoritative turn completion",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "completion_recorded": completion_recorded,
+                    "settlement_pending": settlement_pending,
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
+        if !force && !codex_provider && (prompt_completed || settlement_pending) {
             let quiet_after_response = owned.prompt_output_quiet_after_response(
                 provider_run_id,
                 STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
@@ -279,7 +302,7 @@ impl KernelRuntimeState {
             });
         }
 
-        if !force && (prompt_completed || settlement_pending) {
+        if !force && !codex_provider && (prompt_completed || settlement_pending) {
             if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                 active_prompt.workflow_run_id(),
                 active_prompt.workflow_node_run_id(),

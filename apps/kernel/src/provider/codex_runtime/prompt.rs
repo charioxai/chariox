@@ -36,6 +36,7 @@ pub fn submit_codex_prompt(
         cwd.as_deref(),
         model.as_deref(),
         hidden_context_for_provider(&envelope.hidden_system_context),
+        envelope.steering,
     ) {
         state.buffered_notifications.push(CodexNotification::Error {
             message: error.to_string(),
@@ -49,20 +50,35 @@ pub fn submit_codex_prompt(
     );
     let input = codex_input(&turn_input_prompt, &envelope.attachments);
     let thread_id = state.thread_id().to_string();
-    let response = match client.turn_start(
-        &mut state.socket,
-        &mut state.next_request_id,
-        &thread_id,
-        cwd.as_deref(),
-        model.as_deref(),
-        effort.as_deref(),
-        run.write_access_mode(),
-        run.execution_mode(),
-        run.permission_level(),
-        hidden_context_for_provider(&envelope.hidden_system_context),
-        input,
-        &mut state.buffered_notifications,
-    ) {
+    let active_steering_turn_id = envelope
+        .steering
+        .then(|| state.active_turn_id.clone())
+        .flatten();
+    let response_result = match active_steering_turn_id.as_deref() {
+        Some(active_turn_id) => client.turn_steer(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+            active_turn_id,
+            input,
+            &mut state.buffered_notifications,
+        ),
+        None => client.turn_start(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+            cwd.as_deref(),
+            model.as_deref(),
+            effort.as_deref(),
+            run.write_access_mode(),
+            run.execution_mode(),
+            run.permission_level(),
+            hidden_context_for_provider(&envelope.hidden_system_context),
+            input,
+            &mut state.buffered_notifications,
+        ),
+    };
+    let response = match response_result {
         Ok(response) => response,
         Err(error) => {
             state.buffered_notifications.push(CodexNotification::Error {
@@ -113,7 +129,15 @@ fn ensure_codex_thread_ready(
     cwd: Option<&str>,
     model: Option<&str>,
     developer_instructions: Option<&str>,
+    steering: bool,
 ) -> Result<(), DaemonError> {
+    if codex_active_steering_preserves_thread(
+        state.thread_ready(),
+        state.active_turn_id.is_some(),
+        steering,
+    ) {
+        return Ok(());
+    }
     let desired_fingerprint = developer_instructions_fingerprint(developer_instructions);
     if state.thread_ready()
         && state.developer_instructions_fingerprint() == Some(desired_fingerprint.as_str())
@@ -203,6 +227,54 @@ fn ensure_codex_thread_ready(
     }
 }
 
+fn codex_active_steering_preserves_thread(
+    thread_ready: bool,
+    active_turn: bool,
+    steering: bool,
+) -> bool {
+    thread_ready && active_turn && steering
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::{
+        codex_active_steering_preserves_thread, note_codex_turn_interrupt_accepted,
+        CodexNotification, CodexTurnTracker,
+    };
+
+    #[test]
+    fn active_steering_preserves_the_existing_codex_thread() {
+        assert!(codex_active_steering_preserves_thread(true, true, true));
+        assert!(!codex_active_steering_preserves_thread(true, true, false));
+        assert!(!codex_active_steering_preserves_thread(true, false, true));
+        assert!(!codex_active_steering_preserves_thread(false, true, true));
+    }
+
+    #[test]
+    fn accepted_interrupt_releases_runtime_for_the_next_fifo_prompt() {
+        let mut active_turn_id = Some("turn-cancelled".to_string());
+        let mut turn_tracker = CodexTurnTracker::default();
+        turn_tracker.note_tool_started("tool-still-active");
+        let mut buffered_notifications = vec![CodexNotification::TurnCompleted {
+            turn_id: "turn-cancelled".to_string(),
+            status: "interrupted".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        }];
+
+        note_codex_turn_interrupt_accepted(
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut buffered_notifications,
+        );
+
+        assert_eq!(active_turn_id, None);
+        assert_eq!(turn_tracker.active_tool_count(), 0);
+        assert!(!turn_tracker.has_pending_terminal());
+        assert!(buffered_notifications.is_empty());
+    }
+}
+
 fn developer_instructions_fingerprint(value: Option<&str>) -> String {
     format!("{:x}", Sha256::digest(value.unwrap_or_default().as_bytes()))
 }
@@ -258,7 +330,26 @@ pub fn abort_codex_turn(
         &thread_id,
         &turn_id,
         &mut state.buffered_notifications,
-    )
+    )?;
+    note_codex_turn_interrupt_accepted(
+        &mut state.active_turn_id,
+        &mut state.turn_tracker,
+        &mut state.buffered_notifications,
+    );
+    Ok(())
+}
+
+fn note_codex_turn_interrupt_accepted(
+    active_turn_id: &mut Option<String>,
+    turn_tracker: &mut CodexTurnTracker,
+    buffered_notifications: &mut Vec<CodexNotification>,
+) {
+    *active_turn_id = None;
+    turn_tracker.reset_for_started();
+    // These notifications were received before the interrupt acknowledgement and belong to the
+    // cancelled turn. Carrying them into the next FIFO submit would project stale output onto the
+    // promoted prompt, which the kernel has already made authoritative.
+    buffered_notifications.clear();
 }
 
 pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<String> {

@@ -97,6 +97,104 @@ async fn provider_message_completion_without_prompt_completed_settles_after_quie
 }
 
 #[tokio::test]
+async fn codex_completion_output_does_not_settle_before_authoritative_turn_completion() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-codex-terminal-gate",
+            "worktree-codex-terminal-gate",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-codex-terminal-gate",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-codex-terminal-gate",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-codex-terminal-gate".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-codex-terminal-gate",
+        attachment.id(),
+        agent.id(),
+        "complete only after turn/completed",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.mark_prompt_completion_recorded(run.id());
+    if let Some(activity) = runtime.owned.prompt_activity.write().get_mut(run.id()) {
+        activity.saw_response_content = true;
+        activity.last_output_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        activity.settlement_requested = true;
+    }
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
+        .await
+        .expect("quiet completion evidence should be accepted");
+    assert!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_some(),
+        "Codex assistant output must not settle the prompt before turn/completed"
+    );
+
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
+        .await
+        .expect("authoritative turn completion should be accepted");
+    assert!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .expect("session snapshot should exist")
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "turn/completed should release the prompt after Codex drained to quiet"
+    );
+}
+
+#[tokio::test]
 async fn metaagent_quiet_drain_settlement_without_prompt_completed_does_not_inject_orphaned_task() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

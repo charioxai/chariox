@@ -833,13 +833,12 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let Some(active_prompt) = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, &target_agent_id)
-            .is_none()
-        {
+        else {
             return Ok(None);
-        }
+        };
         let Some(provider_run) = self
             .provider_store
             .get_run_for_agent(session_id, &target_agent_id)
@@ -867,7 +866,7 @@ impl KernelRuntimeOwnedState {
             provider_run_id: provider_run.id().to_string(),
             agent_id: target_agent_id,
             prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: None,
+            target_active_prompt_id: Some(active_prompt.id().to_string()),
             source_attachment_id: prompt.source_attachment_id().to_string(),
             prompt: prompt.prompt().to_string(),
             hidden_system_context: prompt.hidden_system_context().to_string(),
@@ -876,7 +875,7 @@ impl KernelRuntimeOwnedState {
             external_provider: prompt.external_provider().map(str::to_string),
             external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-            steering: false,
+            steering: true,
         });
         Ok(Some(dispatches))
     }

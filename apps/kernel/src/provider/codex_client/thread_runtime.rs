@@ -192,6 +192,36 @@ impl CodexClient {
         )
     }
 
+    pub fn turn_steer(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: Vec<Value>,
+        buffered_notifications: &mut Vec<CodexNotification>,
+    ) -> Result<Value, DaemonError> {
+        self.send_request_buffering_notifications(
+            socket,
+            next_request_id,
+            "turn/steer",
+            Self::turn_steer_params(thread_id, expected_turn_id, input),
+            buffered_notifications,
+        )
+    }
+
+    pub(super) fn turn_steer_params(
+        thread_id: &str,
+        expected_turn_id: &str,
+        input: Vec<Value>,
+    ) -> Value {
+        json!({
+            "threadId": thread_id,
+            "expectedTurnId": expected_turn_id,
+            "input": input,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn turn_start_params(
         thread_id: &str,

@@ -333,6 +333,23 @@ mod tests {
     }
 
     #[test]
+    fn codex_turn_steer_targets_the_authoritative_active_turn() {
+        let params = CodexClient::turn_steer_params(
+            "thread-1",
+            "turn-active",
+            vec![json!({"type": "text", "text": "updated task"})],
+        );
+
+        assert_eq!(params.get("threadId"), Some(&json!("thread-1")));
+        assert_eq!(params.get("expectedTurnId"), Some(&json!("turn-active")));
+        assert_eq!(
+            params.get("input"),
+            Some(&json!([{"type": "text", "text": "updated task"}]))
+        );
+        assert_eq!(params.as_object().map(|value| value.len()), Some(3));
+    }
+
+    #[test]
     fn codex_thread_start_creates_durable_threads() {
         let client =
             CodexClient::new("run-1", "ws://127.0.0.1:43123").expect("client should construct");
