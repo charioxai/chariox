@@ -103,6 +103,7 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
                     None,
                     None,
                     true,
+                    true,
                 )
                 .await;
             }
@@ -120,6 +121,7 @@ struct AttachedExternalObserverTarget {
     provider_session_id: String,
     observed_cursor: ExternalProviderObservedCursor,
     cursor_source: AttachedExternalObserverCursorSource,
+    needs_responsive_refresh: bool,
 }
 
 #[derive(Debug, Clone)]

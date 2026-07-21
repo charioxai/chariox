@@ -42,6 +42,7 @@ pub(super) async fn refresh_external_provider_session_index(
                 None,
                 None,
                 true,
+                false,
             )
             .await;
             let total_elapsed = refresh_started.elapsed();
@@ -79,8 +80,15 @@ pub(super) async fn refresh_external_provider_session_index(
                 cache.cached_signature_checks.saturating_add(1)
             };
         }
-        refresh_attached_external_provider_histories_matching(app, runtime_state, None, None, true)
-            .await;
+        refresh_attached_external_provider_histories_matching(
+            app,
+            runtime_state,
+            None,
+            None,
+            true,
+            false,
+        )
+        .await;
         let total_elapsed = refresh_started.elapsed();
         if total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE {
             crate::logging::info_with_fields(
@@ -326,6 +334,7 @@ pub(super) async fn refresh_attached_external_provider_histories(
         provider_filter,
         None,
         false,
+        false,
     )
     .await;
 }
@@ -341,6 +350,7 @@ pub(crate) async fn refresh_attached_external_provider_histories_for_session(
         None,
         Some(session_id),
         true,
+        false,
     )
     .await;
 }
@@ -351,6 +361,7 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
     provider_filter: Option<&str>,
     session_filter: Option<&str>,
     changed_transcripts_only: bool,
+    responsive_targets_only: bool,
 ) {
     let targets = attached_external_observer_targets_for_runtime(app, runtime_state)
         .await
@@ -360,11 +371,12 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
                 target,
                 provider_filter,
                 session_filter,
-            ) && (!changed_transcripts_only
-                || crate::app::external_provider_session_transcript_needs_refresh(
-                    &target.provider,
-                    &target.provider_session_id,
-                ))
+            ) && (!responsive_targets_only || target.needs_responsive_refresh)
+                && (!changed_transcripts_only
+                    || crate::app::external_provider_session_transcript_needs_refresh(
+                        &target.provider,
+                        &target.provider_session_id,
+                    ))
         })
         .collect::<Vec<_>>();
     for target in targets {

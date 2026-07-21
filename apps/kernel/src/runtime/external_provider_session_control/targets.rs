@@ -19,7 +19,8 @@ pub(super) fn attached_external_observer_targets(
         {
             continue;
         }
-        let provider_run_id = latest_run.map(|run| run.id().to_string());
+        let provider_run_is_active = latest_run.as_ref().is_some_and(provider_run_is_running);
+        let provider_run_id = latest_run.as_ref().map(|run| run.id().to_string());
         if let Some(import) = agent.external_provider_import().cloned() {
             let target = attached_external_observer_target_from_import(
                 session_id,
@@ -35,6 +36,7 @@ pub(super) fn attached_external_observer_targets(
             agent.id(),
             provider_run_id.clone(),
             agent.provider_resume_state(),
+            provider_run_is_active,
         ) {
             targets
                 .entry(attached_observer_target_key(&target))
@@ -251,6 +253,7 @@ pub(super) fn attached_external_observer_target_from_import(
         provider_session_id: import.external_provider_session_provider_id.clone(),
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),
+        needs_responsive_refresh: true,
     }
 }
 
@@ -270,6 +273,7 @@ pub(super) fn attached_external_observer_targets_from_provider_run(
             Some(run.id().to_string()),
             run.adapter_key(),
             provider_session_id,
+            provider_run_is_running(run),
         ) {
             targets.push(target);
         }
@@ -280,6 +284,7 @@ pub(super) fn attached_external_observer_targets_from_provider_run(
         agent_id,
         Some(run.id().to_string()),
         run.resume_state(),
+        provider_run_is_running(run),
     ));
     targets
 }
@@ -290,6 +295,7 @@ pub(super) fn attached_external_observer_targets_from_resume_state(
     agent_id: &str,
     provider_run_id: Option<String>,
     resume_state: &ProviderResumeState,
+    needs_responsive_refresh: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
     resume_state
         .external_provider_sessions()
@@ -302,6 +308,7 @@ pub(super) fn attached_external_observer_targets_from_resume_state(
                 provider_run_id.clone(),
                 provider,
                 provider_session_id,
+                needs_responsive_refresh,
             )
         })
         .collect()
@@ -314,6 +321,7 @@ pub(super) fn attached_external_observer_target_from_provider_session(
     provider_run_id: Option<String>,
     provider: &str,
     provider_session_id: &str,
+    needs_responsive_refresh: bool,
 ) -> Option<AttachedExternalObserverTarget> {
     let external_session_id =
         external_session_id_for_provider_session(provider, provider_session_id)?;
@@ -332,6 +340,7 @@ pub(super) fn attached_external_observer_target_from_provider_session(
         provider_session_id: provider_session_id.to_string(),
         observed_cursor: cursor_store.get(&cursor_key),
         cursor_source: AttachedExternalObserverCursorSource::ArrobaOwned(cursor_key),
+        needs_responsive_refresh,
     })
 }
 

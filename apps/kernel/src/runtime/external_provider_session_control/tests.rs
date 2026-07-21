@@ -30,6 +30,11 @@ pub(super) fn observer_target(agent_id: &str) -> AttachedExternalObserverTarget 
 }
 
 #[test]
+fn imported_observer_targets_keep_responsive_history_catch_up() {
+    assert!(observer_target("agent-1").needs_responsive_refresh);
+}
+
+#[test]
 fn external_observed_history_entry_match_includes_visible_metadata() {
     let existing = ExternalImportHistoryEntry {
         kind: SessionHistoryEntryKind::ProviderOutput,

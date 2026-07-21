@@ -35,6 +35,7 @@ pub(super) fn append_observed_external_history(
         provider_session_id: import.external_provider_session_provider_id.clone(),
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),
+        needs_responsive_refresh: true,
     };
     let _ = append_observed_external_turns_for_attached_target(
         app,

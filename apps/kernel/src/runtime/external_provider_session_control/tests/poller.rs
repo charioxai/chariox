@@ -169,6 +169,10 @@ fn attached_resume_state_is_observed() {
     assert_eq!(target.agent_id, agent.id());
     assert_eq!(target.provider, "codex");
     assert_eq!(target.provider_session_id, "thread-attached");
+    assert!(
+        !target.needs_responsive_refresh,
+        "an idle Arroba-owned session only needs attach-time and low-frequency catch-up"
+    );
 }
 
 #[test]
@@ -768,6 +772,10 @@ fn running_provider_run_without_attachment_is_observed() {
 
     assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
     assert_eq!(target.provider_session_id, "thread-live");
+    assert!(
+        target.needs_responsive_refresh,
+        "a running provider turn needs responsive transcript catch-up"
+    );
 }
 
 #[test]
