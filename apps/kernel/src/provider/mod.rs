@@ -143,7 +143,7 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
 pub(crate) fn provider_run_finalizes_cancellation_on_abort_dispatch(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
+    matches!(run.adapter_key(), "claude" | "codex") && provider_run_uses_structured_prompt_io(run)
 }
 
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_claude_cancellation_settlement_is_provider_policy() {
+    fn structured_provider_cancellation_settlement_is_provider_policy() {
         let structured = provider_run("claude", "claude");
         let headless = provider_run("claude", "claude-headless");
         let native_tui = provider_run_with_client_interface(
@@ -322,7 +322,7 @@ mod tests {
         assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
             &native_tui
         ));
-        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
+        assert!(provider_run_finalizes_cancellation_on_abort_dispatch(
             &codex
         ));
     }

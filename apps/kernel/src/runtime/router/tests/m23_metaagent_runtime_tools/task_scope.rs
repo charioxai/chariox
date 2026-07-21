@@ -2,6 +2,12 @@ use super::*;
 
 #[tokio::test]
 async fn metaagent_runtime_mcp_manages_scoped_task_artifacts() {
+    tokio::spawn(metaagent_runtime_mcp_manages_scoped_task_artifacts_impl())
+        .await
+        .expect("metaagent task artifact test should join");
+}
+
+async fn metaagent_runtime_mcp_manages_scoped_task_artifacts_impl() {
     let env = TestMetaRuntimeEnv::new("task-artifacts");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");

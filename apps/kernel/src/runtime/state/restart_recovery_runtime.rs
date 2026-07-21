@@ -16,6 +16,7 @@ pub(crate) fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> boo
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
+    pub(crate) cancelled_local_prompts_finalized: usize,
     pub(crate) accepted_local_redispatched: usize,
     pub(crate) uncertain_original_redispatched: usize,
     pub(crate) provider_continuations_dispatched: usize,
@@ -60,6 +61,7 @@ impl KernelRuntimeState {
                 "durable_state.recovery",
                 "reconciled durable runtime work after kernel restart",
                 serde_json::json!({
+                    "cancelled_local_prompts_finalized": summary.cancelled_local_prompts_finalized,
                     "accepted_local_redispatched": summary.accepted_local_redispatched,
                     "uncertain_original_redispatched": summary.uncertain_original_redispatched,
                     "provider_continuations_dispatched": summary.provider_continuations_dispatched,
@@ -152,6 +154,24 @@ impl KernelRuntimeState {
                     }
                     continue;
                 }
+                if prompt.status() == crate::session::PromptStatus::Cancelling {
+                    match self
+                        .finalize_cancelled_local_prompt_after_restart(session.id(), agent_id)
+                        .await
+                    {
+                        Ok(()) => summary.cancelled_local_prompts_finalized += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 match delivery_phase {
                     Some(crate::session::DurablePromptDeliveryPhase::Accepted) => match self
                         .redispatch_local_prompt(session.id(), agent_id, &prompt)
@@ -207,6 +227,39 @@ impl KernelRuntimeState {
             }
         }
         summary
+    }
+
+    async fn finalize_cancelled_local_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let provider_run_id = self
+            .owned
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .map(|run| run.id().to_string());
+        let cancellation = self
+            .owned
+            .finalize_local_prompt_cancellation_with_queued_advance(
+                session_id,
+                agent_id,
+                provider_run_id.as_deref(),
+            )?;
+        self.owned
+            .workflow_cancel_prompt(session_id, &cancellation.cancellation.prompt)?;
+        if cancellation.released_claim {
+            self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
+        }
+        if let Some(dispatch) = cancellation.dispatch {
+            if let Err(error) = self
+                .enqueue_prompt_dispatch_after_liveness(&dispatch, &self.owned)
+                .await
+            {
+                let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        }
+        Ok(())
     }
 
     async fn redispatch_local_prompt(
@@ -657,6 +710,49 @@ mod tests {
         assert_eq!(
             prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_local_prompt_is_finalized_instead_of_resumed_after_restart() {
+        let (runtime, session_id, agent_id, _prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        runtime
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_active_prompt(&session, &agent_id)
+            .expect("prompt should begin cancelling");
+        let (active_prompt, queued_prompts) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&session_id, &agent_id, active_prompt, queued_prompts)
+            .expect("cancelling state should persist");
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.cancelled_local_prompts_finalized, 1);
+        assert_eq!(summary.provider_continuations_dispatched, 0);
+        assert_eq!(summary.failed_reconciliations, 0);
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none(),
+            "cancelled prompt must not be resumed after restart"
         );
     }
 

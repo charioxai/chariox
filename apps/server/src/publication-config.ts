@@ -48,7 +48,7 @@ export function defaultPublicationConfig(): WorkflowPublicationConfig {
     session_id: requiredProcessEnv("ARROBA_PUBLICATION_SESSION_ID"),
     workflow_ref: requiredProcessEnv("ARROBA_PUBLICATION_WORKFLOW"),
     endpoint_ref: requiredProcessEnv("ARROBA_PUBLICATION_ENDPOINT"),
-    route: process.env.ARROBA_PUBLICATION_ROUTE ?? "/*",
+    route: process.env.ARROBA_PUBLICATION_ROUTE ?? "/",
     mode: process.env.ARROBA_PUBLICATION_MODE === "async" ? "async" : "sync",
   }
   if (process.env.ARROBA_KERNEL_URL) config.kernel_endpoint = process.env.ARROBA_KERNEL_URL
@@ -416,10 +416,7 @@ function publicationTransportKind(value: unknown): string | undefined {
 }
 
 function defaultRouteForTransport(transport: string | undefined): string {
-  if (transport === "api_sse_json") return "/invoke"
-  if (transport === "websocket_json") return "/.well-known/arroba/publication/ws"
-  if (transport === "mcp") return "/mcp"
-  return "/*"
+  return "/"
 }
 
 function defaultMethodsForTransport(transport: string | undefined): Array<"GET" | "POST"> | undefined {
@@ -430,6 +427,7 @@ function defaultMethodsForTransport(transport: string | undefined): Array<"GET" 
 
 function defaultParserForTransport(transport: string | undefined): ParserConfig | undefined {
   if (transport === "websocket_json" || transport === "mcp") return undefined
+  if (!transport || transport === "human_http") return { kind: "query_params" }
   return { kind: "json" }
 }
 

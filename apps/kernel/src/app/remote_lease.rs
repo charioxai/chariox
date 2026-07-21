@@ -591,6 +591,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn clear_active_home_prompt_projection_for_test(&mut self, leased_agent_id: &str) {
+        if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            agent.active_home_prompt_id = None;
+            agent.active_home_prompt_started_at_ms = None;
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_projected_output_history_key_for_test(
         &mut self,
         leased_agent_id: &str,

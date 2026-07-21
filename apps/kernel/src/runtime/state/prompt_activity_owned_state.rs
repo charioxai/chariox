@@ -128,7 +128,8 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_abort_jobs()
         {
-            if let Err(error) = finished.result {
+            let abort_error = finished.result.err().map(|error| error.to_string());
+            if let Some(error) = abort_error.as_deref() {
                 let recipients = self
                     .attachment_store
                     .list_session_attachment_ids(&finished.session_id);
@@ -138,16 +139,45 @@ impl KernelRuntimeOwnedState {
                     recipients,
                     format!("Prompt cancellation dispatch failed after acknowledgement: {error}"),
                 );
+                if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id) {
+                    if let Some(agent_id) = provider_run.agent_instance_id() {
+                        if let Ok(session) = self.session_store.get_session(&finished.session_id) {
+                            if let Some(prompt) = self
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, agent_id)
+                                .filter(|prompt| {
+                                    prompt.status() == crate::session::PromptStatus::Cancelling
+                                })
+                            {
+                                let _ = self.settle_failed_local_prompt_without_advance(
+                                    &finished.session_id,
+                                    agent_id,
+                                    prompt.id(),
+                                    &finished.provider_run_id,
+                                    &format!("Provider prompt cancellation failed: {error}"),
+                                );
+                            }
+                        }
+                    }
+                }
             } else if let Ok(provider_run) = self.provider_store.get_run(&finished.provider_run_id)
             {
-                if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(
-                    &provider_run,
-                ) {
-                    if let Some(agent_id) = provider_run.agent_instance_id() {
-                        let _ = self.finalize_local_prompt_cancellation_with_queued_advance(
+                // A successful structured-provider abort RPC is the
+                // authoritative acknowledgement that the interrupted turn no
+                // longer owns the agent. Some providers do not emit a usable
+                // terminal event afterwards, so settle the cancelling prompt
+                // from this acknowledgement instead of leaving it WORKING.
+                if let Some(agent_id) = provider_run.agent_instance_id() {
+                    if let Ok(cancellation) = self
+                        .finalize_local_prompt_cancellation_with_queued_advance(
                             &finished.session_id,
                             agent_id,
                             Some(&finished.provider_run_id),
+                        )
+                    {
+                        let _ = self.workflow_cancel_prompt(
+                            &finished.session_id,
+                            &cancellation.cancellation.prompt,
                         );
                     }
                 }
@@ -427,12 +457,12 @@ impl KernelRuntimeOwnedState {
     pub(super) fn acquire_workflow_node_workspace_claim(
         &self,
         session_id: &str,
-        provider_run_id: &str,
+        claim_id: &str,
         agent_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
     ) -> Result<(), DaemonError> {
-        if self.prompt_workspace_claims.contains(provider_run_id) {
+        if self.prompt_workspace_claims.contains(claim_id) {
             return Ok(());
         }
         let session = self.session_store.get_session(session_id)?;
@@ -451,7 +481,7 @@ impl KernelRuntimeOwnedState {
             "workflow_node_dispatch",
         )?;
         self.prompt_workspace_claims
-            .insert(provider_run_id.to_string(), claim);
+            .insert(claim_id.to_string(), claim);
         Ok(())
     }
 }

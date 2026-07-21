@@ -72,10 +72,12 @@ pub fn drain_codex_events(
             })
             .is_none();
     }
-    if state.active_turn_id.is_some()
-        && (run.endpoint_mode() == AgentEndpointMode::External
-            || state.turn_tracker.has_pending_terminal())
-    {
+    if codex_turn_should_backfill(
+        run.endpoint_mode(),
+        state.active_turn_id.is_some(),
+        &state.turn_tracker,
+        drained_to_quiet,
+    ) {
         backfill_completed_turn(
             &client,
             state,
@@ -87,10 +89,7 @@ pub fn drain_codex_events(
             &mut terminal_failure,
         )?;
     }
-    let terminal_waiting_for_backfill = state.active_turn_id.is_some()
-        && state.turn_tracker.has_pending_terminal()
-        && !prompt_completed;
-    if drained_to_quiet && !prompt_completed && !terminal_waiting_for_backfill {
+    if drained_to_quiet && !prompt_completed {
         maybe_finalize_terminal_signal(
             &mut state.active_turn_id,
             &mut state.turn_tracker,
@@ -109,4 +108,16 @@ pub fn drain_codex_events(
         notices,
         resolved_usage,
     })
+}
+
+pub(super) fn codex_turn_should_backfill(
+    endpoint_mode: AgentEndpointMode,
+    has_active_turn: bool,
+    turn_tracker: &super::turn::CodexTurnTracker,
+    drained_to_quiet: bool,
+) -> bool {
+    has_active_turn
+        && (endpoint_mode == AgentEndpointMode::External
+            || turn_tracker.has_pending_terminal()
+            || (drained_to_quiet && turn_tracker.has_terminal_assistant_evidence()))
 }

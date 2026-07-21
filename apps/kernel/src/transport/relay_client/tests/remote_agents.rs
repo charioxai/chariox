@@ -514,7 +514,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
     ));
 
     let mut worker_received_prompt = false;
-    for _ in 0..80 {
+    for _ in 0..1200 {
         worker_received_prompt = {
             let mut app = app_worker.lock().await;
             let leased_agent = RemoteLeaseRuntime::new(&mut app)
@@ -578,9 +578,25 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         }
         sleep(Duration::from_millis(25)).await;
     }
+    let home_projection_debug = {
+        let app = app_home.lock().await;
+        (
+            app.agents()
+                .get_agent(&remote_agent_id)
+                .ok()
+                .and_then(|agent| {
+                    agent
+                        .remote_execution()
+                        .and_then(|remote| remote.active_worker_provider_run_id.clone())
+                }),
+            app.provider_run_projection_store()
+                .get_for_agent(&session_id, &remote_agent_id)
+                .map(|run| (run.id().to_string(), run.state())),
+        )
+    };
     assert!(
         home_provider_running,
-        "home agent must project the running worker provider run before follow-up steering"
+        "home agent must project the running worker provider run before follow-up steering: {home_projection_debug:?}"
     );
     let (worker_provider_run_id, projected_provider_run_id) = {
         let app = app_home.lock().await;

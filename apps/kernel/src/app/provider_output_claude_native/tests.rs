@@ -318,7 +318,8 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-stop-test-{}-{}",
+        "arroba-claude-headless-stop-test-{}-{}-{}",
+        provider,
         std::process::id(),
         timestamp_millis()
     ));
@@ -1066,6 +1067,45 @@ fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
         drain.chunks[0].text,
         "Only the real response settles the turn."
     );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_drain_preserves_synthetic_api_errors() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-api-error-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "api-error-assistant",
+            "isApiErrorMessage": true,
+            "error": "authentication_failed",
+            "sessionId": "claude-session-error",
+            "message": {
+                "id": "api-error-message",
+                "model": "<synthetic>",
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "Login expired · Please run /login" }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.session_id.as_deref(), Some("claude-session-error"));
+    assert_eq!(drain.model, None);
+    assert_eq!(drain.assistant_message_ids, vec!["api-error-message"]);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.chunks[0].text, "Login expired · Please run /login");
 
     let _ = fs::remove_dir_all(dir);
 }

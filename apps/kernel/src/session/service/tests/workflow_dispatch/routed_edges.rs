@@ -97,6 +97,84 @@ fn multi_edge_completion_routes_only_matching_edge_id() {
 }
 
 #[test]
+fn unmatched_routed_edge_schedules_correction_instead_of_completing_run() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["router", "worker"]);
+    let workflow = service
+        .create_workflow(session.id(), Some("invalid-edge-route".to_string()))
+        .expect("workflow should be created");
+    let router = service
+        .add_workflow_node(session.id(), workflow.id(), "router")
+        .expect("router node should be added");
+    let worker = service
+        .add_workflow_node(session.id(), workflow.id(), "worker")
+        .expect("worker node should be added");
+    service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            router.id(),
+            worker.id(),
+            None,
+            None,
+        )
+        .expect("router should connect to worker");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            router.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    let workflow_run = service
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("go".to_string()),
+        )
+        .expect("workflow run should be created");
+    service
+        .start_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+        )
+        .expect("router should start");
+    let routed = serde_json::json!({
+        "workflow_handoffs": [{
+            "edge_id": "nonexistent-edge",
+            "summary": "bad route",
+            "message": "must not disappear"
+        }]
+    });
+
+    let completion = service
+        .complete_workflow_node_run(
+            session.id(),
+            workflow_run.id(),
+            workflow_run.node_runs()[0].id(),
+            Some(completion_with_message(routed.to_string())),
+            None,
+        )
+        .expect("invalid route should become a corrective workflow turn");
+
+    assert_eq!(completion.workflow_run.status(), WorkflowRunStatus::Waiting);
+    assert!(completion.workflow_run.final_output().is_none());
+    assert_eq!(completion.dispatches.len(), 1);
+    assert_eq!(completion.dispatches[0].node_run.node_id(), router.id());
+    let failure = completion
+        .handoff_validation_failure
+        .expect("invalid route should report a validation failure");
+    assert_eq!(failure.edge_id, "nonexistent-edge");
+    assert!(failure.retry_scheduled);
+}
+
+#[test]
 fn multi_edge_completion_routes_by_target_node_and_suppresses_null_message() {
     let mut service = SessionService::new(&test_config());
     let session = service

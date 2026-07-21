@@ -97,43 +97,6 @@ impl KernelRuntimeOwnedState {
             );
         let update = match completion_result {
             Ok(update) => update,
-            Err(crate::error::DaemonError::WorkflowHandoffValidationFailed {
-                edge_id,
-                message,
-                ..
-            }) => {
-                self.workflow_record_failure(
-                    session_id,
-                    workflow_run_id,
-                    &crate::session::WorkflowFailureEvent::new(
-                        crate::session::WorkflowFailureKind::OutputValidationFailed,
-                        workflow_node_run_id,
-                        vec![edge_id.clone()],
-                        message.clone(),
-                    ),
-                );
-                self.session_store.write().stop_workflow_node_run(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                )?;
-                let _ = self.release_workflow_node_workspace_claim(
-                    session_id,
-                    workflow_run_id,
-                    workflow_node_run_id,
-                );
-                self.record_notice(
-                    session_id,
-                    None,
-                    self.attachment_store.list_session_attachment_ids(session_id),
-                    format!(
-                        "Workflow run `{workflow_run_id}` stopped after validation failed on edge `{edge_id}`: {message}"
-                    ),
-                );
-                self.workflow_maybe_start_next_queued_prompt(session_id);
-                self.persist_workflow_completion_session(session_id)?;
-                return Ok(WorkflowPromptDispatches::default());
-            }
             Err(error) => return Err(error),
         };
         for warning in &update.validation_warnings {
@@ -173,6 +136,35 @@ impl KernelRuntimeOwnedState {
                     Vec::new(),
                     "workflow run stopped after a node exhausted its turn budget",
                 ),
+            );
+        }
+        if let Some(failure) = update.handoff_validation_failure.as_ref() {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::OutputValidationFailed,
+                    workflow_node_run_id,
+                    vec![failure.edge_id.clone()],
+                    failure.message.clone(),
+                ),
+            );
+            self.record_notice(
+                session_id,
+                provider_run_id,
+                self.attachment_store
+                    .list_session_attachment_ids(session_id),
+                if failure.retry_scheduled {
+                    format!(
+                        "Workflow handoff on edge `{}` failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
+                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
+                    )
+                } else {
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}` after attempt {}/{}: {}",
+                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
+                    )
+                },
             );
         }
         if let Some(failure) = update.run_output_validation_failure.as_ref() {
@@ -234,6 +226,7 @@ impl KernelRuntimeOwnedState {
             );
         }
         if update.validation_warnings.is_empty()
+            && update.handoff_validation_failure.is_none()
             && update.missing_output_failure.is_none()
             && update.run_output_validation_failure.is_none()
         {

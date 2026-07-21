@@ -50,6 +50,7 @@ SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${ARROBA_SLICE_AUTH_PROVIDER:-all}"
+SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 
 log() {
   printf '[slice-linux] %s\n' "$*" >&2
@@ -272,6 +273,8 @@ require_slice_free_space() {
 }
 
 build_image() {
+  [[ -n "$SLICE_RELAY_PEER_PROTOCOL_VERSION" ]] \
+    || fail "could not read relay peer protocol version from the kernel source"
   case "$SLICE_BUILD_IMAGE" in
     auto|always|never) ;;
     *) fail "ARROBA_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
@@ -286,8 +289,13 @@ build_image() {
   fi
 
   if [[ "$SLICE_BUILD_IMAGE" == "auto" ]] && docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
-    log "using cached $SLICE_IMAGE"
-    return 0
+    local image_protocol_version
+    image_protocol_version="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.relay-peer-protocol-version" }}' "$SLICE_IMAGE" 2>/dev/null || true)"
+    if [[ "$image_protocol_version" == "$SLICE_RELAY_PEER_PROTOCOL_VERSION" ]]; then
+      log "using compatible cached $SLICE_IMAGE (relay peer protocol $image_protocol_version)"
+      return 0
+    fi
+    log "cached $SLICE_IMAGE uses relay peer protocol ${image_protocol_version:-unknown}; rebuilding for $SLICE_RELAY_PEER_PROTOCOL_VERSION"
   fi
 
   log "building $SLICE_IMAGE"
@@ -295,12 +303,14 @@ build_image() {
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
     docker build \
       --build-arg "ARROBA_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
+      --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
       "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
     return 0
   fi
   docker build \
+    --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$SLICE_IMAGE" \
     "$REPO_ROOT"
@@ -311,6 +321,15 @@ ensure_container() {
   if [[ "$SLICE_RECREATE" == "1" ]] && container_exists; then
     log "recreating container $SLICE_NAME"
     run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
+  fi
+  if container_exists; then
+    local container_image_id desired_image_id
+    container_image_id="$(docker container inspect -f '{{.Image}}' "$SLICE_NAME" 2>/dev/null || true)"
+    desired_image_id="$(docker image inspect -f '{{.Id}}' "$SLICE_IMAGE" 2>/dev/null || true)"
+    if [[ -n "$desired_image_id" && "$container_image_id" != "$desired_image_id" ]]; then
+      log "recreating $SLICE_NAME because its worker image is stale"
+      run_with_timeout 60 docker rm -f "$SLICE_NAME" >/dev/null
+    fi
   fi
   case "$SLICE_WORKSPACE_MOUNT_MODE" in
     rw|ro) ;;

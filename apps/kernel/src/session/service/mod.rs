@@ -78,6 +78,7 @@ pub struct WorkflowCompletionUpdate {
     pub workflow_run: WorkflowRun,
     pub dispatches: Vec<WorkflowDispatch>,
     pub validation_warnings: Vec<WorkflowHandoffValidationWarning>,
+    pub handoff_validation_failure: Option<WorkflowHandoffValidationFailure>,
     pub missing_output_failure: Option<WorkflowMissingOutputFailure>,
     pub run_output_validation_failure: Option<WorkflowRunOutputValidationFailure>,
 }
@@ -86,6 +87,15 @@ pub struct WorkflowCompletionUpdate {
 pub struct WorkflowHandoffValidationWarning {
     pub edge_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowHandoffValidationFailure {
+    pub edge_id: String,
+    pub message: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+    pub retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

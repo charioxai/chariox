@@ -400,8 +400,14 @@ impl KernelRuntimeOwnedState {
                 "delivery_token": context.delivery_token,
                 "messages": messages,
                 "outgoing_edges": outgoing_edges,
+                "run_output_contract": workflow_run_output_contract(
+                    &workflow,
+                    workflow
+                        .node(&node_id)
+                        .is_some_and(|node| node.can_complete_workflow_run()),
+                ),
                 "handoff_routing": {
-                    "final_json_field": "workflow_handoffs",
+                    "final_json_field": "output.message.workflow_handoffs",
                     "select_by": ["edge_id", "to_node_id"],
                     "message_fields": ["output.message", "message"],
                 },
@@ -583,6 +589,31 @@ struct AgentAppActionAuditOutcome {
     http_status: Option<u16>,
     duration_ms: Option<u64>,
     error: Option<String>,
+}
+
+fn workflow_run_output_contract(
+    workflow: &crate::session::WorkflowDefinition,
+    can_complete_workflow_run: bool,
+) -> serde_json::Value {
+    if !can_complete_workflow_run {
+        return serde_json::Value::Null;
+    }
+    let Some(schema_ref) = workflow.run_output_schema_ref() else {
+        return serde_json::Value::Null;
+    };
+    let Some(schema) = workflow.schema(schema_ref) else {
+        return serde_json::json!({
+            "schema_ref": schema_ref,
+            "source": "external_ref",
+        });
+    };
+    serde_json::json!({
+        "schema_ref": schema_ref,
+        "source": "embedded",
+        "alias": schema.alias(),
+        "description": schema.description(),
+        "schema": schema.schema(),
+    })
 }
 
 fn call_agent_app_http_action(

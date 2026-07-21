@@ -108,6 +108,23 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
 }
 
 #[test]
+fn linux_docker_slice_auto_build_replaces_protocol_incompatible_workers() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let dockerfile = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/Dockerfile"),
+    )
+    .expect("slice Dockerfile should be readable");
+
+    assert!(script.contains("io.arroba.relay-peer-protocol-version"));
+    assert!(script.contains("because its worker image is stale"));
+    assert!(dockerfile.contains("io.arroba.relay-peer-protocol-version"));
+}
+
+#[test]
 fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let record = test_record();
     let options = test_options();

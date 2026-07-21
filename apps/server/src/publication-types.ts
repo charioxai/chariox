@@ -143,6 +143,7 @@ export type AgentAppReplicaConfig = {
 }
 
 export type PublicationTraceLevel =
+  | "user_prompt"
   | "output_summary"
   | "assistant_messages"
   | "thinking"

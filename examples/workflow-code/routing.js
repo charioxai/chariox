@@ -76,7 +76,11 @@ for (let index = 0; index < params.specialist_count; index += 1) {
   const handle = params.specialist_count === 2 ? defaultHandles[index] : `specialist_${pad2(number)}`;
   const specialist = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "opencode" : "claude", model: "default" }),
+    agent: workflow.newAgent({
+      alias: handle.replaceAll("_", "-"),
+      provider: index % 2 === 0 ? "opencode" : "claude",
+      model: index % 2 === 0 ? "kimi-k2.6" : "sonnet",
+    }),
     publicLabel: params.specialist_count === 2 ? defaultLabels[index] : `Specialist ${number}`,
     instructions: `Answer tasks routed to specialist branch ${number} and submit final output.`,
     canCompleteWorkflowRun: true,

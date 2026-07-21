@@ -96,9 +96,10 @@ const aggregator = workflow.node({
 for (let index = 0; index < params.reviewer_count; index += 1) {
   const number = index + 1;
   const handle = `reviewer_${pad2(number)}`;
+  const provider = index % 2 === 0 ? "claude" : "opencode";
   const reviewer = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider, model: provider === "claude" ? "haiku" : "deepseek-v4-pro" }),
     publicLabel: `Reviewer ${number}`,
     instructions: "Review the task independently, then hand structured notes to the aggregator.",
     canvas: { x: 300, y: branchY(index, params.reviewer_count) },

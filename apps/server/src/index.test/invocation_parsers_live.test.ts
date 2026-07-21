@@ -217,8 +217,38 @@ test("human HTTP publication parsers inject prompt consistently", async () => {
   }
 })
 
-test("published API SSE, WebSocket, and MCP transports invoke through live local gateway", async () => {
+test("published transports invoke at their root defaults without viewer route collisions", async () => {
   const prompt = "ship the transport surface"
+
+  {
+    let invocations = 0
+    const { app } = buildServer(publishedTransportConfig({
+      id: "human-http",
+      transport: "human_http",
+      methods: ["GET", "POST"],
+      parser: { kind: "query_params" },
+    }), {
+      invokeWorkflow: async (invocation) => {
+        invocations += 1
+        assert.deepEqual(invocation.input, { prompt })
+        return { accepted: true, workflow_run: { id: "run-human", status: "Completed", final_output: { message: "human done" } } }
+      },
+    })
+    try {
+      const address = await app.listen({ host: "127.0.0.1", port: 0 })
+      const viewer = await fetch(address, { headers: { accept: "text/html" } })
+      assert.equal(viewer.status, 200)
+      assert.match(viewer.headers.get("content-type") ?? "", /text\/html/)
+      assert.match(await viewer.text(), /Published workflow/)
+      assert.equal(invocations, 0)
+
+      const invoked = await fetch(`${address}/?prompt=${encodeURIComponent(prompt)}`, { headers: { accept: "application/json" } })
+      assert.equal(invoked.status, 200)
+      assert.equal(invocations, 1)
+    } finally {
+      await app.close()
+    }
+  }
 
   {
     let seenInput: unknown = null
@@ -227,7 +257,6 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
     const { app } = buildServer(publishedTransportConfig({
       id: "api-sse",
       transport: "api_sse_json",
-      route: "/api/invoke",
       methods: ["POST"],
       inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
       mode: "async",
@@ -248,7 +277,7 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
     })
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 })
-      const response = await fetch(`${address}/api/invoke`, {
+      const response = await fetch(address, {
         method: "POST",
         headers: { accept: "text/event-stream", "content-type": "application/json" },
         body: JSON.stringify({ prompt, format: "html" }),
@@ -274,7 +303,6 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
     const { app } = buildServer(publishedTransportConfig({
       id: "websocket",
       transport: "websocket_json",
-      route: "/ws/invoke",
       inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
       mode: "async",
     }), {
@@ -296,7 +324,7 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
       await app.listen({ host: "127.0.0.1", port: 0 })
       const address = app.server.address()
       const port = typeof address === "object" && address ? address.port : 0
-      const socket = new WebSocket(`ws://127.0.0.1:${port}/ws/invoke`)
+      const socket = new WebSocket(`ws://127.0.0.1:${port}/`)
       const reader = createWebSocketReader(socket)
       try {
         assert.deepEqual(await reader.read(), { type: "ready", publication_id: "pub-websocket" })
@@ -331,7 +359,6 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
     const { app } = buildServer(publishedTransportConfig({
       id: "mcp",
       transport: "mcp",
-      route: "/integrations/mcp",
       methods: ["POST"],
       inputSchema: { type: "object", required: ["prompt"], properties: { prompt: { type: "string" } } },
       mode: "sync",
@@ -352,7 +379,7 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
     })
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 })
-      const initialize = await fetch(`${address}/integrations/mcp`, {
+      const initialize = await fetch(address, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }),
@@ -360,7 +387,7 @@ test("published API SSE, WebSocket, and MCP transports invoke through live local
       assert.equal(initialize.status, 200)
       assert.equal((await initialize.json() as { result?: { serverInfo?: { name?: string } } }).result?.serverInfo?.name, "arroba-publication")
 
-      const called = await fetch(`${address}/integrations/mcp`, {
+      const called = await fetch(address, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

@@ -954,6 +954,11 @@ mod tests {
             result: None,
             error: None,
         });
-        assert_eq!(raw_turn_aborted, None);
+        assert_eq!(
+            raw_turn_aborted,
+            Some(CodexNotification::TurnAborted {
+                reason: Some("interrupted".to_string()),
+            })
+        );
     }
 }

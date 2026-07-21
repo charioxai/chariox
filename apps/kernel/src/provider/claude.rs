@@ -554,14 +554,16 @@ mod tests {
         );
         assert_eq!(
             catalog.default.get("claude-headless").map(String::as_str),
-            Some("claude-sonnet-4-6")
+            Some("sonnet")
         );
         assert_eq!(
             catalog.default.get("claude-p").map(String::as_str),
-            Some("claude-sonnet-4-6")
+            Some("sonnet")
         );
         let models = &catalog.all[0].models;
-        assert!(!models.contains_key("sonnet"));
+        assert!(models.contains_key("haiku"));
+        assert!(models.contains_key("sonnet"));
+        assert!(models.contains_key("opus"));
         assert!(models.contains_key("claude-sonnet-4-6"));
         assert_eq!(
             models

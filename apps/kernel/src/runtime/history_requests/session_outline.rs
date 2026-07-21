@@ -280,6 +280,10 @@ fn suppress_arroba_owned_external_prompt_echoes(
         .iter()
         .filter_map(|text| workflow_handoff_payload(text))
         .collect::<Vec<_>>();
+    let arroba_owned_workflow_endpoint_prompts = arroba_owned_prompts
+        .iter()
+        .filter_map(|text| workflow_endpoint_prompt(text))
+        .collect::<BTreeSet<_>>();
     if arroba_owned_prompt_texts.is_empty() {
         return Ok(());
     }
@@ -289,6 +293,7 @@ fn suppress_arroba_owned_external_prompt_echoes(
             &arroba_owned_prompt_texts,
             &arroba_owned_workflow_delivery_tokens,
             &arroba_owned_workflow_handoff_payloads,
+            &arroba_owned_workflow_endpoint_prompts,
         )
     });
     Ok(())
@@ -299,6 +304,7 @@ fn external_prompt_matches_arroba_owned_text(
     arroba_owned_prompt_texts: &BTreeSet<String>,
     arroba_owned_workflow_delivery_tokens: &BTreeSet<String>,
     arroba_owned_workflow_handoff_payloads: &[serde_json::Value],
+    arroba_owned_workflow_endpoint_prompts: &BTreeSet<String>,
 ) -> bool {
     if prompt.kind != HistoryEventKind::UserPrompt {
         return false;
@@ -317,6 +323,16 @@ fn external_prompt_matches_arroba_owned_text(
             .is_some_and(|token| arroba_owned_workflow_delivery_tokens.contains(&token))
         || workflow_handoff_payload(&entry.text)
             .is_some_and(|payload| arroba_owned_workflow_handoff_payloads.contains(&payload))
+        || workflow_endpoint_prompt(&entry.text)
+            .is_some_and(|endpoint| arroba_owned_workflow_endpoint_prompts.contains(&endpoint))
+}
+
+fn workflow_endpoint_prompt(text: &str) -> Option<String> {
+    const OPEN: &str = "<endpoint-prompt>";
+    const CLOSE: &str = "</endpoint-prompt>";
+    let start = text.find(OPEN)?.saturating_add(OPEN.len());
+    let end = text[start..].find(CLOSE)?.saturating_add(start);
+    normalized_observed_prompt_text(&text[start..end])
 }
 
 fn workflow_handoff_payload(text: &str) -> Option<serde_json::Value> {
@@ -355,14 +371,16 @@ fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
 
 fn external_recovery_envelope_prompt(prompt: &HistoryEvent) -> bool {
     const RECOVERY_OPERATION_PREFIX: &str = "[Arroba recovery operation arroba-recovery:";
+    const CODEX_TURN_ABORTED_PREFIX: &str = "<turn_aborted>";
 
     prompt.kind == HistoryEventKind::UserPrompt
         && prompt.to_session_history_entry().is_some_and(|entry| {
-            entry.is_external_provider_observed()
-                && entry
-                    .text
-                    .trim_start()
-                    .starts_with(RECOVERY_OPERATION_PREFIX)
+            if !entry.is_external_provider_observed() {
+                return false;
+            }
+            let text = entry.text.trim_start();
+            text.starts_with(RECOVERY_OPERATION_PREFIX)
+                || text.starts_with(CODEX_TURN_ABORTED_PREFIX)
         })
 }
 
@@ -507,9 +525,10 @@ fn outline_turn_from_events_with_lifecycle(
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
     let events = suppress_sparse_legacy_transcript_duplicates(events);
-    let user_prompt = outline_page_entry_from_event(prompt.clone())?;
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
+    let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
+    project_workflow_user_prompt(&mut user_prompt, prompt_origin);
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms);
@@ -581,6 +600,22 @@ fn outline_turn_from_events_with_lifecycle(
         summary,
         blobs,
     })
+}
+
+fn project_workflow_user_prompt(
+    user_prompt: &mut crate::session_history_page::SessionHistoryPageEntry,
+    prompt_origin: PromptOrigin,
+) {
+    if prompt_origin != PromptOrigin::Arroba {
+        return;
+    }
+    let Some(endpoint_prompt) = workflow_endpoint_prompt(&user_prompt.entry.text) else {
+        return;
+    };
+    user_prompt.entry.text = endpoint_prompt;
+    user_prompt.fragment_start = 0;
+    user_prompt.total_chars = user_prompt.entry.text.chars().count();
+    user_prompt.fragment_end = user_prompt.total_chars;
 }
 
 fn trailing_provider_output_group(

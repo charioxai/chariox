@@ -97,7 +97,7 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
             ..
         } => {
             assert_eq!(inventory_version, "inventory-b");
-            assert_eq!(schema_version, 9);
+            assert_eq!(schema_version, 10);
             assert_eq!(
                 sessions
                     .iter()

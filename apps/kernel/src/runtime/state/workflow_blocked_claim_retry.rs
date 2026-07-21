@@ -60,13 +60,11 @@ impl KernelRuntimeOwnedState {
         &self,
         retry: BlockedWorkflowClaimRetry,
     ) -> Option<WorkflowPromptDispatches> {
-        let claim_id = match self.workflow_dispatch_claim_id(&retry.session_id, &retry.agent_id) {
-            Ok(claim_id) => claim_id,
-            Err(error) => {
-                self.record_blocked_workflow_claim_retry_error(&retry, error);
-                return None;
-            }
-        };
+        let claim_id = self.workflow_dispatch_claim_id(
+            &retry.session_id,
+            &retry.workflow_run_id,
+            &retry.workflow_node_run_id,
+        );
         match self.acquire_workflow_node_workspace_claim(
             &retry.session_id,
             &claim_id,

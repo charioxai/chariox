@@ -72,6 +72,59 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
     );
     assert!(resolved.source.contains("workflow.define"));
 
+    let adversarial = registry
+        .resolve("adversarial-verification")
+        .expect("adversarial workflow registry entry should resolve");
+    assert!(adversarial.source.contains("hand the critique to Judge"));
+    assert!(adversarial.source.contains("workflow.edge(critic, judge"));
+    assert!(!adversarial
+        .source
+        .contains("workflow.edge(critic, proposer"));
+
+    let generate_filter = registry
+        .resolve("generate-filter")
+        .expect("generate-filter workflow registry entry should resolve");
+    assert!(generate_filter
+        .source
+        .contains("Route this request through every outgoing workflow edge"));
+    assert!(generate_filter
+        .source
+        .contains("Do not create or spawn provider-native agents"));
+    assert!(generate_filter
+        .source
+        .contains("alias: \"filter\", provider: \"claude\", model: \"haiku\""));
+
+    let parallelization = registry
+        .resolve("parallelization")
+        .expect("parallelization workflow registry entry should resolve");
+    assert!(parallelization
+        .source
+        .contains("model: provider === \"claude\" ? \"haiku\" : \"deepseek-v4-pro\""));
+    for workflow_ref in [
+        "adversarial-verification",
+        "generate-filter",
+        "orchestrator-workers",
+    ] {
+        assert!(registry
+            .resolve(workflow_ref)
+            .expect("OpenCode workflow registry entry should resolve")
+            .source
+            .contains("provider: \"opencode\", model: \"kimi-k2.6\""));
+    }
+    let prompt_chaining = registry
+        .resolve("prompt-chaining")
+        .expect("prompt chaining registry entry should resolve");
+    assert!(prompt_chaining
+        .source
+        .contains("model: index % 2 === 0 ? \"haiku\" : \"deepseek-v4-pro\""));
+    for workflow_ref in ["fan-out-synthesize", "routing", "tournament"] {
+        assert!(registry
+            .resolve(workflow_ref)
+            .expect("mixed-provider workflow registry entry should resolve")
+            .source
+            .contains("kimi-k2.6"));
+    }
+
     let error = registry
         .delete("prompt-chaining", None)
         .expect_err("builtin registry entries must not be deleted");

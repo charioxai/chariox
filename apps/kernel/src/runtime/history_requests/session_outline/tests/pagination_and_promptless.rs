@@ -387,6 +387,96 @@ fn agent_outline_omits_persisted_external_recovery_envelopes() {
 }
 
 #[test]
+fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-codex-abort-envelope-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let arroba_context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let observed_context = HistoryEventTurnContext {
+        turn_id: Some("observed-abort".to_string()),
+        prompt_id: None,
+        ..arroba_context.clone()
+    };
+    let prompt = SessionHistoryEntry::user_prompt(
+        "session-1",
+        "attachment-1",
+        "agent-1",
+        "wait for thirty seconds",
+    );
+    let running_tool = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        r#"{"tool":"bash","status":"running","input":{"command":"sleep 30"}}"#,
+    );
+    let abort_echo = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "<turn_aborted> The user interrupted the previous turn on purpose. </turn_aborted>",
+        "codex",
+        "thread-1",
+        Some("observed-abort".to_string()),
+        Some(3),
+    );
+    let completed_tool_echo = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderTool,
+        r#"{"tool":"bash","status":"completed","input":{"command":"sleep 30"}}"#,
+        "codex",
+        "thread-1",
+        Some("observed-tool".to_string()),
+        Some(4),
+    );
+    store
+        .append_many(&[
+            HistoryEvent::transcript(1, &prompt, arroba_context.clone()),
+            HistoryEvent::transcript(2, &running_tool, arroba_context),
+            HistoryEvent::transcript(3, &abort_echo, observed_context.clone()),
+            HistoryEvent::transcript(4, &completed_tool_echo, observed_context),
+        ])
+        .expect("cancelled turn history should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 4, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    assert_eq!(
+        outline.turns[0].user_prompt.entry.text,
+        "wait for thirty seconds"
+    );
+    assert!(outline.turns[0]
+        .entries
+        .iter()
+        .chain(outline.turns[0].summary.iter())
+        .all(|entry| !entry.entry.text.contains("turn_aborted")));
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_store_restart() {
     let path = std::env::temp_dir().join(format!(
         "arroba-history-restart-outline-{}-{}.db",

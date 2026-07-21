@@ -71,5 +71,25 @@ export function visibleWorkflowRun(
       })
       .map(visibleAssistantWorkflowMessage)
   }
+  const invocationInput = workflowRun.publication_invocation?.input
+  const invocationPrompt = invocationInput && typeof invocationInput === "object" && !Array.isArray(invocationInput)
+    ? (invocationInput as Record<string, unknown>).prompt
+    : null
+  if (typeof invocationPrompt === "string" && invocationPrompt.trim()) {
+    const promptMessages = (workflowRun.node_runs ?? [])
+      .filter((nodeRun) => (policy[nodeRun.node_id] ?? []).length > 0)
+      .map((nodeRun) => ({
+        id: `publication-prompt:${workflowRun.id}:${nodeRun.node_id}`,
+        source_node_run_id: nodeRun.id,
+        target_node_id: nodeRun.node_id,
+        message_type: "user_prompt",
+        summary: invocationPrompt.trim(),
+        handoff_payload: "",
+        created_at_ms: workflowRun.created_at_ms ?? 0,
+      }))
+    if (promptMessages.length > 0) {
+      visibleRun.messages = [...promptMessages, ...(visibleRun.messages ?? [])]
+    }
+  }
   return visibleRun
 }

@@ -1334,6 +1334,106 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:workflow-node-run-2"
 }
 
 #[test]
+fn agent_outline_suppresses_endpoint_only_workflow_prompt_echoes() {
+    let path = std::env::temp_dir().join(format!(
+        "arroba-workflow-endpoint-echo-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-77".to_string()),
+        prompt_id: Some("prompt-77".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let owned_prompt = r#"<endpoint-prompt>
+Inspect the lifecycle and report one concise result.
+</endpoint-prompt>
+
+<workflow-runtime-instructions>
+Call ack_workflow_turn with {"delivery_token":"workflow-ack:node-run-1"}.
+</workflow-runtime-instructions>"#;
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "workflow-run:run-1",
+                "agent-1",
+                owned_prompt,
+            ),
+            context.clone(),
+        ))
+        .expect("Arroba workflow prompt should append");
+    let observed_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "<endpoint-prompt> Inspect the lifecycle and report one concise result. </endpoint-prompt>",
+        "codex",
+        "thread-1",
+        Some("observed-user".to_string()),
+        Some(2_000),
+    );
+    store
+        .append(&HistoryEvent::transcript(
+            11,
+            &observed_prompt,
+            context.clone(),
+        ))
+        .expect("observed workflow prompt should append");
+    let assistant = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "Lifecycle is stable.",
+    )
+    .with_source_attachment_id(Some("workflow-run:run-1".to_string()));
+    store
+        .append(&HistoryEvent::transcript(12, &assistant, context))
+        .expect("assistant output should append");
+
+    let import =
+        ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+    let outline = load_scoped_agent_outline(&store, "session-1", "agent-1", 4, None, Some(&import))
+        .expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    assert_eq!(outline.turns[0].turn_id, "prompt-77");
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(
+        outline.turns[0].user_prompt.entry.text,
+        "Inspect the lifecycle and report one concise result."
+    );
+    assert_eq!(outline.turns[0].user_prompt.fragment_start, 0);
+    assert_eq!(
+        outline.turns[0].user_prompt.fragment_end,
+        "Inspect the lifecycle and report one concise result."
+            .chars()
+            .count()
+    );
+    assert_eq!(
+        outline.turns[0].user_prompt.total_chars,
+        outline.turns[0].user_prompt.fragment_end
+    );
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
 fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload() {
     let path = std::env::temp_dir().join(format!(
         "arroba-workflow-handoff-external-echo-outline-{}-{}.db",

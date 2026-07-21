@@ -764,13 +764,8 @@ fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn default_publication_route(publication_value: &serde_json::Value) -> &'static str {
-    match hook_transport(publication_value).as_str() {
-        Some("api_sse_json") => "/invoke",
-        Some("websocket_json") => "/socket",
-        Some("mcp") => "/mcp",
-        _ => "/prompt/*",
-    }
+fn default_publication_route(_publication_value: &serde_json::Value) -> &'static str {
+    "/"
 }
 
 fn default_publication_methods(publication_value: &serde_json::Value) -> serde_json::Value {
@@ -788,6 +783,9 @@ fn default_publication_parser(publication_value: &serde_json::Value) -> Option<s
         _ => {
             let route = string_field(publication_value, "route")
                 .unwrap_or_else(|| default_publication_route(publication_value));
+            if route == "/" {
+                return Some(serde_json::json!({"kind": "query_params"}));
+            }
             Some(serde_json::json!({
                 "kind": "path_template",
                 "template": route_prompt_template(route),
@@ -865,6 +863,14 @@ mod digest_tests {
             workflow_publication_package_digest(&files).expect("package digest"),
             "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
         );
+    }
+
+    #[test]
+    fn publication_package_defaults_every_ingress_transport_to_root() {
+        for transport in ["human_http", "api_sse_json", "websocket_json", "mcp"] {
+            let publication = serde_json::json!({ "transport": { "kind": transport } });
+            assert_eq!(default_publication_route(&publication), "/", "{transport}");
+        }
     }
 
     fn package_file(

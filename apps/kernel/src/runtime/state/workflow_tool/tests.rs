@@ -80,6 +80,36 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
         .sessions_mut()
         .create_workflow(session.id(), Some("routing".to_string()))
         .expect("workflow should be created");
+    app.sessions_mut()
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "final-answer",
+                    Some("Specialist answer".to_string()),
+                    Some("Final answer returned by a specialist".to_string()),
+                    serde_json::json!({
+                        "type": "object",
+                        "required": ["answer", "specialist"],
+                        "properties": {
+                            "answer": { "type": "string" },
+                            "specialist": { "type": "integer" }
+                        },
+                        "additionalProperties": false
+                    }),
+                ),
+            },
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("embedded final output schema should be added");
+    app.sessions_mut()
+        .set_workflow_run_output_schema_ref(
+            session.id(),
+            workflow.id(),
+            Some("final-answer".to_string()),
+        )
+        .expect("run output schema should be selected");
     let router = app
         .sessions_mut()
         .add_workflow_node_owned(
@@ -230,7 +260,11 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
     assert_eq!(option_b["validation_policy"], "warn");
     assert_eq!(
         result.payload["handoff_routing"]["final_json_field"],
-        "workflow_handoffs"
+        "output.message.workflow_handoffs"
+    );
+    assert_eq!(
+        result.payload["run_output_contract"],
+        serde_json::Value::Null
     );
     assert!(result.payload["handoff_routing"]["select_by"]
         .as_array()
@@ -238,6 +272,74 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
         .iter()
         .any(|value| value == "edge_id"));
     assert_eq!(result.payload["workflow_node_run_id"], node_run_id);
+}
+
+#[test]
+fn workflow_run_output_contract_is_null_without_a_schema() {
+    let workflow = crate::session::WorkflowDefinition::new("workflow-1", None);
+    assert_eq!(
+        workflow_run_output_contract(&workflow, true),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn workflow_run_output_contract_is_null_for_nodes_that_cannot_complete() {
+    let mut workflow = crate::session::WorkflowDefinition::new("workflow-1", None);
+    workflow.add_schema(crate::session::WorkflowSchemaDefinition::new(
+        "final-answer",
+        None,
+        None,
+        serde_json::json!({ "type": "object" }),
+    ));
+    workflow.set_run_output_schema_ref(Some("final-answer".to_string()));
+
+    assert_eq!(
+        workflow_run_output_contract(&workflow, false),
+        serde_json::Value::Null
+    );
+}
+
+#[test]
+fn workflow_run_output_contract_exposes_embedded_schema_to_completing_nodes() {
+    let mut workflow = crate::session::WorkflowDefinition::new("workflow-1", None);
+    workflow.add_schema(crate::session::WorkflowSchemaDefinition::new(
+        "final-answer",
+        Some("Specialist answer".to_string()),
+        Some("Final answer returned by a specialist".to_string()),
+        serde_json::json!({
+            "type": "object",
+            "required": ["answer", "specialist"],
+            "properties": {
+                "answer": { "type": "string" },
+                "specialist": { "type": "integer" }
+            },
+            "additionalProperties": false
+        }),
+    ));
+    workflow.set_run_output_schema_ref(Some("final-answer".to_string()));
+
+    let contract = workflow_run_output_contract(&workflow, true);
+    assert_eq!(contract["schema_ref"], "final-answer");
+    assert_eq!(contract["source"], "embedded");
+    assert_eq!(
+        contract["schema"]["required"],
+        serde_json::json!(["answer", "specialist"])
+    );
+    assert_eq!(contract["schema"]["properties"]["answer"]["type"], "string");
+    assert_eq!(contract["schema"]["additionalProperties"], false);
+}
+
+#[test]
+fn workflow_run_output_contract_does_not_read_external_refs() {
+    let mut workflow = crate::session::WorkflowDefinition::new("workflow-1", None);
+    workflow.set_run_output_schema_ref(Some("/private/host/final-output.json".to_string()));
+
+    let contract = workflow_run_output_contract(&workflow, true);
+
+    assert_eq!(contract["schema_ref"], "/private/host/final-output.json");
+    assert_eq!(contract["source"], "external_ref");
+    assert!(contract.get("schema").is_none());
 }
 
 #[test]
