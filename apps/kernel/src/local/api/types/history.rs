@@ -60,6 +60,7 @@ pub struct SessionHistoryOutlineTurn {
 pub enum SessionHistoryOutlineTurnLifecycle {
     Open,
     Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -37,7 +37,7 @@ export type TranscriptDisplayEntry = TranscriptTurnDisplayEntry & TranscriptRole
   readonly turnTracking?: "none" | string | null
 }
 
-export type TranscriptHistoryTurnLifecycle = "open" | "completed"
+export type TranscriptHistoryTurnLifecycle = "open" | "completed" | "cancelled"
 
 export type TranscriptBlobDescription = CollapsedTranscriptBlobDescription
 
@@ -418,10 +418,10 @@ function openHistoryTurnIds(
       continue
     }
     const lifecycle = lifecycleByTurnId.get(entry.turnId) ?? { completed: false, open: false }
-    if (lifecycleName === "completed") {
-      lifecycle.completed = true
-    } else {
+    if (lifecycleName === "open") {
       lifecycle.open = true
+    } else {
+      lifecycle.completed = true
     }
     lifecycleByTurnId.set(entry.turnId, lifecycle)
   }

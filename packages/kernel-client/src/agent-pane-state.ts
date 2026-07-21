@@ -30,7 +30,7 @@ export type AgentPaneHistoryBlobEntry = AgentPaneLineageEntry & {
   readonly observedAtMs?: number | null
   readonly externalObservation?: SessionHistoryExternalObservation | null
   readonly historyTurnCompletedAtMs?: number | null
-  readonly historyTurnLifecycle?: "open" | "completed"
+  readonly historyTurnLifecycle?: "open" | "completed" | "cancelled"
 }
 
 export type AgentPaneRefreshResult<TEntry, TCursor> = {

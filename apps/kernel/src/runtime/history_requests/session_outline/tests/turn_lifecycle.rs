@@ -194,6 +194,51 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
 }
 
 #[test]
+fn outline_cancelled_arroba_turn_preserves_cancelled_lifecycle() {
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "hello"),
+        context.clone(),
+    );
+    prompt.timestamp_ms = 9_000;
+    let settlement = HistoryEvent::operational(
+        11,
+        HistoryEventKind::ProviderStatus,
+        Some(crate::history::HistoryEventRole::System),
+        None,
+        BTreeMap::from([
+            (
+                crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY.to_string(),
+                serde_json::json!(9_876),
+            ),
+            (
+                crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.to_string(),
+                serde_json::json!("cancelled"),
+            ),
+        ]),
+        context,
+    );
+
+    let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), settlement], false)
+        .expect("cancelled turn should be outlined");
+
+    assert_eq!(
+        turn.lifecycle,
+        SessionHistoryOutlineTurnLifecycle::Cancelled
+    );
+    assert_eq!(turn.completed_at_ms, Some(9_876));
+    assert!(turn.summary.is_none());
+}
+
+#[test]
 fn outline_completed_turn_never_settles_before_its_final_output() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),

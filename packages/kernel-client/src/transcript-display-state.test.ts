@@ -150,6 +150,18 @@ test("projectSettledTranscriptTurnDisplayState keeps open history turns expanded
   )
 })
 
+test("projectSettledTranscriptTurnDisplayState treats cancelled history turns as settled", () => {
+  const cancelled = baseTurnEntries().map((entry) => ({
+    ...entry,
+    historyTurnCompletedAtMs: 2_000,
+    historyTurnLifecycle: "cancelled" as const,
+  }))
+  const projection = projectSettledTranscriptTurnDisplayState(cancelled, [1])
+
+  assert.deepEqual(projection.collapsedTurnIds, [1])
+  assert.equal(projection.entries.find((entry) => entry.role === "turn_toggle")?.text, "click to expand")
+})
+
 test("projectTranscriptTurnToggleDisplayState projects expansion through shared state", () => {
   const current = applyTranscriptDisplayState(baseTurnEntries(), [1])
   const projection = projectTranscriptTurnToggleDisplayState(current, 1, [1], 999)

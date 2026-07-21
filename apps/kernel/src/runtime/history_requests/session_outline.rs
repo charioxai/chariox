@@ -531,7 +531,7 @@ fn outline_turn_from_events_with_lifecycle(
     project_workflow_user_prompt(&mut user_prompt, prompt_origin);
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
-    let lifecycle = outline_turn_lifecycle(completed_at_ms);
+    let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
     let summary_index = events
         .iter()
         .rposition(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event));
@@ -686,12 +686,23 @@ fn legacy_transcript_duplicate_key(event: &HistoryEvent) -> Option<LegacyTranscr
     })
 }
 
-fn outline_turn_lifecycle(completed_at_ms: Option<u64>) -> SessionHistoryOutlineTurnLifecycle {
-    if completed_at_ms.is_some() {
-        SessionHistoryOutlineTurnLifecycle::Completed
-    } else {
-        SessionHistoryOutlineTurnLifecycle::Open
+fn outline_turn_lifecycle(
+    completed_at_ms: Option<u64>,
+    events: &[HistoryEvent],
+) -> SessionHistoryOutlineTurnLifecycle {
+    if completed_at_ms.is_none() {
+        return SessionHistoryOutlineTurnLifecycle::Open;
     }
+    if events.iter().any(|event| {
+        event
+            .metadata
+            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+            .and_then(serde_json::Value::as_str)
+            == Some("cancelled")
+    }) {
+        return SessionHistoryOutlineTurnLifecycle::Cancelled;
+    }
+    SessionHistoryOutlineTurnLifecycle::Completed
 }
 
 fn outline_turn_completed_at_ms(

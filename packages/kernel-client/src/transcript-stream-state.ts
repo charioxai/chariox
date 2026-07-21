@@ -39,7 +39,7 @@ export type TranscriptStreamEntry = {
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
   readonly historyEntryIndex?: number
-  readonly historyTurnLifecycle?: "open" | "completed"
+  readonly historyTurnLifecycle?: "open" | "completed" | "cancelled"
 } & ExternalProviderObservedMutableTranscriptMetadataFields
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {

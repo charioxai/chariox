@@ -114,6 +114,7 @@ test("session history outline completion distinguishes absent, open, and settled
 test("session history outline lifecycle follows explicit protocol state", () => {
   assert.equal(sessionHistoryOutlineTurnLifecycle({ ...turn(1), lifecycle: "open" }), "open")
   assert.equal(sessionHistoryOutlineTurnLifecycle({ ...turn(1), lifecycle: "completed" }), "completed")
+  assert.equal(sessionHistoryOutlineTurnLifecycle({ ...turn(1), lifecycle: "cancelled" }), "cancelled")
 })
 
 test("session history outline prompt metadata follows durable prompt entry identity", () => {
