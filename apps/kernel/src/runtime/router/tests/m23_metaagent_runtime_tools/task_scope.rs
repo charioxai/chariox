@@ -453,12 +453,14 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         task.as_ref().map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Paused)
     );
+    let paused_prompt = session
+        .active_prompt_for_agent(metaagent.id())
+        .expect("pause should retain the cancelling meta task prompt");
     assert_eq!(
-        session
-            .active_prompt_for_agent(metaagent.id())
-            .map(|prompt| prompt.status()),
-        Some(crate::session::PromptStatus::Cancelling)
+        paused_prompt.status(),
+        crate::session::PromptStatus::Cancelling
     );
+    let paused_prompt_id = paused_prompt.id().to_string();
     assert!(
         session
             .agents()
@@ -487,11 +489,16 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         task.as_ref().map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Aborted)
     );
-    assert_eq!(
-        session
-            .active_prompt_for_agent(metaagent.id())
-            .map(|prompt| prompt.status()),
-        Some(crate::session::PromptStatus::Cancelling)
+    let exit_prompt = session
+        .active_prompt_for_agent(metaagent.id())
+        .expect("abort should start the private regular-mode transition prompt");
+    assert_eq!(exit_prompt.status(), crate::session::PromptStatus::Running);
+    assert_ne!(exit_prompt.id(), paused_prompt_id);
+    assert!(
+        exit_prompt
+            .hidden_system_context()
+            .contains("has left Arroba meta mode"),
+        "abort must not leave the cancelled meta task prompt active: {exit_prompt:?}"
     );
     assert!(
         session
