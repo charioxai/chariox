@@ -219,6 +219,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             self.clear_prompt_activity(provider_run_id);
             return Ok(());
         };
+        if prompt.status() == PromptStatus::Dispatching
+            || prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
+            return Ok(());
+        }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
@@ -306,6 +312,12 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             self.clear_prompt_activity(provider_run_id);
             return Ok(());
         };
+        if prompt.status() == PromptStatus::Dispatching
+            || prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
+            return Ok(());
+        }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if prompt.status() == PromptStatus::Cancelling {
             let _ = self.app.finalize_active_prompt_cancellation(
@@ -329,10 +341,8 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
     ) -> Result<Option<PromptQueueItem>, DaemonError> {
         let agent_id = self.provider_run_agent_id(provider_run_id)?;
         if let Some(prompt) = self
-            .agent_runtime_projection
-            .get(&agent_id)
-            .filter(|projection| projection.session_id == session_id)
-            .and_then(|projection| projection.active_prompt)
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
         {
             if prompt.is_external() {
                 return Ok(None);
@@ -340,8 +350,10 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             return Ok(Some(prompt));
         }
         let active = self
-            .app
-            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;
+            .agent_runtime_projection
+            .get(&agent_id)
+            .filter(|projection| projection.session_id == session_id)
+            .and_then(|projection| projection.active_prompt);
         if active.as_ref().is_some_and(|prompt| prompt.is_external()) {
             return Ok(None);
         }
@@ -542,5 +554,106 @@ mod tests {
             .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
             .expect("active prompt should load")
             .is_some());
+    }
+
+    #[test]
+    fn settlement_prefers_authoritative_prompt_owner_over_stale_projection() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-stale-settlement-projection",
+                "worktree-stale-settlement-projection",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-stale-settlement-projection",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            "default",
+            "gpt-5.3-codex-spark",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-stale-settlement-projection",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-codex-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(run.id().to_string()))
+            .expect("active provider run should be set");
+
+        let first = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "first prompt\n",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), first, false)
+            .expect("first prompt should start");
+        let stale_prompt = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("first active prompt should load")
+            .expect("first prompt should be active");
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("first prompt should complete");
+        let second = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment.id(),
+            agent.id(),
+            "second prompt\n",
+            PromptStatus::Queued,
+        );
+        app.prompt_owner_submit_prepared_prompt(session.id(), second, false)
+            .expect("second prompt should start");
+        let authoritative_prompt = app
+            .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+            .expect("second active prompt should load")
+            .expect("second prompt should be active");
+
+        let agent_runtime_projection = app.agent_runtime_projection_store();
+        agent_runtime_projection.update_agent_prompt_state(
+            session.id(),
+            agent.id(),
+            Some(stale_prompt.clone()),
+            None,
+            0,
+        );
+        let provider_store = app.providers.clone();
+        let active_turns = app.active_turns.clone();
+        let prompt_activity = app.prompt_activity.clone();
+        let selected = ProviderOutputPromptSettlement::new(
+            &mut app,
+            provider_store,
+            active_turns,
+            prompt_activity,
+            agent_runtime_projection,
+        )
+        .active_prompt_for_settlement(session.id(), run.id())
+        .expect("active prompt selection should succeed")
+        .expect("an active prompt should be selected");
+
+        assert_eq!(selected.id(), authoritative_prompt.id());
+        assert_ne!(selected.id(), stale_prompt.id());
     }
 }
