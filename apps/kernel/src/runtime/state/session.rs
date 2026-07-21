@@ -21,9 +21,12 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let projection_sequence = self.session_projection.change_sequence();
         let session = self.build_session_snapshot(session_id)?;
         let session = self.update_session_projection(session);
-        self.runtime_projection_changes.record_change();
+        if self.session_projection.change_sequence() != projection_sequence {
+            self.runtime_projection_changes.record_change();
+        }
         Ok(session)
     }
 

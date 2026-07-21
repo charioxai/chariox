@@ -48,6 +48,9 @@ struct CachedWorktreeLabel {
 #[derive(Clone, Default)]
 pub(crate) struct WaitingRoomSessionSummaryProjectionStore {
     state: Arc<StdMutex<HashMap<String, CachedSessionSummaries>>>,
+    snapshots: Arc<StdMutex<HashMap<String, CachedWaitingRoomPublicSnapshot>>>,
+    #[cfg(test)]
+    snapshot_build_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -55,6 +58,14 @@ struct CachedSessionSummaries {
     session_revision: u64,
     metaagent_event_revision: u64,
     summaries: Arc<[WaitingRoomPublicSessionSummary]>,
+}
+
+#[derive(Clone)]
+struct CachedWaitingRoomPublicSnapshot {
+    session_revision: u64,
+    metaagent_event_revision: u64,
+    auxiliary_fingerprint: String,
+    snapshot: WaitingRoomPublicSnapshot,
 }
 
 impl WaitingRoomSessionSummaryProjectionStore {
@@ -93,6 +104,87 @@ impl WaitingRoomSessionSummaryProjectionStore {
             },
         );
         summaries
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn project_snapshot(
+        &self,
+        runtime_sessions: &[Arc<RuntimeSession>],
+        session_revision: u64,
+        metaagent_events: &MetaagentEventStore,
+        external_provider_sessions: Vec<ExternalProviderSessionRecord>,
+        external_provider_sessions_has_more: bool,
+        external_provider_sessions_next_cursor: Option<String>,
+        relay_status: RelayStatus,
+        remote_machines: Vec<RemoteMachineRecord>,
+        remote_kernels: Vec<RelayKernelPresence>,
+        terminals: Vec<TerminalRecord>,
+        generated_at_ms: u64,
+        caller_user_id: &str,
+    ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+        let metaagent_event_revision = metaagent_events.revision();
+        let auxiliary_fingerprint = waiting_room_snapshot_auxiliary_fingerprint(
+            &external_provider_sessions,
+            external_provider_sessions_has_more,
+            external_provider_sessions_next_cursor.as_deref(),
+            &relay_status,
+            &remote_machines,
+            &remote_kernels,
+            &terminals,
+        )?;
+        let mut snapshots = self
+            .snapshots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cached) = snapshots.get(caller_user_id).filter(|cached| {
+            cached.session_revision == session_revision
+                && cached.metaagent_event_revision == metaagent_event_revision
+                && cached.auxiliary_fingerprint == auxiliary_fingerprint
+        }) {
+            let mut snapshot = cached.snapshot.clone();
+            snapshot.generated_at_ms = generated_at_ms;
+            return Ok(snapshot);
+        }
+        let sessions = self
+            .project(
+                runtime_sessions,
+                session_revision,
+                metaagent_events,
+                caller_user_id,
+            )
+            .iter()
+            .cloned()
+            .collect();
+        let snapshot = build_waiting_room_public_snapshot_from_summaries(
+            sessions,
+            external_provider_sessions,
+            external_provider_sessions_has_more,
+            external_provider_sessions_next_cursor,
+            relay_status,
+            remote_machines,
+            remote_kernels,
+            terminals,
+            generated_at_ms,
+        )?;
+        #[cfg(test)]
+        self.snapshot_build_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        snapshots.insert(
+            caller_user_id.to_string(),
+            CachedWaitingRoomPublicSnapshot {
+                session_revision,
+                metaagent_event_revision,
+                auxiliary_fingerprint,
+                snapshot: snapshot.clone(),
+            },
+        );
+        Ok(snapshot)
+    }
+
+    #[cfg(test)]
+    fn snapshot_build_count(&self) -> u64 {
+        self.snapshot_build_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -174,18 +266,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     generated_at_ms: u64,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-    let sessions = summary_projection
-        .project(
-            runtime_sessions,
-            session_revision,
-            metaagent_events,
-            caller_user_id,
-        )
-        .iter()
-        .cloned()
-        .collect();
-    build_waiting_room_public_snapshot_from_summaries(
-        sessions,
+    summary_projection.project_snapshot(
+        runtime_sessions,
+        session_revision,
+        metaagent_events,
         external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
@@ -194,6 +278,30 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
         remote_kernels,
         terminals,
         generated_at_ms,
+        caller_user_id,
+    )
+}
+
+fn waiting_room_snapshot_auxiliary_fingerprint(
+    external_provider_sessions: &[ExternalProviderSessionRecord],
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<&str>,
+    relay_status: &RelayStatus,
+    remote_machines: &[RemoteMachineRecord],
+    remote_kernels: &[RelayKernelPresence],
+    terminals: &[TerminalRecord],
+) -> Result<String, DaemonError> {
+    hash_waiting_room_version(
+        "serialize waiting room snapshot auxiliary inputs",
+        &serde_json::json!({
+            "external_provider_sessions": external_provider_sessions,
+            "external_provider_sessions_has_more": external_provider_sessions_has_more,
+            "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
+            "relay_status": relay_status,
+            "remote_machines": remote_machines,
+            "remote_kernels": remote_kernels,
+            "terminals": terminals,
+        }),
     )
 }
 
@@ -716,9 +824,9 @@ mod tests {
     use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
-        build_waiting_room_public_snapshot, waiting_room_activity_revision,
-        waiting_room_session_summaries, waiting_room_structural_version,
-        WaitingRoomSessionSummaryProjectionStore,
+        build_waiting_room_public_snapshot, build_waiting_room_public_snapshot_from_cached_shared,
+        waiting_room_activity_revision, waiting_room_session_summaries,
+        waiting_room_structural_version, WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{RuntimeSession, WorkflowDefinition};
 
@@ -920,6 +1028,57 @@ mod tests {
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert!(!Arc::ptr_eq(&first, &next_session_revision));
+    }
+
+    #[test]
+    fn public_snapshot_projection_is_shared_across_subscribers_for_one_revision() {
+        let sessions = vec![Arc::new(RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        ))];
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+        let relay_status = RelayStatus {
+            configured: false,
+            connected: false,
+            relay_url: None,
+            relay_token_configured: false,
+            daemon_id: "daemon".to_string(),
+            daemon_alias: None,
+            machine_id: "machine".to_string(),
+            machine_alias: None,
+        };
+        let build = |revision, generated_at_ms| {
+            build_waiting_room_public_snapshot_from_cached_shared(
+                &sessions,
+                revision,
+                &projection,
+                &metaagent_events,
+                Vec::new(),
+                false,
+                None,
+                relay_status.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                generated_at_ms,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .expect("waiting room snapshot should project")
+        };
+
+        let first = build(7, 100);
+        let second_subscriber = build(7, 200);
+        assert_eq!(projection.snapshot_build_count(), 1);
+        assert_eq!(first.inventory_version, second_subscriber.inventory_version);
+        assert_eq!(second_subscriber.generated_at_ms, 200);
+
+        let _changed_revision = build(8, 300);
+        assert_eq!(projection.snapshot_build_count(), 2);
     }
 
     #[test]

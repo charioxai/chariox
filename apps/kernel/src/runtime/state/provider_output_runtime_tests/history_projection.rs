@@ -140,6 +140,38 @@ async fn session_lookup_snapshots_project_runtime_view_from_owned_state() {
 }
 
 #[tokio::test]
+async fn unchanged_session_lookup_does_not_wake_waiting_room_subscribers() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-idle-session-lookup",
+            "worktree-idle-session-lookup",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    runtime
+        .session_snapshot(&session_id)
+        .await
+        .expect("first lookup should warm the projection");
+    let waiting_room_sequence = runtime.waiting_room_change_sequence();
+
+    runtime
+        .session_snapshot(&session_id)
+        .await
+        .expect("unchanged lookup should succeed");
+
+    assert_eq!(
+        runtime.waiting_room_change_sequence(),
+        waiting_room_sequence,
+        "read-only session lookup must not wake every waiting-room subscriber"
+    );
+}
+
+#[tokio::test]
 async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive_enabled() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.history.archive.mode = crate::config::HistoryArchiveMode::External;
