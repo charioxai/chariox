@@ -32,6 +32,14 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission() {
     );
 }
 
+#[test]
+fn stopping_workflow_dispatches_next_queued_workflow_prompt() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "stopping-workflow-dispatches-next-queued-workflow-prompt",
+        stopping_workflow_dispatches_next_queued_workflow_prompt_inner,
+    );
+}
+
 fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: impl FnOnce() + Send + 'static) {
     let handle = std::thread::Builder::new()
         .name(name.to_string())
@@ -155,6 +163,22 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
         _ => panic!("unexpected local response"),
     }
     let _ = harness.wait_for_active_provider_run(session.id());
+    let provider_ready_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let running = harness.with_app(|app| {
+            app.providers()
+                .get_run_for_agent(session.id(), agent.id())
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+        });
+        if running {
+            break;
+        }
+        assert!(
+            Instant::now() < provider_ready_deadline,
+            "structured workflow test provider should become running"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 
     let workflow_run = match harness
         .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
@@ -438,6 +462,180 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
         _ => panic!("unexpected local response"),
     };
     assert_eq!(queued_prompts, vec![queued_prompt]);
+}
+
+fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-queued-after-stop", "worktree-queued-after-stop"),
+        ))
+        .expect("session should create")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let agent = harness.spawn_workflow_test_agent(session.id(), "queued-after-stop-agent");
+    match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "slow-structured".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ))
+        .expect("provider should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { .. }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    let _ = harness.wait_for_active_provider_run(session.id());
+    let workflow = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session.id().to_string(),
+            alias: Some("queued-after-stop".to_string()),
+        }))
+        .expect("workflow should create")
+    {
+        LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+        _ => panic!("unexpected local response"),
+    };
+    let node = harness.add_workflow_test_node(session.id(), workflow.id(), agent.id());
+    let endpoint = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+            CreateWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                entry_node_id: node.id().to_string(),
+                alias: Some("entry".to_string()),
+                expected_workflow_revision: None,
+            },
+        ))
+        .expect("workflow endpoint should create")
+    {
+        LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+        _ => panic!("unexpected local response"),
+    };
+    let first_run = match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                prompt: Some("first active workflow".to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            },
+        ))
+        .expect("first workflow should start")
+    {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("unexpected local response"),
+    };
+    match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                prompt: Some("second queued workflow".to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            },
+        ))
+        .expect("second workflow should enqueue")
+    {
+        LocalDaemonResponse::WorkflowPromptEnqueued { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    match harness
+        .dispatch(LocalDaemonRequest::PauseWorkflowRun(
+            PauseWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: first_run.id().to_string(),
+            },
+        ))
+        .expect("first workflow should pause")
+    {
+        LocalDaemonResponse::WorkflowRunPaused { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    harness.wait_for_session_where(
+        session.id(),
+        "paused workflow prompt should settle before stop",
+        |session| session.active_prompt_for_agent(agent.id()).is_none(),
+    );
+    match harness
+        .dispatch(LocalDaemonRequest::CancelWorkflowRun(
+            CancelWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: first_run.id().to_string(),
+            },
+        ))
+        .expect("first workflow should stop")
+    {
+        LocalDaemonResponse::WorkflowRunCancelled { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        harness.pump_transport_runtime();
+        let delivered = harness.with_app(|app| {
+            app.sessions()
+                .get_session(session.id())
+                .expect("session should remain available")
+                .active_prompt_for_agent(agent.id())
+                .is_some_and(|prompt| {
+                    prompt.prompt().contains("second queued workflow")
+                        && prompt.durable_delivery_phase()
+                            == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+        });
+        if delivered {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let diagnostic = harness.with_app(|app| {
+                let session = app
+                    .sessions()
+                    .get_session(session.id())
+                    .expect("session should remain available");
+                let active = session.active_prompt_for_agent(agent.id()).cloned();
+                let provider = app
+                    .providers()
+                    .get_run_for_agent(session.id(), agent.id());
+                format!(
+                    "active={active:?}, provider={provider:?}, workflow_runs={:?}, workflow_queue={:?}",
+                    session.workflow_runs(),
+                    session.workflow_queued_prompts(),
+                )
+            });
+            panic!(
+                "stopping the active workflow must deliver the promoted queued workflow prompt: {diagnostic}"
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let advanced = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+    });
+    assert!(advanced.workflow_queued_prompts().is_empty());
+    assert_eq!(advanced.workflow_runs().len(), 2);
+    assert_eq!(
+        advanced.workflow_runs()[1].status(),
+        WorkflowRunStatus::Running
+    );
 }
 
 fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {

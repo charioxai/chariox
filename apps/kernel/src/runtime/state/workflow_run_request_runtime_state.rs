@@ -249,8 +249,9 @@ impl KernelRuntimeState {
                 queued_prompts,
             );
         }
-        owned.workflow_maybe_start_next_queued_prompt(session_id);
-        self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
+        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         for (agent_id, attachment_id) in active_agents {
             let cancellation = match self
                 .cancel_agent_prompt(session_id, &agent_id, &attachment_id)
