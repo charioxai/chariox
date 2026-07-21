@@ -249,7 +249,16 @@ impl PromptStateOwner {
                 None,
             );
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
-            state.queued_prompts.push_back(prompt.clone());
+            if prompt.workflow_run_id().is_some() {
+                state.queued_prompts.push_back(prompt.clone());
+            } else {
+                let insert_at = state
+                    .queued_prompts
+                    .iter()
+                    .position(|queued| queued.workflow_run_id().is_some())
+                    .unwrap_or(state.queued_prompts.len());
+                state.queued_prompts.insert(insert_at, prompt.clone());
+            }
             Ok(PromptSubmissionOutcome::Queued { prompt })
         }
     }
@@ -259,11 +268,25 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
     ) -> Option<PromptQueueItem> {
+        self.complete_active_prompt_if_matches(session, agent_id, None)
+    }
+
+    pub(crate) fn complete_active_prompt_if_matches(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        expected_prompt_id: Option<&str>,
+    ) -> Option<PromptQueueItem> {
         let mut owner = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = owner.ensure_agent_state(session, agent_id);
+        if expected_prompt_id.is_some_and(|expected_prompt_id| {
+            state.active_prompt.as_ref().map(PromptQueueItem::id) != Some(expected_prompt_id)
+        }) {
+            return None;
+        }
         let mut completed = state.active_prompt.take()?;
         completed.set_status(PromptStatus::Completed);
         Some(completed)
@@ -348,6 +371,11 @@ impl PromptStateOwner {
             });
         }
         active.set_durable_delivery(phase, provider_run_id, provider_session_id);
+        if phase == crate::session::DurablePromptDeliveryPhase::Delivered
+            && active.status() == PromptStatus::Dispatching
+        {
+            active.set_status(PromptStatus::Running);
+        }
         Ok(active.clone())
     }
 
@@ -1071,6 +1099,7 @@ mod tests {
             delivered.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Delivered)
         );
+        assert_eq!(delivered.status(), PromptStatus::Running);
         assert_eq!(
             delivered.durable_delivery_provider_session_id(),
             Some("provider-session-1")
@@ -1227,6 +1256,72 @@ mod tests {
             .expect("dispatching prompt should become running");
         assert_eq!(running.id(), "prompt-real-2");
         assert_eq!(running.status(), PromptStatus::Running);
+    }
+
+    #[test]
+    fn stale_completion_cannot_consume_a_promoted_prompt() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session-stale-completion",
+            None,
+            "workspace-stale-completion",
+            "worktree-stale-completion",
+            "machine-1",
+            "daemon-1",
+        );
+        owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-first",
+                    "attachment-1",
+                    "agent-1",
+                    "first",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("first prompt should start");
+        let pending_prompt_id = match owner
+            .submit_prepared_prompt(
+                &session,
+                PromptQueueItem::new(
+                    "prompt-queued",
+                    "attachment-2",
+                    "agent-1",
+                    "second",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("second prompt should queue")
+        {
+            PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+            PromptSubmissionOutcome::Started { .. } => panic!("second prompt should queue"),
+        };
+
+        owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("prompt-first"))
+            .expect("the matching first prompt should complete");
+        owner
+            .activate_next_queued_prompt_with_prompt_id(
+                &session,
+                "agent-1",
+                Some(&pending_prompt_id),
+                "prompt-second".to_string(),
+            )
+            .expect("queued prompt activation should succeed")
+            .expect("queued prompt should promote");
+
+        assert!(owner
+            .complete_active_prompt_if_matches(&session, "agent-1", Some("prompt-first"))
+            .is_none());
+        assert_eq!(
+            owner
+                .active_prompt_for_agent(&session, "agent-1")
+                .map(|prompt| prompt.id().to_string()),
+            Some("prompt-second".to_string())
+        );
     }
 
     #[test]

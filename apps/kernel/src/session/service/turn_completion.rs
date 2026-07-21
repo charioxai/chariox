@@ -55,8 +55,15 @@ impl SessionService {
             workflow_run_id,
             workflow_node_run_id,
         )?;
-        let (emitted_messages, validation_warnings) =
-            self.build_workflow_completion_messages(session_id, &context, completion.as_ref())?;
+        let (emitted_messages, validation_warnings, handoff_validation_error) = match self
+            .build_workflow_completion_messages(session_id, &context, completion.as_ref())
+        {
+            Ok((messages, warnings)) => (messages, warnings, None),
+            Err(DaemonError::WorkflowHandoffValidationFailed {
+                edge_id, message, ..
+            }) => (Vec::new(), Vec::new(), Some((edge_id, message))),
+            Err(error) => return Err(error),
+        };
         let candidate_final_output = context
             .source_node_run
             .turn_envelope()
@@ -77,10 +84,21 @@ impl SessionService {
             .map(|submission| {
                 Self::workflow_run_output_validation_failure(&context, submission, max_turns)
             });
-        let retry_prompt = missing_output_failure
+        let handoff_validation_failure = handoff_validation_error.map(|(edge_id, message)| {
+            Self::workflow_handoff_validation_failure(&context, edge_id, message, max_turns)
+        });
+        let retry_prompt = handoff_validation_failure
             .as_ref()
             .filter(|failure| failure.retry_scheduled)
-            .map(|failure| Self::workflow_missing_output_correction_prompt(&context, failure))
+            .map(|failure| Self::workflow_handoff_correction_prompt(&context, failure))
+            .or_else(|| {
+                missing_output_failure
+                    .as_ref()
+                    .filter(|failure| failure.retry_scheduled)
+                    .map(|failure| {
+                        Self::workflow_missing_output_correction_prompt(&context, failure)
+                    })
+            })
             .or_else(|| {
                 run_output_validation_failure
                     .as_ref()
@@ -89,8 +107,9 @@ impl SessionService {
             });
         let retry_dispatch =
             retry_prompt.map(|prompt| self.workflow_correction_dispatch(&context, prompt));
-        let has_corrective_failure =
-            missing_output_failure.is_some() || run_output_validation_failure.is_some();
+        let has_corrective_failure = handoff_validation_failure.is_some()
+            || missing_output_failure.is_some()
+            || run_output_validation_failure.is_some();
 
         let session =
             self.store
@@ -168,6 +187,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches,
                 validation_warnings,
+                handoff_validation_failure,
                 missing_output_failure,
                 run_output_validation_failure,
             });
@@ -206,6 +226,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                handoff_validation_failure: None,
                 missing_output_failure: None,
                 run_output_validation_failure: None,
             });
@@ -255,6 +276,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                handoff_validation_failure: None,
                 missing_output_failure: None,
                 run_output_validation_failure: None,
             });
@@ -265,6 +287,7 @@ impl SessionService {
                 workflow_run: workflow_run.clone(),
                 dispatches: Vec::new(),
                 validation_warnings,
+                handoff_validation_failure: None,
                 missing_output_failure: None,
                 run_output_validation_failure: None,
             });
@@ -278,6 +301,7 @@ impl SessionService {
             workflow_run: workflow_run.clone(),
             dispatches,
             validation_warnings,
+            handoff_validation_failure: None,
             missing_output_failure: None,
             run_output_validation_failure: None,
         })
@@ -349,12 +373,19 @@ impl SessionService {
         let mut validation_warnings = Vec::new();
         let completion = completion.cloned();
         let mut emitted_messages = Vec::new();
-        for edge in context
+        let outgoing_edges = context
             .workflow
             .edges()
             .iter()
             .filter(|edge| edge.from_node_id() == context.source_node_run.node_id())
-        {
+            .collect::<Vec<_>>();
+        Self::validate_workflow_handoff_selectors(
+            session_id,
+            &context.workflow,
+            &outgoing_edges,
+            completion.as_ref(),
+        )?;
+        for edge in outgoing_edges {
             let Some(edge_completion) = Self::workflow_edge_completion(edge, completion.as_ref())
             else {
                 continue;
@@ -414,6 +445,48 @@ impl SessionService {
             emitted_messages.push(message);
         }
         Ok((emitted_messages, validation_warnings))
+    }
+
+    fn validate_workflow_handoff_selectors(
+        session_id: &str,
+        workflow: &WorkflowDefinition,
+        outgoing_edges: &[&WorkflowEdgeDefinition],
+        completion: Option<&WorkflowCompletionSnapshot>,
+    ) -> Result<(), DaemonError> {
+        let Some(output) = completion.and_then(|snapshot| snapshot.output()) else {
+            return Ok(());
+        };
+        let Ok(value) = serde_json::from_str::<Value>(output.message()) else {
+            return Ok(());
+        };
+        let Some(handoffs) = value
+            .get("workflow_handoffs")
+            .and_then(Value::as_array)
+            .filter(|handoffs| !handoffs.is_empty())
+        else {
+            return Ok(());
+        };
+
+        for handoff in handoffs {
+            let edge_id = handoff.get("edge_id").and_then(Value::as_str);
+            let to_node_id = handoff.get("to_node_id").and_then(Value::as_str);
+            let matches_outgoing_edge = outgoing_edges.iter().any(|edge| {
+                edge_id.is_some_and(|candidate| candidate == edge.id())
+                    || to_node_id.is_some_and(|candidate| candidate == edge.to_node_id())
+            });
+            if matches_outgoing_edge {
+                continue;
+            }
+
+            let selector = edge_id.or(to_node_id).unwrap_or("<missing selector>");
+            return Err(DaemonError::WorkflowHandoffValidationFailed {
+                session_id: session_id.to_string(),
+                workflow_id: workflow.id().to_string(),
+                edge_id: selector.to_string(),
+                message: "selected handoff does not match any outgoing workflow edge".to_string(),
+            });
+        }
+        Ok(())
     }
 
     fn workflow_edge_completion(
@@ -564,6 +637,23 @@ impl SessionService {
         }
     }
 
+    fn workflow_handoff_validation_failure(
+        context: &WorkflowCompletionContext,
+        edge_id: String,
+        message: String,
+        max_turns: Option<usize>,
+    ) -> WorkflowHandoffValidationFailure {
+        let (attempt, max_attempts, retry_scheduled) =
+            Self::workflow_correction_retry_budget(context, max_turns);
+        WorkflowHandoffValidationFailure {
+            edge_id,
+            message,
+            attempt,
+            max_attempts,
+            retry_scheduled,
+        }
+    }
+
     fn workflow_missing_output_failure(
         context: &WorkflowCompletionContext,
         max_turns: Option<usize>,
@@ -600,6 +690,7 @@ impl SessionService {
                 matches!(
                     event.kind(),
                     WorkflowFailureKind::MissingStructuredOutput
+                        | WorkflowFailureKind::OutputValidationFailed
                         | WorkflowFailureKind::WorkflowRunOutputValidationFailed
                 )
             })
@@ -672,6 +763,23 @@ impl SessionService {
         format!(
             "{invocation_prompt}\n\nThe previous final workflow output failed schema validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Produce corrected final output, call `validate_and_submit_workflow_run_output`, and do not finish until that tool returns `valid: true` with no warning.",
             failure.attempt, failure.max_attempts, failure.message
+        )
+        .trim()
+        .to_string()
+    }
+
+    fn workflow_handoff_correction_prompt(
+        context: &WorkflowCompletionContext,
+        failure: &WorkflowHandoffValidationFailure,
+    ) -> String {
+        let invocation_prompt = context
+            .workflow_run
+            .invocation_prompt()
+            .map(str::trim)
+            .unwrap_or("");
+        format!(
+            "{invocation_prompt}\n\nThe previous workflow handoff for edge `{}` failed validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Put the selected `workflow_handoffs` array inside final `output.message`, validate the selected edge payload with `validate_workflow_handoff`, and do not finish until validation returns `valid: true` with no warning.",
+            failure.edge_id, failure.attempt, failure.max_attempts, failure.message
         )
         .trim()
         .to_string()

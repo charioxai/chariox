@@ -733,6 +733,13 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         blocked_run.node_runs()[0].status(),
         WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
     );
+    assert!(
+        harness.with_app(|app| app
+            .providers()
+            .get_run_for_agent(workflow_session.id(), workflow_agent.id())
+            .is_none()),
+        "a workflow node blocked on a workspace claim must not leave a provider run starting"
+    );
 
     match harness
         .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {

@@ -457,6 +457,9 @@ impl SessionHistoryEntry {
             prompt_origin: None,
             kind: match kind {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
+                TerminalOutputKind::ProviderTerminal => {
+                    unreachable!("provider terminal bytes must not enter session history")
+                }
                 TerminalOutputKind::ProviderReasoning => SessionHistoryEntryKind::ProviderReasoning,
                 TerminalOutputKind::ProviderTool => SessionHistoryEntryKind::ProviderTool,
                 TerminalOutputKind::ProviderError => SessionHistoryEntryKind::ProviderError,

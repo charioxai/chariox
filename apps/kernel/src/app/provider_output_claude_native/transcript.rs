@@ -154,6 +154,7 @@ fn claude_transcript_is_internal_resume_entry(value: &Value) -> bool {
                 .and_then(|message| message.get("model"))
                 .and_then(Value::as_str)
                 == Some("<synthetic>")
+                && value.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true)
         }
         _ => false,
     }
@@ -308,6 +309,7 @@ fn claude_transcript_model(value: &Value) -> Option<String> {
     value
         .get("message")
         .and_then(|message| claude_string_field(message, &["model"]))
+        .filter(|model| model != "<synthetic>")
         .map(|model| {
             if model.starts_with("claude/") {
                 model

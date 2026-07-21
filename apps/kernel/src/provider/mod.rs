@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+mod catalog_process;
 mod claude;
 mod claude_runtime;
 mod codex;
@@ -24,8 +25,10 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
+pub(crate) use catalog_process::ProviderCatalogEndpoint;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use codex::lease_codex_catalog_endpoint;
 pub use codex::{
     codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
     resolve_codex_executable,
@@ -53,6 +56,7 @@ pub use launch_contract::{
     ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
 pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
+pub(crate) use opencode::lease_opencode_catalog_endpoint;
 pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
     resolve_opencode_executable,
@@ -139,7 +143,7 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
 pub(crate) fn provider_run_finalizes_cancellation_on_abort_dispatch(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
+    matches!(run.adapter_key(), "claude" | "codex") && provider_run_uses_structured_prompt_io(run)
 }
 
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
@@ -299,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_claude_cancellation_settlement_is_provider_policy() {
+    fn structured_provider_cancellation_settlement_is_provider_policy() {
         let structured = provider_run("claude", "claude");
         let headless = provider_run("claude", "claude-headless");
         let native_tui = provider_run_with_client_interface(
@@ -318,7 +322,7 @@ mod tests {
         assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
             &native_tui
         ));
-        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
+        assert!(provider_run_finalizes_cancellation_on_abort_dispatch(
             &codex
         ));
     }

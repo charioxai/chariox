@@ -3,7 +3,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::provider::AgentEndpointMode;
+use crate::provider::{AgentEndpointMode, ProviderCatalogEndpoint};
 
 use super::super::codex_client::codex_endpoint_is_healthy;
 use super::ports::{clear_codex_catalog_port_if_unset, resolve_codex_catalog_port};
@@ -19,6 +19,10 @@ fn codex_catalog_endpoint_unlocked() -> Result<String, DaemonError> {
 }
 
 pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
+    lease_codex_catalog_endpoint().map(ProviderCatalogEndpoint::into_persistent_endpoint)
+}
+
+pub(crate) fn lease_codex_catalog_endpoint() -> Result<ProviderCatalogEndpoint, DaemonError> {
     let launch = super::plan_codex_launch(None)?;
     let endpoint =
         launch
@@ -29,7 +33,7 @@ pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
                 message: "codex launch did not expose a structured endpoint".to_string(),
             })?;
     if codex_endpoint_is_healthy(&endpoint) {
-        return Ok(endpoint);
+        return Ok(ProviderCatalogEndpoint::existing(endpoint));
     }
     if launch.endpoint_mode == AgentEndpointMode::External {
         return Err(DaemonError::LocalTransport {
@@ -65,7 +69,7 @@ pub fn ensure_codex_catalog_endpoint() -> Result<String, DaemonError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if codex_endpoint_is_healthy(&endpoint) {
-            return Ok(endpoint);
+            return Ok(ProviderCatalogEndpoint::managed(endpoint, child));
         }
         if let Some(status) = child
             .try_wait()

@@ -265,7 +265,9 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<Option<crate::app::KernelPromptCancellation>, DaemonError> {
-        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+            let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -336,6 +338,12 @@ impl KernelRuntimeOwnedState {
             ),
         );
         if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(&provider_run) {
+            // Finalization can promote and enqueue the next structured prompt. Queue the abort
+            // first so the provider-run actor's FIFO cannot submit that prompt into the old turn.
+            self.provider_store.enqueue_structured_prompt_abort(
+                session_id.to_string(),
+                provider_run.id().to_string(),
+            )?;
             let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
                 session_id,
                 target_agent_id,
@@ -345,11 +353,7 @@ impl KernelRuntimeOwnedState {
             return Ok(Some(crate::app::KernelPromptCancellation {
                 cancellation: cancellation.cancellation,
                 session,
-                dispatch: Some(crate::app::KernelPromptAbortDispatch {
-                    session_id: session_id.to_string(),
-                    provider_run_id: provider_run.id().to_string(),
-                    source_attachment_id: attachment_id.to_string(),
-                }),
+                dispatch: None,
             }));
         }
         let session = self.session_snapshot(session_id)?;

@@ -11,9 +11,14 @@ import {
   sessionHistoryEntryPreviewLabel,
   transcriptEntryPreviewLabel,
 } from "./session-history-preview.js"
+
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"
+
+test("provider terminal bytes never appear in transcript previews", () => {
+  assert.equal(previewLineForTerminalRecord("provider_terminal", "\u001b[2Jfullscreen"), "")
+})
 
 test("session history preview labels all history entry kinds", () => {
   assert.equal(sessionHistoryEntryPreviewLabel("user_prompt"), "You")

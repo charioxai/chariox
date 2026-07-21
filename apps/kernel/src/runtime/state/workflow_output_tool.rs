@@ -374,14 +374,21 @@ impl KernelRuntimeOwnedState {
                 provider_run_id.as_deref(),
             )?
         };
+        let released_workflow_claim = self.release_workflow_node_workspace_claim(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
         let mut dispatches = WorkflowPromptDispatches::default();
         if let Some(mut completion) = completion {
             if let Some(dispatch) = completion.dispatch.take() {
                 dispatches.local.push(dispatch);
             }
-            if completion.released_claim {
+            if completion.released_claim || released_workflow_claim {
                 dispatches.extend(self.workflow_retry_blocked_claims());
             }
+        } else if released_workflow_claim {
+            dispatches.extend(self.workflow_retry_blocked_claims());
         }
         dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
         Ok(dispatches)

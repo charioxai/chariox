@@ -85,6 +85,9 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 USER slice
 
+ARG ARROBA_RELAY_PEER_PROTOCOL_VERSION=unknown
+LABEL io.arroba.relay-peer-protocol-version="${ARROBA_RELAY_PEER_PROTOCOL_VERSION}"
+
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace
 CMD ["sleep", "infinity"]

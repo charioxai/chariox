@@ -336,6 +336,46 @@ async fn terminal_output_with_active_run_enters_provider_runtime_lane() {
 }
 
 #[tokio::test]
+async fn background_output_pump_enters_provider_runtime_lane() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let provider_run_id = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "claude-code",
+        "sonnet",
+    )
+    .id()
+    .to_string();
+    app.structured_output_record_store()
+        .schedule_next_poll(provider_run_id.clone(), 0);
+
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let permit = router
+        .provider_runtime_lanes
+        .acquire(&provider_run_id)
+        .await;
+    let pump_router = router.clone();
+    let pump_task = tokio::spawn(async move { pump_router.pump_transport_runtime().await });
+
+    tokio::task::yield_now().await;
+    assert!(
+        !pump_task.is_finished(),
+        "background output pumping must wait behind the provider-run runtime lane"
+    );
+
+    drop(permit);
+    timeout(Duration::from_secs(1), pump_task)
+        .await
+        .expect("background output pump should resume after the lane is released")
+        .expect("background output pump task should join");
+}
+
+#[tokio::test]
 async fn terminal_output_with_active_run_drains_buffer_before_provider_lane() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

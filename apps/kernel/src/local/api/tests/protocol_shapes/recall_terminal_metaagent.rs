@@ -286,34 +286,54 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     );
 
     let response = LocalDaemonResponse::TerminalOutput {
-        records: vec![crate::terminal::TerminalOutputRecord {
-            record_id: Some(7),
-            timestamp_ms: 1_700_000_000_000,
-            session_id: "session-1".to_string(),
-            provider_run_id: "provider-run-1".to_string(),
-            agent_id: Some("agent-1".to_string()),
-            prompt_id: Some("prompt-42".to_string()),
-            prompt_origin: Some(crate::session::PromptOrigin::External),
-            source_attachment_id: Some("attachment-1".to_string()),
-            kind: crate::terminal::TerminalOutputKind::PromptEcho,
-            merge_key: None,
-            recipient_attachment_ids: vec!["attachment-2".to_string()],
-            pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
-            bytes: b"hello\n".to_vec(),
-            external_observation_metadata: Some(
-                crate::terminal::TerminalOutputExternalObservationMetadata {
-                    source: crate::history::SessionHistoryEntrySource::ExternalProviderObserved,
-                    external_provider: Some("codex".to_string()),
-                    external_provider_session_id: Some("thread-1".to_string()),
-                    external_provider_turn_id: Some("turn-1".to_string()),
-                    observed_at_ms: Some(1_234),
-                    external_observation: Some(crate::history::SessionHistoryExternalObservation {
-                        settles_active_prompt: true,
-                        passive_telemetry: false,
-                    }),
-                },
-            ),
-        }],
+        records: vec![
+            crate::terminal::TerminalOutputRecord {
+                record_id: Some(7),
+                timestamp_ms: 1_700_000_000_000,
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                prompt_id: Some("prompt-42".to_string()),
+                prompt_origin: Some(crate::session::PromptOrigin::External),
+                source_attachment_id: Some("attachment-1".to_string()),
+                kind: crate::terminal::TerminalOutputKind::PromptEcho,
+                merge_key: None,
+                recipient_attachment_ids: vec!["attachment-2".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
+                bytes: b"hello\n".to_vec(),
+                external_observation_metadata: Some(
+                    crate::terminal::TerminalOutputExternalObservationMetadata {
+                        source: crate::history::SessionHistoryEntrySource::ExternalProviderObserved,
+                        external_provider: Some("codex".to_string()),
+                        external_provider_session_id: Some("thread-1".to_string()),
+                        external_provider_turn_id: Some("turn-1".to_string()),
+                        observed_at_ms: Some(1_234),
+                        external_observation: Some(
+                            crate::history::SessionHistoryExternalObservation {
+                                settles_active_prompt: true,
+                                passive_telemetry: false,
+                            },
+                        ),
+                    },
+                ),
+            },
+            crate::terminal::TerminalOutputRecord {
+                record_id: Some(8),
+                timestamp_ms: 1_700_000_000_001,
+                session_id: "session-1".to_string(),
+                provider_run_id: "provider-run-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                prompt_id: Some("prompt-42".to_string()),
+                prompt_origin: Some(crate::session::PromptOrigin::Arroba),
+                source_attachment_id: Some("attachment-1".to_string()),
+                kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
+                merge_key: None,
+                recipient_attachment_ids: vec!["attachment-2".to_string()],
+                pending_recipient_attachment_ids: vec!["attachment-2".to_string()],
+                bytes: b"\x1b[2Jfullscreen".to_vec(),
+                external_observation_metadata: None,
+            },
+        ],
     };
     let snapshot = serde_json::to_value(response).expect("response should serialize");
     assert_eq!(
@@ -360,6 +380,10 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
         snapshot.pointer("/TerminalOutput/records/0/external_observation/settles_active_prompt"),
         Some(&serde_json::json!(true))
     );
+    assert_eq!(
+        snapshot.pointer("/TerminalOutput/records/1/kind"),
+        Some(&serde_json::json!("provider_terminal"))
+    );
     let snapshots = serde_json::json!({
         "batch_request": batch_snapshot,
         "response": snapshot,
@@ -369,7 +393,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "0c85bf6c0d45cf07786fe27acc345c5c41556d36253a2841ced8895855156312"
+        "9fac32530edaea40d66f4e7bd4cf96931a571e28ac7093e3a5ba38dfbb82938d"
     );
 }
 

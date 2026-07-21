@@ -727,6 +727,42 @@ mod tests {
     }
 
     #[test]
+    fn session_credit_error_ends_active_prompt_with_authoritative_failure() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionError {
+                session_id: "session-1".to_string(),
+                message: "Insufficient balance. Manage your billing to continue.".to_string(),
+            },
+        )
+        .expect("session error should send");
+
+        let result =
+            drain_opencode_events(&test_run(), &mut state, None).expect("drain should succeed");
+
+        assert!(result.prompt_completed);
+        assert_eq!(state.active_user_message_id, None);
+        assert_eq!(
+            result.terminal_failure.as_deref(),
+            Some("Insufficient balance. Manage your billing to continue.")
+        );
+        assert_eq!(
+            result
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderError)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn idle_status_after_submitted_prompt_without_response_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(

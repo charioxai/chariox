@@ -270,6 +270,21 @@ pub(super) fn apply_notification_with_manifest(
                 error_message,
             });
         }
+        CodexNotification::TurnAborted { reason } => {
+            let Some(turn_id) = active_turn_id.clone() else {
+                return;
+            };
+            // Legacy Codex abort notifications do not carry a turn id and may
+            // arrive without terminal item events for interrupted tools. The
+            // kernel already owns the one active turn for this provider run,
+            // so clear its tool gate and settle that turn as interrupted.
+            turn_tracker.reset_for_started();
+            turn_tracker.note_terminal(CodexTerminalSignal {
+                turn_id,
+                status: "interrupted".to_string(),
+                error_message: reason,
+            });
+        }
         CodexNotification::Error { message } => {
             if codex_error_is_retry_progress(&message) {
                 turn_tracker.note_activity();

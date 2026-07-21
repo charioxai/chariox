@@ -26,23 +26,6 @@ impl KernelRuntimeOwnedState {
         let Some(remote_execution) = target_agent.remote_execution().cloned() else {
             return Ok(None);
         };
-        if let Some(error) =
-            super::remote_prompt_worker_submission_runtime::remote_prompt_unavailable_slice_error(
-                &self.slice_store,
-                &remote_execution,
-                &session_id,
-                &target_agent_id,
-            )
-        {
-            let _ = self
-                .agent_store
-                .set_agent_processing(&target_agent_id, false)?;
-            let _ = self
-                .agent_store
-                .set_agent_state(&target_agent_id, crate::agent::AgentState::Error)?;
-            let _ = self.session_snapshot(&session_id)?;
-            return Err(error);
-        }
         if target_agent.state() == crate::agent::AgentState::Error {
             let _ = self
                 .agent_store
@@ -239,7 +222,9 @@ impl KernelRuntimeOwnedState {
         target_agent_id: &str,
         attachment_id: &str,
     ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
-        let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        if !crate::scheduler::runtime::is_workflow_prompt_attachment(attachment_id) {
+            let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
+        }
         let target_agent = self.agent_store.get_agent(target_agent_id)?;
         if target_agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -534,7 +519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stopped_slice_rejects_prompt_without_starting_or_admitting_it() {
+    async fn stopped_slice_prompt_settles_with_one_visible_durable_error() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -593,7 +578,7 @@ mod tests {
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
 
-        let result = runtime
+        let submission = runtime
             .owned
             .submit_remote_prepared_prompt(&KernelPreparedPromptSubmission {
                 session_id: session_id.clone(),
@@ -606,13 +591,32 @@ mod tests {
                 ),
                 force_queue: false,
                 refresh_projection: true,
-            });
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("stopped slice prompt should be rejected"),
-        };
+            })
+            .expect("stopped slice prompt should be admitted locally")
+            .expect("remote prompt should be handled");
+        let mut dispatch = submission
+            .remote_dispatch
+            .expect("admitted stopped-slice prompt should reach remote dispatch settlement");
+        let dispatch_error =
+            super::remote_prompt_worker_submission_runtime::submit_remote_prompt_to_worker_with_binding_refresh(
+                &runtime,
+                &mut dispatch,
+                "prompt for stopped slice".to_string(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .await
+            .expect_err("stopped slice must fail before relay transport");
 
-        assert!(error.to_string().contains("stopped slice `stopped-slice`"));
+        assert!(dispatch_error
+            .to_string()
+            .contains("stopped slice `stopped-slice`"));
+        runtime
+            .finish_remote_prompt_dispatch(dispatch, Err(dispatch_error))
+            .await
+            .expect_err("authoritative dispatch failure must remain visible to the caller");
         assert_eq!(
             runtime
                 .owned
@@ -622,6 +626,36 @@ mod tests {
                 .status,
             crate::slice::SliceStatus::Stopped,
         );
+        let output_records = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, attachment.id());
+        let errors = output_records
+            .iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1, "live trace must show the rejection once");
+        assert!(String::from_utf8_lossy(&errors[0].bytes).contains("stopped slice `stopped-slice`"));
+        let durable_events = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .expect("durable agent history should load");
+        assert_eq!(
+            durable_events
+                .iter()
+                .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderError)
+                .count(),
+            1,
+            "refresh history must contain exactly one visible error",
+        );
+        assert!(!durable_events.iter().any(|event| {
+            event.kind == crate::history::HistoryEventKind::Notice
+                && event
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("Remote prompt dispatch failed"))
+        }));
         assert!(runtime
             .owned
             .prompt_state_owner
@@ -642,6 +676,22 @@ mod tests {
                 .expect("agent should remain available")
                 .state(),
             crate::agent::AgentState::Error,
+        );
+        let refreshed = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("failed stopped-slice session should remain refreshable");
+        let refreshed_agent = refreshed
+            .agents()
+            .iter()
+            .find(|candidate| candidate.id() == agent_id)
+            .expect("remote agent should remain projected after refresh");
+        assert_eq!(refreshed_agent.state(), crate::agent::AgentState::Error);
+        assert_eq!(
+            refreshed_agent
+                .remote_execution()
+                .map(|remote| remote.worker_kernel_id.as_str()),
+            Some("worker-kernel-stopped"),
         );
     }
 

@@ -392,7 +392,7 @@ impl KernelRuntimeState {
                     .await
             }
             LocalDaemonRequest::CancelWorkflowRun(request) => {
-                self.execute_workflow_cancel_run_request(request)
+                self.execute_workflow_cancel_run_request(request).await
             }
             LocalDaemonRequest::ResumeWorkflowRun(request) => {
                 self.execute_workflow_resume_run_request(request)

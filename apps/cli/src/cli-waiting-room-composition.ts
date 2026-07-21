@@ -10,6 +10,7 @@ import {
   relayCloudProfile,
 } from "./preferences.js"
 import { LocalIpcClient } from "./ipc.js"
+import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 import {
   getProviderAuthStatus,
   getProviderCatalog,
@@ -25,6 +26,7 @@ import {
   createSession,
   deleteSessionByRef,
 } from "./session-api.js"
+import type { SessionListEntry } from "./sessions.js"
 import {
   createSlice,
   deleteSlice,
@@ -34,6 +36,7 @@ import { applyTheme } from "./theme.js"
 import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import { createWaitingRoomInventoryCache } from "./waiting-room-inventory-cache.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
@@ -110,6 +113,8 @@ export type CliWaitingRoomCompositionDeps = {
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
+  const waitingRoomInventoryCache = createWaitingRoomInventoryCache()
+  const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
@@ -179,6 +184,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     reconcileWaitingRoom,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
+    cachedInventories: cachedWaitingRoomInventories,
+    persistInventory: waitingRoomInventoryCache.persist,
+    getLocalKernelPresences: loadLocalKernelPresences,
   })
   const refreshWaitingRoomDataNow = waitingRoomInventoryRefreshController.refreshNow
   const refreshWaitingRoomData = waitingRoomInventoryRefreshController.refresh
@@ -207,6 +215,45 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     refreshWaitingRoomData,
   })
   const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
+
+  const replaceClientForKernel = async (kernelRef: string | null | undefined, machineRef: string | null | undefined) => {
+    const targetKernelRef = kernelRef?.trim()
+    const currentKernelId = deps.relayStatusState()?.daemon_id?.trim()
+    if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
+      return
+    }
+    const localPresence = loadLocalKernelPresences()
+      .find((presence) => presence.kernelId === targetKernelRef)
+    const connection = localPresence
+      ? null
+      : await resolveKernelClientConnection(deps.client, {
+          kernelRef: targetKernelRef,
+          machineRef: machineRef ?? null,
+          clientId: deps.options.clientId,
+        })
+    const nextClient = localPresence
+      ? new LocalIpcClient(localKernelEndpoint(localPresence))
+      : new LocalIpcClient(connection!.relayUrl, {
+          relayAuthToken: connection!.relayToken,
+          targetDaemonId: connection!.targetDaemonId ?? undefined,
+          targetDaemonAlias: connection!.targetDaemonAlias ?? undefined,
+        })
+    if (typeof deps.client.replaceClient !== "function") {
+      await nextClient.close()
+      throw new Error("kernel client pivot is unavailable in this build")
+    }
+    try {
+      await getWaitingRoomInventory(nextClient)
+    } catch (error) {
+      await nextClient.close()
+      throw error
+    }
+    await deps.client.replaceClient(nextClient)
+    waitingRoomInventoryRefreshController.invalidate()
+    deps.setKernelConnected(true)
+    deps.setDaemonDisconnected(false)
+    deps.flashFooter(`connected to kernel ${localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? targetKernelRef}`, "info")
+  }
 
   const waitingRoomActivationController = createWaitingRoomActivationController({
     isKernelConnected: deps.kernelConnected,
@@ -260,6 +307,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       reconcileWaitingRoom(deps.waitingRoomState())
       return page.sessions.length
     },
+    browseKernelInventory: async (kernelId, machineId) => {
+      await replaceClientForKernel(kernelId, machineId)
+      await refreshWaitingRoomDataNow()
+      return deps.availableSessions().filter((session: SessionListEntry) => {
+        return (session.kernel_id ?? session.host_daemon_id) === kernelId
+      }).length
+    },
     createSlice: (options) => createSlice(deps.client, {
       name: options.name,
       displayMode: options.displayMode,
@@ -276,28 +330,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       ])
     },
     prepareSessionOwnerClient: async (launch) => {
-      const ownerKernelRef = launch.ownerKernelRef?.trim()
-      if (!ownerKernelRef || ownerKernelRef === "local") {
-        return
-      }
-      const connection = await resolveKernelClientConnection(deps.client, {
-        kernelRef: ownerKernelRef,
-        machineRef: launch.ownerMachineRef ?? null,
-        clientId: deps.options.clientId,
-      })
-      const nextClient = new LocalIpcClient(connection.relayUrl, {
-        relayAuthToken: connection.relayToken,
-        targetDaemonId: connection.targetDaemonId ?? undefined,
-        targetDaemonAlias: connection.targetDaemonAlias ?? undefined,
-      })
-      if (typeof deps.client.replaceClient !== "function") {
-        await nextClient.close()
-        throw new Error("kernel client pivot is unavailable in this build")
-      }
-      await deps.client.replaceClient(nextClient)
-      deps.setKernelConnected(true)
-      deps.setDaemonDisconnected(false)
-      deps.flashFooter(`connected to kernel ${connection.targetDaemonAlias ?? connection.kernelId ?? ownerKernelRef}`, "info")
+      await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
+    },
+    prepareExistingSessionClient: async (session) => {
+      await replaceClientForKernel(session.kernel_id ?? session.host_daemon_id, session.machine_id ?? session.host_machine_id)
+      await refreshWaitingRoomDataNow()
     },
     attachBinding: deps.attachBinding,
     flashFooter: (message, tone) => deps.flashFooter(message, tone),

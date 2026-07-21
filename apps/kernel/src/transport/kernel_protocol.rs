@@ -124,6 +124,8 @@ pub(crate) enum KernelEvent {
     },
     WaitingRoomRowsChanged {
         inventory_version: String,
+        structural_version: String,
+        activity_revision: String,
         schema_version: u32,
         generated_at_ms: u64,
         launch_target: Option<WaitingRoomLaunchTarget>,
@@ -387,6 +389,8 @@ pub(crate) fn waiting_room_rows_changed_event(
         .unwrap_or_default();
     Some(KernelEvent::WaitingRoomRowsChanged {
         inventory_version: snapshot.inventory_version,
+        structural_version: snapshot.structural_version,
+        activity_revision: snapshot.activity_revision,
         schema_version: snapshot.schema_version,
         generated_at_ms: snapshot.generated_at_ms,
         launch_target: snapshot.launch_target,

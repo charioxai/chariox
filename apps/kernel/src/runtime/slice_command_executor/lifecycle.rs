@@ -136,20 +136,21 @@ pub(super) async fn execute_save_slice_state_request(
             return Err(error);
         }
     };
-    let relaunch_manifests = match runtime_state.slice_agent_relaunch_manifests(&slice) {
-        Ok(manifests) => manifests,
-        Err(error) => {
-            let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
-            let _ = runtime_state.record_slice_audit_event(
-                &slice,
-                "state.save",
-                "failed",
-                None,
-                Some(&error.to_string()),
-            );
-            return Err(error);
-        }
-    };
+    let relaunch_manifests =
+        match runtime_state.slice_agent_relaunch_manifests(&slice, "slice.state.save") {
+            Ok(manifests) => manifests,
+            Err(error) => {
+                let _ = runtime_state.mark_slice_state_save_failed(&request.slice_ref, &error);
+                let _ = runtime_state.record_slice_audit_event(
+                    &slice,
+                    "state.save",
+                    "failed",
+                    None,
+                    Some(&error.to_string()),
+                );
+                return Err(error);
+            }
+        };
     if let Err(error) = runtime_state
         .park_slice_agent_provider_runs(&relaunch_manifests)
         .await
@@ -220,12 +221,6 @@ pub(super) async fn execute_save_slice_state_request(
                 message: "slice restart returned an unexpected response".to_string(),
             });
         };
-        if !relaunch_manifests.is_empty() {
-            let worker = relay_presence_from_started_slice(&started_slice)?;
-            runtime_state
-                .rebind_and_relaunch_slice_agents(relaunch_manifests, &worker)
-                .await?;
-        }
         Ok(LocalDaemonResponse::SliceStateSaved {
             slice: started_slice,
             state,
@@ -338,6 +333,11 @@ pub(super) async fn execute_start_slice_request(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
+    let relaunch_manifests =
+        runtime_state.slice_agent_relaunch_manifests(&initial_record, "slice.start")?;
+    runtime_state
+        .park_slice_agent_provider_runs(&relaunch_manifests)
+        .await?;
     runtime_state.record_slice_audit_event(&initial_record, "start", "accepted", None, None)?;
     ensure_cloud_relay_connection(runtime_state, config_projection).await?;
     let relay = local_docker_slice_relay(config_projection, &initial_record).await?;
@@ -420,8 +420,15 @@ pub(super) async fn execute_start_slice_request(
         }
     };
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
-    let slice =
+    let mut slice =
         import_all_provider_auth_for_started_slice(runtime_state, config_projection, slice).await?;
+    if !relaunch_manifests.is_empty() {
+        let worker = relay_presence_from_started_slice(&slice, "slice.start")?;
+        runtime_state
+            .rebind_and_relaunch_slice_agents(relaunch_manifests, &worker)
+            .await?;
+        slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    }
     runtime_state.record_slice_audit_event(&slice, "start", "completed", None, None)?;
     Ok(LocalDaemonResponse::SliceStarted { slice })
 }
@@ -637,16 +644,17 @@ fn ensure_slice_has_no_active_agents(
 
 fn relay_presence_from_started_slice(
     slice: &crate::slice::SliceRecord,
+    operation: &'static str,
 ) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
     let Some(worker_kernel_id) = slice.worker_kernel_id.clone() else {
         return Err(DaemonError::LocalTransport {
-            operation: "slice.state.save",
+            operation,
             message: format!("started slice `{}` has no worker kernel id", slice.name),
         });
     };
     let Some(worker_machine_id) = slice.worker_machine_id.clone() else {
         return Err(DaemonError::LocalTransport {
-            operation: "slice.state.save",
+            operation,
             message: format!("started slice `{}` has no worker machine id", slice.name),
         });
     };

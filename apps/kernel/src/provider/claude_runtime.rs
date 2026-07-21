@@ -200,7 +200,7 @@ pub(crate) fn drain_claude_events(
                     .push(format!("Claude stdout parse warning: {error}"));
             }
             Ok(ClaudeRuntimeMessage::Stderr(line)) => {
-                batch.notices.push(format!("Claude stderr: {line}"));
+                apply_claude_stderr(run, state, &line, &mut batch);
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => break,
@@ -238,6 +238,25 @@ pub(crate) fn drain_claude_events(
     }
 
     Ok(batch)
+}
+
+fn apply_claude_stderr(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+    line: &str,
+    batch: &mut ProviderPromptSignalBatch,
+) {
+    if batch.terminal_failure.is_none() {
+        if let Some(failure) =
+            crate::provider::classify_provider_terminal_failure_text(run.adapter_key(), line)
+        {
+            batch.terminal_failure = Some(failure);
+            batch.prompt_completed = state.active_turn_id.is_some();
+            clear_active_claude_turn(state);
+            return;
+        }
+    }
+    batch.notices.push(format!("Claude stderr: {line}"));
 }
 
 fn apply_claude_turn_stall_policy(
@@ -514,9 +533,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
-        initialize_claude_runtime, input::claude_user_content, new_claude_session_id,
-        restart_claude_runtime, ClaudeRuntimeState, ProviderPromptSignalBatch,
+        apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
+        handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
+        new_claude_session_id, restart_claude_runtime, ClaudeRuntimeState,
+        ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -560,6 +580,43 @@ mod tests {
             },
             ProviderPromptSignalBatch::default(),
         )
+    }
+
+    #[test]
+    fn claude_usage_limit_on_stderr_ends_active_turn_with_authoritative_failure() {
+        let (mut state, mut batch) = parser_state();
+        let run = RuntimeProviderRun::new(
+            "run-1",
+            &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+
+        apply_claude_stderr(
+            &run,
+            &mut state,
+            "You've hit your usage limit. Your limit will reset later.",
+            &mut batch,
+        );
+
+        assert!(batch.prompt_completed);
+        assert_eq!(state.active_turn_id, None);
+        assert!(batch.notices.is_empty());
+        assert_eq!(
+            batch.terminal_failure.as_deref(),
+            Some(
+                "Provider reported a resource limit: You've hit your usage limit. Your limit will reset later."
+            )
+        );
     }
 
     #[test]

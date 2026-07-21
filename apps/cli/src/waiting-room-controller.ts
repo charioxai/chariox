@@ -10,7 +10,6 @@ import { waitingRoomChoice } from "./waiting-room-choice.js"
 import { moveWaitingRoomFocus } from "./waiting-room-focus-targets.js"
 import {
   waitingRoomRemoteKernelCanDelete,
-  waitingRoomRemoteKernelIsAttachable,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
 import { waitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
@@ -63,6 +62,7 @@ export type WaitingRoomCreateSessionDecision =
 
 export type WaitingRoomControlActivationDecision =
   | { action: "cloud" }
+  | { action: "browse-kernel"; kernelId: string; machineId: string; label: string }
   | { action: "stage-command"; command: string; message: string }
   | { action: "info"; message: string }
   | { action: "error"; message: string }
@@ -413,19 +413,11 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       if (!kernel) {
         return { action: "error", message: "no kernel selected" }
       }
-      const target = kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id
-      if (!waitingRoomRemoteKernelIsAttachable(kernel)) {
-        return {
-          action: waitingRoomRemoteKernelCanDelete(kernel) ? "info" : "error",
-          message: waitingRoomRemoteKernelCanDelete(kernel)
-            ? `press D twice to delete kernel ${target}`
-            : `kernel ${target} is active`,
-        }
-      }
       return {
-        action: "stage-command",
-        command: `/relay cloud client-token ${target}`,
-        message: `press Enter to mint a relay token for ${target}`,
+        action: "browse-kernel",
+        kernelId: kernel.kernel_id,
+        machineId: kernel.machine_id,
+        label: kernel.relay_alias ?? kernel.kernel_alias ?? kernel.kernel_id,
       }
     }
     case "slice-entry": {

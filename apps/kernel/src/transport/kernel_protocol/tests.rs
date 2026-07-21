@@ -97,7 +97,7 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
             ..
         } => {
             assert_eq!(inventory_version, "inventory-b");
-            assert_eq!(schema_version, 9);
+            assert_eq!(schema_version, 10);
             assert_eq!(
                 sessions
                     .iter()
@@ -413,8 +413,10 @@ fn waiting_room_snapshot(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
 ) -> WaitingRoomPublicSnapshot {
     WaitingRoomPublicSnapshot {
-        schema_version: 9,
+        schema_version: 10,
         inventory_version: inventory_version.to_string(),
+        structural_version: format!("structural-{inventory_version}"),
+        activity_revision: format!("activity-{inventory_version}"),
         generated_at_ms: 100,
         sessions,
         external_provider_sessions: Vec::new(),

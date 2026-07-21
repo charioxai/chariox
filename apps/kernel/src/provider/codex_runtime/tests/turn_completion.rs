@@ -1,3 +1,4 @@
+use super::super::drain::codex_turn_should_backfill;
 use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
 use super::*;
@@ -763,6 +764,84 @@ fn streamed_assistant_content_after_tools_does_not_infer_prompt_completion() {
 }
 
 #[test]
+fn terminal_with_final_assistant_text_settles_despite_stale_tool_tracking() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::ExecCommandStarted {
+            call_id: "cmd-1".to_string(),
+            command: json!("echo ok"),
+            cwd: None,
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::AgentMessageDelta {
+            item_id: "msg-1".to_string(),
+            delta: "```json\n{\"summary\":\"done\"}\n```".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-1".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+}
+
+#[test]
 fn tool_start_after_assistant_content_still_requires_terminal_completion() {
     let mut active_turn_id = Some("turn-1".to_string());
     let mut turn_tracker = CodexTurnTracker::default();
@@ -910,6 +989,51 @@ fn interrupted_turn_is_treated_as_terminal_cancellation() {
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].message_id, "codex-turn:turn-2");
     assert_eq!(notices, vec!["Aborted".to_string()]);
+}
+
+#[test]
+fn legacy_aborted_turn_clears_unfinished_tools_and_settles() {
+    let mut active_turn_id = Some("turn-legacy-abort".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("tool-still-running");
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnAborted {
+            reason: Some("interrupted".to_string()),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert!(prompt_completed);
+    assert_eq!(active_turn_id, None);
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "codex-turn:turn-legacy-abort");
+    assert_eq!(notices, vec!["interrupted".to_string()]);
 }
 
 #[test]
@@ -1109,5 +1233,28 @@ fn completed_turn_backfill_requires_final_answer_or_error_evidence() {
     assert!(codex_completed_turn_has_settlement_evidence(
         Some(&empty_items),
         Some("model rejected")
+    ));
+}
+
+#[test]
+fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal_notification() {
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("workflow-ack-call");
+    turn_tracker.note_tool_completed("workflow-ack-call");
+    turn_tracker.note_assistant_content();
+
+    assert_eq!(turn_tracker.active_tool_count(), 0);
+    assert!(!turn_tracker.has_pending_terminal());
+    assert!(!codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        false,
+    ));
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
     ));
 }

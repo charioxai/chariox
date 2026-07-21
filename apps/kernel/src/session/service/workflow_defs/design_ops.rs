@@ -487,6 +487,10 @@ impl SessionService {
                     .resolve_workflow_ref(session_id, &workflow_id)?
                     .id()
                     .to_string();
+                let alias = normalize_workflow_endpoint_alias(endpoint.alias)?;
+                if let Some(alias) = alias.as_deref() {
+                    self.ensure_workflow_endpoint_alias_available(session_id, &workflow_id, alias)?;
+                }
                 let session =
                     self.store
                         .get_mut(session_id)
@@ -501,7 +505,7 @@ impl SessionService {
                 })?;
                 let mut definition = WorkflowEndpointDefinition::new(
                     endpoint.id.clone(),
-                    endpoint.alias,
+                    alias,
                     endpoint.entry_node_id,
                 );
                 definition.set_owner_user_id(owner_user_id);
@@ -526,6 +530,21 @@ impl SessionService {
                     .resolve_workflow_ref(session_id, &workflow_id)?
                     .id()
                     .to_string();
+                let alias = match patch.alias {
+                    Some(alias) => {
+                        let alias = normalize_workflow_endpoint_alias(alias)?;
+                        if let Some(alias) = alias.as_deref() {
+                            self.ensure_workflow_endpoint_alias_available_for_update(
+                                session_id,
+                                &workflow_id,
+                                &endpoint_id,
+                                alias,
+                            )?;
+                        }
+                        Some(alias)
+                    }
+                    None => None,
+                };
                 let session =
                     self.store
                         .get_mut(session_id)
@@ -545,7 +564,7 @@ impl SessionService {
                         endpoint_id: endpoint_id.clone(),
                     }
                 })?;
-                if let Some(alias) = patch.alias {
+                if let Some(alias) = alias {
                     endpoint.set_alias(alias);
                 }
                 if let Some(entry_node_id) = patch.entry_node_id {

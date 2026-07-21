@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn started_prompt_history_preserves_prompt_acceptance_timestamp() {
+async fn started_prompt_history_records_prompt_activation_timestamp() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -34,14 +34,14 @@ async fn started_prompt_history_preserves_prompt_acceptance_timestamp() {
         .record_started_user_prompt(session.id(), attachment.id(), &prompt)
         .expect("started prompt should be recorded");
 
-    assert_eq!(recorded_at_ms, accepted_at_ms);
+    assert!(recorded_at_ms > accepted_at_ms);
     let entries = runtime
         .owned
         .operational_history_store
         .load_session_history_entries(session.id(), Some(agent.id()))
         .expect("canonical prompt history should load");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].timestamp_ms, accepted_at_ms);
+    assert_eq!(entries[0].timestamp_ms, recorded_at_ms);
 }
 
 #[tokio::test]

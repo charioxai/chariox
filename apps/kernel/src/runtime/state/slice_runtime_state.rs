@@ -140,6 +140,7 @@ impl KernelRuntimeState {
     pub(crate) fn slice_agent_relaunch_manifests(
         &self,
         slice: &crate::slice::SliceRecord,
+        operation: &'static str,
     ) -> Result<Vec<SliceAgentRelaunchManifest>, DaemonError> {
         let mut busy_agents = Vec::new();
         let mut manifests = Vec::new();
@@ -177,7 +178,7 @@ impl KernelRuntimeState {
                     provider: run.provider().to_string(),
                     account_profile: run.account_profile().to_string(),
                     model: run.model().to_string(),
-                    variant: run.variant().map(str::to_string),
+                    variant: run.variant().or_else(|| agent.effort()).map(str::to_string),
                     // A slice restart must spawn a fresh managed provider process inside the
                     // restarted worker. The previous structured endpoint is worker-local and
                     // points at the provider server that was stopped with the old slice.
@@ -197,7 +198,7 @@ impl KernelRuntimeState {
                     provider: agent.provider().to_string(),
                     account_profile: "default".to_string(),
                     model: agent.model().unwrap_or("default").to_string(),
-                    variant: None,
+                    variant: agent.effort().map(str::to_string),
                     structured_endpoint: None,
                     provider_session_id: None,
                     existing_provider_run_id: None,
@@ -207,9 +208,9 @@ impl KernelRuntimeState {
         }
         if !busy_agents.is_empty() {
             return Err(DaemonError::LocalTransport {
-                operation: "slice.state.save",
+                operation,
                 message: format!(
-                    "cannot save slice while agents are running; wait for them to finish or stop them: {}",
+                    "cannot restart slice agents while prompts are running; wait for them to finish or stop them: {}",
                     busy_agents.join(",")
                 ),
             });
@@ -836,6 +837,17 @@ mod tests {
         runtime
             .owned
             .agent_store
+            .set_agent_runtime_profile(
+                &agent_id,
+                "codex",
+                Some("gpt-5.6-sol".to_string()),
+                Some("low".to_string()),
+                crate::provider::ProviderResumeState::default(),
+            )
+            .expect("agent runtime profile should update");
+        runtime
+            .owned
+            .agent_store
             .set_agent_processing(&agent_id, true)
             .expect("stale processing flag should be set");
         runtime
@@ -845,11 +857,12 @@ mod tests {
             .expect("stale working state should be set");
 
         let manifests = runtime
-            .slice_agent_relaunch_manifests(&slice)
+            .slice_agent_relaunch_manifests(&slice, "slice.start")
             .expect("stale legacy state should not block relaunch manifests");
 
         assert_eq!(manifests.len(), 1);
         assert_eq!(manifests[0].agent_id, agent_id);
+        assert_eq!(manifests[0].variant.as_deref(), Some("low"));
     }
 
     #[tokio::test]
@@ -858,13 +871,13 @@ mod tests {
         sync_active_prompt(&app, &session_id, &agent_id).await;
 
         let error = runtime
-            .slice_agent_relaunch_manifests(&slice)
+            .slice_agent_relaunch_manifests(&slice, "slice.start")
             .expect_err("active prompt ownership should block relaunch manifests");
 
         match error {
             DaemonError::LocalTransport { operation, message } => {
-                assert_eq!(operation, "slice.state.save");
-                assert!(message.contains("cannot save slice while agents are running"));
+                assert_eq!(operation, "slice.start");
+                assert!(message.contains("cannot restart slice agents while prompts are running"));
                 assert!(message.contains(&agent_id));
             }
             other => panic!("expected active prompt ownership error, got {other:?}"),

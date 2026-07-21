@@ -105,7 +105,7 @@ async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
 }
 
 #[tokio::test]
-async fn structured_terminal_failure_records_single_clean_notice() {
+async fn structured_terminal_failure_settles_and_persists_single_provider_error() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -190,30 +190,39 @@ async fn structured_terminal_failure_records_single_clean_notice() {
         .await
         .expect("structured terminal failure should be accepted");
 
-    let notices = runtime
+    let records = runtime
         .owned
         .terminal_stream
-        .drain_notice_records(session.id(), attachment.id());
-    assert_eq!(notices.len(), 1);
+        .drain_output_records(session.id(), attachment.id());
+    let provider_errors = records
+        .iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .collect::<Vec<_>>();
+    assert_eq!(provider_errors.len(), 1);
     assert_eq!(
-        notices[0].message,
+        String::from_utf8_lossy(&provider_errors[0].bytes),
         "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
     );
-    let durable_notices = runtime
+    let durable_errors = runtime
         .owned
         .operational_history_store
         .load_session_events(session.id(), Some(agent.id()))
         .expect("canonical operational history should load")
         .into_iter()
         .filter(|event| {
-            event.kind == crate::history::HistoryEventKind::Notice
+            event.kind == crate::history::HistoryEventKind::ProviderError
                 && event.content.as_deref()
                     == Some(
                         "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model.",
                     )
         })
         .collect::<Vec<_>>();
-    assert_eq!(durable_notices.len(), 1);
+    assert_eq!(durable_errors.len(), 1);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
     assert_eq!(
         runtime
             .owned
@@ -224,6 +233,23 @@ async fn structured_terminal_failure_records_single_clean_notice() {
         Some(
             "Provider prompt dispatch failed: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model."
         )
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("provider run should exist")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert_eq!(
+        runtime
+            .agent_activity_for_session(&session_state)
+            .get(agent.id())
+            .expect("agent activity should be projected")
+            .status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
     );
 }
 

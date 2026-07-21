@@ -176,20 +176,44 @@ impl DaemonApp {
                     let current_active_run_id =
                         session.active_provider_run_id().map(str::to_string);
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
-                        let active_run = self.providers.get_run(current_active_run_id)?;
-                        if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
-                            && active_run.state() == ProviderRunState::Running
-                            && !self.provider_run_has_active_prompt(session_id, &active_run)?
-                        {
-                            let outcome = self
-                                .providers
-                                .park_run_provider_only(session_id, current_active_run_id)?;
-                            clear_active_provider_run_session_pointer(
-                                self,
-                                session_id,
-                                outcome.run().id(),
-                            )?;
-                            self.update_provider_run_projection(outcome.into_run());
+                        match self.providers.get_run(current_active_run_id) {
+                            Ok(active_run) => {
+                                let active_run_is_remote = active_run
+                                    .agent_instance_id()
+                                    .and_then(|agent_id| self.agents.get_agent(agent_id).ok())
+                                    .is_some_and(|agent| agent.remote_execution().is_some());
+                                if active_run_is_remote {
+                                    self.sessions.set_active_provider_run(session_id, None)?;
+                                } else if active_run.agent_instance_id()
+                                    != Some(focused_agent_id.as_str())
+                                    && active_run.state() == ProviderRunState::Running
+                                    && !self
+                                        .provider_run_has_active_prompt(session_id, &active_run)?
+                                {
+                                    match self
+                                        .providers
+                                        .park_run_provider_only(session_id, current_active_run_id)
+                                    {
+                                        Ok(outcome) => {
+                                            clear_active_provider_run_session_pointer(
+                                                self,
+                                                session_id,
+                                                outcome.run().id(),
+                                            )?;
+                                            self.update_provider_run_projection(outcome.into_run());
+                                        }
+                                        Err(DaemonError::ProviderRunNotFound { .. }) => {
+                                            self.sessions
+                                                .set_active_provider_run(session_id, None)?;
+                                        }
+                                        Err(error) => return Err(error),
+                                    }
+                                }
+                            }
+                            Err(DaemonError::ProviderRunNotFound { .. }) => {
+                                self.sessions.set_active_provider_run(session_id, None)?;
+                            }
+                            Err(error) => return Err(error),
                         }
                     }
                 }

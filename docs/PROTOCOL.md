@@ -456,7 +456,8 @@ Minimum response/result shapes:
 - prompt completion returns structured completion details and the next started prompt when relevant
 - prompt cancellation returns the updated prompt state; for provider-backed turns the daemon advances queued work only after the provider confirms the stop
 - config update returns canonical session config state, version, and updated session state
-- terminal output polling returns structured terminal-output fan-out records, including distinct provider text, reasoning, tool, error, and status output kinds
+- terminal output polling returns structured terminal-output fan-out records, including distinct provider text, reasoning, tool, error, status, and transient `provider_terminal` output kinds
+- `provider_terminal` carries fullscreen native-renderer bytes only; clients must not treat it as semantic transcript, turn activity, history, or completion evidence
 - end-session returns structured final session metadata
 
 Current session-management semantics:

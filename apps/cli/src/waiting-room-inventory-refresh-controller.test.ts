@@ -4,6 +4,7 @@ import test from "node:test"
 import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
+import type { LocalKernelPresence } from "./local-kernel-presence.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
@@ -57,6 +58,35 @@ test("waiting room inventory refresh reconciles unchanged versions without repla
   assert.equal(harness.reconcileCount(), 2)
 })
 
+test("waiting room inventory refresh scopes equal versions to their kernel", async () => {
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { kernelId: "kernel-a", sessions: [session("session-a")] }),
+      inventory("v1", { kernelId: "kernel-b", sessions: [session("session-b")] }),
+    ],
+  })
+
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id).sort(), ["session-a", "session-b"])
+})
+
+test("waiting room inventory refresh makes fresh local sibling kernels visible", async () => {
+  const harness = createHarness({
+    snapshots: [inventory("v1", { kernelId: "kernel-a", machineId: "machine-a" })],
+    localKernelPresences: [
+      { kernelId: "kernel-a", machineId: "machine-a", host: "127.0.0.1", port: 43_121, heartbeatAtMs: 1 },
+      { kernelId: "kernel-b", kernelAlias: "Experiments", machineId: "machine-a", machineAlias: "Laptop", host: "127.0.0.1", port: 43_122, heartbeatAtMs: 1 },
+    ],
+  })
+
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.remoteMachines()[0]?.kernel_count, 2)
+  assert.deepEqual(harness.remoteKernels().map((entry) => entry.kernel_id), ["kernel-b"])
+})
+
 test("waiting room inventory refresh reports failures", async () => {
   const harness = createHarness({
     getInventory: async () => {
@@ -90,6 +120,8 @@ test("waiting room inventory row patch applies first row set without fetching", 
 
   harness.controller.applyRowsChanged({
     inventoryVersion: "v1",
+    structuralVersion: "structure-v1",
+    activityRevision: "activity-v1",
     sessions: [session("session-1"), session("session-2")],
     removedSessionIds: [],
   })
@@ -110,6 +142,8 @@ test("waiting room inventory row patch merges changes and removals", () => {
   return harness.controller.refreshNow().then(() => {
     harness.controller.applyRowsChanged({
       inventoryVersion: "v2",
+      structuralVersion: "structure-v2",
+      activityRevision: "activity-v2",
       sessions: [session("session-3"), { ...session("session-1"), alias: "updated" }],
       removedSessionIds: ["session-2"],
     })
@@ -137,6 +171,8 @@ test("waiting room refresh still hydrates unattached agents after a row patch se
 
   harness.controller.applyRowsChanged({
     inventoryVersion: "v2",
+    structuralVersion: "structure-v2",
+    activityRevision: "activity-v2",
     sessions: [session("session-1")],
     removedSessionIds: [],
   })
@@ -156,11 +192,15 @@ test("waiting room inventory row patch ignores duplicate versions and disconnect
 
   harness.controller.applyRowsChanged({
     inventoryVersion: "v1",
+    structuralVersion: "structure-v1",
+    activityRevision: "activity-v1",
     sessions: [session("session-1")],
     removedSessionIds: [],
   })
   harness.controller.applyRowsChanged({
     inventoryVersion: "v1",
+    structuralVersion: "structure-v1",
+    activityRevision: "activity-v1",
     sessions: [session("session-2")],
     removedSessionIds: [],
   })
@@ -171,6 +211,8 @@ test("waiting room inventory row patch ignores duplicate versions and disconnect
   const disconnected = createHarness({ connected: false })
   disconnected.controller.applyRowsChanged({
     inventoryVersion: "v1",
+    structuralVersion: "structure-v1",
+    activityRevision: "activity-v1",
     sessions: [session("session-1")],
     removedSessionIds: [],
   })
@@ -237,6 +279,7 @@ function createHarness(options: {
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
   getInventory?: () => Promise<WaitingRoomInventory>
+  localKernelPresences?: readonly LocalKernelPresence[]
 } = {}) {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
@@ -296,6 +339,7 @@ function createHarness(options: {
     warn: (message, fields) => {
       warnings.push({ message, fields })
     },
+    getLocalKernelPresences: () => options.localKernelPresences ?? [],
   })
 
   return {
@@ -333,7 +377,12 @@ function inventory(
   overrides: Partial<WaitingRoomInventory> = {},
 ): WaitingRoomInventory {
   return {
+    schemaVersion: 10,
     inventoryVersion,
+    structuralVersion: `structure-${inventoryVersion}`,
+    activityRevision: `activity-${inventoryVersion}`,
+    kernelId: "kernel-1",
+    machineId: "machine-1",
     sessions: [],
     relayStatus: { configured: false } as RelayStatusView,
     remoteMachines: [],

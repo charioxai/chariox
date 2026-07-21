@@ -172,6 +172,7 @@ fn add_json_field(total: &mut usize, field_count: &mut usize, field: &str, value
 fn terminal_output_kind_json(kind: &TerminalOutputKind) -> &'static str {
     match kind {
         TerminalOutputKind::ProviderOutput => "provider_output",
+        TerminalOutputKind::ProviderTerminal => "provider_terminal",
         TerminalOutputKind::PromptEcho => "prompt_echo",
         TerminalOutputKind::ProviderReasoning => "provider_reasoning",
         TerminalOutputKind::ProviderTool => "provider_tool",

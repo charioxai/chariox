@@ -93,6 +93,8 @@ test("kernel event dispatch applies waiting-room row patches without refreshing 
   await harness.controller.handleKernelEvent({
     event: "waiting_room_rows_changed",
     inventory_version: "v2",
+    structural_version: "structure-v2",
+    activity_revision: "activity-v2",
     schema_version: 1,
     generated_at_ms: 2,
     sessions: [{

@@ -47,6 +47,9 @@ impl KernelRuntimeState {
             .drain_finished_structured_output_poll_jobs()
         {
             let finished_run_id = finished.provider_run_id.clone();
+            let polled_prompt_id = owned
+                .structured_output_records
+                .take_in_flight_prompt_id(&finished_run_id);
             let is_requested_run = finished_run_id == provider_run_id;
             crate::logging::debug_with_fields(
                 "daemon.provider",
@@ -118,6 +121,48 @@ impl KernelRuntimeState {
                     }
                 }
             };
+            let active_prompt = owned
+                .provider_store
+                .get_run(&finished_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
+            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.status() == crate::session::PromptStatus::Dispatching
+                    || prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            });
+            if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
+                crate::logging::debug_with_fields(
+                    "daemon.provider",
+                    "discarding stale structured output poll before prompt delivery",
+                    serde_json::json!({
+                        "provider_run_id": finished_run_id,
+                        "polled_prompt_id": polled_prompt_id,
+                        "active_prompt_id": active_prompt_id,
+                        "active_prompt_is_dispatching": active_prompt_is_dispatching,
+                    }),
+                );
+                owned
+                    .structured_output_records
+                    .schedule_next_poll(finished_run_id, now_ms);
+                continue;
+            }
             let run = match owned.provider_store.get_run(&finished_run_id) {
                 Ok(run) => run,
                 Err(_) => {
@@ -166,18 +211,57 @@ impl KernelRuntimeState {
             .structured_output_records
             .poll_due(provider_run_id, crate::session::unix_epoch_ms())
         {
+            let active_prompt = owned
+                .provider_store
+                .get_run(provider_run_id)
+                .ok()
+                .and_then(|run| {
+                    run.agent_instance_id()
+                        .map(str::to_string)
+                        .map(|agent_id| (run, agent_id))
+                })
+                .and_then(|(run, agent_id)| {
+                    owned
+                        .session_store
+                        .get_session(run.session_id())
+                        .ok()
+                        .and_then(|session| {
+                            owned
+                                .prompt_state_owner
+                                .active_prompt_for_agent(&session, &agent_id)
+                        })
+                });
+            if active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.status() == crate::session::PromptStatus::Dispatching
+                    || prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            }) {
+                owned.structured_output_records.schedule_after_empty_poll(
+                    provider_run_id.to_string(),
+                    crate::session::unix_epoch_ms(),
+                );
+                return Ok(records);
+            }
             match owned
                 .provider_store
                 .enqueue_structured_output_poll(provider_run_id)?
             {
-                true => owned
-                    .structured_output_records
-                    .mark_poll_enqueued(provider_run_id),
+                true => {
+                    let prompt_id = active_prompt.map(|prompt| prompt.id().to_string());
+                    owned
+                        .structured_output_records
+                        .mark_poll_enqueued(provider_run_id, prompt_id);
+                }
                 false => owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),
                 ),
             }
+        }
+        if owned.prompt_completion_settlement_pending(provider_run_id) {
+            let _ = self
+                .settle_owned_provider_prompt(session_id, provider_run_id, false, false, false)
+                .await?;
         }
         Ok(records)
     }
@@ -254,15 +338,10 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(provider_prompt_dispatch_failure_notice);
+        project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         if let Some(message) = terminal_failure.as_ref() {
             recorded_notice_messages.insert(message.clone());
-            owned.record_notice(
-                session_id,
-                Some(provider_run_id),
-                recipient_attachment_ids.clone(),
-                message.clone(),
-            );
         }
         for notice in &poll_result.notices {
             let message = provider_notice_message(notice);
@@ -434,6 +513,25 @@ fn provider_prompt_dispatch_failure_notice(message: &str) -> String {
     )
 }
 
+fn project_terminal_failure_chunk(
+    poll_result: &mut crate::provider::ProviderPromptSignalBatch,
+    message: Option<&str>,
+) {
+    let Some(message) = message else {
+        return;
+    };
+    poll_result
+        .chunks
+        .retain(|chunk| chunk.kind != crate::terminal::TerminalOutputKind::ProviderError);
+    poll_result
+        .chunks
+        .push(crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderError,
+            merge_key: None,
+            bytes: message.as_bytes().to_vec(),
+        });
+}
+
 fn provider_notice_message(message: &str) -> String {
     provider_error_message(message)
         .map(|message| format!("Provider prompt dispatch failed: {message}"))
@@ -460,4 +558,57 @@ fn compact_provider_notice_message(message: &str) -> String {
         compact.push_str("...");
     }
     compact
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn representative_provider_exhaustion_envelopes_project_one_canonical_error() {
+        let cases = [
+            (
+                "Codex",
+                r#"{"error":{"type":"usage_limit_reached","message":"You have no weighted tokens left"}}"#,
+                "You have no weighted tokens left",
+            ),
+            (
+                "Claude",
+                "You've hit your usage limit. Your limit will reset later.",
+                "You've hit your usage limit. Your limit will reset later.",
+            ),
+            (
+                "OpenCode",
+                "Insufficient balance. Manage your billing to continue.",
+                "Insufficient balance. Manage your billing to continue.",
+            ),
+        ];
+
+        for (provider, envelope, expected) in cases {
+            let mut batch = crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderError,
+                    merge_key: None,
+                    bytes: format!("provider-specific rendering for {provider}").into_bytes(),
+                }],
+                terminal_failure: Some(envelope.to_string()),
+                ..Default::default()
+            };
+            let message = provider_prompt_dispatch_failure_notice(envelope);
+
+            project_terminal_failure_chunk(&mut batch, Some(&message));
+
+            let errors = batch
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ProviderError)
+                .collect::<Vec<_>>();
+            assert_eq!(errors.len(), 1, "{provider} should project one error");
+            assert_eq!(
+                String::from_utf8_lossy(&errors[0].bytes),
+                format!("Provider prompt dispatch failed: {expected}"),
+                "{provider} should preserve the provider explanation",
+            );
+        }
+    }
 }

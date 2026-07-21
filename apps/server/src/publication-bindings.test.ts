@@ -71,3 +71,37 @@ test("publication bindings keep OpenCode models provider-qualified after catalog
     assert.equal(resolved.changed, false)
   }
 })
+
+test("publication bindings validate the Claude family against runtime adapter catalogs", async () => {
+  const snapshot = {
+    workflow: {
+      id: "workflow-1",
+      nodes: [{ id: "node-1", agent_id: "agent-1" }],
+    },
+    agents: [{
+      id: "agent-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      effort: null,
+    }],
+  } as unknown as WorkflowPublicationSnapshot
+
+  const resolved = await resolvePublicationProviderModelBindings(
+    snapshot,
+    "/tmp/arroba-publication-claude-family-bindings-does-not-exist.json",
+    {
+      send: async <T>(): Promise<T> => ({
+        ProviderCatalog: {
+          catalog: {
+            all: [{ id: "claude-headless", models: { "claude-sonnet-5": {} } }],
+          },
+        },
+      }) as T,
+    },
+    { promptReplacement: false },
+  )
+
+  assert.equal(resolved.snapshot.agents?.[0]?.provider, "claude")
+  assert.equal(resolved.snapshot.agents?.[0]?.model, "claude-sonnet-5")
+  assert.equal(resolved.changed, false)
+})

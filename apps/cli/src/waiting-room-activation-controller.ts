@@ -53,6 +53,7 @@ export type WaitingRoomActivationControllerDeps = {
     externalSessionId: string,
   ) => Promise<{ session: RuntimeSession; agent?: unknown; providerRun?: unknown }>
   loadOlderExternalProviderSessions?: () => Promise<number>
+  browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   createSlice?: (options: {
     name: string
     displayMode: "headless" | "headed"
@@ -64,6 +65,7 @@ export type WaitingRoomActivationControllerDeps = {
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   updateSlices?: (slice: SliceRecord) => void
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
     session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
     createdSession: boolean,
@@ -151,6 +153,18 @@ export function createWaitingRoomActivationController(
       await deps.handleCloudCommand()
       return true
     }
+    if (decision.action === "browse-kernel") {
+      if (!deps.browseKernelInventory) {
+        deps.flashFooter("kernel inventory browsing is unavailable", "error")
+        return true
+      }
+      const count = await deps.browseKernelInventory(decision.kernelId, decision.machineId)
+      deps.flashFooter(
+        `loaded ${count} session${count === 1 ? "" : "s"} from ${decision.label}`,
+        "info",
+      )
+      return true
+    }
     if (decision.action === "stage-command") {
       deps.setPromptText(decision.command)
       deps.focusPrompt()
@@ -190,6 +204,7 @@ export function createWaitingRoomActivationController(
       return
     }
     if (decision.action === "join") {
+      await deps.prepareExistingSessionClient?.(decision.session)
       await deps.attachBinding(decision.session, false, decision.launch)
       deps.flashFooter(`attached to session ${decision.session.alias ?? decision.session.id}`, "info")
       return

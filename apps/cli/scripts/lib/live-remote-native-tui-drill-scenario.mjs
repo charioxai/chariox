@@ -474,6 +474,19 @@ function attachedImagePrompt(markerText) {
   return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
 }
 
+export function baselinePrompt(provider, promptKey, markers) {
+  if (provider !== "claude") {
+    return `Reply with exactly ${markers[promptKey]} and nothing else.`
+  }
+  const prompts = {
+    nativeA: `Please answer this astronomy question in one concise sentence: which planet is closest to the Sun? Include the phrase ${markers.nativeA}.`,
+    nativeB: `Please answer this astronomy question in one concise sentence: which planet is the largest in the Solar System? Include the phrase ${markers.nativeB}.`,
+    arrobaA: `Please answer this geography question in one concise sentence: what is the capital of Australia? Include the phrase ${markers.arrobaA}.`,
+    arrobaB: `Please answer this geography question in one concise sentence: what is the capital of Canada? Include the phrase ${markers.arrobaB}.`,
+  }
+  return prompts[promptKey]
+}
+
 function relayClient(relayUrl, relayToken, targetDaemonAlias) {
   return new LocalIpcClient(relayUrl, {
     relayAuthToken: relayToken,
@@ -528,10 +541,10 @@ export async function runProviderScenario({
   }
   const marker = provider === "opencode" ? "OPENCODE" : provider === "codex" ? "CODEX" : "CLAUDE"
   const markers = {
-    arrobaA: `${marker}ALPHA`,
-    arrobaB: `${marker}BRAVO`,
-    nativeA: `${marker}CHARLIE`,
-    nativeB: `${marker}DELTA`,
+    arrobaA: provider === "claude" ? "Canberra is the capital of Australia" : `${marker}ALPHA`,
+    arrobaB: provider === "claude" ? "Ottawa is the capital of Canada" : `${marker}BRAVO`,
+    nativeA: provider === "claude" ? "Mercury is the closest planet to the Sun" : `${marker}CHARLIE`,
+    nativeB: provider === "claude" ? "Jupiter is the largest planet in the Solar System" : `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
     arrobaPermission: `${marker}ARROBAPERMISSION`,
     nativeAttachment: `${marker}NATIVEATTACHMENT`,
@@ -618,7 +631,7 @@ export async function runProviderScenario({
       ...(sliceRef ? ["--slice", sliceRef] : []),
       ...(nativeCapabilities ? ["--grant-mcp", nativeCapabilities.mcpName, "--grant-skill", nativeCapabilities.skillName] : []),
       ...providerArgs,
-      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeA} and nothing else.`] : []),
+      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", baselinePrompt(provider, "nativeA", markers)] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -660,7 +673,7 @@ export async function runProviderScenario({
       ...(sliceRef ? ["--slice", sliceRef] : []),
       ...(nativeCapabilities ? ["--grant-mcp", nativeCapabilities.mcpName, "--grant-skill", nativeCapabilities.skillName] : []),
       ...providerArgs,
-      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", `Reply with exactly ${markers.nativeB} and nothing else.`] : []),
+      ...(provider === "claude" && !skipBaselineTurns ? ["--initial-prompt", baselinePrompt(provider, "nativeB", markers)] : []),
       ...(provider === "claude" ? ["--remote-rendered"] : []),
     ], {
       ...process.env,
@@ -777,12 +790,12 @@ export async function runProviderScenario({
 
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} Reply with exactly ${markers.arrobaA} and nothing else.`,
+        command: `prompt ${aliases[0]} ${shellQuote(baselinePrompt(provider, "arrobaA", markers))}`,
       })
       badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[1]} Reply with exactly ${markers.arrobaB} and nothing else.`,
+        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
       })
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
 
@@ -815,7 +828,7 @@ export async function runProviderScenario({
         sessionId,
         attachment.id,
         providerRunB,
-        `Reply with exactly ${markers.nativeB} and nothing else.`,
+        baselinePrompt(provider, "nativeB", markers),
       )
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
       await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[1]], {
@@ -823,7 +836,7 @@ export async function runProviderScenario({
       })
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[1]} Reply with exactly ${markers.arrobaB} and nothing else.`,
+        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
       })
       const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
         [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },

@@ -435,7 +435,7 @@ test("deriveWaitingRoomControlActivationDecision handles machine activation", ()
   })
 })
 
-test("deriveWaitingRoomControlActivationDecision handles remote kernel activation", () => {
+test("deriveWaitingRoomControlActivationDecision browses remote kernel inventories", () => {
   const attachable = deriveWaitingRoomControlActivationDecision({
     state: waitingRoomState({ focus: "remote-kernel" }),
     workspacePath: "/workspace",
@@ -469,13 +469,16 @@ test("deriveWaitingRoomControlActivationDecision handles remote kernel activatio
   })
 
   assert.deepEqual(attachable, {
-    action: "stage-command",
-    command: "/relay cloud client-token builder-kernel",
-    message: "press Enter to mint a relay token for builder-kernel",
+    action: "browse-kernel",
+    kernelId: "kernel-1",
+    machineId: "machine-1",
+    label: "builder-kernel",
   })
   assert.deepEqual(busy, {
-    action: "error",
-    message: "kernel busy-kernel is active",
+    action: "browse-kernel",
+    kernelId: "kernel-2",
+    machineId: "machine-1",
+    label: "busy-kernel",
   })
 })
 

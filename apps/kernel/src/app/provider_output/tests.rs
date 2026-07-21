@@ -71,6 +71,58 @@ fn pump_structured_test_run(
     let _ = attachment_id;
 }
 
+#[test]
+fn provider_terminal_is_transient_and_does_not_wake_meta_traces() {
+    let (app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let session = app
+        .sessions
+        .get_session(&session_id)
+        .expect("session should exist");
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let trace_store = app.metaagent_trace_subscription_store();
+    let subscription = trace_store.subscribe(
+        &session_id,
+        "meta-agent",
+        &agent_id,
+        crate::runtime::metaagent_trace::MetaagentTraceMode::Verbose,
+    );
+    let history_count = app
+        .load_session_history_entries(&session, Some(&agent_id))
+        .expect("history should load")
+        .len();
+
+    let record = ProviderOutputFanout::new(&app).fan_out(
+        &session_id,
+        &provider_run_id,
+        TerminalOutputKind::ProviderTerminal,
+        None,
+        vec![attachment_id.clone()],
+        b"\x1b[2Jfullscreen redraw",
+    );
+
+    assert_eq!(record.kind, TerminalOutputKind::ProviderTerminal);
+    assert!(record.recipient_attachment_ids.contains(&attachment_id));
+    assert!(!record
+        .recipient_attachment_ids
+        .contains(&subscription.recipient_attachment_id));
+    assert_eq!(
+        trace_store.target_activity_sequence(&session_id, &agent_id),
+        0
+    );
+    assert_eq!(
+        app.load_session_history_entries(&session, Some(&agent_id))
+            .expect("history should still load")
+            .len(),
+        history_count
+    );
+}
+
 fn pending_structured_output_record(
     session_id: &str,
     provider_run_id: &str,
@@ -318,6 +370,129 @@ fn app_side_structured_pump_defers_empty_poll_reenqueue() {
         Some(first_due_at),
         "second app-side pump before due time must not alter the poll schedule"
     );
+}
+
+#[test]
+fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let direct = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "direct user prompt",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(&session_id, direct, false)
+        .expect("direct prompt should start")
+    else {
+        panic!("direct prompt should be active");
+    };
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("queued-after-user".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(&session_id, workflow.id(), &agent_id)
+        .expect("workflow node should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            &session_id,
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            &session_id,
+            workflow.id(),
+            endpoint.id(),
+            Some("finish the workflow".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            &session_id,
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "workflow prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    let workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        &agent_id,
+        "workflow prompt",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(&session_id, workflow_prompt, false)
+        .expect("workflow prompt should queue")
+    else {
+        panic!("workflow prompt should remain queued");
+    };
+    app.complete_active_prompt(&session_id, &agent_id, Some(&provider_run_id))
+        .expect("direct prompt should complete and promote workflow prompt");
+    let promoted_prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("active prompt should load")
+        .expect("workflow prompt should be active")
+        .id()
+        .to_string();
+    crate::transport::flow_control::note_prompt_started(&mut app, &provider_run_id);
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(promoted_prompt_id.clone()));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "stale-direct-completion".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+
+    ProviderOutputPumpContext::new(&mut app)
+        .drain_finished_structured_output_jobs_for_run(
+            &session_id,
+            &provider_run_id,
+            vec![attachment_id.clone()],
+        )
+        .expect("legacy structured poll should drain");
+    ProviderOutputPumpContext::new(&mut app)
+        .settle_structured_prompt_completion(&session_id, &provider_run_id, true, false)
+        .expect("dispatching prompt should reject duplicate completion settlement");
+    std::thread::sleep(std::time::Duration::from_millis(75));
+    ProviderOutputPumpContext::new(&mut app)
+        .settle_structured_prompt_completion(&session_id, &provider_run_id, false, false)
+        .expect("pending duplicate settlement should remain rejected before delivery");
+
+    let active_prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("active prompt should load")
+        .expect("stale completion must not settle the workflow prompt")
+        .id()
+        .to_string();
+    assert_eq!(active_prompt_id, promoted_prompt_id);
 }
 
 #[test]

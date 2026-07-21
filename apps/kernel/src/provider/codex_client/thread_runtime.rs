@@ -234,8 +234,9 @@ impl CodexClient {
         next_request_id: &mut u64,
         thread_id: &str,
         turn_id: &str,
+        buffered_notifications: &mut Vec<CodexNotification>,
     ) -> Result<(), DaemonError> {
-        let _: Value = self.send_request(
+        let _: Value = self.send_request_buffering_notifications(
             socket,
             next_request_id,
             "turn/interrupt",
@@ -243,6 +244,7 @@ impl CodexClient {
                 "threadId": thread_id,
                 "turnId": turn_id,
             }),
+            buffered_notifications,
         )?;
         Ok(())
     }

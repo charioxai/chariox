@@ -10,6 +10,8 @@ import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
+import { collectPublicationTraceEvents, createPublicationTraceStreamState } from "./publication-trace-events.js"
+import { visibleWorkflowRun } from "./publication-workflow-run-visibility.js"
 import type {
   GatewayDeps,
   WorkflowPublicationConfig,
@@ -68,7 +70,10 @@ async function lookupPublicationRuntimeStatus(publication: WorkflowPublicationCo
       runtime: { reachable: true },
       watchdog_count: watchdogs.length,
       watchdogs,
-      latest_run: latestRun ? summarizeWorkflowRun(latestRun) : null,
+      latest_run: latestRun ? visibleWorkflowRun(publication, latestRun) : null,
+      latest_traces: latestRun
+        ? collectPublicationTraceEvents(publication, latestRun, createPublicationTraceStreamState())
+        : [],
       recent_runs: recentRuns.map(summarizeWorkflowRun),
       latest_output: latestWorkflowRunOutput(latestOutputRun ?? latestRun),
     }

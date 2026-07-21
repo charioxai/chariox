@@ -10,6 +10,7 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
+import { PROVIDER_TERMINAL_OUTPUT_KIND } from "@arroba/kernel-client/terminal-record-transcript"
 import {
   extractClaudeNativePromptAttachmentReferences,
   stripClaudeAttachmentMentions,
@@ -137,7 +138,15 @@ export async function submitClaudeRemoteRenderedInitialPrompt(options: {
     options.sessionId,
     options.attachmentId,
     options.providerRunId,
-    `${options.prompt}\r`,
+    options.prompt,
+  )
+  await sleep(250)
+  await sendRemoteRenderedInput(
+    options.client,
+    options.sessionId,
+    options.attachmentId,
+    options.providerRunId,
+    "\r",
   )
 }
 
@@ -406,8 +415,9 @@ function claudeRemoteRenderedTerminalBytes(
   if (!Array.isArray(records)) return chunks
   for (const record of records) {
     if (!record || typeof record !== "object") continue
-    const payload = record as { provider_run_id?: unknown; agent_id?: unknown; bytes?: unknown }
+    const payload = record as { provider_run_id?: unknown; agent_id?: unknown; kind?: unknown; bytes?: unknown }
     if (payload.provider_run_id !== providerRunId && payload.agent_id !== agentId) continue
+    if (payload.kind !== PROVIDER_TERMINAL_OUTPUT_KIND) continue
     const bytes = Array.isArray(payload.bytes) ? Buffer.from(payload.bytes as number[]) : null
     if (bytes?.length) chunks.push(bytes)
   }

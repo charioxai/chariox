@@ -35,13 +35,19 @@ pub(crate) fn classify_provider_terminal_failure_text(
     adapter_key: &str,
     text: &str,
 ) -> Option<String> {
-    if !matches!(adapter_key, "codex" | "opencode") {
+    if !matches!(adapter_key, "claude" | "codex" | "opencode") {
         return None;
     }
     if let Some(failure) = classify_provider_substitutable_failure_text(adapter_key, text) {
         return Some(failure);
     }
     let normalized = text.to_lowercase();
+    if provider_text_reports_resource_limit(&normalized) {
+        return Some(format!(
+            "Provider reported a resource limit: {}",
+            compact_provider_error_snippet(text)
+        ));
+    }
     let fatal_model_error = normalized.contains("unsupported model")
         || normalized.contains("invalid model")
         || normalized.contains("model_not_found")
@@ -69,6 +75,16 @@ pub(crate) fn classify_provider_substitutable_failure_text(
         return None;
     }
     let normalized = text.to_lowercase();
+    if !provider_text_reports_resource_limit(&normalized) {
+        return None;
+    }
+    Some(format!(
+        "Provider reported a substitutable resource limit: {}",
+        compact_provider_error_snippet(text)
+    ))
+}
+
+fn provider_text_reports_resource_limit(normalized: &str) -> bool {
     let quota_or_billing = normalized.contains("insufficient_quota")
         || normalized.contains("quota exceeded")
         || normalized.contains("exceeded your current quota")
@@ -94,13 +110,7 @@ pub(crate) fn classify_provider_substitutable_failure_text(
         || normalized.contains("run limit")
         || normalized.contains("runs limit")
         || normalized.contains("turn limit");
-    if !(quota_or_billing || rate_or_run_limit) {
-        return None;
-    }
-    Some(format!(
-        "Provider reported a substitutable resource limit: {}",
-        compact_provider_error_snippet(text)
-    ))
+    quota_or_billing || rate_or_run_limit
 }
 
 fn compact_provider_error_snippet(text: &str) -> String {
@@ -165,6 +175,23 @@ mod tests {
         )
         .expect("opencode balance error should be substitutable");
         assert!(opencode_balance_failure.contains("Insufficient balance"));
+    }
+
+    #[test]
+    fn terminal_classifier_detects_claude_usage_limit_without_marking_it_substitutable() {
+        let failure = classify_provider_terminal_failure_text(
+            "claude",
+            "You've hit your usage limit. Your limit will reset later.",
+        )
+        .expect("Claude usage limit should be terminal");
+
+        assert!(failure.contains("resource limit"));
+        assert!(failure.contains("You've hit your usage limit"));
+        assert!(classify_provider_substitutable_failure_text(
+            "claude",
+            "You've hit your usage limit."
+        )
+        .is_none());
     }
 
     #[test]

@@ -1170,9 +1170,64 @@ impl KernelRuntimeState {
             let _permit = provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
+            let structured = state
+                .owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| {
+                    state
+                        .owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                });
             loop {
+                let completion_signal =
+                    structured.then(|| state.owned.provider_store.run_actor_completion_signal());
+                let mut completion_sequence = completion_signal
+                    .as_ref()
+                    .map(|signal| signal.sequence())
+                    .unwrap_or_default();
                 let outcome = match state.enqueue_prompt_abort(&dispatch).await {
-                    Ok(()) => PromptAbortDispatchOutcome::Done,
+                    Ok(()) if !structured => PromptAbortDispatchOutcome::Done,
+                    Ok(()) => loop {
+                        let completion_signal = completion_signal
+                            .as_ref()
+                            .expect("structured abort should have a completion signal");
+                        completion_signal
+                            .wait_for_change_after(completion_sequence)
+                            .await;
+                        completion_sequence = completion_signal.sequence();
+                        state.owned.reap_structured_prompt_jobs();
+                        let prompt_is_still_cancelling = state
+                            .owned
+                            .provider_store
+                            .get_run(&dispatch.provider_run_id)
+                            .ok()
+                            .and_then(|run| run.agent_instance_id().map(str::to_string))
+                            .and_then(|agent_id| {
+                                state
+                                    .owned
+                                    .session_store
+                                    .get_session(&dispatch.session_id)
+                                    .ok()
+                                    .and_then(|session| {
+                                        state
+                                            .owned
+                                            .prompt_state_owner
+                                            .active_prompt_for_agent(&session, &agent_id)
+                                    })
+                            })
+                            .is_some_and(|prompt| {
+                                prompt.status() == crate::session::PromptStatus::Cancelling
+                            });
+                        if !prompt_is_still_cancelling {
+                            state.spawn_workflow_prompt_dispatches(
+                                state.owned.workflow_retry_blocked_claims(),
+                            );
+                            let _ = state.owned.session_snapshot(&dispatch.session_id);
+                            break PromptAbortDispatchOutcome::Done;
+                        }
+                    },
                     Err(_)
                         if state
                             .structured_prompt_io_in_flight(&dispatch.provider_run_id)

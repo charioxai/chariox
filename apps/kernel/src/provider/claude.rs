@@ -29,6 +29,7 @@ pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 const CLAUDE_ENV_OVERRIDE: &str = "ARROBA_CLAUDE_BIN";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
+const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
@@ -128,7 +129,7 @@ fn plan_claude_launch_unlocked(
         );
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
-        let mut pty_env = BTreeMap::new();
+        let mut pty_env = claude_process_env();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -174,7 +175,7 @@ fn plan_claude_launch_unlocked(
         );
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
-        let mut pty_env = BTreeMap::new();
+        let mut pty_env = claude_process_env();
         pty_env.insert(
             "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -225,7 +226,7 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     let mut native = prepare_claude_native_tui_files(request)?;
-    let mut pty_env = BTreeMap::new();
+    let mut pty_env = claude_process_env();
     pty_env.insert(
         "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),
@@ -344,6 +345,10 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
         }
     }
     names
+}
+
+fn claude_process_env() -> BTreeMap<String, String> {
+    BTreeMap::from([(CLAUDE_DISABLE_AUTOUPDATER_ENV.to_string(), "1".to_string())])
 }
 
 fn resolve_candidate(candidate: PathBuf, treat_as_literal_path: bool) -> Option<PathBuf> {
@@ -549,14 +554,16 @@ mod tests {
         );
         assert_eq!(
             catalog.default.get("claude-headless").map(String::as_str),
-            Some("claude-sonnet-4-6")
+            Some("sonnet")
         );
         assert_eq!(
             catalog.default.get("claude-p").map(String::as_str),
-            Some("claude-sonnet-4-6")
+            Some("sonnet")
         );
         let models = &catalog.all[0].models;
-        assert!(!models.contains_key("sonnet"));
+        assert!(models.contains_key("haiku"));
+        assert!(models.contains_key("sonnet"));
+        assert!(models.contains_key("opus"));
         assert!(models.contains_key("claude-sonnet-4-6"));
         assert_eq!(
             models
@@ -617,6 +624,13 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "ANTHROPIC_API_KEY"));
+        assert_eq!(
+            launch
+                .pty_env
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
@@ -647,6 +661,13 @@ mod tests {
             Some("stdio://claude")
         );
         assert_eq!(launch.pty_args.first().map(String::as_str), Some("-p"));
+        assert_eq!(
+            launch
+                .pty_env
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
         assert!(launch
             .pty_args
             .windows(2)
@@ -694,6 +715,13 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
         assert!(launch.pty_env.contains_key("ARROBA_CLAUDE_SETTINGS_FILE"));
+        assert_eq!(
+            launch
+                .pty_env
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
         let state_path = config_dir.join(".claude.json");
         assert_eq!(
             fs::read_to_string(&state_path).expect("headless state should exist"),
@@ -850,6 +878,13 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
+        assert_eq!(
+            launch
+                .pty_env
+                .get("DISABLE_AUTOUPDATER")
+                .map(String::as_str),
+            Some("1")
+        );
         let config_arg = launch
             .pty_args
             .windows(2)

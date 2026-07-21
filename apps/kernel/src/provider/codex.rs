@@ -14,6 +14,7 @@ mod catalog_endpoint;
 mod mcp_config;
 mod ports;
 
+pub(crate) use catalog_endpoint::lease_codex_catalog_endpoint;
 pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
 
 const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";

@@ -256,6 +256,16 @@ test("publication trace events honor per-node level policy", () => {
   const workflowRun = {
     id: "run-1",
     status: "Completed",
+    publication_invocation: {
+      publication_id: "publication-1",
+      invocation_id: "invocation-1",
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      input: { prompt: "Build the requested dashboard" },
+      artifacts: [],
+      mode: "async" as const,
+      caller: {},
+    },
     node_runs: [{
       id: "run-node-a",
       node_id: "node-a",
@@ -295,7 +305,7 @@ test("publication trace events honor per-node level policy", () => {
           arguments_json: "{\"q\":\"d\"}",
           result_json: "{\"ok\":true}",
           ok: true,
-          timestamp_ms: 42,
+          timestamp_ms: 52,
         }],
       },
       completed_at_ms: 50,
@@ -346,25 +356,29 @@ test("publication trace events honor per-node level policy", () => {
   const secondPass = collectPublicationTraceEvents(publication, workflowRun, state)
 
   assert.deepEqual(firstPass.map((event) => [event.node_id, event.agent_alias, event.level, event.message]), [
-    ["node-a", "summary", "output_summary", "A completion"],
-    ["node-b", "researcher", "output_summary", "B completion"],
+    ["node-a", "summary", "user_prompt", "Build the requested dashboard"],
+    ["node-b", "researcher", "user_prompt", "Build the requested dashboard"],
+    ["node-c", "planner", "user_prompt", "Build the requested dashboard"],
+    ["node-d", "builder", "user_prompt", "Build the requested dashboard"],
     ["node-b", "researcher", "assistant_messages", "B handoff"],
     ["node-b", "researcher", "assistant_messages", "B assistant output"],
-    ["node-c", "planner", "output_summary", "C summary"],
+    ["node-c", "planner", "thinking", "C thinking"],
     ["node-c", "planner", "assistant_messages", "C handoff"],
     ["node-c", "planner", "assistant_messages", "{\"message\":{\"kind\":\"html\",\"html\":\"<main>C assistant output</main>\"}}"],
-    ["node-c", "planner", "thinking", "C thinking"],
-    ["node-d", "builder", "output_summary", "D summary"],
+    ["node-d", "builder", "thinking", "D thinking"],
     ["node-d", "builder", "assistant_messages", "D handoff"],
     ["node-d", "builder", "assistant_messages", "D assistant output"],
-    ["node-d", "builder", "thinking", "D thinking"],
     ["node-d", "builder", "tool_use", "lookup ok"],
+    ["node-a", "summary", "output_summary", "A completion"],
+    ["node-b", "researcher", "output_summary", "B completion"],
+    ["node-c", "planner", "output_summary", "C summary"],
+    ["node-d", "builder", "output_summary", "D summary"],
   ])
   assert.equal(firstPass.some((event) => event.node_id === "node-e"), false)
   assert.equal(JSON.stringify(firstPass).includes("TRACE_SUMMARY B hidden"), false)
   assert.match(JSON.stringify(firstPass), /B assistant output/)
   assert.doesNotMatch(JSON.stringify(firstPass), /arguments_json|result_json/)
-  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+  assert.deepEqual(firstPass.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
   assert.deepEqual(secondPass, [])
 })
 
@@ -372,6 +386,17 @@ test("visible workflow run hides unexposed trace levels", () => {
   const workflowRun = {
     id: "run-visibility",
     status: "Completed",
+    created_at_ms: 9,
+    publication_invocation: {
+      publication_id: "publication-1",
+      invocation_id: "request-1",
+      transport: "human_http",
+      endpoint_id: "endpoint-1",
+      input: { prompt: "TRACE_PROMPT visible prompt" },
+      artifacts: [],
+      mode: "async" as const,
+      caller: {},
+    },
     final_output: { message: "TRACE_FINAL visible" },
     intermediate_outputs: [{ id: "partial-1", output: { message: "partial visible" }, valid: true }],
     node_runs: [{
@@ -423,4 +448,26 @@ test("visible workflow run hides unexposed trace levels", () => {
   assert.doesNotMatch(exposedText, /arguments_json|result_json|TRACE_TOOL/)
   assert.doesNotMatch(exposedText, /TRACE_SUMMARY hidden handoff/)
   assert.match(exposedText, /TRACE_ASSISTANT hidden/)
+  assert.match(exposedText, /"message_type":"user_prompt"/)
+  assert.match(exposedText, /TRACE_PROMPT visible prompt/)
+})
+
+test("publication trace events omit empty output summaries", () => {
+  const events = collectPublicationTraceEvents({
+    ...baseConfig,
+    trace_exposure: { nodes: { "node-empty": ["output_summary"] } },
+  }, {
+    id: "run-empty-summary",
+    status: "Stopped",
+    node_runs: [{
+      id: "run-node-empty",
+      node_id: "node-empty",
+      agent_id: "agent-empty",
+      status: "Stopped",
+      summary: "   ",
+      completion: { summary: "" },
+    }],
+  }, createPublicationTraceStreamState())
+
+  assert.deepEqual(events, [])
 })

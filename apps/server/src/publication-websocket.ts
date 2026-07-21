@@ -65,7 +65,7 @@ type WebSocketConnectionState = {
   started: boolean
 }
 
-export const DEFAULT_WEBSOCKET_INVOKE_PATH = "/.well-known/arroba/publication/ws"
+export const DEFAULT_WEBSOCKET_INVOKE_PATH = "/"
 
 export function websocketInvokePath(publication: WorkflowPublicationConfig) {
   if (publication.transport === "websocket_json") {

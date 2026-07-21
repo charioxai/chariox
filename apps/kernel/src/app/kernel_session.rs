@@ -188,7 +188,24 @@ impl<'a> KernelSessionService<'a> {
             );
         }
 
-        self.app.sync_focused_provider_run_if_idle(&session_id)?;
+        if let Err(error) = self.app.sync_focused_provider_run_if_idle(&session_id) {
+            match error {
+                DaemonError::ProviderRunNotFound { provider_run_id } => {
+                    self.app
+                        .sessions_mut()
+                        .set_active_provider_run(&session_id, None)?;
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "cleared stale provider run while attaching session",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "provider_run_id": provider_run_id,
+                        }),
+                    );
+                }
+                error => return Err(error),
+            }
+        }
 
         crate::logging::info_with_fields(
             "daemon.session",

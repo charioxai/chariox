@@ -112,6 +112,78 @@ fn workflow_design_create_generates_default_alias() {
 }
 
 #[test]
+fn workflow_design_endpoints_enforce_canonical_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("endpoint-aliases".to_string()))
+        .expect("workflow should be created");
+
+    let invalid = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-invalid".to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some("entry-1.1".to_string()),
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("design endpoint aliases must use the canonical alias contract");
+    assert!(matches!(
+        invalid,
+        DaemonError::InvalidWorkflowEndpointAlias { .. }
+    ));
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-valid".to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some(" Entry-1-1 ".to_string()),
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid design endpoint alias should apply");
+    assert_eq!(
+        created
+            .endpoint("endpoint-valid")
+            .and_then(|endpoint| endpoint.alias()),
+        Some("entry-1-1")
+    );
+
+    let invalid_update = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: "endpoint-valid".to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: Some(Some("entry-2.1".to_string())),
+                    entry_node_id: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("design endpoint updates must use the canonical alias contract");
+    assert!(matches!(
+        invalid_update,
+        DaemonError::InvalidWorkflowEndpointAlias { .. }
+    ));
+}
+
+#[test]
 fn workflow_design_create_and_update_persist_workflow_prompt() {
     let mut service = SessionService::new(&test_config());
     let session = service

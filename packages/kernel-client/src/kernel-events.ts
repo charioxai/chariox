@@ -90,6 +90,8 @@ export type KernelEvent =
   | {
     event: "waiting_room_rows_changed"
     inventory_version: string
+    structural_version: string
+    activity_revision: string
     schema_version: number
     generated_at_ms: number
     launch_target?: {

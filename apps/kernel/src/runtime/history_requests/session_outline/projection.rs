@@ -72,7 +72,7 @@ fn outline_blob_from_event(event: HistoryEvent) -> Option<SessionHistoryOutlineB
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
         kind: entry.kind,
-        title: blob_title(entry.kind, &entry.text),
+        title: blob_title(entry.kind),
         summary: blob_summary(entry.kind, &entry.text),
         sequence_start: event.sequence,
         sequence_end: event.sequence,
@@ -157,7 +157,14 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
         kind: first_entry.kind,
-        title: format!("{} trace entries", events.len()),
+        title: grouped_blob_title(
+            first_entry.kind,
+            if first_entry.kind == SessionHistoryEntryKind::ProviderTool {
+                unique_provider_tool_call_count(events)
+            } else {
+                events.len()
+            },
+        ),
         summary: format!("{} entries, {} chars", events.len(), total_chars),
         sequence_start,
         sequence_end,
@@ -165,6 +172,49 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         total_chars,
         timestamp_ms,
     })
+}
+
+fn unique_provider_tool_call_count(events: &[&HistoryEvent]) -> usize {
+    events
+        .iter()
+        .map(|event| {
+            let entry = event.to_session_history_entry();
+            let call_id = entry
+                .as_ref()
+                .and_then(|entry| entry.merge_key.as_deref())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    entry.as_ref().and_then(|entry| {
+                        let value = serde_json::from_str::<serde_json::Value>(&entry.text).ok()?;
+                        value
+                            .get("id")
+                            .or_else(|| value.get("call_id"))
+                            .and_then(|value| value.as_str())
+                            .filter(|value| !value.trim().is_empty())
+                            .map(str::to_string)
+                    })
+                })
+                .unwrap_or_else(|| format!("history-event:{}", event.sequence));
+            (event.provider_run_id.clone(), call_id)
+        })
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn grouped_blob_title(kind: SessionHistoryEntryKind, entry_count: usize) -> String {
+    match kind {
+        SessionHistoryEntryKind::ProviderTool => format!(
+            "{entry_count} {} called",
+            if entry_count == 1 { "tool" } else { "tools" },
+        ),
+        SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
+        SessionHistoryEntryKind::ProviderError => "error".to_string(),
+        SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
+        SessionHistoryEntryKind::Notice => "note".to_string(),
+        SessionHistoryEntryKind::ProviderOutput => "assistant output".to_string(),
+        SessionHistoryEntryKind::UserPrompt => "prompt".to_string(),
+    }
 }
 
 pub(super) fn page_entry_from_event(event: HistoryEvent) -> Option<SessionHistoryPageEntry> {
@@ -259,9 +309,9 @@ pub(super) fn parse_blob_id(blob_id: &str) -> Result<(u64, u64), DaemonError> {
     })
 }
 
-fn blob_title(kind: SessionHistoryEntryKind, text: &str) -> String {
+fn blob_title(kind: SessionHistoryEntryKind) -> String {
     match kind {
-        SessionHistoryEntryKind::ProviderTool => tool_title(text),
+        SessionHistoryEntryKind::ProviderTool => grouped_blob_title(kind, 1),
         SessionHistoryEntryKind::ProviderReasoning => "thinking".to_string(),
         SessionHistoryEntryKind::ProviderError => "error".to_string(),
         SessionHistoryEntryKind::ProviderStatus => "status".to_string(),
@@ -295,25 +345,6 @@ fn compact_blob_summary(text: &str) -> String {
         .collect();
     summary.push_str("...");
     summary
-}
-
-fn tool_title(text: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
-        return "tool".to_string();
-    };
-    let tool = value
-        .get("tool")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("tool");
-    let status = value
-        .get("status")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty());
-    match status {
-        Some(status) => format!("{tool} · {}", status.to_uppercase()),
-        None => tool.to_string(),
-    }
 }
 
 fn tool_summary(text: &str) -> Option<String> {
@@ -352,5 +383,93 @@ fn truncate_single_line(line: &str) -> String {
         format!("{truncated}...")
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
+    use crate::terminal::TerminalOutputKind;
+
+    #[test]
+    fn grouped_blob_titles_are_user_facing() {
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderTool, 2),
+            "2 tools called"
+        );
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderTool, 1),
+            "1 tool called"
+        );
+        assert_eq!(
+            grouped_blob_title(SessionHistoryEntryKind::ProviderOutput, 4),
+            "assistant output"
+        );
+    }
+
+    #[test]
+    fn provider_tool_blob_counts_running_and_completed_records_as_one_call() {
+        let running = provider_tool_event(1, "call-1", "running");
+        let completed = provider_tool_event(2, "call-1", "completed");
+
+        let blob = outline_blob_from_event_group(&[&running, &completed]).expect("tool blob");
+
+        assert_eq!(blob.entry_count, 2);
+        assert_eq!(blob.title, "1 tool called");
+        assert_eq!(
+            blob.summary,
+            format!("2 entries, {} chars", blob.total_chars)
+        );
+    }
+
+    #[test]
+    fn provider_tool_blob_counts_distinct_calls_once_each() {
+        let first_running = provider_tool_event(1, "call-1", "running");
+        let first_completed = provider_tool_event(2, "call-1", "completed");
+        let second_running = provider_tool_event(3, "call-2", "running");
+        let second_completed = provider_tool_event(4, "call-2", "completed");
+
+        let blob = outline_blob_from_event_group(&[
+            &first_running,
+            &first_completed,
+            &second_running,
+            &second_completed,
+        ])
+        .expect("tool blob");
+
+        assert_eq!(blob.entry_count, 4);
+        assert_eq!(blob.title, "2 tools called");
+        assert_eq!(
+            blob.summary,
+            format!("4 entries, {} chars", blob.total_chars)
+        );
+    }
+
+    fn provider_tool_event(sequence: u64, call_id: &str, status: &str) -> HistoryEvent {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "provider-run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderTool,
+                Some(call_id.to_string()),
+                serde_json::json!({
+                    "id": call_id,
+                    "tool": "bash",
+                    "status": status,
+                })
+                .to_string(),
+            ),
+            HistoryEventTurnContext {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                turn_id: Some("turn-1".to_string()),
+                prompt_id: Some("prompt-1".to_string()),
+                provider_run_id: Some("provider-run-1".to_string()),
+                ..HistoryEventTurnContext::default()
+            },
+        )
     }
 }

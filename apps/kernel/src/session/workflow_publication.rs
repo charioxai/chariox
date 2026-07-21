@@ -500,6 +500,18 @@ impl WorkflowPublicationDefinition {
         self.updated_at_ms = unix_epoch_ms();
     }
 
+    pub fn set_runtime_run_observability(
+        &mut self,
+        latest_run: Option<Value>,
+        recent_runs: Vec<Value>,
+        latest_output: Option<Value>,
+    ) {
+        self.latest_run = latest_run;
+        self.recent_runs = recent_runs;
+        self.latest_output = latest_output;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
     pub fn trace_exposure(&self) -> Option<&Value> {
         self.trace_exposure.as_ref()
     }

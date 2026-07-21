@@ -53,37 +53,9 @@ impl KernelRuntimeOwnedState {
             .iter()
             .filter(|edge| edge.from_node_id() == node_id)
             .map(|edge| {
-                let target_label = workflow
-                    .node(edge.to_node_id())
-                    .map(|node| node.public_label())
-                    .filter(|label| !label.trim().is_empty());
-                let target_instructions = workflow
-                    .node(edge.to_node_id())
-                    .and_then(|node| node.instructions())
-                    .map(compact_workflow_edge_contract_instructions)
-                    .filter(|instructions| !instructions.is_empty());
-                let mut line = match target_label {
-                    Some(label) => {
-                        format!("- edge {} -> {} ({label})", edge.id(), edge.to_node_id())
-                    }
-                    None => format!("- edge {} -> {}", edge.id(), edge.to_node_id()),
-                };
-                if let Some(instructions) = target_instructions {
-                    let escaped =
-                        serde_json::to_string(&instructions).unwrap_or_else(|_| "\"\"".to_string());
-                    line.push_str(&format!(", target_instructions: {escaped}"));
-                }
-                if let Some(schema_ref) = edge.handoff_schema_ref() {
-                    line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));
-                }
-                if let Some(validation_policy) = edge.validation_policy() {
-                    let validation_policy = match validation_policy {
-                        crate::session::WorkflowHandoffValidationPolicy::Warn => "warn",
-                        crate::session::WorkflowHandoffValidationPolicy::Halt => "halt",
-                    };
-                    line.push_str(&format!(", validation_policy: {validation_policy}"));
-                }
-                line
+                crate::scheduler::prompt_injection::workflow_outgoing_edge_contract_line(
+                    &workflow, edge,
+                )
             })
             .collect::<Vec<_>>();
         if lines.is_empty() {
@@ -152,6 +124,7 @@ impl KernelRuntimeOwnedState {
                             turn_index,
                             max_turns: node.max_turns(),
                             can_complete_workflow_run: node.can_complete_workflow_run(),
+                            run_output_contract: crate::scheduler::prompt_injection::workflow_run_output_contract_block(&workflow),
                             can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
                             wait_for_all_inputs: node.wait_for_all_inputs(),
                         }
@@ -255,17 +228,4 @@ impl KernelRuntimeOwnedState {
         }
         Some(path.to_string_lossy().to_string())
     }
-}
-
-fn compact_workflow_edge_contract_instructions(instructions: &str) -> String {
-    const MAX_CHARS: usize = 240;
-    let compact = instructions
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if compact.chars().count() <= MAX_CHARS {
-        return compact;
-    }
-    let truncated = compact.chars().take(MAX_CHARS).collect::<String>();
-    format!("{truncated}...")
 }

@@ -83,7 +83,7 @@ const orchestrator = workflow.node({
 
 const synthesizer = workflow.node({
   handle: "synthesizer",
-  agent: workflow.newAgent({ alias: "orchestrated-synthesizer", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "orchestrated-synthesizer", provider: "claude", model: "sonnet" }),
   publicLabel: "Synthesizer",
   instructions: `Combine orchestration context and all ${params.worker_count} worker result${params.worker_count === 1 ? "" : "s"} into final output.`,
   canCompleteWorkflowRun: true,
@@ -96,7 +96,7 @@ for (let index = 0; index < params.worker_count; index += 1) {
   const handle = params.worker_count === 1 ? "worker" : `worker_${pad2(number)}`;
   const worker = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle === "worker" ? "orchestrated-worker" : handle.replaceAll("_", "-"), provider: "opencode", model: "default" }),
+    agent: workflow.newAgent({ alias: handle === "worker" ? "orchestrated-worker" : handle.replaceAll("_", "-"), provider: "opencode", model: "kimi-k2.6" }),
     publicLabel: params.worker_count === 1 ? "Worker" : `Worker ${number}`,
     instructions: "Complete the assigned subtask and hand the result to the synthesizer.",
     canvas: { x: 300, y: branchY(index, params.worker_count) },

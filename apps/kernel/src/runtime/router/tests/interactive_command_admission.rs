@@ -1,5 +1,5 @@
 use super::*;
-use crate::local::GetSessionHistoryOutlineRequest;
+use crate::local::{GetSessionHistoryOutlineRequest, UpdateQueuedPromptRequest};
 
 fn run_async_with_large_test_stack<F, Fut>(name: &'static str, test: F)
 where
@@ -133,6 +133,42 @@ async fn queued_prompt_cancel_routes_through_interactive_dispatch_and_removes_st
 }
 
 #[tokio::test]
+async fn queued_user_prompt_update_routes_through_interactive_dispatch() {
+    let fixture = queued_prompt_router_fixture("update");
+    let request = LocalDaemonRequest::UpdateQueuedPrompt(UpdateQueuedPromptRequest {
+        session_id: fixture.session_id.clone(),
+        attachment_id: fixture.attachment_id.clone(),
+        target_agent_id: fixture.agent_id.clone(),
+        prompt_id: fixture.queued_prompt_id.clone(),
+        prompt: "updated queued user prompt".to_string(),
+    });
+    let command =
+        KernelCommand::from_local_request("cmd-update-queued-prompt", None, None, &request);
+
+    let response = fixture
+        .router
+        .dispatch(command, request)
+        .await
+        .expect("queued user prompt update should route through interactive dispatch");
+
+    let LocalDaemonResponse::QueuedPromptUpdated {
+        prompt, session, ..
+    } = response
+    else {
+        panic!("unexpected queued prompt update response");
+    };
+    assert_eq!(prompt.id(), fixture.queued_prompt_id);
+    assert_eq!(prompt.prompt(), "updated queued user prompt");
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(&fixture.agent_id)
+            .and_then(|queued| queued.front())
+            .map(|queued| queued.prompt()),
+        Some("updated queued user prompt")
+    );
+}
+
+#[tokio::test]
 async fn queued_prompt_steer_routes_through_interactive_dispatch_and_removes_strip_state() {
     let fixture = queued_prompt_router_fixture("steer");
     let request = LocalDaemonRequest::SteerQueuedPrompt(SteerQueuedPromptRequest {
@@ -201,6 +237,54 @@ async fn queued_prompt_steer_rejects_external_active_prompt() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn queued_workflow_prompt_rejects_manual_update_and_cancel() {
+    let update_fixture = queued_workflow_prompt_router_fixture("workflow-update");
+    let update_request = LocalDaemonRequest::UpdateQueuedPrompt(UpdateQueuedPromptRequest {
+        session_id: update_fixture.session_id.clone(),
+        attachment_id: update_fixture.attachment_id.clone(),
+        target_agent_id: update_fixture.agent_id.clone(),
+        prompt_id: update_fixture.queued_prompt_id.clone(),
+        prompt: "manually rewritten workflow turn".to_string(),
+    });
+    let update_command = KernelCommand::from_local_request(
+        "cmd-update-workflow-prompt",
+        None,
+        None,
+        &update_request,
+    );
+    let update_error = update_fixture
+        .router
+        .dispatch(update_command, update_request)
+        .await
+        .expect_err("workflow queued prompt should reject manual update");
+    assert!(update_error
+        .to_string()
+        .contains("workflow queued prompts cannot be updated manually"));
+
+    let cancel_fixture = queued_workflow_prompt_router_fixture("workflow-cancel");
+    let cancel_request = LocalDaemonRequest::CancelQueuedPrompt(CancelQueuedPromptRequest {
+        session_id: cancel_fixture.session_id.clone(),
+        attachment_id: cancel_fixture.attachment_id.clone(),
+        target_agent_id: cancel_fixture.agent_id.clone(),
+        prompt_id: cancel_fixture.queued_prompt_id.clone(),
+    });
+    let cancel_command = KernelCommand::from_local_request(
+        "cmd-cancel-workflow-prompt",
+        None,
+        None,
+        &cancel_request,
+    );
+    let cancel_error = cancel_fixture
+        .router
+        .dispatch(cancel_command, cancel_request)
+        .await
+        .expect_err("workflow queued prompt should reject manual cancellation");
+    assert!(cancel_error
+        .to_string()
+        .contains("workflow queued prompts cannot be cancelled manually"));
 }
 
 #[tokio::test]
@@ -292,12 +376,24 @@ struct QueuedPromptRouterFixture {
 }
 
 fn queued_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
-    queued_prompt_router_fixture_with_origin(label, PromptOrigin::Arroba)
+    queued_prompt_router_fixture_with_options(label, PromptOrigin::Arroba, false)
+}
+
+fn queued_workflow_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
+    queued_prompt_router_fixture_with_options(label, PromptOrigin::Arroba, true)
 }
 
 fn queued_prompt_router_fixture_with_origin(
     label: &str,
     active_prompt_origin: PromptOrigin,
+) -> QueuedPromptRouterFixture {
+    queued_prompt_router_fixture_with_options(label, active_prompt_origin, false)
+}
+
+fn queued_prompt_router_fixture_with_options(
+    label: &str,
+    active_prompt_origin: PromptOrigin,
+    workflow_owned_queued_prompt: bool,
 ) -> QueuedPromptRouterFixture {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -337,13 +433,16 @@ fn queued_prompt_router_fixture_with_origin(
     else {
         panic!("first prompt should start");
     };
-    let queued_prompt = PromptQueueItem::new(
+    let mut queued_prompt = PromptQueueItem::new(
         app.sessions_mut().reserve_prompt_id(),
         attachment.id(),
         agent.id(),
         "queued prompt",
         PromptStatus::Queued,
     );
+    if workflow_owned_queued_prompt {
+        queued_prompt = queued_prompt.with_workflow_context("workflow-run-1", "node-run-1");
+    }
     let PromptSubmissionOutcome::Queued {
         prompt: queued_prompt,
     } = app

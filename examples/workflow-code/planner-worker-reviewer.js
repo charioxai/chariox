@@ -138,7 +138,7 @@ If the reviewer routes revision feedback back to you on reviewer_to_worker, appl
 
 const reviewer = workflow.node({
   handle: "reviewer",
-  agent: workflow.newAgent({ alias: "goal-reviewer", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "goal-reviewer", provider: "claude", model: "sonnet" }),
   publicLabel: "Reviewer",
   instructions: `Review only the worker's latest implementation result for the current planner assignment.
 

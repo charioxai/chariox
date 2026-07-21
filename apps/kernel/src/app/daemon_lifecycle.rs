@@ -128,11 +128,13 @@ impl DaemonApp {
             let app = app.lock().await;
             app.relay_client_state()
         };
-        let relay_task = tokio::spawn(crate::transport::relay_client::run_daemon_relay_connector(
-            Arc::clone(&app),
-            relay_state,
-            shutdown_rx.clone(),
-        ));
+        let relay_task = tokio::spawn(
+            crate::transport::relay_client::run_daemon_relay_connector_with_router(
+                Arc::clone(&router),
+                relay_state,
+                shutdown_rx.clone(),
+            ),
+        );
         runtime_state.spawn_durable_restart_recovery();
         let external_provider_session_discovery_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(

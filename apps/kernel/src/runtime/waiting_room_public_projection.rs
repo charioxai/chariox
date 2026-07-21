@@ -217,20 +217,27 @@ fn build_waiting_room_public_snapshot_from_summaries(
         .map(filter_remote_kernel_product_providers)
         .collect::<Vec<_>>();
     let launch_target = infer_waiting_room_launch_target();
-    let inventory_version = waiting_room_inventory_version(
+    let structural_version = waiting_room_structural_version(
         &sessions,
         &external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor.as_deref(),
+        launch_target.as_ref(),
+    )?;
+    let activity_revision = waiting_room_activity_revision(&sessions, &external_provider_sessions)?;
+    let inventory_version = waiting_room_inventory_version(
+        &structural_version,
+        &activity_revision,
         &relay_status,
         &remote_machines,
         &remote_kernels,
         &terminals,
-        launch_target.as_ref(),
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 9,
+        schema_version: 10,
         inventory_version,
+        structural_version,
+        activity_revision,
         generated_at_ms,
         sessions,
         external_provider_sessions,
@@ -321,29 +328,143 @@ fn compute_waiting_room_launch_target(
 }
 
 fn waiting_room_inventory_version(
-    sessions: &[WaitingRoomPublicSessionSummary],
-    external_provider_sessions: &[ExternalProviderSessionRecord],
-    external_provider_sessions_has_more: bool,
-    external_provider_sessions_next_cursor: Option<&str>,
+    structural_version: &str,
+    activity_revision: &str,
     relay_status: &RelayStatus,
     remote_machines: &[RemoteMachineRecord],
     remote_kernels: &[RelayKernelPresence],
     terminals: &[TerminalRecord],
-    launch_target: Option<&WaitingRoomLaunchTarget>,
 ) -> Result<String, DaemonError> {
     let payload = serde_json::to_vec(&serde_json::json!({
-        "sessions": sessions,
-        "external_provider_sessions": external_provider_sessions,
-        "external_provider_sessions_has_more": external_provider_sessions_has_more,
-        "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
+        "structural_version": structural_version,
+        "activity_revision": activity_revision,
         "relay_status": relay_status,
         "remote_machines": remote_machines,
         "remote_kernels": remote_kernels,
         "terminals": terminals,
-        "launch_target": launch_target,
     }))
     .map_err(|error| DaemonError::LocalTransport {
         operation: "serialize waiting room inventory snapshot",
+        message: error.to_string(),
+    })?;
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
+}
+
+fn waiting_room_structural_version(
+    sessions: &[WaitingRoomPublicSessionSummary],
+    external_provider_sessions: &[ExternalProviderSessionRecord],
+    external_provider_sessions_has_more: bool,
+    external_provider_sessions_next_cursor: Option<&str>,
+    launch_target: Option<&WaitingRoomLaunchTarget>,
+) -> Result<String, DaemonError> {
+    let mut sessions =
+        serde_json::to_value(sessions).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize waiting room structural inventory",
+            message: error.to_string(),
+        })?;
+    if let Some(sessions) = sessions.as_array_mut() {
+        for session in sessions {
+            let Some(session) = session.as_object_mut() else {
+                continue;
+            };
+            session.remove("activity");
+            session.remove("last_used_at_ms");
+            session.remove("last_prompt_sent_at_ms");
+            session.remove("connected_cli_count");
+            if let Some(agents) = session
+                .get_mut("agents")
+                .and_then(|value| value.as_array_mut())
+            {
+                for agent in agents {
+                    if let Some(agent) = agent.as_object_mut() {
+                        agent.remove("activity");
+                        agent.remove("last_prompt_sent_at_ms");
+                        agent.remove("metaagent_event_counts");
+                    }
+                }
+            }
+            if let Some(workflows) = session
+                .get_mut("workflows")
+                .and_then(|value| value.as_array_mut())
+            {
+                for workflow in workflows {
+                    if let Some(workflow) = workflow.as_object_mut() {
+                        workflow.remove("activity");
+                    }
+                }
+            }
+        }
+    }
+    let mut external_provider_sessions =
+        serde_json::to_value(external_provider_sessions).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "serialize waiting room structural inventory",
+                message: error.to_string(),
+            }
+        })?;
+    if let Some(external_sessions) = external_provider_sessions.as_array_mut() {
+        for external_session in external_sessions {
+            if let Some(external_session) = external_session.as_object_mut() {
+                external_session.remove("last_modified_at_ms");
+            }
+        }
+    }
+    hash_waiting_room_version(
+        "serialize waiting room structural inventory",
+        &serde_json::json!({
+            "sessions": sessions,
+            "external_provider_sessions": external_provider_sessions,
+            "external_provider_sessions_has_more": external_provider_sessions_has_more,
+            "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
+            "launch_target": launch_target,
+        }),
+    )
+}
+
+fn waiting_room_activity_revision(
+    sessions: &[WaitingRoomPublicSessionSummary],
+    external_provider_sessions: &[ExternalProviderSessionRecord],
+) -> Result<String, DaemonError> {
+    let activity = sessions
+        .iter()
+        .map(|session| {
+            serde_json::json!({
+                "id": session.id,
+                "last_used_at_ms": session.last_used_at_ms,
+                "last_prompt_sent_at_ms": session.last_prompt_sent_at_ms,
+                "connected_cli_count": session.connected_cli_count,
+                "activity": session.activity,
+                "agents": session.agents.iter().map(|agent| serde_json::json!({
+                    "id": agent.id,
+                    "last_prompt_sent_at_ms": agent.last_prompt_sent_at_ms,
+                    "activity": agent.activity,
+                    "metaagent_event_counts": agent.metaagent_event_counts,
+                })).collect::<Vec<_>>(),
+                "workflows": session.workflows.iter().map(|workflow| serde_json::json!({
+                    "id": workflow.id,
+                    "activity": workflow.activity,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    hash_waiting_room_version(
+        "serialize waiting room activity inventory",
+        &serde_json::json!({
+            "sessions": activity,
+            "external_provider_sessions": external_provider_sessions.iter().map(|session| serde_json::json!({
+                "external_session_id": session.external_session_id,
+                "last_modified_at_ms": session.last_modified_at_ms,
+            })).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+fn hash_waiting_room_version(
+    operation: &'static str,
+    value: &serde_json::Value,
+) -> Result<String, DaemonError> {
+    let payload = serde_json::to_vec(value).map_err(|error| DaemonError::LocalTransport {
+        operation,
         message: error.to_string(),
     })?;
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(payload)))
@@ -595,7 +716,8 @@ mod tests {
     use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
-        build_waiting_room_public_snapshot, waiting_room_session_summaries,
+        build_waiting_room_public_snapshot, waiting_room_activity_revision,
+        waiting_room_session_summaries, waiting_room_structural_version,
         WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{RuntimeSession, WorkflowDefinition};
@@ -864,7 +986,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 9);
+        assert_eq!(snapshot.schema_version, 10);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
@@ -874,5 +996,51 @@ mod tests {
         assert!(snapshot.remote_kernels[0].available_providers.is_empty());
         assert_eq!(snapshot.terminals.len(), 1);
         assert!(!snapshot.inventory_version.is_empty());
+        assert!(!snapshot.structural_version.is_empty());
+        assert!(!snapshot.activity_revision.is_empty());
+    }
+
+    #[test]
+    fn waiting_room_versions_separate_structure_from_activity() {
+        let metaagent_events = MetaagentEventStore::default();
+        let mut session = RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        let initial = waiting_room_session_summaries(
+            vec![session.clone()],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        session.note_prompt_sent_at("missing-agent", 42);
+        let activity_only = waiting_room_session_summaries(
+            vec![session.clone()],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_eq!(
+            waiting_room_structural_version(&initial, &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&activity_only, &[], false, None, None).unwrap(),
+        );
+        assert_ne!(
+            waiting_room_activity_revision(&initial, &[]).unwrap(),
+            waiting_room_activity_revision(&activity_only, &[]).unwrap(),
+        );
+
+        session.set_alias(Some("renamed".to_string()));
+        let structural_change = waiting_room_session_summaries(
+            vec![session],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_ne!(
+            waiting_room_structural_version(&activity_only, &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&structural_change, &[], false, None, None).unwrap(),
+        );
     }
 }

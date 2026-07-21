@@ -237,7 +237,7 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
     })
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
-    assert.match(response.body, /class="split-viewer"/)
+    assert.match(response.body, /class="publication-viewer has-traces has-composer"/)
     assert.match(response.body, /run-shopping/)
     assert.deepEqual(seenInput, { prompt: "1 kg bananas" })
     const proof = seenProof as Record<string, unknown> | null

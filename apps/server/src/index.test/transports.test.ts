@@ -46,7 +46,12 @@ import {
 import {
   configurePublicationCallerClaimsRuntimeForTests,
 } from "../publication-caller-claims.js"
-import { publicationViewerPage } from "../publication-viewer.js"
+import {
+  publicationViewerPage,
+  publicationViewerResultPage,
+  viewerComposerEnabled,
+  viewerTraceNodes,
+} from "../publication-viewer.js"
 
 test("publication viewer preserves canonical and legacy Cloud ingress prefixes", () => {
   const html = publicationViewerPage({
@@ -78,7 +83,52 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     "/publication-ingress/demo",
   )
   assert.equal(resolvePrefix({ location: { pathname: "/final/hello" } }, viewerConfig), "")
-  assert.match(html, /window\.location\.href = publicationUrl\(viewerConfig\.humanPromptTarget\.prefix/)
+  assert.equal(
+    resolvePrefix({ location: { pathname: "/.well-known/arroba/publication/viewer/invocations/request-1" } }, viewerConfig),
+    "",
+  )
+  assert.match(html, /"showComposer":false/)
+
+  const namedRouteHtml = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/viewer/:prompt/result",
+    methods: ["GET"],
+  })
+  const namedRouteConfig = JSON.parse(
+    namedRouteHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.deepEqual(namedRouteConfig.humanPromptTarget, {
+    prefix: "/viewer/",
+    suffix: "/result",
+  })
+
+  const invocationHtml = publicationViewerPage({
+    ...baseConfig,
+    transport: "human_http",
+  }, {
+    result: { accepted: true, queued: true },
+    invocationRequestId: "request-1",
+  })
+  const invocationConfig = JSON.parse(
+    invocationHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.equal(
+    invocationConfig.permalink,
+    "/.well-known/arroba/publication/viewer/invocations/request-1",
+  )
+  assert.match(invocationHtml, /window\.history\.replaceState/)
+
+  const directGetHtml = publicationViewerResultPage({
+    ...baseConfig,
+    transport: "human_http",
+    route: "/final/*",
+    methods: ["GET"],
+  }, { accepted: true, queued: true }, "request-2", true)
+  const directGetConfig = JSON.parse(
+    directGetHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+  )
+  assert.equal(directGetConfig.permalink, null)
 
   const agentAppHtml = publicationViewerPage({
     ...baseConfig,
@@ -104,6 +154,93 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     resolvePrefix({ location: { pathname: "/agent/demo" } }, agentAppViewerConfig),
     "",
   )
+})
+
+test("publication viewer derives composer capability and one pane per exposed node", () => {
+  assert.equal(viewerComposerEnabled({ ...baseConfig, transport: "human_http", methods: ["GET"] }), false)
+  assert.equal(viewerComposerEnabled({ ...baseConfig, transport: "human_http", methods: ["POST"] }), true)
+  assert.equal(viewerComposerEnabled({ ...baseConfig, transport: "api_sse_json", methods: ["POST"] }), true)
+  assert.equal(viewerComposerEnabled({ ...baseConfig, transport: "websocket_json" }), true)
+  assert.equal(viewerComposerEnabled({ ...baseConfig, transport: "mcp", methods: ["POST"] }), false)
+
+  const publication: WorkflowPublicationConfig = {
+    ...baseConfig,
+    transport: "api_sse_json",
+    trace_exposure: {
+      nodes: {
+        "node-a": ["thinking", "tool_use"],
+        "node-b": ["assistant_messages"],
+      },
+    },
+    trace_context: {
+      nodes: {
+        "node-a": { node_id: "node-a", node_label: "Research", agent_id: "agent-1", agent_alias: "Scout" },
+        "node-b": { node_id: "node-b", node_label: "Compose", agent_id: "agent-2", agent_alias: "Writer" },
+      },
+    },
+  }
+  assert.deepEqual(viewerTraceNodes(publication), [
+    { nodeId: "node-a", nodeLabel: "Research", agentAlias: "Scout", levels: ["thinking", "tool_use"] },
+    { nodeId: "node-b", nodeLabel: "Compose", agentAlias: "Writer", levels: ["assistant_messages"] },
+  ])
+
+  const html = publicationViewerPage(publication)
+  assert.match(html, /class="publication-viewer has-traces has-composer"/)
+  assert.match(html, /new URLSearchParams\(window\.location\.search\)\.get\('arroba_embed'\) === 'output'/)
+  assert.match(html, /rootEl\?\.classList\.add\('is-output-only'\)/)
+  assert.match(html, /\.publication-viewer\.is-output-only \.trace-rail/)
+  assert.match(html, /event\.data\?\.type !== 'arroba:publication:invoke'/)
+  assert.match(html, /arroba:publication:snapshot/)
+  assert.doesNotMatch(html, /initialWorkflowRun/)
+  assert.match(html, /void invokePublication\(prompt, artifacts\)/)
+  assert.match(html, /type: 'arroba:publication:settled'/)
+  assert.match(html, /publicationId: viewerConfig\.publicationId/)
+  assert.match(html, /workflowRun,/)
+  assert.match(html, /id="rail-resizer"/)
+  assert.match(html, /data-trace-node="node-a"/)
+  assert.match(html, /data-trace-node="node-b"/)
+  assert.match(html, /<footer>Scout<\/footer>/)
+  assert.match(html, /class="invoke-form composer-under-traces"/)
+  assert.match(html, /ResizeObserver/)
+  assert.match(html, /traceKeys\.has\(key\)/)
+  assert.match(html, /resetForInvocation\(prompt\)/)
+  assert.match(html, /renderOptimisticPrompt\(prompt\)/)
+  assert.match(html, /window\.addEventListener\('pointermove', move\)/)
+  assert.match(html, /window\.addEventListener\('pointerup', done\)/)
+  assert.match(html, /startWidth \+ startX - moveEvent\.clientX/)
+  assert.match(html, /is-resizing-rail/)
+  assert.match(html, /\.trace-agent-pane:only-child \{ grid-column: 1 \/ -1; \}/)
+})
+
+test("publication viewer replaces progress output and hydrates only the latest update", () => {
+  const html = publicationViewerPage({
+    ...baseConfig,
+    transport: "api_sse_json",
+  }, {
+    result: {
+      accepted: true,
+      workflow_run: {
+        id: "run-progress",
+        status: "Running",
+        intermediate_outputs: [
+          { id: "first", output: { message: "first update" }, valid: true },
+          { id: "latest", output: { message: "latest update" }, valid: true },
+        ],
+      },
+    },
+  })
+
+  assert.match(html, /run\.intermediate_outputs\.at\(-1\)/)
+  assert.match(html, /htmlOutputEl\.replaceChildren\(\)/)
+  assert.match(html, /outputEl\.textContent = ''/)
+  assert.match(html, /function normalizeViewerMessage\(message\)/)
+  assert.match(html, /parsed\.output && typeof parsed\.output === 'object'/)
+  assert.match(html, /const finalMessage = outputMessage\(payload\.workflow_run\?\.final_output\)/)
+  assert.match(html, /else if \(payload\.message !== undefined\) renderOutput\(payload\.message, 'final'\)/)
+  assert.doesNotMatch(html, /partialOutputs\.push/)
+  assert.doesNotMatch(html, /partialOutputs\.join/)
+  assert.match(html, /allow-downloads/)
+  assert.doesNotMatch(html, /allow-same-origin/)
 })
 
 test("gateway parses JSON and forwards transport-shaped workflow output", async () => {
@@ -224,7 +361,7 @@ test("api_sse_json streams queued, started, partial, and final events", async ()
   }
 })
 
-test("api_sse_json defaults to /invoke when no route is configured", async () => {
+test("api_sse_json defaults to / when no route is configured", async () => {
   const { route: _route, ...configWithoutRoute } = baseConfig
   const { app } = buildServer({
     ...configWithoutRoute,
@@ -244,7 +381,7 @@ test("api_sse_json defaults to /invoke when no route is configured", async () =>
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/invoke",
+      url: "/",
       headers: { accept: "text/event-stream" },
       payload: { prompt: "ship" },
     })
@@ -464,7 +601,7 @@ test("mcp rejects invalid tool input", async () => {
   }
 })
 
-test("human HTTP root returns a browser invocation form", async () => {
+test("human HTTP GET viewer omits the user composer", async () => {
   const { app } = buildServer({
     ...baseConfig,
     transport: "human_http",
@@ -479,8 +616,8 @@ test("human HTTP root returns a browser invocation form", async () => {
     const response = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } })
     assert.equal(response.statusCode, 200)
     assert.match(response.headers["content-type"] as string, /text\/html/)
-    assert.match(response.body, /invoke-form/)
-    assert.match(response.body, /type="file" name="artifact" multiple/)
+    assert.doesNotMatch(response.body, /id="invoke-form"/)
+    assert.doesNotMatch(response.body, /type="file" name="artifact" multiple/)
     assert.match(response.body, /\/qa\//)
   } finally {
     await app.close()
@@ -494,7 +631,7 @@ test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket t
     route: string
     adapterMarker: RegExp
   }> = [
-    { transport: "human_http", methods: ["GET"], route: "/qa/*", adapterMarker: /invokeHumanHttp/ },
+    { transport: "human_http", methods: ["POST"], route: "/qa", adapterMarker: /invokeHumanHttp/ },
     { transport: "api_sse_json", methods: ["POST"], route: "/custom/api", adapterMarker: /invokeApiSse/ },
     { transport: "websocket_json", methods: ["GET"], route: "/custom/ws", adapterMarker: /invokeWebSocket/ },
   ]
@@ -514,7 +651,7 @@ test("browser viewer shell is shared across human HTTP, API SSE, and WebSocket t
       const response = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } })
       assert.equal(response.statusCode, 200)
       assert.match(response.headers["content-type"] as string, /text\/html/)
-      assert.match(response.body, /split-viewer/)
+      assert.match(response.body, /publication-viewer/)
       assert.match(response.body, /invoke-form/)
       assert.match(response.body, /type="file" name="artifact" multiple/)
       assert.match(response.body, new RegExp(`"transport":"${item.transport}"`))
@@ -565,6 +702,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
+    assert.match(response.body, /"permalink":"\/.well-known\/arroba\/publication\/viewer\/invocations\//)
     assert.deepEqual(seenInput, {
       prompt: "read image",
       artifacts: [{
@@ -612,8 +750,14 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /subscribeHumanHttpEvents\(viewerConfig\.eventsUrl\)/)
+    assert.match(response.body, /let eventStreamSettled = false/)
+    assert.match(response.body, /events\.addEventListener\('timeout', \(event\) => \{ applyPublicationEvent\('timeout', parseEventData\(event\)\); reconnect\(\); \}\);/)
+    assert.match(response.body, /setTimeout\(\(\) => subscribeHumanHttpEvents\(path\), 1_000\)/)
+    assert.match(response.body, /if \(!eventStreamSettled\) setStatus\('Still running · reconnecting'\)/)
+    assert.match(response.body, /"permalink":null/)
     assert.match(response.body, /\/display\\\/\[\^\/\]\+/)
     assert.match(response.body, /parts\[0\] === 'publication-ingress'/)
+    assert.match(response.body, /directRouteRoots\.includes\('\*'\)/)
     assert.match(response.body, /run-1/)
     assert.deepEqual(seenInput, { prompt: "make tea" })
   } finally {
@@ -621,7 +765,7 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
   }
 })
 
-test("human HTTP status page renders split trace viewer and sandboxed HTML output support", async () => {
+test("human HTTP status page renders resizable per-node traces and sandboxed app output", async () => {
   const { app } = buildServer({
     ...baseConfig,
     transport: "human_http",
@@ -647,13 +791,22 @@ test("human HTTP status page renders split trace viewer and sandboxed HTML outpu
   try {
     const response = await app.inject({ method: "GET", url: "/dashboard", headers: { accept: "text/html" } })
     assert.equal(response.statusCode, 200)
-    assert.match(response.body, /class="split-viewer"/)
-    assert.match(response.body, /id="trace-feed"/)
+    assert.match(response.body, /class="publication-viewer"/)
+    assert.doesNotMatch(response.body, /id="trace-rail"/)
     assert.match(response.body, /events\.addEventListener\('trace'/)
-    assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals'\)/)
+    assert.match(response.body, /frame\.setAttribute\('sandbox', 'allow-scripts allow-forms allow-popups allow-modals allow-downloads'\)/)
     assert.match(response.body, /frame\.srcdoc = renderable\.html/)
     assert.match(response.body, /frame\.src = publicationAppAssetUrl\(renderable\.src\)/)
     assert.match(response.body, /parsed\.kind === 'response'/)
+    assert.match(response.body, /renderTraceContent\(item, trace\)/)
+    assert.match(response.body, /trace\.level === 'tool_use'/)
+    assert.match(response.body, /Generated an interactive HTML workflow update\./)
+    assert.match(response.body, /className = 'trace-prose'/)
+    assert.match(response.body, /className = 'trace-code'/)
+    assert.doesNotMatch(response.body, /item\.innerHTML = .*<pre><\/pre>/)
+    assert.match(response.body, /const files = data\.getAll\('artifact'\)/)
+    assert.match(response.body, /form\.reset\(\);/)
+    assert.ok(response.body.indexOf("form.reset();") < response.body.indexOf("setStatus('Submitting');"))
   } finally {
     await app.close()
   }

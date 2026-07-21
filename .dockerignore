@@ -12,6 +12,8 @@ DerivedData
 **/.derivedData
 .arroba
 **/.arroba
+.artifacts
+**/.artifacts
 *.log
 *.tmp
 codex-main

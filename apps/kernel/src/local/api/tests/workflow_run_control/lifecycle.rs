@@ -4,7 +4,15 @@ use super::*;
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
     run_workflow_run_lifecycle_large_stack_test(
         "local-request-api-invokes-lists-gets-and-cancels-workflow-runs",
-        local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner,
+        || local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner("dev-stub"),
+    );
+}
+
+#[test]
+fn local_request_api_settles_structured_workflow_prompt_cancellation() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-settles-structured-workflow-prompt-cancellation",
+        || local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner("slow-structured"),
     );
 }
 
@@ -24,7 +32,7 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission() {
     );
 }
 
-fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: fn()) {
+fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: impl FnOnce() + Send + 'static) {
     let handle = std::thread::Builder::new()
         .name(name.to_string())
         .stack_size(64 * 1024 * 1024)
@@ -35,7 +43,7 @@ fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: fn()) {
     }
 }
 
-fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
+fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider: &str) {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -131,7 +139,7 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
                 session_id: session.id().to_string(),
                 agent_id: Some(agent.id().to_string()),
                 adapter_key: "dev-stub".to_string(),
-                provider: "dev-stub".to_string(),
+                provider: provider.to_string(),
                 account_profile: "default".to_string(),
                 model: "default".to_string(),
                 variant: None,
@@ -239,7 +247,6 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
         LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
     };
-
     let cancelled = match harness
         .dispatch(LocalDaemonRequest::CancelWorkflowRun(
             CancelWorkflowRunRequest {
@@ -254,6 +261,75 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner() {
     };
     assert_eq!(cancelled.id(), second_run.id());
     assert_eq!(format!("{:?}", cancelled.status()), "Stopped");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    if provider == "slow-structured" {
+        loop {
+            let prompt_settled = harness.with_app(|app| {
+                app.sessions()
+                    .get_session(session.id())
+                    .expect("workflow session should resolve")
+                    .active_prompt_for_agent(agent.id())
+                    .is_none()
+            });
+            if prompt_settled {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stopping a structured workflow node turn should settle its active prompt"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    } else {
+        let provider_run_id = harness.with_app(|app| {
+            app.providers()
+                .get_run_for_agent(session.id(), agent.id())
+                .expect("workflow provider run should resolve")
+                .id()
+                .to_string()
+        });
+        loop {
+            let interrupted = harness.with_app(|app| {
+                app.terminal().input_records().iter().any(|record| {
+                    record.provider_run_id == provider_run_id && record.bytes == b"\x03"
+                })
+            });
+            if interrupted {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stopping a PTY workflow node turn should send Ctrl-C"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    let (cancelled_again, refreshed_session) = match harness
+        .dispatch(LocalDaemonRequest::CancelWorkflowRun(
+            CancelWorkflowRunRequest {
+                session_id: session.id().to_string(),
+                workflow_run_ref: second_run.id().to_string(),
+            },
+        ))
+        .expect("stopping a workflow run twice should succeed")
+    {
+        LocalDaemonResponse::WorkflowRunCancelled {
+            workflow_run,
+            session,
+        } => (workflow_run, session),
+        _ => panic!("unexpected local response"),
+    };
+    assert_eq!(cancelled_again.status(), WorkflowRunStatus::Stopped);
+    if provider == "slow-structured" {
+        assert!(
+            refreshed_session
+                .active_prompt_for_agent(agent.id())
+                .is_none(),
+            "refresh after an idempotent stop should keep the structured prompt settled"
+        );
+    }
 }
 
 fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_inner() {

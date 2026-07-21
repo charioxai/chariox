@@ -101,6 +101,10 @@ impl DaemonConfig {
         default_config_dir().join("kernels").join("registry.json")
     }
 
+    pub fn default_active_kernel_registry_dir() -> PathBuf {
+        default_config_dir().join("kernels").join("active")
+    }
+
     pub fn default_daemon_config_path() -> PathBuf {
         persisted_daemon::default_daemon_config_path()
     }

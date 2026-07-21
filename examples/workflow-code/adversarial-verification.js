@@ -78,13 +78,12 @@ const proposer = workflow.node({
   agent: workflow.newAgent({ alias: "proposer", provider: "codex", model: "default" }),
   publicLabel: "Proposer",
   instructions: `Produce a proposal with evidence and hand it to ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"}.`,
-  maxTurns: 4,
   canvas: { x: 0, y: centerY },
 });
 
 const judge = workflow.node({
   handle: "judge",
-  agent: workflow.newAgent({ alias: "judge", provider: "opencode", model: "default" }),
+  agent: workflow.newAgent({ alias: "judge", provider: "opencode", model: "kimi-k2.6" }),
   publicLabel: "Judge",
   instructions: `Decide whether the proposal survives critique from ${params.critic_count} critic${params.critic_count === 1 ? "" : "s"} and submit final output.`,
   canCompleteWorkflowRun: true,
@@ -97,13 +96,12 @@ for (let index = 0; index < params.critic_count; index += 1) {
   const handle = params.critic_count === 1 ? "critic" : `critic_${pad2(number)}`;
   const critic = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle, provider: "claude", model: "default" }),
+    agent: workflow.newAgent({ alias: handle, provider: "claude", model: "sonnet" }),
     publicLabel: params.critic_count === 1 ? "Critic" : `Critic ${number}`,
-    instructions: "Find flaws. Route back to proposer for revision or forward to judge when ready.",
+    instructions: "Find flaws, set recommendation to revise or judge, and hand the critique to Judge.",
     canvas: { x: 300, y: branchY(index, params.critic_count) },
   });
   workflow.edge(proposer, critic, { handle: `proposal_to_${handle}`, handoffSchema: proposal });
-  workflow.edge(critic, proposer, { handle: `${handle}_loop`, handoffSchema: critique, validationPolicy: "warn" });
   workflow.edge(critic, judge, { handle: `${handle}_to_judge`, handoffSchema: critique, validationPolicy: "halt" });
 }
 

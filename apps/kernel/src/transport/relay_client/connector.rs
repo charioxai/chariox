@@ -9,12 +9,25 @@ use super::*;
 mod writer;
 use writer::{send_relay_envelope_frame, RelayEventWriteCoalescer, RELAY_EVENT_WRITE_COALESCE_MS};
 
+#[cfg(test)]
 pub async fn run_daemon_relay_connector(
     app: Arc<Mutex<DaemonApp>>,
     state: Arc<RwLock<RelayClientState>>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    run_daemon_relay_connector_inner(app, state, &mut shutdown, None).await;
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app,
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    run_daemon_relay_connector_inner(router, state, &mut shutdown, None).await;
+}
+
+pub async fn run_daemon_relay_connector_with_router(
+    router: Arc<CommandRouter>,
+    state: Arc<RwLock<RelayClientState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    run_daemon_relay_connector_inner(router, state, &mut shutdown, None).await;
 }
 
 pub async fn run_daemon_relay_connector_with_static_relay(
@@ -24,8 +37,12 @@ pub async fn run_daemon_relay_connector_with_static_relay(
     relay_url: String,
     relay_token: String,
 ) {
-    run_daemon_relay_connector_inner(
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         app,
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    run_daemon_relay_connector_inner(
+        router,
         state,
         &mut shutdown,
         Some(StaticRelayConfig {
@@ -278,15 +295,11 @@ async fn disconnect_relay(
 }
 
 async fn run_daemon_relay_connector_inner(
-    app: Arc<Mutex<DaemonApp>>,
+    router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,
     shutdown: &mut watch::Receiver<bool>,
     static_relay: Option<StaticRelayConfig>,
 ) {
-    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
-        app,
-        INTERACTIVE_COMMAND_QUEUE_LIMIT,
-    ));
     let event_runtime = match RelayEventRuntime::new(router.relay_event_counter_path()) {
         Ok(runtime) => Arc::new(runtime),
         Err(error) => {

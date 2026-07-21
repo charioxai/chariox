@@ -2,14 +2,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
 use base64::Engine;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream as TokioTcpStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -27,6 +30,8 @@ const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
 const PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS: u64 = 1_000;
 const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
+const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(10);
+const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Default)]
 pub(crate) struct WorkflowPublicationRuntimeProcessStore {
@@ -428,7 +433,14 @@ async fn inspect_publication_runtime(
         .as_ref()
         .and_then(|process| process.local_url.clone());
     let process_id = running.as_ref().and_then(|process| process.process_id);
-    let publication = if let Some(process) = running.as_ref() {
+    let runtime_snapshot = if let Some(process) = running.as_ref() {
+        publication_runtime_status_snapshot(&process.host, process.port)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let mut publication = if let Some(process) = running.as_ref() {
         mark_publication_runtime_status(
             runtime_state,
             publication.session_id(),
@@ -460,6 +472,32 @@ async fn inspect_publication_runtime(
             })),
         )?
     };
+    if let Some(snapshot) = runtime_snapshot {
+        let latest_run = snapshot
+            .get("latest_run")
+            .filter(|value| !value.is_null())
+            .cloned();
+        let recent_runs = snapshot
+            .get("recent_runs")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let latest_output = snapshot
+            .get("latest_output")
+            .filter(|value| !value.is_null())
+            .cloned();
+        publication = runtime_state
+            .owned
+            .session_store
+            .write()
+            .set_workflow_publication_runtime_run_observability(
+                publication.session_id(),
+                publication.id(),
+                latest_run,
+                recent_runs,
+                latest_output,
+            )?;
+    }
     let status = publication.status().unwrap_or("stopped").to_string();
     let open_url = running.as_ref().and_then(|_| {
         publication
@@ -489,6 +527,43 @@ async fn inspect_publication_runtime(
         process_id,
         message: Some(message.to_string()),
     })
+}
+
+async fn publication_runtime_status_snapshot(
+    host: &str,
+    port: u16,
+) -> Result<serde_json::Value, String> {
+    let mut stream = TokioTcpStream::connect((host, port))
+        .await
+        .map_err(|error| format!("failed to connect to publication status endpoint: {error}"))?;
+    let request = format!(
+        "GET /.well-known/arroba/publication/status HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        host, port,
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|error| format!("failed to request publication status: {error}"))?;
+    let mut response = Vec::new();
+    stream
+        .take(4 * 1024 * 1024)
+        .read_to_end(&mut response)
+        .await
+        .map_err(|error| format!("failed to read publication status: {error}"))?;
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "publication status response omitted HTTP headers".to_string())?;
+    let headers = String::from_utf8_lossy(&response[..separator]);
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "))
+    {
+        return Err(format!("publication status endpoint returned {headers}"));
+    }
+    serde_json::from_slice(&response[separator + 4..])
+        .map_err(|error| format!("publication status endpoint returned invalid JSON: {error}"))
 }
 
 async fn start_publication_runtime(
@@ -644,7 +719,7 @@ async fn start_publication_runtime_claimed(
         .arg(&host)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     command.arg("--kernel-url").arg(&kernel_url);
     if let Some(deployment_id) = launch_context.cloud_deployment_id.as_deref() {
         command.arg("--cloud-deployment").arg(deployment_id);
@@ -663,20 +738,9 @@ async fn start_publication_runtime_claimed(
         }
     })?;
     let process_id = child.id();
-    if let Some(status) = child.try_wait().map_err(|error| {
-        let message = format!("failed to inspect launched publication gateway: {error}");
-        let _ = mark_publication_runtime_error(
-            runtime_state,
-            &request.session_id,
-            publication.id(),
-            &message,
-        );
-        DaemonError::LocalTransport {
-            operation: "start workflow publication runtime",
-            message,
-        }
-    })? {
-        let message = format!("publication gateway exited immediately with status {status}");
+    if let Err(message) =
+        wait_for_publication_runtime_start(&mut child, &host, port, is_schedule_only).await
+    {
         let _ = mark_publication_runtime_error(
             runtime_state,
             &request.session_id,
@@ -889,6 +953,57 @@ fn publication_runtime_error(operation: &'static str, message: impl Into<String>
     DaemonError::LocalTransport {
         operation,
         message: message.into(),
+    }
+}
+
+async fn wait_for_publication_runtime_start(
+    child: &mut Child,
+    host: &str,
+    port: u16,
+    is_schedule_only: bool,
+) -> Result<(), String> {
+    let deadline = Instant::now() + PUBLICATION_RUNTIME_START_TIMEOUT;
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("failed to inspect launched publication gateway: {error}"))?
+        {
+            let stderr = publication_runtime_stderr(child).await;
+            return Err(format!(
+                "publication gateway exited before becoming ready with status {status}{}",
+                stderr_suffix(&stderr),
+            ));
+        }
+        if is_schedule_only || TcpStream::connect((host, port)).is_ok() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill().await;
+            let stderr = publication_runtime_stderr(child).await;
+            return Err(format!(
+                "publication gateway did not listen on {host}:{port} within {}s{}",
+                PUBLICATION_RUNTIME_START_TIMEOUT.as_secs(),
+                stderr_suffix(&stderr),
+            ));
+        }
+        sleep(PUBLICATION_RUNTIME_START_POLL).await;
+    }
+}
+
+async fn publication_runtime_stderr(child: &mut Child) -> String {
+    let Some(mut stderr) = child.stderr.take() else {
+        return String::new();
+    };
+    let mut output = String::new();
+    let _ = stderr.read_to_string(&mut output).await;
+    output.trim().to_string()
+}
+
+fn stderr_suffix(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
     }
 }
 

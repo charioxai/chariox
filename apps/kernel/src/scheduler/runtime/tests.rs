@@ -5,8 +5,8 @@ use crate::agent::CreateAgentRequest;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
-    CreateSessionRequest, RuntimeSession, WorkflowHandoffValidationPolicy, WorkflowMessage,
-    WorkflowRun, WorkflowRunStatus,
+    CreateSessionRequest, PromptSubmissionOutcome, RuntimeSession, WorkflowHandoffValidationPolicy,
+    WorkflowMessage, WorkflowRun, WorkflowRunStatus,
 };
 use crate::{DaemonApp, DaemonConfig};
 
@@ -89,6 +89,275 @@ fn invoke_workflow_node(
         )
         .expect("workflow should invoke");
     workflow_run
+}
+
+fn prepare_active_workflow_run(
+    app: &mut DaemonApp,
+    session_id: &str,
+    workflow_id: &str,
+    node_id: &str,
+) -> WorkflowRun {
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session_id, workflow_id, false)
+        .expect("workflow flush context should update");
+    app.sessions_mut()
+        .create_workflow_endpoint(session_id, workflow_id, node_id, Some("entry".to_string()))
+        .expect("endpoint should exist");
+    app.sessions_mut()
+        .invoke_workflow_endpoint(session_id, workflow_id, "entry", Some("start".to_string()))
+        .expect("workflow run should become active")
+}
+
+#[test]
+fn direct_user_prompt_starts_before_active_workflow_reaches_idle_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-user-first-idle");
+    let attachment_id = app.attachments().list_session_attachment_ids(session.id())[0].clone();
+    let (workflow_id, node_id) =
+        create_workflow_node(&mut app, session.id(), "wf-user-first-idle", &agent_id);
+    let workflow_run = prepare_active_workflow_run(&mut app, session.id(), &workflow_id, &node_id);
+
+    let PromptSubmissionOutcome::Started {
+        prompt: user_prompt,
+    } = app
+        .submit_prompt(
+            session.id(),
+            &attachment_id,
+            Some(&agent_id),
+            "direct user turn",
+            Vec::new(),
+        )
+        .expect("idle agent should start the direct user prompt")
+    else {
+        panic!("idle direct user prompt should start");
+    };
+    super::schedule_workflow_run_entry_node(&mut app, session.id(), &workflow_run)
+        .expect("workflow turn should schedule behind the user turn");
+
+    let state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    assert_eq!(
+        state
+            .active_prompt_for_agent(&agent_id)
+            .map(|prompt| prompt.id()),
+        Some(user_prompt.id())
+    );
+    let queued = state
+        .queued_prompts_for_agent(&agent_id)
+        .expect("workflow prompt should queue");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].workflow_run_id(), Some(workflow_run.id()));
+
+    app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+        .expect("user prompt should settle");
+    let promoted = crate::app::KernelAgentService::new(&mut app)
+        .advance_next_queued_prompt(session.id(), &agent_id, None)
+        .expect("queued workflow prompt should advance")
+        .expect("workflow prompt should resume");
+    assert_eq!(promoted.workflow_run_id(), Some(workflow_run.id()));
+}
+
+#[test]
+fn busy_agent_preserves_user_fifo_before_workflow_turn() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-user-first-busy");
+    let attachment_id = app.attachments().list_session_attachment_ids(session.id())[0].clone();
+    let (workflow_id, node_id) =
+        create_workflow_node(&mut app, session.id(), "wf-user-first-busy", &agent_id);
+    let workflow_run = prepare_active_workflow_run(&mut app, session.id(), &workflow_id, &node_id);
+
+    let PromptSubmissionOutcome::Started { prompt: first_user } = app
+        .submit_prompt(
+            session.id(),
+            &attachment_id,
+            Some(&agent_id),
+            "first user turn",
+            Vec::new(),
+        )
+        .expect("first user prompt should start")
+    else {
+        panic!("first user prompt should start");
+    };
+    let PromptSubmissionOutcome::Queued {
+        prompt: second_user,
+    } = app
+        .submit_prompt(
+            session.id(),
+            &attachment_id,
+            Some(&agent_id),
+            "second user turn",
+            Vec::new(),
+        )
+        .expect("second user prompt should queue")
+    else {
+        panic!("second user prompt should queue");
+    };
+    super::schedule_workflow_run_entry_node(&mut app, session.id(), &workflow_run)
+        .expect("workflow turn should queue behind both user turns");
+
+    let state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    assert_eq!(
+        state
+            .active_prompt_for_agent(&agent_id)
+            .map(|prompt| prompt.id()),
+        Some(first_user.id())
+    );
+    let queued = state
+        .queued_prompts_for_agent(&agent_id)
+        .expect("queued prompts should exist");
+    assert_eq!(queued.len(), 2);
+    assert_eq!(queued[0].id(), second_user.id());
+    assert!(queued[0].workflow_run_id().is_none());
+    assert_eq!(queued[1].workflow_run_id(), Some(workflow_run.id()));
+
+    app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+        .expect("first user prompt should settle");
+    let promoted_user = crate::app::KernelAgentService::new(&mut app)
+        .advance_next_queued_prompt(session.id(), &agent_id, None)
+        .expect("second user prompt should advance")
+        .expect("second user prompt should resume");
+    assert_eq!(promoted_user.prompt(), second_user.prompt());
+    assert!(promoted_user.workflow_run_id().is_none());
+    app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+        .expect("second user prompt should settle");
+    let promoted_workflow = crate::app::KernelAgentService::new(&mut app)
+        .advance_next_queued_prompt(session.id(), &agent_id, None)
+        .expect("workflow prompt should advance")
+        .expect("workflow prompt should resume");
+    assert_eq!(promoted_workflow.workflow_run_id(), Some(workflow_run.id()));
+}
+
+#[test]
+fn user_prompts_from_every_pane_jump_ahead_of_queued_workflow_follow_up() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-freeform-priority");
+    let freeform_attachment =
+        app.attachments().list_session_attachment_ids(session.id())[0].clone();
+    let workflow_trace_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-workflow-trace-priority",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("workflow trace attachment should attach")
+        .id()
+        .to_string();
+    let slice_trace_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-slice-trace-priority",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("slice trace attachment should attach")
+        .id()
+        .to_string();
+    let (workflow_id, node_id) =
+        create_workflow_node(&mut app, session.id(), "wf-user-priority", &agent_id);
+    let active_workflow = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
+    let active_workflow_prompt = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve")
+        .active_prompt_for_agent(&agent_id)
+        .expect("workflow prompt should be active")
+        .clone();
+    assert_eq!(
+        active_workflow_prompt.workflow_run_id(),
+        Some(active_workflow.id())
+    );
+
+    let queued_workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(active_workflow.id()),
+        &agent_id,
+        "workflow follow-up",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(active_workflow.id(), active_workflow.node_runs()[0].id());
+    let PromptSubmissionOutcome::Queued {
+        prompt: queued_workflow,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_workflow_prompt, false)
+        .expect("workflow follow-up should queue")
+    else {
+        panic!("workflow follow-up should not replace the active workflow prompt");
+    };
+
+    let mut user_prompts = Vec::new();
+    for (attachment_id, text) in [
+        (&freeform_attachment, "freeform user prompt"),
+        (&workflow_trace_attachment, "workflow trace user prompt"),
+        (&slice_trace_attachment, "slice trace user prompt"),
+    ] {
+        let PromptSubmissionOutcome::Queued { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachment_id,
+                Some(&agent_id),
+                text,
+                Vec::new(),
+            )
+            .expect("busy agent should queue the user prompt")
+        else {
+            panic!("active workflow prompt should remain active");
+        };
+        user_prompts.push(prompt);
+    }
+
+    let state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    assert_eq!(
+        state
+            .active_prompt_for_agent(&agent_id)
+            .map(|prompt| prompt.id()),
+        Some(active_workflow_prompt.id())
+    );
+    let queued = state
+        .queued_prompts_for_agent(&agent_id)
+        .expect("queued prompts should exist");
+    assert_eq!(queued.len(), 4);
+    assert_eq!(
+        queued.iter().map(|prompt| prompt.id()).collect::<Vec<_>>(),
+        vec![
+            user_prompts[0].id(),
+            user_prompts[1].id(),
+            user_prompts[2].id(),
+            queued_workflow.id(),
+        ],
+        "user prompts should preserve FIFO across panes and precede workflow follow-up",
+    );
+
+    app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+        .expect("active workflow prompt should settle");
+    for expected in &user_prompts {
+        let promoted = crate::app::KernelAgentService::new(&mut app)
+            .advance_next_queued_prompt(session.id(), &agent_id, None)
+            .expect("user prompt promotion should succeed")
+            .expect("user prompt should promote");
+        assert_eq!(promoted.prompt(), expected.prompt());
+        assert!(promoted.workflow_run_id().is_none());
+        app.prompt_owner_complete_active_prompt_only(session.id(), &agent_id)
+            .expect("promoted user prompt should settle");
+    }
+    let promoted_workflow = crate::app::KernelAgentService::new(&mut app)
+        .advance_next_queued_prompt(session.id(), &agent_id, None)
+        .expect("workflow follow-up promotion should succeed")
+        .expect("workflow follow-up should promote after user prompts");
+    assert_eq!(promoted_workflow.prompt(), queued_workflow.prompt());
+    assert_eq!(
+        promoted_workflow.workflow_run_id(),
+        Some(active_workflow.id())
+    );
 }
 
 #[test]
@@ -569,7 +838,8 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
     assert!(prompt.contains("workflow_handoffs"));
     assert!(prompt.contains("edge_id"));
     assert!(prompt.contains("to_node_id"));
-    assert!(prompt.contains("validate the routed message for each selected edge"));
+    assert!(prompt.contains("validate only the routed message inside each selected edge entry"));
+    assert!(prompt.contains("do not validate the outer routing wrapper"));
     if let Some(previous_arroba_home) = previous_arroba_home {
         std::env::set_var("ARROBA_HOME", previous_arroba_home);
     } else {

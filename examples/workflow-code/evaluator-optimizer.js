@@ -91,7 +91,7 @@ const coordinator = workflow.node({
 
 const evaluator = workflow.node({
   handle: "evaluator",
-  agent: workflow.newAgent({ alias: "evaluator", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "evaluator", provider: "claude", model: "sonnet" }),
   publicLabel: "Evaluator",
   instructions: `Evaluate ${params.optimizer_count} candidate stream${params.optimizer_count === 1 ? "" : "s"}. Route feedback back for revision or submit final output when accepted.`,
   canCompleteWorkflowRun: true,

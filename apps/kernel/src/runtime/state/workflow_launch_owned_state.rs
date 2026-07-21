@@ -41,7 +41,8 @@ impl KernelRuntimeOwnedState {
             None,
             None,
         )?;
-        let claim_id = self.workflow_dispatch_claim_id(session_id, node_run.agent_id())?;
+        let claim_id =
+            self.workflow_dispatch_claim_id(session_id, workflow_run.id(), node_run.id());
         match self.acquire_workflow_node_workspace_claim(
             session_id,
             &claim_id,

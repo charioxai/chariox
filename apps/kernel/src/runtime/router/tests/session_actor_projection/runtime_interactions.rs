@@ -380,7 +380,7 @@ fn native_interaction_subscription_routers(
 async fn dispatched_native_provider_interaction_updates_subscription_projection() {
     let (app, session_id, agent_id, attachment_id) =
         native_interaction_subscription_app("native-interaction-subscription");
-    let router = CommandRouter::with_interactive_capacity(app, 1);
+    let router = Box::new(CommandRouter::with_interactive_capacity(app, 1));
 
     let initial = router
         .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
@@ -479,6 +479,12 @@ async fn dispatched_native_provider_interaction_updates_subscription_projection(
 
 #[tokio::test]
 async fn native_provider_interaction_wakes_subscription_projection_across_routers() {
+    tokio::spawn(native_provider_interaction_wakes_subscription_projection_across_routers_impl())
+        .await
+        .expect("cross-router native interaction test should join");
+}
+
+async fn native_provider_interaction_wakes_subscription_projection_across_routers_impl() {
     let (relay_router, local_router, session_id, agent_id, attachment_id) =
         native_interaction_subscription_routers("cross-router-native-interaction-subscription");
 

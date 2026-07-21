@@ -293,6 +293,15 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 
 #[test]
 fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude-headless");
+}
+
+#[test]
+fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude");
+}
+
+fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -309,7 +318,8 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-stop-test-{}-{}",
+        "arroba-claude-headless-stop-test-{}-{}-{}",
+        provider,
         std::process::id(),
         timestamp_millis()
     ));
@@ -333,7 +343,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
         "claude",
-        "claude-headless",
+        provider,
         "default",
         "claude-sonnet",
     )
@@ -388,14 +398,14 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
         .process(session.id(), run.id(), &run, None)
         .expect("Stop event should be processed");
 
-    assert!(outcome.needs_deferred_headless_drain);
+    assert!(outcome.needs_deferred_transcript_drain);
     assert!(app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
         .expect("active prompt should load")
         .is_some());
     assert!(claude_native_marker(&context_file)
         .as_deref()
-        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_STOP_DRAIN_MARKER_PREFIX)));
+        .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
     fs::write(
         &transcript_file,
@@ -413,7 +423,7 @@ fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
     .expect("late transcript output should be written");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
-        .finish_deferred_headless_stop(session.id(), run.id(), &run)
+        .finish_deferred_stop(session.id(), run.id(), &run)
         .expect("deferred transcript drain should finish");
 
     assert!(app
@@ -1057,6 +1067,45 @@ fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
         drain.chunks[0].text,
         "Only the real response settles the turn."
     );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_drain_preserves_synthetic_api_errors() {
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let dir = std::env::temp_dir().join(format!(
+        "arroba-claude-transcript-api-error-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl");
+    fs::write(
+        &transcript,
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "api-error-assistant",
+            "isApiErrorMessage": true,
+            "error": "authentication_failed",
+            "sessionId": "claude-session-error",
+            "message": {
+                "id": "api-error-message",
+                "model": "<synthetic>",
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "Login expired · Please run /login" }]
+            }
+        })
+        .to_string(),
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.session_id.as_deref(), Some("claude-session-error"));
+    assert_eq!(drain.model, None);
+    assert_eq!(drain.assistant_message_ids, vec!["api-error-message"]);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.chunks[0].text, "Login expired · Please run /login");
 
     let _ = fs::remove_dir_all(dir);
 }

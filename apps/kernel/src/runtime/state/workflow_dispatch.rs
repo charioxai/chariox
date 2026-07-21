@@ -66,24 +66,11 @@ impl KernelRuntimeOwnedState {
                 control_mailbox,
                 Some(handoff_payloads_json),
             );
-            let claim_id = match self
-                .workflow_dispatch_claim_id(session_id, dispatch.node_run.agent_id())
-            {
-                Ok(claim_id) => claim_id,
-                Err(error) => {
-                    self.record_notice(
-                            session_id,
-                            None,
-                            self.attachment_store.list_session_attachment_ids(session_id),
-                            format!(
-                                "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
-                                dispatch.node_run.node_id(),
-                                error
-                            ),
-                        );
-                    continue;
-                }
-            };
+            let claim_id = self.workflow_dispatch_claim_id(
+                session_id,
+                workflow_run_id,
+                dispatch.node_run.id(),
+            );
             match self.acquire_workflow_node_workspace_claim(
                 session_id,
                 &claim_id,

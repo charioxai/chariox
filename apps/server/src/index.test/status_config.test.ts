@@ -446,7 +446,7 @@ test("gateway defaults publication runtime config by transport", async () => {
     created_at_ms: 0,
     updated_at_ms: 0,
   }, "ws://kernel")
-  assert.equal(apiConfig.route, "/invoke")
+  assert.equal(apiConfig.route, "/")
   assert.deepEqual(apiConfig.methods, ["POST"])
   assert.deepEqual(apiConfig.parser, { kind: "json" })
   assert.equal(apiConfig.mode, "async")
@@ -463,10 +463,30 @@ test("gateway defaults publication runtime config by transport", async () => {
     created_at_ms: 0,
     updated_at_ms: 0,
   }, "ws://kernel")
-  assert.equal(websocketConfig.route, "/.well-known/arroba/publication/ws")
+  assert.equal(websocketConfig.route, "/")
   assert.equal(websocketConfig.methods, undefined)
   assert.equal(websocketConfig.parser, undefined)
   assert.equal(websocketConfig.mode, "async")
+
+  for (const [transport, expectedParser] of [
+    ["human_http", { kind: "query_params" }],
+    ["mcp", undefined],
+  ] as const) {
+    const config = publicationConfigFromKernelRecord({
+      id: `pub-${transport}`,
+      session_id: "session-1",
+      workflow_id: "workflow-1",
+      endpoint_id: "endpoint-1",
+      alias: transport,
+      enabled: true,
+      transport: { kind: transport },
+      created_by_user_id: "local",
+      created_at_ms: 0,
+      updated_at_ms: 0,
+    }, "ws://kernel")
+    assert.equal(config.route, "/", transport)
+    assert.deepEqual(config.parser, expectedParser, transport)
+  }
 })
 
 test("gateway can load publication config from kernel lookup", async () => {
@@ -701,9 +721,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
     await writeFile(join(root, "deployment-contract.json"), JSON.stringify(deploymentContract))
     await assert.rejects(
       loadPublicationPackageConfig(root, { kernelEndpoint: "ws://kernel" }),
-      new RegExp(
-        `requires local daemon protocol version ${unsupportedProtocolVersion}, but target runtime supports ${LOCAL_DAEMON_PROTOCOL_VERSION}`,
-      ),
+      new RegExp(`requires local daemon protocol version ${unsupportedProtocolVersion}, but target runtime supports ${LOCAL_DAEMON_PROTOCOL_VERSION}`),
     )
   } finally {
     await rm(root, { recursive: true, force: true })

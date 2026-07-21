@@ -11,7 +11,6 @@ pub(crate) fn remote_machine_records(
     let registry = DaemonConfig::machine_registry_entries();
     let mut records: Vec<RemoteMachineRecord> = live_machines
         .into_iter()
-        .filter(|machine| machine.machine_id != local_machine_id)
         .filter_map(|machine| {
             let entry = registry
                 .iter()
@@ -19,7 +18,12 @@ pub(crate) fn remote_machine_records(
             if entry.map(|entry| entry.forgotten).unwrap_or(false) {
                 return None;
             }
-            Some(remote_machine_record(machine, entry, true))
+            Some(remote_machine_record(
+                machine,
+                entry,
+                local_machine_id,
+                true,
+            ))
         })
         .collect();
 
@@ -66,11 +70,13 @@ pub(crate) fn remote_machine_records(
 fn remote_machine_record(
     machine: RelayMachinePresence,
     entry: Option<&PersistedMachineRegistration>,
+    local_machine_id: &str,
     online: bool,
 ) -> RemoteMachineRecord {
-    let approved = entry
-        .map(|entry| entry.approved && !entry.forgotten)
-        .unwrap_or(false);
+    let approved = machine.machine_id == local_machine_id
+        || entry
+            .map(|entry| entry.approved && !entry.forgotten)
+            .unwrap_or(false);
     let registry_alias = entry.and_then(|entry| entry.alias.clone());
     let display_name = registry_alias
         .clone()

@@ -80,6 +80,11 @@ impl KernelRuntimeState {
                 .owned
                 .attachment_store
                 .list_session_attachment_ids(&session_id);
+            // Browser/CLI terminal-output requests use this same provider lane. Keep the
+            // background pump in it too: otherwise both paths can apply one completion
+            // concurrently, allowing a queued prompt promoted by the first path to be
+            // settled immediately by the second path's stale turn state.
+            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
             match self
                 .pump_owned_provider_output(&session_id, &provider_run_id, recipients, false)
                 .await

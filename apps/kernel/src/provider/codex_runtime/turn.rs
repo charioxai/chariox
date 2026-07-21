@@ -17,6 +17,7 @@ pub(super) struct CodexTurnTracker {
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
     tool_started: bool,
+    assistant_content_after_tool_activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +37,7 @@ impl CodexTurnTracker {
         self.active_tool_ids.clear();
         self.pending_terminal = None;
         self.tool_started = false;
+        self.assistant_content_after_tool_activity = false;
     }
 
     pub(super) fn note_tool_started(&mut self, tool_id: &str) {
@@ -43,14 +45,14 @@ impl CodexTurnTracker {
             self.active_tool_ids.insert(tool_id.to_string());
         }
         self.tool_started = true;
-        self.note_activity();
+        self.assistant_content_after_tool_activity = false;
     }
 
     pub(super) fn note_tool_completed(&mut self, tool_id: &str) {
         if !tool_id.is_empty() {
             self.active_tool_ids.remove(tool_id);
         }
-        self.note_activity();
+        self.assistant_content_after_tool_activity = false;
     }
 
     pub(super) fn note_terminal(&mut self, signal: CodexTerminalSignal) {
@@ -60,7 +62,7 @@ impl CodexTurnTracker {
     pub(super) fn note_activity(&mut self) {}
 
     pub(super) fn note_assistant_content(&mut self) {
-        self.note_activity();
+        self.assistant_content_after_tool_activity = true;
     }
 
     pub(super) fn has_pending_terminal(&self) -> bool {
@@ -69,6 +71,10 @@ impl CodexTurnTracker {
 
     pub(super) fn active_tool_count(&self) -> usize {
         self.active_tool_ids.len()
+    }
+
+    pub(super) fn has_terminal_assistant_evidence(&self) -> bool {
+        self.assistant_content_after_tool_activity
     }
 
     #[cfg(test)]
@@ -127,7 +133,7 @@ pub(super) fn maybe_finalize_terminal_signal(
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
 ) {
-    if turn_tracker.active_tool_count() > 0 {
+    if turn_tracker.active_tool_count() > 0 && !turn_tracker.has_terminal_assistant_evidence() {
         return;
     }
     if !turn_tracker.has_pending_terminal() {

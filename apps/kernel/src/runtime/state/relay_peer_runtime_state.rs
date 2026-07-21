@@ -581,7 +581,9 @@ impl KernelRuntimeState {
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
                 run,
-                !output_chunks.is_empty() || !completions.is_empty(),
+                output_chunks.iter().any(|chunk| {
+                    chunk.kind != crate::terminal::TerminalOutputKind::ProviderTerminal
+                }) || !completions.is_empty(),
             )
         });
         let session_id = session_id.to_string();

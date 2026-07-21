@@ -21,6 +21,8 @@ pub struct WaitingRoomLaunchTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
+    pub structural_version: String,
+    pub activity_revision: String,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
@@ -42,6 +44,8 @@ pub struct WaitingRoomInventorySnapshot {
 pub struct WaitingRoomPublicSnapshot {
     pub schema_version: u32,
     pub inventory_version: String,
+    pub structural_version: String,
+    pub activity_revision: String,
     pub generated_at_ms: u64,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -203,6 +207,8 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
     fn from(snapshot: WaitingRoomPublicSnapshot) -> Self {
         Self {
             inventory_version: snapshot.inventory_version,
+            structural_version: snapshot.structural_version,
+            activity_revision: snapshot.activity_revision,
             sessions: snapshot.sessions,
             external_provider_sessions: snapshot.external_provider_sessions,
             external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,

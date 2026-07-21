@@ -7,6 +7,7 @@ export type RelayStatus = {
   relay_url?: string | null
   relay_token_configured: boolean
   daemon_id: string
+  daemon_alias?: string | null
   machine_id: string
   machine_alias?: string | null
 }
@@ -308,6 +309,8 @@ export type ProviderAccountSummary = {
 
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
+  structural_version: string
+  activity_revision: string
   sessions: WaitingRoomPublicSessionSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]

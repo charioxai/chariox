@@ -13,6 +13,7 @@ mod catalog_endpoint;
 mod mcp_config;
 mod ports;
 
+pub(crate) use catalog_endpoint::lease_opencode_catalog_endpoint;
 pub use catalog_endpoint::{ensure_opencode_catalog_endpoint, opencode_catalog_endpoint};
 
 const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";

@@ -2,6 +2,145 @@
 use super::support::*;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn relay_waiting_room_subscription_observes_shared_router_mutations() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config = DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config.relay_token = Some("secret".to_string());
+    config.relay_heartbeat_ms = 50;
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        Arc::clone(&app),
+        INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let connector_task = tokio::spawn(run_daemon_relay_connector_with_router(
+        Arc::clone(&router),
+        Arc::clone(&state),
+        shutdown_rx,
+    ));
+    wait_for_daemon_registration(registry, &config.daemon_id).await;
+
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut client_socket, _) = connect_async(&url)
+        .await
+        .expect("client should connect to relay");
+    send_client_envelope(
+        &mut client_socket,
+        &RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+        },
+    )
+    .await;
+    let _daemon_public_key = expect_client_connected(&mut client_socket).await;
+    let subscription_private_key = relay_crypto::generate_private_key_base64();
+    let subscription_public_key =
+        relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
+            .expect("subscription public key should derive");
+    send_client_envelope(
+        &mut client_socket,
+        &RelayEnvelope::ClientSubscribe {
+            request_id: "waiting-room-subscribe".to_string(),
+            subscription_id: "waiting-room-subscription".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            attachment_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            client_public_key: subscription_public_key,
+            subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
+            resume_from_event_id: None,
+        },
+    )
+    .await;
+    let _ = expect_json_client_response(
+        &mut client_socket,
+        "waiting-room-subscribe",
+        &subscription_private_key,
+    )
+    .await;
+    let _ = expect_named_client_event(
+        &mut client_socket,
+        &subscription_private_key,
+        "waiting_room_rows_changed",
+    )
+    .await;
+
+    let request = LocalDaemonRequest::CreateSession(
+        CreateSessionRequest::new("workspace-relay-inventory", "worktree-relay-inventory")
+            .with_alias("relay-visible-session"),
+    );
+    let command =
+        KernelCommand::from_local_request("create-relay-visible-session", None, None, &request);
+    let response = router
+        .dispatch(command, request)
+        .await
+        .expect("session creation should succeed");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::SessionCreated { .. }
+    ));
+
+    let event = tokio::time::timeout(
+        Duration::from_secs(2),
+        expect_named_client_event(
+            &mut client_socket,
+            &subscription_private_key,
+            "waiting_room_rows_changed",
+        ),
+    )
+    .await
+    .expect("relay waiting-room subscription should observe the shared router mutation")
+    .1;
+    assert_eq!(
+        event["sessions"][0]["alias"],
+        serde_json::json!("relay-visible-session")
+    );
+
+    let _ = shutdown_tx.send(true);
+    connector_task.await.expect("connector task should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn proxied_session_subscriptions_share_one_attachment_without_replacement() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {

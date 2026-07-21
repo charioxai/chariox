@@ -41,6 +41,7 @@ pub(crate) struct WorkflowNodeTurnPromptContext {
     pub turn_index: u32,
     pub max_turns: Option<u32>,
     pub can_complete_workflow_run: bool,
+    pub run_output_contract: Option<String>,
     pub can_emit_intermediate_output: bool,
     pub wait_for_all_inputs: bool,
 }
@@ -437,6 +438,7 @@ fn workflow_node_prompt_context(
         turn_index,
         max_turns: node.max_turns(),
         can_complete_workflow_run: node.can_complete_workflow_run(),
+        run_output_contract: workflow_run_output_contract_block(&workflow),
         can_emit_intermediate_output: node.can_emit_intermediate_run_output(),
         wait_for_all_inputs: node.wait_for_all_inputs(),
     })
@@ -469,12 +471,24 @@ fn workflow_node_prompt_fragments(
                     "System node-level prompt:",
                 ));
             }
+            if let Some(contract) = context.run_output_contract.as_deref() {
+                fragments.push(contract.to_string());
+            }
         }
         if let Some(fragment) = workflow_last_turn_notice_block(context) {
             fragments.push(fragment);
         }
     }
     fragments
+}
+
+pub(crate) fn workflow_run_output_contract_block(workflow: &WorkflowDefinition) -> Option<String> {
+    let schema_ref = workflow.run_output_schema_ref()?;
+    let schema = workflow.schema(schema_ref)?;
+    let schema_json = serde_json::to_string(schema.schema()).ok()?;
+    Some(format!(
+        "Final workflow run output contract:\n- workflow_run_output_schema_ref: {schema_ref}\n- workflow_run_output_schema: {schema_json}\nPass only the JSON value matching this schema as the `workflow_output_json` string. Do not wrap that value in the turn-level `summary`/`output` envelope.\n\n"
+    ))
 }
 
 fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> String {
@@ -615,7 +629,7 @@ pub(crate) fn workflow_handoff_payloads_from_prompt(prompt: &str) -> Option<Stri
         })
 }
 
-fn workflow_outgoing_edge_contract_line(
+pub(crate) fn workflow_outgoing_edge_contract_line(
     workflow: &WorkflowDefinition,
     edge: &WorkflowEdgeDefinition,
 ) -> String {
@@ -645,6 +659,14 @@ fn workflow_outgoing_edge_contract_line(
             WorkflowHandoffValidationPolicy::Halt => "halt",
         };
         line.push_str(&format!(", validation_policy: {validation_policy}"));
+    }
+    if let Some(schema) = edge
+        .handoff_schema_ref()
+        .and_then(|schema_ref| workflow.schema(schema_ref))
+    {
+        if let Ok(schema_json) = serde_json::to_string(schema.schema()) {
+            line.push_str(&format!(", handoff_schema: {schema_json}"));
+        }
     }
     line
 }

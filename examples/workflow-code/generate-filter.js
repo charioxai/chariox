@@ -84,13 +84,13 @@ const coordinator = workflow.node({
   handle: "coordinator",
   agent: workflow.newAgent({ alias: "generate-filter-coordinator", provider: "codex", model: "default" }),
   publicLabel: "Coordinator",
-  instructions: `Start ${params.generator_count} candidate generator${params.generator_count === 1 ? "" : "s"} and send their outputs to the filter.`,
+  instructions: `Route this request through every outgoing workflow edge to the ${params.generator_count} preconfigured candidate generator${params.generator_count === 1 ? "" : "s"}. Do not create or spawn provider-native agents.`,
   canvas: { x: 0, y: centerY },
 });
 
 const filter = workflow.node({
   handle: "filter",
-  agent: workflow.newAgent({ alias: "filter", provider: "claude", model: "default" }),
+  agent: workflow.newAgent({ alias: "filter", provider: "claude", model: "haiku" }),
   publicLabel: "Filter",
   instructions: `Filter candidate lists from ${params.generator_count} generator${params.generator_count === 1 ? "" : "s"} and hand selected options to the finisher.`,
   waitForAllInputs: params.generator_count > 1,
@@ -99,7 +99,7 @@ const filter = workflow.node({
 
 const finisher = workflow.node({
   handle: "finisher",
-  agent: workflow.newAgent({ alias: "finisher", provider: "opencode", model: "default" }),
+  agent: workflow.newAgent({ alias: "finisher", provider: "opencode", model: "kimi-k2.6" }),
   publicLabel: "Finisher",
   instructions: "Turn the filtered candidates into the final result.",
   canCompleteWorkflowRun: true,

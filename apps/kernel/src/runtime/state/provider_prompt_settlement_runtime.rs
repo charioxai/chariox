@@ -93,6 +93,31 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
+        if !force
+            && (active_prompt.status() == crate::session::PromptStatus::Dispatching
+                || active_prompt.durable_delivery_phase()
+                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching))
+        {
+            owned.schedule_provider_output_check_after(
+                provider_run_id,
+                STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
+            );
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "provider settlement ignored before prompt delivery acknowledgement",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "prompt_id": active_prompt.id(),
+                    "prompt_completed": prompt_completed,
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        }
 
         if prompt_completed {
             owned.mark_prompt_completion_recorded(provider_run_id);
@@ -275,23 +300,37 @@ impl KernelRuntimeState {
             None
         };
         let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
-            owned.complete_local_prompt_with_queued_advance(
+            owned.complete_local_prompt_with_queued_advance_if_matches(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
                 next_queued_prompt,
+                Some(active_prompt.id()),
             )?
         } else {
-            owned.complete_local_prompt_without_advance(
+            owned.complete_local_prompt_without_advance_if_matches(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
+                Some(active_prompt.id()),
             )?
-        }
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "settle provider prompt",
-            message: "owned prompt runtime could not settle provider prompt".to_string(),
-        })?;
+        };
+        let Some(completion) = completion else {
+            crate::logging::debug_with_fields(
+                "daemon.provider",
+                "ignored stale provider settlement after active prompt changed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "provider_run_id": provider_run_id,
+                    "agent_id": agent_id,
+                    "expected_prompt_id": active_prompt.id(),
+                }),
+            );
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: true,
+                started_next_prompt: false,
+            });
+        };
         self.observe_git_after_prompt_completion(provider_run_id, &completion.completion.completed)
             .await;
         crate::logging::debug_with_fields(

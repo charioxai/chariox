@@ -89,7 +89,11 @@ for (let index = 0; index < bracketSize; index += 1) {
   const handle = `contestant_${pad2(slot)}`;
   const contestant = workflow.node({
     handle,
-    agent: workflow.newAgent({ alias: handle.replaceAll("_", "-"), provider: index % 2 === 0 ? "claude" : "opencode", model: "default" }),
+    agent: workflow.newAgent({
+      alias: handle.replaceAll("_", "-"),
+      provider: index % 2 === 0 ? "claude" : "opencode",
+      model: index % 2 === 0 ? "sonnet" : "kimi-k2.6",
+    }),
     publicLabel: `Contestant ${slot}`,
     instructions: `Produce a tournament entry for slot ${slot}.`,
     canvas: { x: 300, y: rowY(index) },

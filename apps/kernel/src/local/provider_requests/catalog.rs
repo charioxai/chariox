@@ -2,8 +2,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     claude_provider_catalog, default_provider_command_catalogs, ensure_codex_catalog_endpoint,
-    ensure_opencode_catalog_endpoint, resolve_claude_executable, CodexClient, OpenCodeClient,
-    OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
+    lease_codex_catalog_endpoint, lease_opencode_catalog_endpoint, resolve_claude_executable,
+    CodexClient, OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use arroba_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -38,8 +38,8 @@ pub(crate) fn load_provider_catalog(
     }
     let mut source_errors = Vec::new();
 
-    match ensure_opencode_catalog_endpoint() {
-        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint) {
+    match lease_opencode_catalog_endpoint() {
+        Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
                 Err(error) => source_errors.push(format!("opencode catalog request: {error}")),
@@ -48,8 +48,8 @@ pub(crate) fn load_provider_catalog(
         },
         Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
     }
-    match ensure_codex_catalog_endpoint() {
-        Ok(endpoint) => match CodexClient::new("catalog", endpoint) {
+    match lease_codex_catalog_endpoint() {
+        Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(catalog),
                 Err(error) => source_errors.push(format!("codex catalog request: {error}")),
@@ -122,8 +122,8 @@ pub(crate) fn provider_auth_status_response(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match crate::provider::canonical_provider_family(&request.provider) {
         Some("codex") => {
-            let endpoint = ensure_codex_catalog_endpoint()?;
-            let client = CodexClient::new("provider-auth", endpoint)?;
+            let endpoint = lease_codex_catalog_endpoint()?;
+            let client = CodexClient::new("provider-auth", endpoint.as_str())?;
             Ok(LocalDaemonResponse::ProviderAuthStatus {
                 status: client.auth_status()?,
             })
