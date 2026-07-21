@@ -117,6 +117,14 @@ mod tests {
         );
         assert!(!run.requires_workspace_live_sync());
         assert!(run.tracks_workspace_live_sync());
+        assert_eq!(
+            app.sessions
+                .get_session(session.id())
+                .expect("session should remain available")
+                .active_provider_run_id(),
+            Some(run_id.as_str()),
+            "prompt-launched provider must replace any stale session runtime pointer",
+        );
         drop(app);
         let _ = std::fs::remove_dir_all(workspace);
     }

@@ -369,6 +369,8 @@ impl DaemonApp {
             return Err(error);
         }
         let run = self.providers.get_run(run.id())?;
+        self.sessions
+            .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
             let agent = self.agents.set_agent_runtime_profile_with_account_profile(

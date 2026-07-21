@@ -24,6 +24,22 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: "provider run has no agent".to_string(),
             })?;
+        if owned
+            .provider_store
+            .get_run_for_agent(session_id, &agent_id)
+            .is_some_and(|current| {
+                current.id() != provider_run_id
+                    && current.state() != crate::provider::ProviderRunState::Ended
+            })
+        {
+            if owned.clear_prompt_activity(provider_run_id) {
+                self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
+            }
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                started_next_prompt: false,
+            });
+        }
         let active_prompt = owned
             .prompt_state_owner
             .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, &agent_id);
