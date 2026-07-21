@@ -171,13 +171,27 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         _ => panic!("unexpected local response"),
     };
     harness.with_app_mut(|app| {
+        app.agents()
+            .bind_remote_execution(
+                remote_agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel".to_string(),
+                    worker_machine_id: "worker-machine".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: Some("provider-run-1".to_string()),
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
         app.sessions_mut()
             .set_focused_agent(session.id(), Some(focused_agent.id().to_string()))
             .expect("first agent should be focused");
         let request =
             LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.6-sol")
                 .with_agent_id(remote_agent.id());
-        let worker_run = RuntimeProviderRun::new(
+        let mut worker_run = RuntimeProviderRun::new(
             "provider-run-1",
             &request,
             crate::provider::ProviderLaunchResult {
@@ -192,6 +206,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
                 structured_endpoint: None,
             },
         );
+        worker_run.mark_running();
         let (_, projected_run) = worker_run.project_leased_for_home_agent(
             "leased-agent-1",
             session.id(),

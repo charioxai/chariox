@@ -148,7 +148,15 @@ impl KernelRuntimeOwnedState {
                             });
                         match active_run {
                             Ok(active_run) => {
-                                if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
+                                let active_run_is_remote = active_run
+                                    .agent_instance_id()
+                                    .and_then(|agent_id| self.agent_store.get_agent(agent_id).ok())
+                                    .is_some_and(|agent| agent.remote_execution().is_some());
+                                if active_run_is_remote {
+                                    self.session_store
+                                        .set_active_provider_run(session_id, None)?;
+                                } else if active_run.agent_instance_id()
+                                    != Some(focused_agent_id.as_str())
                                     && active_run.state()
                                         == crate::provider::ProviderRunState::Running
                                     && active_run.client_interface().is_arroba()

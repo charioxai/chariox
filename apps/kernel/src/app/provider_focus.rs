@@ -178,7 +178,14 @@ impl DaemonApp {
                     if let Some(current_active_run_id) = current_active_run_id.as_deref() {
                         match self.providers.get_run(current_active_run_id) {
                             Ok(active_run) => {
-                                if active_run.agent_instance_id() != Some(focused_agent_id.as_str())
+                                let active_run_is_remote = active_run
+                                    .agent_instance_id()
+                                    .and_then(|agent_id| self.agents.get_agent(agent_id).ok())
+                                    .is_some_and(|agent| agent.remote_execution().is_some());
+                                if active_run_is_remote {
+                                    self.sessions.set_active_provider_run(session_id, None)?;
+                                } else if active_run.agent_instance_id()
+                                    != Some(focused_agent_id.as_str())
                                     && active_run.state() == ProviderRunState::Running
                                     && !self
                                         .provider_run_has_active_prompt(session_id, &active_run)?
