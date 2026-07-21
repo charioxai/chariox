@@ -111,11 +111,12 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .filter(|session| session.has_member(caller_user_id))
             .map(|session| {
                 let session_id = session.id().to_string();
+                let previous_entry = previous.and_then(|cached| cached.entries.get(&session_id));
                 let cached = can_reuse_entries
-                    .then(|| previous.and_then(|cached| cached.entries.get(&session_id)))
+                    .then_some(previous_entry)
                     .flatten()
                     .filter(|cached| Arc::ptr_eq(&cached.source, session));
-                let summary = cached.map_or_else(
+                let mut summary = cached.map_or_else(
                     || {
                         waiting_room_session_summaries_from_refs(
                             std::iter::once(session.as_ref()),
@@ -128,6 +129,15 @@ impl WaitingRoomSessionSummaryProjectionStore {
                     },
                     |cached| cached.summary.clone(),
                 );
+                if cached.is_none() && can_reuse_entries {
+                    if let Some(previous_entry) = previous_entry {
+                        let last_used_at_ms = summary.last_used_at_ms;
+                        summary.last_used_at_ms = previous_entry.summary.last_used_at_ms;
+                        if summary != previous_entry.summary {
+                            summary.last_used_at_ms = last_used_at_ms;
+                        }
+                    }
+                }
                 (
                     session_id,
                     CachedSessionSummaryEntry {
@@ -1095,6 +1105,23 @@ mod tests {
             &next_session_revision.summaries
         ));
         assert_eq!(first.revision, next_session_revision.revision);
+
+        let touched_sessions = vec![Arc::new({
+            let mut session = sessions[0].as_ref().clone();
+            session.touch();
+            session
+        })];
+        let touched_session_revision = projection.project(
+            &touched_sessions,
+            9,
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert!(Arc::ptr_eq(
+            &first.summaries,
+            &touched_session_revision.summaries
+        ));
+        assert_eq!(first.revision, touched_session_revision.revision);
     }
 
     #[test]
@@ -1151,6 +1178,30 @@ mod tests {
             unchanged_projection.inventory_version
         );
 
+        let touched_sessions = vec![Arc::new({
+            let mut session = sessions[0].as_ref().clone();
+            session.touch();
+            session
+        })];
+        let touched = build_waiting_room_public_snapshot_from_cached_shared(
+            &touched_sessions,
+            9,
+            &projection,
+            &metaagent_events,
+            Vec::new(),
+            false,
+            None,
+            relay_status.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            400,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("timestamp-only waiting room snapshot should project");
+        assert_eq!(projection.snapshot_build_count(), 1);
+        assert_eq!(first.inventory_version, touched.inventory_version);
+
         let changed_sessions = vec![Arc::new({
             let mut session = RuntimeSession::new(
                 "session-1",
@@ -1165,7 +1216,7 @@ mod tests {
         })];
         let changed = build_waiting_room_public_snapshot_from_cached_shared(
             &changed_sessions,
-            9,
+            10,
             &projection,
             &metaagent_events,
             Vec::new(),
@@ -1175,7 +1226,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            400,
+            500,
             crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .expect("changed waiting room snapshot should project");
