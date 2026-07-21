@@ -505,6 +505,15 @@ pub(super) async fn execute_stop_slice_request(
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.stop")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
     runtime_state.record_slice_audit_event(&resolved_slice, "stop", "accepted", None, None)?;
+    if slice_stop_is_already_complete(&resolved_slice) {
+        let slice = runtime_state.mark_slice_stopped(&request.slice_ref)?;
+        runtime_state
+            .stop_slice_private_relay_home_connection(&slice.id)
+            .await;
+        revoke_display_tunnels_for_slice(relay_state, &slice.id).await;
+        runtime_state.record_slice_audit_event(&slice, "stop", "completed", None, None)?;
+        return Ok(LocalDaemonResponse::SliceStopped { slice });
+    }
     if let Err(error) = ensure_slice_has_no_active_agents(&resolved_slice, "slice.stop") {
         let _ = runtime_state.mark_slice_operation_rejected(&request.slice_ref, "stop", &error);
         let _ = runtime_state.record_slice_audit_event(
@@ -640,6 +649,10 @@ fn ensure_slice_has_no_active_agents(
             slice.agent_ids.len()
         ),
     })
+}
+
+fn slice_stop_is_already_complete(slice: &crate::slice::SliceRecord) -> bool {
+    slice.status == crate::slice::SliceStatus::Stopped
 }
 
 fn relay_presence_from_started_slice(
@@ -882,6 +895,13 @@ mod tests {
         assert!(error.to_string().contains("active agent"));
         ensure_slice_has_no_active_agents(&slice(Vec::new()), "slice.stop")
             .expect("idle slice should pass guard");
+    }
+
+    #[test]
+    fn stop_is_idempotent_after_shutdown_save_with_attached_agents() {
+        let mut stopped = slice(vec!["agent-1".to_string()]);
+        stopped.status = crate::slice::SliceStatus::Stopped;
+        assert!(slice_stop_is_already_complete(&stopped));
     }
 
     #[test]
