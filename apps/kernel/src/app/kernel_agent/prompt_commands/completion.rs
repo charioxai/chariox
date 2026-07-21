@@ -171,6 +171,7 @@ impl<'a> KernelAgentService<'a> {
                 &completion.completed,
                 settled_at_ms,
                 started_at_ms,
+                crate::git_observer::CompletedTurnSettlementStatus::Completed,
             );
         if !flow_control::prompt_completion_recorded(
             self.app,

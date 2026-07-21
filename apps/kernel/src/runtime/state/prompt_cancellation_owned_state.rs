@@ -30,7 +30,7 @@ impl KernelRuntimeOwnedState {
         self.record_cancelled_prompt_settlement(
             session_id,
             agent_id,
-            cancelled.id(),
+            &cancelled,
             provider_run_id.as_deref(),
         );
         let (active_prompt, queued_prompts) =
@@ -67,7 +67,7 @@ impl KernelRuntimeOwnedState {
         self.record_cancelled_prompt_settlement(
             session_id,
             agent_id,
-            prompt.id(),
+            &prompt,
             cancellation_provider_run_id.as_deref(),
         );
         let (active_prompt, queued_prompts) =
@@ -243,9 +243,10 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: &str,
-        prompt_id: &str,
+        prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) {
+        let settled_at_ms = crate::session::unix_epoch_ms();
         let archive_enabled = self
             .config_projection
             .snapshot()
@@ -258,10 +259,19 @@ impl KernelRuntimeOwnedState {
             archive_enabled,
             session_id,
             agent_id,
-            prompt_id,
+            prompt.id(),
             provider_run_id,
-            crate::session::unix_epoch_ms(),
+            settled_at_ms,
             "cancelled",
+        );
+        self.completed_git_turn_snapshots.record_prompt_settlement(
+            session_id,
+            agent_id,
+            provider_run_id.unwrap_or("provider-run-cancelled"),
+            prompt,
+            settled_at_ms,
+            Some(prompt.created_at_ms()),
+            crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
         );
     }
 

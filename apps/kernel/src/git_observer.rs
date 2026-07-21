@@ -116,6 +116,8 @@ pub struct CompletedGitTurnActionProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_turn_id: Option<String>,
     pub completed_at_ms: u64,
+    #[serde(default)]
+    pub settlement_status: CompletedTurnSettlementStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(default)]
@@ -124,6 +126,14 @@ pub struct CompletedGitTurnActionProjection {
     pub undo_available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletedTurnSettlementStatus {
+    #[default]
+    Completed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -157,8 +167,9 @@ impl CompletedGitTurnSnapshotStore {
         prompt: &PromptQueueItem,
         completed_at_ms: u64,
         started_at_ms: Option<u64>,
+        settlement_status: CompletedTurnSettlementStatus,
     ) {
-        let projection = CompletedGitTurnActionProjection {
+        let mut projection = CompletedGitTurnActionProjection {
             turn_id: prompt.id().to_string(),
             prompt_id: prompt.id().to_string(),
             provider_run_id: provider_run_id.to_string(),
@@ -169,6 +180,7 @@ impl CompletedGitTurnSnapshotStore {
             external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
             external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
             completed_at_ms,
+            settlement_status,
             duration_ms: started_at_ms
                 .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms)),
             changed_paths: Vec::new(),
@@ -182,6 +194,12 @@ impl CompletedGitTurnSnapshotStore {
             .settled_turns
             .lock()
             .expect("settled prompt turn mutex poisoned");
+        if settled_turns.get(&key).is_some_and(|existing| {
+            existing.turn_id == projection.turn_id
+                && existing.settlement_status == CompletedTurnSettlementStatus::Cancelled
+        }) {
+            projection.settlement_status = CompletedTurnSettlementStatus::Cancelled;
+        }
         let replace = settled_turns
             .get(&key)
             .is_none_or(|existing| completed_turn_projection_is_newer(&projection, existing));
@@ -256,7 +274,10 @@ impl CompletedGitTurnSnapshotStore {
             .cloned();
         match (observed, settled) {
             (Some(observed), Some(settled)) if observed.turn_id == settled.turn_id => {
-                Some(observed)
+                Some(CompletedGitTurnActionProjection {
+                    settlement_status: settled.settlement_status,
+                    ..observed
+                })
             }
             (Some(observed), Some(settled)) => {
                 Some(if completed_turn_projection_is_newer(&settled, &observed) {
@@ -326,6 +347,7 @@ impl CompletedGitTurnSnapshot {
             external_provider_session_id: self.before.external_provider_session_id.clone(),
             external_provider_turn_id: self.before.external_provider_turn_id.clone(),
             completed_at_ms: self.completed_at_ms,
+            settlement_status: CompletedTurnSettlementStatus::Completed,
             duration_ms: self.duration_ms,
             changed_paths: self
                 .change

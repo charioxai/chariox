@@ -401,6 +401,7 @@ impl KernelRuntimeOwnedState {
             completed_prompt,
             settled_at_ms,
             started_at_ms,
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
         );
     }
 }

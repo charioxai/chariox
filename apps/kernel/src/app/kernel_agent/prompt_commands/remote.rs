@@ -360,6 +360,7 @@ impl<'a> KernelAgentService<'a> {
                 &completion.completed,
                 settled_at_ms,
                 started_at_ms,
+                crate::git_observer::CompletedTurnSettlementStatus::Completed,
             );
         let recipient_attachment_ids = self
             .app
