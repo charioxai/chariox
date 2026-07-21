@@ -57,13 +57,25 @@ pub(crate) struct WaitingRoomSessionSummaryProjectionStore {
 struct CachedSessionSummaries {
     session_revision: u64,
     metaagent_event_revision: u64,
+    projection_revision: u64,
+    entries: HashMap<String, CachedSessionSummaryEntry>,
+    summaries: Arc<[WaitingRoomPublicSessionSummary]>,
+}
+
+#[derive(Clone)]
+struct CachedSessionSummaryEntry {
+    source: Arc<RuntimeSession>,
+    summary: WaitingRoomPublicSessionSummary,
+}
+
+struct ProjectedSessionSummaries {
+    revision: u64,
     summaries: Arc<[WaitingRoomPublicSessionSummary]>,
 }
 
 #[derive(Clone)]
 struct CachedWaitingRoomPublicSnapshot {
-    session_revision: u64,
-    metaagent_event_revision: u64,
+    session_summary_revision: u64,
     auxiliary_fingerprint: String,
     snapshot: WaitingRoomPublicSnapshot,
 }
@@ -75,7 +87,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
         caller_user_id: &str,
-    ) -> Arc<[WaitingRoomPublicSessionSummary]> {
+    ) -> ProjectedSessionSummaries {
         let metaagent_event_revision = metaagent_events.revision();
         let mut state = self
             .state
@@ -85,25 +97,81 @@ impl WaitingRoomSessionSummaryProjectionStore {
             cached.session_revision == session_revision
                 && cached.metaagent_event_revision == metaagent_event_revision
         }) {
-            return Arc::clone(&cached.summaries);
+            return ProjectedSessionSummaries {
+                revision: cached.projection_revision,
+                summaries: Arc::clone(&cached.summaries),
+            };
         }
-        let summaries = Arc::from(
-            waiting_room_session_summaries_from_refs(
-                runtime_sessions.iter().map(AsRef::as_ref),
-                metaagent_events,
-                caller_user_id,
+
+        let previous = state.get(caller_user_id);
+        let can_reuse_entries = previous
+            .is_some_and(|cached| cached.metaagent_event_revision == metaagent_event_revision);
+        let entries = runtime_sessions
+            .iter()
+            .filter(|session| session.has_member(caller_user_id))
+            .map(|session| {
+                let session_id = session.id().to_string();
+                let cached = can_reuse_entries
+                    .then(|| previous.and_then(|cached| cached.entries.get(&session_id)))
+                    .flatten()
+                    .filter(|cached| Arc::ptr_eq(&cached.source, session));
+                let summary = cached.map_or_else(
+                    || {
+                        waiting_room_session_summaries_from_refs(
+                            std::iter::once(session.as_ref()),
+                            metaagent_events,
+                            caller_user_id,
+                        )
+                        .into_iter()
+                        .next()
+                        .expect("visible waiting-room session should project")
+                    },
+                    |cached| cached.summary.clone(),
+                );
+                (
+                    session_id,
+                    CachedSessionSummaryEntry {
+                        source: Arc::clone(session),
+                        summary,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let projected = runtime_sessions
+            .iter()
+            .filter_map(|session| entries.get(session.id()).map(|entry| entry.summary.clone()))
+            .collect::<Vec<_>>();
+        let unchanged = previous.is_some_and(|cached| cached.summaries.as_ref() == projected);
+        let projection_revision = previous.map_or(1, |cached| {
+            if unchanged {
+                cached.projection_revision
+            } else {
+                cached.projection_revision.saturating_add(1)
+            }
+        });
+        let summaries = if unchanged {
+            Arc::clone(
+                &previous
+                    .expect("unchanged projection has prior state")
+                    .summaries,
             )
-            .into_boxed_slice(),
-        );
+        } else {
+            Arc::from(projected.into_boxed_slice())
+        };
         state.insert(
             caller_user_id.to_string(),
             CachedSessionSummaries {
                 session_revision,
                 metaagent_event_revision,
+                projection_revision,
+                entries,
                 summaries: Arc::clone(&summaries),
             },
         );
-        summaries
+        ProjectedSessionSummaries {
+            revision: projection_revision,
+            summaries,
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -122,7 +190,12 @@ impl WaitingRoomSessionSummaryProjectionStore {
         generated_at_ms: u64,
         caller_user_id: &str,
     ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-        let metaagent_event_revision = metaagent_events.revision();
+        let projected_sessions = self.project(
+            runtime_sessions,
+            session_revision,
+            metaagent_events,
+            caller_user_id,
+        );
         let auxiliary_fingerprint = waiting_room_snapshot_auxiliary_fingerprint(
             &external_provider_sessions,
             external_provider_sessions_has_more,
@@ -137,24 +210,14 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = snapshots.get(caller_user_id).filter(|cached| {
-            cached.session_revision == session_revision
-                && cached.metaagent_event_revision == metaagent_event_revision
+            cached.session_summary_revision == projected_sessions.revision
                 && cached.auxiliary_fingerprint == auxiliary_fingerprint
         }) {
             let mut snapshot = cached.snapshot.clone();
             snapshot.generated_at_ms = generated_at_ms;
             return Ok(snapshot);
         }
-        let sessions = self
-            .project(
-                runtime_sessions,
-                session_revision,
-                metaagent_events,
-                caller_user_id,
-            )
-            .iter()
-            .cloned()
-            .collect();
+        let sessions = projected_sessions.summaries.iter().cloned().collect();
         let snapshot = build_waiting_room_public_snapshot_from_summaries(
             sessions,
             external_provider_sessions,
@@ -172,8 +235,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         snapshots.insert(
             caller_user_id.to_string(),
             CachedWaitingRoomPublicSnapshot {
-                session_revision,
-                metaagent_event_revision,
+                session_summary_revision: projected_sessions.revision,
                 auxiliary_fingerprint,
                 snapshot: snapshot.clone(),
             },
@@ -1019,7 +1081,8 @@ mod tests {
             &metaagent_events,
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
-        assert!(Arc::ptr_eq(&first, &same_revision));
+        assert!(Arc::ptr_eq(&first.summaries, &same_revision.summaries));
+        assert_eq!(first.revision, same_revision.revision);
 
         let next_session_revision = projection.project(
             &sessions,
@@ -1027,7 +1090,11 @@ mod tests {
             &metaagent_events,
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
-        assert!(!Arc::ptr_eq(&first, &next_session_revision));
+        assert!(Arc::ptr_eq(
+            &first.summaries,
+            &next_session_revision.summaries
+        ));
+        assert_eq!(first.revision, next_session_revision.revision);
     }
 
     #[test]
@@ -1077,8 +1144,43 @@ mod tests {
         assert_eq!(first.inventory_version, second_subscriber.inventory_version);
         assert_eq!(second_subscriber.generated_at_ms, 200);
 
-        let _changed_revision = build(8, 300);
+        let unchanged_projection = build(8, 300);
+        assert_eq!(projection.snapshot_build_count(), 1);
+        assert_eq!(
+            first.inventory_version,
+            unchanged_projection.inventory_version
+        );
+
+        let changed_sessions = vec![Arc::new({
+            let mut session = RuntimeSession::new(
+                "session-1",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "daemon",
+            );
+            session.set_alias(Some("renamed".to_string()));
+            session
+        })];
+        let changed = build_waiting_room_public_snapshot_from_cached_shared(
+            &changed_sessions,
+            9,
+            &projection,
+            &metaagent_events,
+            Vec::new(),
+            false,
+            None,
+            relay_status,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            400,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("changed waiting room snapshot should project");
         assert_eq!(projection.snapshot_build_count(), 2);
+        assert_ne!(first.inventory_version, changed.inventory_version);
     }
 
     #[test]
