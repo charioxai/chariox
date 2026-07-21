@@ -427,15 +427,14 @@ async fn metaagent_run_command_routes_owned_agent_lifecycle_commands_inner() {
 }
 
 #[test]
-fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy() {
+fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_commands() {
     run_large_stack_async_test(
         "metaagent-slice-placement-policy",
-        metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner,
+        metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_commands_inner,
     );
 }
 
-async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_management_policy_inner(
-) {
+async fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_commands_inner() {
     let env = TestMetaRuntimeEnv::new("run-command-slice-policy");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
@@ -506,19 +505,8 @@ async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_man
             serde_json::json!({ "command": "slice list" }),
         )
         .await
-        .expect("slice list should return a structured denial");
-    assert!(!slice_list.ok, "{:?}", slice_list.payload);
-    assert!(
-        slice_list
-            .payload
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| {
-                message.contains("cannot manage slices") && message.contains("regular agents")
-            }),
-        "{:?}",
-        slice_list.payload
-    );
+        .expect("slice list should dispatch");
+    assert!(slice_list.ok, "{:?}", slice_list.payload);
 
     let reset_state = router
         .dispatch_authenticated_runtime_tool_call(
@@ -527,14 +515,14 @@ async fn metaagent_run_command_allows_agent_slice_placement_but_denies_slice_man
             serde_json::json!({ "command": "slice reset-state linux-dev" }),
         )
         .await
-        .expect("unrouted slice command should return a structured denial");
+        .expect("unrouted slice command should return a structured error");
     assert!(!reset_state.ok);
     assert!(
         reset_state
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("cannot manage slices")),
+            .is_some_and(|message| message.contains("routed slice commands")),
         "{:?}",
         reset_state.payload
     );

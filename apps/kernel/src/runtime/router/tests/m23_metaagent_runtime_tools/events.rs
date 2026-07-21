@@ -317,7 +317,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         Some(true)
     );
 
-    for command in ["mcp list", "skill list", "credential list"] {
+    for command in ["mcp list", "skill list", "credential list", "slice list"] {
         let routed = router
             .dispatch_authenticated_runtime_tool_call(
                 &meta_auth_token,
@@ -330,27 +330,6 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .expect("safe registered commands should dispatch");
         assert!(routed.ok, "{command}: {:?}", routed.payload);
     }
-
-    let slice_denied = router
-        .dispatch_authenticated_runtime_tool_call(
-            &meta_auth_token,
-            crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
-            serde_json::json!({
-                "command": "slice list"
-            }),
-        )
-        .await
-        .expect("slice commands should return structured denials");
-    assert!(!slice_denied.ok);
-    assert!(
-        slice_denied
-            .payload
-            .get("error")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("cannot manage slices")),
-        "{:?}",
-        slice_denied.payload
-    );
 
     let not_routed = router
         .dispatch_authenticated_runtime_tool_call(

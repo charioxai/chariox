@@ -3,17 +3,22 @@ use super::super::{MetaCommandDoc, MetaCommandPolicy};
 pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "slice",
-        aliases: &["slice save", "slice save-state", "slice stop"],
+        aliases: &["slice list", "slice show", "slice save", "slice save-state", "slice stop"],
         usage: "slice <list|show|start|stop|save-state|status|backup> ...",
-        examples: &["slice save-state dev --restart-agents"],
+        examples: &[
+            "slice list",
+            "slice show dev",
+            "slice save-state dev --restart-agents --this-slice",
+            "slice stop dev",
+        ],
         tags: &["slice", "environment"],
         intents: &["manage slice", "save slice state", "stop environment"],
         scope: "session",
         mutates: true,
-        policy: MetaCommandPolicy::Deny,
-        authority: "denied",
-        routed: false,
-        description: "Denied for Meta mode agents. Direct slice management is an execution-environment operation. To place a worker in a slice, spawn a regular agent with `agent spawn <alias> --slice <slice-ref|new|new:headless|new:headed>`.",
+        policy: MetaCommandPolicy::Allow,
+        authority: "kernel-managed slice lifecycle without credential mutation",
+        routed: true,
+        description: "Inspect and manage slice lifecycle through the kernel. Creating a slice remains composed with `agent spawn <alias> --slice <slice-ref|new|new:headless|new:headed>` so its worker ownership is explicit.",
     },
     MetaCommandDoc {
         name: "credential list",

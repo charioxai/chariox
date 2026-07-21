@@ -613,6 +613,7 @@ impl CommandRouter {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_workflow_request(session, metaagent, &tokens[1..], &agents)
             }
+            "slice" => meta_slice_request(&tokens[1..]),
             "mcp" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(

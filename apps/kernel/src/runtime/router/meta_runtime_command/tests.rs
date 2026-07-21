@@ -1,4 +1,4 @@
-use super::request::meta_extension_import_request;
+use super::request::{meta_extension_import_request, meta_slice_request};
 use super::spawn_args::parse_meta_agent_spawn_args;
 use super::*;
 
@@ -51,6 +51,33 @@ fn meta_agent_spawn_parser_supports_existing_slice_placement() {
     assert_eq!(parsed.alias.as_deref(), Some("checker"));
     assert_eq!(parsed.slice_ref.as_deref(), Some("linux-dev"));
     assert!(parsed.slice_create.is_none());
+}
+
+#[test]
+fn meta_slice_parser_routes_save_and_stop_lifecycle_requests() {
+    let save = meta_slice_request(&[
+        "save-state".to_string(),
+        "slice-1".to_string(),
+        "--restart-agents".to_string(),
+        "--this-slice".to_string(),
+    ])
+    .expect("slice save-state should parse");
+    let LocalDaemonRequest::SaveSliceState(save) = save else {
+        panic!("unexpected save request");
+    };
+    assert_eq!(save.slice_ref, "slice-1");
+    assert_eq!(
+        save.mode,
+        Some(crate::local::SliceStateSaveMode::RestartAgents)
+    );
+    assert_eq!(
+        save.scope,
+        Some(crate::local::SliceStateSaveScope::ThisSlice)
+    );
+
+    let stop = meta_slice_request(&["stop".to_string(), "slice-1".to_string()])
+        .expect("slice stop should parse");
+    assert!(matches!(stop, LocalDaemonRequest::StopSlice(_)));
 }
 
 #[test]

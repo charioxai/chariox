@@ -331,9 +331,14 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                 message: "only `extension import providers` is routed for metaagent extension command execution yet".to_string(),
             }),
         },
-        "slice" => Some(MetaCommandExecutionPolicy::Denied {
-            message: "agents in Meta mode cannot manage slices directly; spawn regular agents with `agent spawn <alias> --slice <slice-ref|new|new:headless|new:headed>` when a worker needs slice placement",
-        }),
+        "slice" => match tokens.get(1).map(String::as_str) {
+            Some("list" | "ls" | "show" | "get" | "start" | "stop" | "save" | "save-state" | "status" | "backup") => {
+                Some(MetaCommandExecutionPolicy::Routed)
+            }
+            _ => Some(MetaCommandExecutionPolicy::NotRouted {
+                message: "routed slice commands: `slice list`, `slice show`, `slice start`, `slice stop`, `slice save-state`, `slice status`, and `slice backup`; create slices with `agent spawn <alias> --slice new`".to_string(),
+            }),
+        },
         "credential" | "credentials" => match tokens.get(1).map(String::as_str) {
             Some("list" | "ls" | "get" | "show" | "upsert-json" | "remove") => {
                 Some(MetaCommandExecutionPolicy::Routed)

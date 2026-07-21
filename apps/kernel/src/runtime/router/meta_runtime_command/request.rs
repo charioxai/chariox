@@ -1,6 +1,10 @@
 use super::result::meta_command_error;
 use super::spawn_args::parse_meta_agent_spawn_args;
 use super::*;
+use crate::local::{
+    CreateSliceBackupRequest, ListSlicesRequest, SliceStateSaveMode, SliceStateSaveRequest,
+    SliceStateSaveScope, SliceStateStatusRequest,
+};
 
 pub(super) fn meta_agent_request(
     session: &crate::session::RuntimeSession,
@@ -91,6 +95,109 @@ pub(super) fn meta_agent_request(
             "usage: agent <list|spawn|focus|alias|delete|destroy> ...",
         )),
     }
+}
+
+pub(super) fn meta_slice_request(args: &[String]) -> Result<LocalDaemonRequest, DaemonError> {
+    match args.first().map(String::as_str) {
+        Some("list" | "ls") => {
+            if args.len() != 1 {
+                return Err(meta_command_error("usage: slice list"));
+            }
+            Ok(LocalDaemonRequest::ListSlices(ListSlicesRequest))
+        }
+        Some("show" | "get") => {
+            let Some(slice_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: slice show <slice-ref>"));
+            };
+            if args.len() != 2 {
+                return Err(meta_command_error("usage: slice show <slice-ref>"));
+            }
+            Ok(LocalDaemonRequest::GetSlice(SliceRefRequest {
+                slice_ref: slice_ref.clone(),
+            }))
+        }
+        Some("start") => meta_slice_ref_request(args, "start", LocalDaemonRequest::StartSlice),
+        Some("stop") => meta_slice_ref_request(args, "stop", LocalDaemonRequest::StopSlice),
+        Some("status") => {
+            let Some(slice_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: slice status <slice-ref>"));
+            };
+            if args.len() != 2 {
+                return Err(meta_command_error("usage: slice status <slice-ref>"));
+            }
+            Ok(LocalDaemonRequest::GetSliceStateStatus(
+                SliceStateStatusRequest {
+                    slice_ref: slice_ref.clone(),
+                },
+            ))
+        }
+        Some("save" | "save-state") => meta_slice_save_request(args),
+        Some("backup") => {
+            let Some(slice_ref) = args.get(1) else {
+                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
+            };
+            if args.len() > 3 {
+                return Err(meta_command_error("usage: slice backup <slice-ref> [name]"));
+            }
+            Ok(LocalDaemonRequest::CreateSliceBackup(
+                CreateSliceBackupRequest {
+                    slice_ref: slice_ref.clone(),
+                    name: args.get(2).cloned(),
+                },
+            ))
+        }
+        _ => Err(meta_command_error(
+            "usage: slice <list|show|start|stop|save-state|status|backup> ...",
+        )),
+    }
+}
+
+fn meta_slice_ref_request(
+    args: &[String],
+    command: &str,
+    request: impl FnOnce(SliceRefRequest) -> LocalDaemonRequest,
+) -> Result<LocalDaemonRequest, DaemonError> {
+    let Some(slice_ref) = args.get(1) else {
+        return Err(meta_command_error(format!(
+            "usage: slice {command} <slice-ref>"
+        )));
+    };
+    if args.len() != 2 {
+        return Err(meta_command_error(format!(
+            "usage: slice {command} <slice-ref>"
+        )));
+    }
+    Ok(request(SliceRefRequest {
+        slice_ref: slice_ref.clone(),
+    }))
+}
+
+fn meta_slice_save_request(args: &[String]) -> Result<LocalDaemonRequest, DaemonError> {
+    let Some(slice_ref) = args.get(1) else {
+        return Err(meta_command_error(
+            "usage: slice save-state <slice-ref> [--restart-agents|--shutdown] [--this-slice|--future-slices]",
+        ));
+    };
+    let mut mode = None;
+    let mut scope = None;
+    for flag in &args[2..] {
+        match flag.as_str() {
+            "--restart-agents" => mode = Some(SliceStateSaveMode::RestartAgents),
+            "--shutdown" => mode = Some(SliceStateSaveMode::Shutdown),
+            "--this-slice" => scope = Some(SliceStateSaveScope::ThisSlice),
+            "--future-slices" => scope = Some(SliceStateSaveScope::FutureSlices),
+            _ => {
+                return Err(meta_command_error(format!(
+                    "unknown slice save-state option `{flag}`"
+                )));
+            }
+        }
+    }
+    Ok(LocalDaemonRequest::SaveSliceState(SliceStateSaveRequest {
+        slice_ref: slice_ref.clone(),
+        mode,
+        scope,
+    }))
 }
 
 fn meta_owned_regular_agent_from_session(
