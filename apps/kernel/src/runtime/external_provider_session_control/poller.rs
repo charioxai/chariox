@@ -42,7 +42,7 @@ pub(super) async fn refresh_external_provider_session_index(
                 None,
                 None,
                 true,
-                false,
+                true,
             )
             .await;
             let total_elapsed = refresh_started.elapsed();
@@ -80,15 +80,7 @@ pub(super) async fn refresh_external_provider_session_index(
                 cache.cached_signature_checks.saturating_add(1)
             };
         }
-        refresh_attached_external_provider_histories_matching(
-            app,
-            runtime_state,
-            None,
-            None,
-            true,
-            false,
-        )
-        .await;
+        refresh_attached_external_provider_histories(app, runtime_state, None).await;
         let total_elapsed = refresh_started.elapsed();
         if total_elapsed >= EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE {
             crate::logging::info_with_fields(
@@ -328,13 +320,17 @@ pub(super) async fn refresh_attached_external_provider_histories(
     runtime_state: Option<&KernelRuntimeState>,
     provider_filter: Option<&str>,
 ) {
+    // Background discovery must never turn every idle Arroba-owned agent into
+    // provider transcript I/O. Active turns and explicitly imported sessions
+    // opt into responsive observation; an attached UI requests its own
+    // one-time session catch-up through the session-filtered path below.
     refresh_attached_external_provider_histories_matching(
         app,
         runtime_state,
         provider_filter,
         None,
-        false,
-        false,
+        true,
+        true,
     )
     .await;
 }

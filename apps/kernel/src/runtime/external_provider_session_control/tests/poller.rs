@@ -171,7 +171,7 @@ fn attached_resume_state_is_observed() {
     assert_eq!(target.provider_session_id, "thread-attached");
     assert!(
         !target.needs_responsive_refresh,
-        "an idle Arroba-owned session only needs attach-time and low-frequency catch-up"
+        "an idle Arroba-owned session only needs explicit attach-time catch-up"
     );
 }
 
