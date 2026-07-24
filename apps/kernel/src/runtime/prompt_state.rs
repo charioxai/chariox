@@ -677,6 +677,20 @@ impl PromptStateOwner {
         removed
     }
 
+    pub(crate) fn remove_queued_metaagent_event_prompts_for_agent(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        source_attachment_id: &str,
+    ) -> usize {
+        self.remove_queued_prompts_matching(session, |prompt| {
+            prompt.target_agent_id() == agent_id
+                && prompt.source_attachment_id() == source_attachment_id
+                && prompt.prompt().trim()
+                    == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
+        })
+    }
+
     pub(crate) fn remove_queued_prompt(
         &self,
         session: &RuntimeSession,

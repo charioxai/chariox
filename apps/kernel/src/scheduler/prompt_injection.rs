@@ -20,7 +20,7 @@ const WORKFLOW_HANDOFF_PAYLOADS_TAG: &str = "workflow-handoff-payloads";
 const OUTGOING_EDGE_CONTRACTS_TAG: &str = "outgoing-edge-contracts";
 const NODE_INSTRUCTION_REFERENCE_TAG: &str = "node-instruction-reference";
 const CONTROL_MAILBOX_TAG: &str = "control-mailbox";
-const METAAGENT_EVENT_VISIBLE_PROMPT: &str = "<metaagent-event/>";
+pub(crate) const METAAGENT_EVENT_VISIBLE_PROMPT: &str = "<metaagent-event/>";
 
 pub(crate) struct WorkflowPromptInjectionContext {
     pub workflow_ref: Option<String>,

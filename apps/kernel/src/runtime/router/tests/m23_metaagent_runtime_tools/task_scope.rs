@@ -332,6 +332,101 @@ async fn metaagent_terminal_states_wait_for_controlled_work_to_settle() {
 }
 
 #[tokio::test]
+async fn terminal_metaagent_task_drops_private_event_prompts_but_keeps_user_queue() {
+    let env = TestMetaRuntimeEnv::new("task-terminal-private-prompt-cleanup");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "Finish cleanly.")
+        .expect("meta task should start");
+    let task_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            format!("metaagent:{}:task", metaagent.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .expect("meta task attachment should attach");
+    let user_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "user-follow-up",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("user attachment should attach");
+    for (attachment_id, prompt) in [
+        (
+            task_attachment.id(),
+            crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT,
+        ),
+        (user_attachment.id(), "Keep this user follow-up queued."),
+    ] {
+        let queued = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            attachment_id,
+            metaagent.id(),
+            prompt,
+            crate::session::PromptStatus::Queued,
+        );
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), queued, true)
+            .expect("prompt should queue");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+    }
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &meta_auth_token,
+            crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
+            serde_json::json!({ "summary": "done" }),
+        )
+        .await
+        .expect("Meta task should complete");
+
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("session should remain available");
+    let queued = snapshot
+        .queued_prompts_for_agent(metaagent.id())
+        .expect("user follow-up should remain queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued.front().map(|prompt| prompt.prompt()),
+        Some("Keep this user follow-up queued.")
+    );
+}
+
+#[tokio::test]
 async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
     let env = TestMetaRuntimeEnv::new("prompt-task-create");
     let workspace = env.root.join("workspace");

@@ -205,6 +205,26 @@ impl KernelRuntimeOwnedState {
         Ok(removed)
     }
 
+    pub(super) fn remove_queued_metaagent_event_prompts_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        source_attachment_id: &str,
+    ) -> Result<usize, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let removed = self
+            .prompt_state_owner
+            .remove_queued_metaagent_event_prompts_for_agent(
+                &session,
+                agent_id,
+                source_attachment_id,
+            );
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(removed)
+    }
+
     pub(super) fn activate_next_queued_prompt_for_agent(
         &self,
         session_id: &str,

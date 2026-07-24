@@ -167,6 +167,12 @@ impl KernelRuntimeState {
         if agent.session_id() != session_id || !agent.is_metaagent() {
             return Ok(self.owned.session_store.get_session(session_id)?);
         }
+        let task_attachment_id = self.ensure_metaagent_task_attachment(session_id, &agent)?;
+        let _ = self.owned.remove_queued_metaagent_event_prompts_for_agent(
+            session_id,
+            agent_id,
+            &task_attachment_id,
+        )?;
         self.sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
             .await?;
         self.owned
