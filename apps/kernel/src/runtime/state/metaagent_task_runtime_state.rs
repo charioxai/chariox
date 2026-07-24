@@ -288,14 +288,6 @@ impl KernelRuntimeState {
         if completion.started_next.is_some() {
             return Ok(());
         }
-        if self
-            .owned
-            .provider_store
-            .get_run_for_agent(session_id, metaagent.id())
-            .is_some_and(|run| self.owned.active_turns.snapshot().contains_key(run.id()))
-        {
-            return Ok(());
-        }
         let session = self.owned.session_store.get_session(session_id)?;
         let Some(task) = session.metaagent_task(metaagent.id()) else {
             return Ok(());
@@ -489,6 +481,10 @@ impl KernelRuntimeState {
                     &self.owned.session_store.get_session(&request.session_id)?,
                     &request.metaagent_id,
                 );
+                let queued_task_notification = queued_prompt.as_ref().is_some_and(|prompt| {
+                    self.ensure_metaagent_task_attachment(&request.session_id, &metaagent)
+                        .is_ok_and(|attachment_id| prompt.source_attachment_id() == attachment_id)
+                });
                 if queued_prompt.is_some() {
                     if metaagent.remote_execution().is_some() {
                         if let Some(mut submission) =
@@ -526,13 +522,15 @@ impl KernelRuntimeState {
                         }
                     }
                 }
-                self.notify_metaagent_task_changed(
-                    &request.session_id,
-                    &metaagent,
-                    "The user resumed your task. Re-read the task and plan, then continue from the current state.",
-                    false,
-                )
-                .await;
+                if !queued_task_notification {
+                    self.notify_metaagent_task_changed(
+                        &request.session_id,
+                        &metaagent,
+                        "The user resumed your task. Re-read the task and plan, then continue from the current state.",
+                        false,
+                    )
+                    .await;
+                }
                 let session = self.owned.session_store.get_session(&request.session_id)?;
                 let session = self.project_metaagent_task_session(session);
                 Ok(metaagent_task_response(session, &request.metaagent_id))
@@ -724,7 +722,23 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        let result = if allow_steer {
+        let paused = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| session.metaagent_task(metaagent.id()).cloned())
+            .is_some_and(|task| task.status() == MetaagentTaskStatus::Paused);
+        let result = if paused {
+            self.queue_metaagent_command_prompt(
+                session_id,
+                metaagent,
+                &attachment_id,
+                metaagent.id(),
+                prompt_text.to_string(),
+            )
+            .await
+        } else if allow_steer {
             self.submit_metaagent_command_prompt(
                 session_id,
                 metaagent,

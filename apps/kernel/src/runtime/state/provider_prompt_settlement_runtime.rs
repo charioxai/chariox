@@ -408,13 +408,11 @@ impl KernelRuntimeState {
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         }
         self.inject_metaagent_turn_completion_event(session_id, &agent_id, &completion.completion)?;
-        if prompt_completed || force {
-            self.inject_orphaned_metaagent_task_event_after_turn(
-                session_id,
-                &agent_id,
-                &completion.completion,
-            )?;
-        }
+        self.inject_orphaned_metaagent_task_event_after_turn(
+            session_id,
+            &agent_id,
+            &completion.completion,
+        )?;
         if let Some(dispatch) = completion.dispatch {
             if let Err(error) = self
                 .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)

@@ -195,7 +195,7 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
 }
 
 #[tokio::test]
-async fn metaagent_quiet_drain_settlement_without_prompt_completed_does_not_inject_orphaned_task() {
+async fn metaagent_quiet_drain_settlement_recovers_orphaned_task() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -276,6 +276,7 @@ async fn metaagent_quiet_drain_settlement_without_prompt_completed_does_not_inje
         "fresh assistant output should not inject orphan recovery before provider completion"
     );
 
+    tokio::time::sleep(std::time::Duration::from_millis(75)).await;
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
@@ -286,13 +287,14 @@ async fn metaagent_quiet_drain_settlement_without_prompt_completed_does_not_inje
         .await
         .expect("quiet drain should settle prompt");
 
-    assert!(
+    assert_eq!(
         runtime
             .owned
             .metaagent_events
             .list(agent.id(), Some("metaagent.task.orphaned"), None, 10)
-            .is_empty(),
-        "quiet-drain settlement without prompt_completed must not resuscitate a Meta task"
+            .len(),
+        1,
+        "a settled Meta turn with an active task must request a final task decision"
     );
 }
 

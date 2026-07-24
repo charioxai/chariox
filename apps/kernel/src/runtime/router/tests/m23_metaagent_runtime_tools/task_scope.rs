@@ -671,6 +671,44 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         "pause must keep the agent in meta mode"
     );
 
+    let edit_while_paused =
+        LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            task_markdown: Some("# Edited while paused".to_string()),
+            plan_markdown: None,
+        });
+    let edited = router
+        .dispatch(
+            KernelCommand::from_local_request(
+                "edit-paused-meta-task",
+                None,
+                None,
+                &edit_while_paused,
+            ),
+            edit_while_paused,
+        )
+        .await
+        .expect("editing a paused task should queue its notification");
+    let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = edited else {
+        panic!("unexpected paused edit response: {edited:?}");
+    };
+    assert_eq!(
+        task.as_ref().map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Paused)
+    );
+    assert!(
+        session
+            .active_prompt_for_agent(metaagent.id())
+            .is_none_or(|prompt| prompt.id() == paused_prompt_id),
+        "editing while paused must not start another provider turn"
+    );
+    let queued = session
+        .queued_prompts_for_agent(metaagent.id())
+        .expect("paused task edit should queue one notification");
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].prompt().contains("Edited while paused"));
+
     let abort = LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
         session_id: session.id().to_string(),
         metaagent_id: metaagent.id().to_string(),
@@ -818,6 +856,100 @@ async fn resumed_metaagent_task_prioritizes_preserved_user_prompt_inner() {
             .queued_prompts_for_agent(metaagent.id())
             .map(|prompts| prompts.len()),
         Some(1)
+    );
+}
+
+#[test]
+fn resumed_metaagent_task_uses_queued_edit_without_duplicate_notification() {
+    run_large_stack_async_test(
+        "resumed-metaagent-task-uses-queued-edit",
+        resumed_metaagent_task_uses_queued_edit_without_duplicate_notification_inner,
+    );
+}
+
+async fn resumed_metaagent_task_uses_queued_edit_without_duplicate_notification_inner() {
+    let env = TestMetaRuntimeEnv::new("paused-task-edit");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "# Original task")
+        .expect("task should start");
+    app.sessions_mut()
+        .set_metaagent_task_status(
+            session.id(),
+            metaagent.id(),
+            crate::session::MetaagentTaskStatus::Paused,
+        )
+        .expect("task should pause");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let update =
+        LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            task_markdown: Some("# Edited task".to_string()),
+            plan_markdown: None,
+        });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("edit-paused-task", None, None, &update),
+            update,
+        )
+        .await
+        .expect("paused task edit should queue");
+
+    let resume =
+        LocalDaemonRequest::ResumeMetaagentTask(crate::local::ResumeMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+        });
+    let resumed = router
+        .dispatch(
+            KernelCommand::from_local_request("resume-edited-task", None, None, &resume),
+            resume,
+        )
+        .await
+        .expect("edited task should resume");
+    let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = resumed else {
+        panic!("unexpected resume response: {resumed:?}");
+    };
+    assert_eq!(
+        task.as_ref().map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Active)
+    );
+    assert!(
+        session
+            .active_prompt_for_agent(metaagent.id())
+            .is_some_and(|prompt| prompt.prompt().contains("# Edited task")),
+        "the queued edit notification should become the active continuation"
+    );
+    assert_eq!(
+        session
+            .queued_prompts_for_agent(metaagent.id())
+            .map(|prompts| prompts.len())
+            .unwrap_or_default(),
+        0,
+        "resume must not add a duplicate continuation behind the queued edit"
     );
 }
 

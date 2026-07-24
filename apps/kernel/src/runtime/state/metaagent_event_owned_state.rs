@@ -256,6 +256,7 @@ impl KernelRuntimeState {
             target_agent_id,
             prompt_text,
             true,
+            false,
         )
         .await
     }
@@ -275,6 +276,27 @@ impl KernelRuntimeState {
             target_agent_id,
             prompt_text,
             false,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn queue_metaagent_command_prompt(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        prompt_text: String,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.submit_metaagent_command_prompt_with_steering(
+            session_id,
+            metaagent,
+            source_attachment_id,
+            target_agent_id,
+            prompt_text,
+            false,
+            true,
         )
         .await
     }
@@ -287,6 +309,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         prompt_text: String,
         allow_steer: bool,
+        force_queue: bool,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let prompt_id = self.owned.session_store.reserve_prompt_id();
         let prompt = crate::session::PromptQueueItem::new(
@@ -326,7 +349,7 @@ impl KernelRuntimeState {
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),
                 prompt,
-                force_queue: false,
+                force_queue,
                 refresh_projection: true,
             })
             .await?;
