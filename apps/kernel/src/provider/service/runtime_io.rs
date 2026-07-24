@@ -71,10 +71,7 @@ impl ProviderProcessService {
                     .insert_claude_runtime(run_id.to_string(), binding.state);
                 if let Some(session_id) = session_id {
                     let run = self.get_run_mut(run_id)?;
-                    let mut resume_state = run.resume_state().clone();
-                    resume_state.set_claude_session_id(session_id.clone());
-                    run.set_resume_state(resume_state);
-                    run.set_provider_session_id(Some(session_id));
+                    record_initialized_claude_session(run, session_id);
                 }
                 self.apply_claude_run_selection(run_id, binding.selection)?;
             }
@@ -556,6 +553,10 @@ fn normalize_claude_selection_model(model: &str) -> String {
         .to_string()
 }
 
+fn record_initialized_claude_session(run: &mut RuntimeProviderRun, session_id: String) {
+    run.set_provider_session_id(Some(session_id));
+}
+
 #[cfg(test)]
 mod tests {
     use crate::provider::{
@@ -563,7 +564,27 @@ mod tests {
         ProviderResumeState, RuntimeProviderRun,
     };
 
-    use super::{normalize_claude_selection_model, CodexRunSelection};
+    use super::{
+        normalize_claude_selection_model, record_initialized_claude_session, CodexRunSelection,
+    };
+
+    #[test]
+    fn initialized_claude_session_is_not_resumable_until_a_prompt_is_accepted() {
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "run-claude",
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "claude".to_string(),
+        );
+
+        record_initialized_claude_session(&mut run, "new-session".to_string());
+
+        assert_eq!(run.provider_session_id(), Some("new-session"));
+        assert!(
+            run.resume_state().claude_session_id().is_none(),
+            "Claude does not create the resumable conversation until it accepts the first prompt"
+        );
+    }
 
     #[test]
     fn codex_run_selection_strips_provider_prefix_before_updating_run_model() {

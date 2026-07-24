@@ -6,8 +6,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::mcp::ArrobaMcpServerConfig;
 use crate::provider::{
-    normalize_provider_resume_model, AgentExecutionMode, LaunchProviderRequest,
-    ProviderResumeState, RuntimeProviderRun,
+    normalize_provider_resume_model, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::RuntimeSession;
 
@@ -108,8 +107,8 @@ pub(crate) fn apply_metaagent_launch_policy(
         return request;
     }
     request = request
-        .with_execution_mode(AgentExecutionMode::Plan)
         .with_provider_config_override("features.multi_agent", serde_json::json!(false))
+        .with_provider_config_override("arroba.metaagent_tools_only", serde_json::json!(true))
         .with_mcp_servers(Vec::new())
         .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest::default());
     request

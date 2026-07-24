@@ -6,7 +6,7 @@ use super::mcp_config::{request_has_claude_mcp_config, CLAUDE_MCP_CONFIG_PLACEHO
 pub(super) fn claude_launch_args(
     request: &LaunchProviderRequest,
 ) -> Result<Vec<String>, DaemonError> {
-    claude_launch_args_from_parts(
+    let mut args = claude_launch_args_from_parts(
         request.model.as_str(),
         request.variant.as_deref(),
         request.execution_mode.unwrap_or_default(),
@@ -17,7 +17,19 @@ pub(super) fn claude_launch_args(
             .and_then(|state| state.claude_session_id()),
         request_has_claude_mcp_config(request)?,
         request.runtime_mcp_binding.is_some(),
-    )
+    )?;
+    if request_uses_metaagent_tools_only(request) {
+        args.extend(["--tools".to_string(), String::new()]);
+    }
+    Ok(args)
+}
+
+pub(super) fn request_uses_metaagent_tools_only(request: &LaunchProviderRequest) -> bool {
+    request
+        .provider_config_overrides
+        .get("arroba.metaagent_tools_only")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn claude_launch_args_from_parts(

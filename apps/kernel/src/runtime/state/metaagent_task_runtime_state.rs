@@ -22,6 +22,23 @@ pub(crate) fn parse_meta_slash_command(prompt: &str) -> Option<MetaSlashCommand>
 }
 
 impl KernelRuntimeState {
+    pub(super) fn persist_metaagent_task_session_update(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session = self.owned.session_snapshot(session_id)?;
+        self.owned.durable_state_store.append_event(
+            "session.updated",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "session": &session,
+                "reason": reason,
+            }),
+        )?;
+        Ok(session)
+    }
+
     pub(crate) fn session_task_lane_busy(&self, session_id: &str) -> Result<bool, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         Ok(session.has_active_session_task() || session.has_pending_session_task())
@@ -135,7 +152,9 @@ impl KernelRuntimeState {
                 .await;
             return Err(error);
         }
-        Ok(self.project_metaagent_task_session(self.owned.session_store.get_session(session_id)?))
+        let session =
+            self.persist_metaagent_task_session_update(session_id, "metaagent_task_started")?;
+        Ok(self.project_metaagent_task_session(session))
     }
 
     pub(crate) async fn deactivate_meta_mode_for_terminal_task(
@@ -237,7 +256,7 @@ impl KernelRuntimeState {
         if !agent.is_metaagent() {
             return Ok(None);
         }
-        let Some(session) = self
+        let Some(_session) = self
             .owned
             .session_store
             .write()
@@ -245,6 +264,8 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
+        let session =
+            self.persist_metaagent_task_session_update(session_id, "metaagent_task_started")?;
         Ok(Some(self.project_metaagent_task_session(session)))
     }
 
@@ -407,6 +428,7 @@ impl KernelRuntimeState {
                         )?;
                     }
                 }
+                self.persist_metaagent_task_session_update(&session_id, "metaagent_task_updated")?;
                 let notification = {
                     let session = self.owned.session_store.get_session(&session_id)?;
                     metaagent_task_update_notification(
@@ -430,6 +452,10 @@ impl KernelRuntimeState {
                     MetaagentTaskStatus::Paused,
                 )?;
                 drop(session);
+                self.persist_metaagent_task_session_update(
+                    &request.session_id,
+                    "metaagent_task_paused",
+                )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
                     &metaagent,
@@ -449,6 +475,10 @@ impl KernelRuntimeState {
                     MetaagentTaskStatus::Active,
                 )?;
                 drop(session);
+                self.persist_metaagent_task_session_update(
+                    &request.session_id,
+                    "metaagent_task_resumed",
+                )?;
                 let queued_prompt = self.owned.prompt_state_owner.peek_next_queued_prompt(
                     &self.owned.session_store.get_session(&request.session_id)?,
                     &request.metaagent_id,
@@ -510,6 +540,10 @@ impl KernelRuntimeState {
                     request.reason,
                 )?;
                 drop(session);
+                self.persist_metaagent_task_session_update(
+                    &request.session_id,
+                    "metaagent_task_aborted",
+                )?;
                 self.cancel_active_metaagent_prompt_if_any(
                     &request.session_id,
                     &metaagent,

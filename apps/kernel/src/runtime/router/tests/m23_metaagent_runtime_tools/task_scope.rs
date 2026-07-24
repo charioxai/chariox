@@ -610,6 +610,22 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
             .is_some_and(|agent| !agent.is_metaagent()),
         "abort must restore the agent to regular mode"
     );
+    let durable_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_after(0)
+        .expect("durable task lifecycle events should load");
+    for reason in ["metaagent_task_paused", "metaagent_task_aborted"] {
+        assert!(
+            durable_events.iter().any(|event| {
+                event.kind == "session.updated"
+                    && event.subject_id.as_deref() == Some(session.id())
+                    && event.payload["reason"] == reason
+            }),
+            "{reason} must be durable across kernel restart"
+        );
+    }
 }
 
 #[test]

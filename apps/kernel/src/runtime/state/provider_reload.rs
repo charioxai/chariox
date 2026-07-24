@@ -180,17 +180,13 @@ impl KernelRuntimeState {
                 return Ok(ProviderReloadOutcome::Unaffected);
             }
             let config = owned.config_projection.snapshot();
-            let mut launch_request = crate::provider::LaunchProviderRequest::new(
-                session_id,
-                run.adapter_key(),
-                run.provider(),
-                run.account_profile(),
-                run.model(),
-            )
-            .with_agent_id(agent_id)
-            .with_owner_user_id(run.owner_user_id().to_string())
-            .with_variant(run.variant().map(str::to_string))
-            .with_resume_state(run.resume_state().clone());
+            let durable_resume_state = owned
+                .agent_store
+                .get_agent(agent_id)?
+                .provider_resume_state()
+                .clone();
+            let mut launch_request =
+                policy_reload_launch_request(&run, agent_id, durable_resume_state);
             launch_request = launch_request.with_workspace_live_sync_mode(
                 crate::provider::provider_workspace_live_sync_mode_for_session(
                     run.provider(),
@@ -242,6 +238,24 @@ impl KernelRuntimeState {
     }
 }
 
+fn policy_reload_launch_request(
+    run: &crate::provider::RuntimeProviderRun,
+    agent_id: &str,
+    durable_resume_state: crate::provider::ProviderResumeState,
+) -> crate::provider::LaunchProviderRequest {
+    crate::provider::LaunchProviderRequest::new(
+        run.session_id(),
+        run.adapter_key(),
+        run.provider(),
+        run.account_profile(),
+        run.model(),
+    )
+    .with_agent_id(agent_id)
+    .with_owner_user_id(run.owner_user_id().to_string())
+    .with_variant(run.variant().map(str::to_string))
+    .with_resume_state(durable_resume_state)
+}
+
 fn user_config_path_requires_provider_reload(path: &str) -> bool {
     path == "providers.workspace_live_sync"
 }
@@ -267,9 +281,41 @@ fn active_agent_provider_run_ids_for_session(
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
+    };
 
-    use super::active_agent_provider_run_ids_for_session;
+    use super::{active_agent_provider_run_ids_for_session, policy_reload_launch_request};
+
+    #[test]
+    fn provider_reload_uses_only_durable_resume_state() {
+        let run = provider_run_with_resume_state(
+            "run-claude",
+            "session-1",
+            "agent-1",
+            ProviderResumeState::from_claude_session_id("unconfirmed-runtime-session"),
+        );
+
+        let fresh_request =
+            policy_reload_launch_request(&run, "agent-1", ProviderResumeState::default());
+        assert!(
+            fresh_request.resume_state.is_none(),
+            "a provider-generated session id must not be resumed before the first turn confirms it"
+        );
+
+        let confirmed_request = policy_reload_launch_request(
+            &run,
+            "agent-1",
+            ProviderResumeState::from_claude_session_id("confirmed-session"),
+        );
+        assert_eq!(
+            confirmed_request
+                .resume_state
+                .as_ref()
+                .and_then(ProviderResumeState::claude_session_id),
+            Some("confirmed-session")
+        );
+    }
 
     #[test]
     fn provider_reload_policy_selects_active_agent_runs_for_session_mode_changes() {
@@ -317,6 +363,31 @@ mod tests {
                 pty_env_remove: Vec::new(),
                 working_directory: None,
                 structured_endpoint: Some("ws://127.0.0.1:1".to_string()),
+            },
+        )
+    }
+
+    fn provider_run_with_resume_state(
+        run_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+    ) -> crate::provider::RuntimeProviderRun {
+        crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &LaunchProviderRequest::new(session_id, "claude", "claude-p", "default", "haiku")
+                .with_agent_id(agent_id)
+                .with_resume_state(resume_state),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude".to_string(),
+                pty_target: None,
+                pty_program: Some("claude".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("stdio://claude".to_string()),
             },
         )
     }

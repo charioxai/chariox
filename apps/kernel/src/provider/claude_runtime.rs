@@ -527,7 +527,7 @@ mod tests {
     use crate::provider::claude::CLAUDE_MCP_CONFIG_PLACEHOLDER;
     use crate::provider::{
         AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
-        ProviderLaunchResult, RuntimeMcpBinding, RuntimeProviderRun,
+        ProviderLaunchResult, ProviderResumeState, RuntimeMcpBinding, RuntimeProviderRun,
     };
     use crate::session::PromptAttachment;
     use crate::terminal::TerminalOutputKind;
@@ -821,11 +821,44 @@ mod tests {
         );
 
         assert_eq!(state.session_id.as_deref(), Some("claude-session-1"));
+        assert!(
+            batch.resolved_resume_state.is_none(),
+            "provider initialization alone must not make a fresh Claude session resumable"
+        );
         assert_eq!(
             batch.resolved_model.as_deref(),
             Some("claude/claude-sonnet-4-6")
         );
         assert_eq!(batch.resolved_model_source, Some("claude.system"));
+    }
+
+    #[test]
+    fn captures_resumable_session_only_after_prompt_submission() {
+        let (mut state, mut batch) = parser_state();
+        state.active_prompt_message = Some(json!({
+            "type": "user",
+            "message": { "role": "user", "content": "hello" }
+        }));
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "system",
+                "subtype": "init",
+                "session_id": "claude-session-1",
+                "model": "claude-haiku-4-5"
+            }),
+            &mut batch,
+        );
+
+        assert_eq!(
+            batch
+                .resolved_resume_state
+                .as_ref()
+                .and_then(ProviderResumeState::claude_session_id),
+            Some("claude-session-1")
+        );
     }
 
     #[test]

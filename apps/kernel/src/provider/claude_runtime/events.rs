@@ -210,7 +210,9 @@ fn record_claude_session_id(
     if state.session_id.as_deref() != Some(session_id.as_str()) {
         state.session_id = Some(session_id.clone());
     }
-    batch.resolved_resume_state = Some(ProviderResumeState::from_claude_session_id(session_id));
+    if state.active_prompt_message.is_some() {
+        batch.resolved_resume_state = Some(ProviderResumeState::from_claude_session_id(session_id));
+    }
 }
 
 fn emit_text_suffix(

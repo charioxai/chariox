@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest};
 
-use super::launch_args::normalized_claude_model;
+use super::launch_args::{normalized_claude_model, request_uses_metaagent_tools_only};
 use super::mcp_config::{
     create_claude_runtime_files_root, materialize_request_claude_mcp_config, ClaudeRuntimeFilesRoot,
 };
@@ -307,6 +307,9 @@ pub(super) fn claude_native_tui_args(
         if request.runtime_mcp_binding.is_some() {
             args.extend(["--allowedTools".to_string(), "mcp__arroba__*".to_string()]);
         }
+    }
+    if request_uses_metaagent_tools_only(request) {
+        args.extend(["--tools".to_string(), String::new()]);
     }
     Ok(args)
 }

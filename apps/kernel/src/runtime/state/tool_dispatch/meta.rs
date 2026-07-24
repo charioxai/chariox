@@ -457,7 +457,10 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .update_metaagent_plan_markdown(session.id(), agent.id(), args.markdown)?;
-                let projected = self.owned.session_snapshot(updated.id())?;
+                let projected = self.persist_metaagent_task_session_update(
+                    updated.id(),
+                    "metaagent_plan_updated",
+                )?;
                 Ok(RuntimeToolResult {
                     ok: true,
                     payload: metaagent_plan_payload(&projected, agent),
@@ -476,6 +479,10 @@ impl KernelRuntimeState {
                     session.id(),
                     agent.id(),
                     args.summary,
+                )?;
+                self.persist_metaagent_task_session_update(
+                    updated.id(),
+                    "metaagent_task_completed",
                 )?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(
@@ -507,6 +514,7 @@ impl KernelRuntimeState {
                     agent.id(),
                     args.reason,
                 )?;
+                self.persist_metaagent_task_session_update(updated.id(), "metaagent_task_blocked")?;
                 let projected = self
                     .deactivate_meta_mode_for_terminal_task(
                         updated.id(),

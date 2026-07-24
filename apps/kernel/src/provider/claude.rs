@@ -846,6 +846,38 @@ mod tests {
     }
 
     #[test]
+    fn metaagent_launch_disables_claude_builtin_tools_but_keeps_runtime_mcp() {
+        let _guard = env_guard();
+        let path = std::env::temp_dir().join(format!(
+            "arroba-claude-resolve-test-{}-meta-tools",
+            std::process::id()
+        ));
+        write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
+        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+
+        let request =
+            LaunchProviderRequest::new("session-1", "claude", "claude-p", "default", "haiku")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "token-123",
+                ))
+                .with_provider_config_override(
+                    "arroba.metaagent_tools_only",
+                    serde_json::json!(true),
+                );
+        let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
+
+        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        let _ = fs::remove_file(&path);
+
+        assert!(launch
+            .pty_args
+            .windows(2)
+            .any(|pair| pair == ["--tools", ""]));
+        assert!(launch.pty_args.iter().any(|arg| arg == "--mcp-config"));
+    }
+
+    #[test]
     fn injects_mcp_config_into_native_tui_launch_args() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(

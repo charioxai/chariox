@@ -198,8 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn app_launch_preparation_forces_metaagents_to_plan_and_preserves_permission_level_without_user_mcps(
-    ) {
+    fn app_launch_preparation_preserves_metaagent_mode_and_permission_without_user_mcps() {
         let mut app =
             DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
         let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -239,7 +238,7 @@ mod tests {
             )
             .expect("provider launch should prepare");
 
-        assert_eq!(prepared.execution_mode, Some(AgentExecutionMode::Plan));
+        assert_eq!(prepared.execution_mode, Some(AgentExecutionMode::Build));
         assert_eq!(prepared.permission_level, Some(AgentPermissionLevel::Yolo));
         assert_eq!(
             prepared
@@ -247,6 +246,13 @@ mod tests {
                 .get("features.multi_agent"),
             Some(&serde_json::json!(false)),
             "Meta mode should disable provider-native Codex multi-agent tools"
+        );
+        assert_eq!(
+            prepared
+                .provider_config_overrides
+                .get("arroba.metaagent_tools_only"),
+            Some(&serde_json::json!(true)),
+            "Meta mode should expose only Arroba orchestration tools to provider-native runtimes"
         );
         assert!(
             prepared.mcp_servers.is_empty(),
