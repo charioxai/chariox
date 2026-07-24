@@ -466,7 +466,12 @@ impl KernelRuntimeState {
             META_COMPLETE_TASK_TOOL => {
                 let args = serde_json::from_value::<MetaCompleteTaskArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                let metaagent = agent.clone();
+                if self.metaagent_has_unfinished_controlled_work(session, agent) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "complete_metaagent_task",
+                        message: "cannot complete the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
+                    });
+                }
                 let updated = self.owned.session_store.write().complete_metaagent_task(
                     session.id(),
                     agent.id(),
@@ -479,12 +484,6 @@ impl KernelRuntimeState {
                         "meta task completion",
                     )
                     .await?;
-                self.cancel_active_metaagent_prompt_if_any(
-                    updated.id(),
-                    &metaagent,
-                    "complete_metaagent_task",
-                )
-                .await?;
                 self.spawn_workflow_prompt_dispatches(
                     self.owned
                         .workflow_maybe_start_next_queued_prompt(updated.id()),
@@ -497,7 +496,12 @@ impl KernelRuntimeState {
             META_MARK_BLOCKED_TOOL => {
                 let args = serde_json::from_value::<MetaMarkBlockedArgs>(arguments)
                     .map_err(invalid_meta_args)?;
-                let metaagent = agent.clone();
+                if self.metaagent_has_unfinished_controlled_work(session, agent) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "block_metaagent_task",
+                        message: "cannot block the Meta task while a controlled agent or workflow still has active, queued, completing, or paused work; wait for it to settle or stop it first".to_string(),
+                    });
+                }
                 let updated = self.owned.session_store.write().block_metaagent_task(
                     session.id(),
                     agent.id(),
@@ -510,12 +514,6 @@ impl KernelRuntimeState {
                         "meta task blocked",
                     )
                     .await?;
-                self.cancel_active_metaagent_prompt_if_any(
-                    updated.id(),
-                    &metaagent,
-                    "block_metaagent_task",
-                )
-                .await?;
                 self.spawn_workflow_prompt_dispatches(
                     self.owned
                         .workflow_maybe_start_next_queued_prompt(updated.id()),

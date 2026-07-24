@@ -193,6 +193,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     let PromptSubmissionOutcome::Started { prompt } = outcome else {
         panic!("meta slash prompt should start");
     };
+    let active_meta_prompt_id = prompt.id().to_string();
     assert_eq!(prompt.prompt(), "Inspect the repo by delegation.");
     assert!(
         prompt
@@ -340,18 +341,22 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
             .map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Completed)
     );
+    let completing_prompt = session_after_completion
+        .active_prompt_for_agent(&agent_id)
+        .expect("task completion should let the current provider turn settle naturally");
+    assert_eq!(completing_prompt.id(), active_meta_prompt_id);
+    assert_eq!(
+        completing_prompt.status(),
+        crate::session::PromptStatus::Running
+    );
     assert!(
         session_after_completion
             .queued_prompts_for_agent(&agent_id)
             .into_iter()
             .flatten()
-            .any(|prompt| {
-                prompt
-                    .hidden_system_context()
-                    .to_ascii_lowercase()
-                    .contains("has left arroba meta mode")
-            }),
-        "mode exit should queue a kernel continuation prompt"
+            .next()
+            .is_none(),
+        "mode exit must not create a user-visible continuation turn"
     );
 }
 

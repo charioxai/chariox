@@ -610,7 +610,8 @@ impl KernelRuntimeOwnedState {
             metaagent.id(),
             assembly.visible_user_prompt,
             crate::session::PromptStatus::Queued,
-        );
+        )
+        .with_hidden_system_context(assembly.hidden_system_context);
         self.submit_metaagent_event_prompt(session_id, &record.event_id, prompt)
             .unwrap_or_default()
     }
@@ -787,7 +788,8 @@ impl KernelRuntimeOwnedState {
                 metaagent.id(),
                 assembly.visible_user_prompt,
                 crate::session::PromptStatus::Queued,
-            );
+            )
+            .with_hidden_system_context(assembly.hidden_system_context);
             dispatches.extend(self.submit_metaagent_event_prompt(
                 run.session_id(),
                 &record.event_id,

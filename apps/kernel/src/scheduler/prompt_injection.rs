@@ -20,6 +20,7 @@ const WORKFLOW_HANDOFF_PAYLOADS_TAG: &str = "workflow-handoff-payloads";
 const OUTGOING_EDGE_CONTRACTS_TAG: &str = "outgoing-edge-contracts";
 const NODE_INSTRUCTION_REFERENCE_TAG: &str = "node-instruction-reference";
 const CONTROL_MAILBOX_TAG: &str = "control-mailbox";
+const METAAGENT_EVENT_VISIBLE_PROMPT: &str = "<metaagent-event/>";
 
 pub(crate) struct WorkflowPromptInjectionContext {
     pub workflow_ref: Option<String>,
@@ -64,6 +65,7 @@ pub(crate) struct WorkflowTurnPromptAssembly {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MetaagentEventPromptAssembly {
     pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
     pub(crate) manifest: PromptManifest,
 }
 
@@ -76,16 +78,17 @@ pub(crate) fn render_metaagent_event_prompt_assembly(
         bundled_metaagent_event_template(),
     );
     manifest.push_body(template.id.clone(), &template.body);
-    let visible_user_prompt = template
+    let hidden_system_context = template
         .body
         .replace("{{EVENT_ID}}", context.event_id.trim())
         .replace("{{EVENT_KIND}}", context.event_kind.trim())
         .replace("{{SOURCE}}", context.source.trim())
         .replace("{{TITLE}}", context.title.trim())
         .replace("{{BODY}}", context.body.trim());
-    let visible_user_prompt = prompt_component("metaagent-event", &visible_user_prompt);
+    let hidden_system_context = prompt_component("metaagent-event", &hidden_system_context);
     MetaagentEventPromptAssembly {
-        visible_user_prompt,
+        visible_user_prompt: METAAGENT_EVENT_VISIBLE_PROMPT.to_string(),
+        hidden_system_context,
         manifest,
     }
 }

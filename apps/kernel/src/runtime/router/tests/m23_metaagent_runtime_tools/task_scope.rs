@@ -226,6 +226,112 @@ async fn metaagent_runtime_mcp_manages_scoped_task_artifacts_impl() {
 }
 
 #[tokio::test]
+async fn metaagent_terminal_states_wait_for_controlled_work_to_settle() {
+    let env = TestMetaRuntimeEnv::new("task-terminal-state-guard");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, worker) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    mark_test_agent_controlled_by_metaagent(&mut app, worker.id(), metaagent.id());
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        worker.id(),
+        "dev-stub",
+        "dev-stub",
+        "worker-model",
+    );
+    let meta_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "Delegate and verify.")
+        .expect("meta task should start");
+    let worker_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "meta-worker-task",
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .expect("worker attachment should attach");
+    let worker_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        worker_attachment.id(),
+        worker.id(),
+        "Finish the delegated check.",
+        crate::session::PromptStatus::Queued,
+    );
+    let outcome = app
+        .prompt_owner_submit_prepared_prompt(session.id(), worker_prompt, false)
+        .expect("worker prompt should submit");
+    assert!(matches!(
+        outcome,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    let meta_auth_token = meta_run
+        .runtime_mcp_auth_token()
+        .expect("meta run should expose runtime MCP auth token")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    for (tool, arguments) in [
+        (
+            crate::transport::runtime_tools::META_COMPLETE_TASK_TOOL,
+            serde_json::json!({ "summary": "too early" }),
+        ),
+        (
+            crate::transport::runtime_tools::META_MARK_BLOCKED_TOOL,
+            serde_json::json!({ "reason": "too early" }),
+        ),
+    ] {
+        let error = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(&meta_auth_token, tool, arguments)
+            .await
+            .expect_err("terminal task state must wait for controlled work");
+        assert!(
+            error
+                .to_string()
+                .contains("controlled agent or workflow still has active"),
+            "{error:?}"
+        );
+    }
+
+    let session_after = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("session should remain available");
+    assert_eq!(
+        session_after
+            .metaagent_task(metaagent.id())
+            .map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Active)
+    );
+    assert!(router
+        .runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.id() == metaagent.id())
+        .is_some_and(|agent| agent.is_metaagent()));
+}
+
+#[tokio::test]
 async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
     let env = TestMetaRuntimeEnv::new("prompt-task-create");
     let workspace = env.root.join("workspace");
@@ -489,17 +595,13 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         task.as_ref().map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Aborted)
     );
-    let exit_prompt = session
-        .active_prompt_for_agent(metaagent.id())
-        .expect("abort should start the private regular-mode transition prompt");
-    assert_eq!(exit_prompt.status(), crate::session::PromptStatus::Running);
-    assert_ne!(exit_prompt.id(), paused_prompt_id);
-    assert!(
-        exit_prompt
-            .hidden_system_context()
-            .contains("has left Arroba meta mode"),
-        "abort must not leave the cancelled meta task prompt active: {exit_prompt:?}"
-    );
+    if let Some(aborted_prompt) = session.active_prompt_for_agent(metaagent.id()) {
+        assert_eq!(aborted_prompt.id(), paused_prompt_id);
+        assert_eq!(
+            aborted_prompt.status(),
+            crate::session::PromptStatus::Cancelling
+        );
+    }
     assert!(
         session
             .agents()

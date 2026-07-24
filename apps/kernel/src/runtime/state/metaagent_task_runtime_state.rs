@@ -156,8 +156,6 @@ impl KernelRuntimeState {
         let _ = self
             .reload_agent_provider_for_policy(session_id, agent_id, reason)
             .await?;
-        self.submit_meta_mode_exited_prompt(session_id, agent_id, reason)
-            .await?;
         Ok(self.owned.session_store.get_session(session_id)?)
     }
 
@@ -165,54 +163,6 @@ impl KernelRuntimeState {
         let (context, _manifest) = crate::prompt_assembly::PromptAssemblyService::from_env()?
             .assemble_meta_mode_entered_context()?;
         Ok(context)
-    }
-
-    async fn submit_meta_mode_exited_prompt(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        reason: &str,
-    ) -> Result<(), DaemonError> {
-        let (exit_context, _manifest) = crate::prompt_assembly::PromptAssemblyService::from_env()?
-            .assemble_meta_mode_exited_context(reason)?;
-        let attachment_id = self.ensure_metaagent_task_attachment(
-            session_id,
-            &self.owned.agent_store.get_agent(agent_id)?,
-        )?;
-        let prompt = crate::session::PromptQueueItem::new(
-            format!("pending-draft:metaagent-task:{session_id}:{agent_id}"),
-            attachment_id,
-            agent_id,
-            exit_context.clone(),
-            crate::session::PromptStatus::Queued,
-        )
-        .with_hidden_system_context(exit_context);
-        let mut submission = self
-            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.to_string(),
-                prompt,
-                force_queue: false,
-                refresh_projection: true,
-            })
-            .await?;
-        if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
-            (&submission.outcome, submission.dispatch.as_ref())
-        {
-            self.start_active_turn_with_trace_id(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                prompt.id(),
-                &dispatch.provider_run_id,
-                "meta-mode-exited",
-            );
-        }
-        if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
-        }
-        if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
-        }
-        Ok(())
     }
 
     async fn sync_remote_leased_agent_meta_mode(
@@ -334,7 +284,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        if self.metaagent_has_active_owned_regular_agent_work(&session, &metaagent) {
+        if self.metaagent_has_unfinished_controlled_work(&session, &metaagent) {
             return Ok(());
         }
         if self
@@ -377,13 +327,14 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn metaagent_has_active_owned_regular_agent_work(
+    pub(crate) fn metaagent_has_unfinished_controlled_work(
         &self,
         session: &crate::session::RuntimeSession,
         metaagent: &crate::agent::AgentInstance,
     ) -> bool {
         let activity = self.agent_activity_for_session(session);
-        self.owned
+        let active_agent_work = self
+            .owned
             .agent_store
             .get_session_agents(session.id())
             .into_iter()
@@ -403,6 +354,19 @@ impl KernelRuntimeState {
                         .prompt_state_owner
                         .queued_prompt_count_for_agent(session, agent.id())
                         > 0
+            });
+        active_agent_work
+            || session.workflow_runs().iter().any(|run| {
+                matches!(
+                    run.status(),
+                    crate::session::WorkflowRunStatus::Created
+                        | crate::session::WorkflowRunStatus::Running
+                        | crate::session::WorkflowRunStatus::Waiting
+                        | crate::session::WorkflowRunStatus::Completing
+                        | crate::session::WorkflowRunStatus::Paused
+                ) && session.workflow(run.workflow_id()).is_some_and(|workflow| {
+                    workflow.controlled_by_metaagent_id() == Some(metaagent.id())
+                })
             })
     }
 

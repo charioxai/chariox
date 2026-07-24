@@ -340,7 +340,8 @@ impl<'a> KernelAgentService<'a> {
             metaagent.id(),
             assembly.visible_user_prompt,
             crate::session::PromptStatus::Queued,
-        );
+        )
+        .with_hidden_system_context(assembly.hidden_system_context);
         let submitted = match self.submit_prepared_prompt_for_kernel(
             crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),
@@ -473,7 +474,8 @@ impl<'a> KernelAgentService<'a> {
             metaagent.id(),
             assembly.visible_user_prompt,
             crate::session::PromptStatus::Queued,
-        );
+        )
+        .with_hidden_system_context(assembly.hidden_system_context);
         let submitted = match self.submit_prepared_prompt_for_kernel(
             crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.clone(),

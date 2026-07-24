@@ -206,7 +206,7 @@ fn workflow_prompt_component_delimiters_are_escaped_and_handoff_extraction_recov
 }
 
 #[test]
-fn metaagent_event_prompt_is_a_tagged_user_component() {
+fn metaagent_event_prompt_is_hidden_from_user_history() {
     let _guard = env_lock::lock();
     let home = temp_arroba_home("metaagent-event-tag");
     let previous_home = set_arroba_home(&home);
@@ -220,14 +220,15 @@ fn metaagent_event_prompt_is_a_tagged_user_component() {
     });
     restore_arroba_home(previous_home);
 
+    assert_eq!(assembly.visible_user_prompt, "<metaagent-event/>");
     assert!(assembly
-        .visible_user_prompt
+        .hidden_system_context
         .starts_with("<metaagent-event>\n"));
     assert!(assembly
-        .visible_user_prompt
+        .hidden_system_context
         .ends_with("\n</metaagent-event>"));
     assert!(assembly
-        .visible_user_prompt
+        .hidden_system_context
         .contains("&lt;/metaagent-event&gt; early."));
 }
 
