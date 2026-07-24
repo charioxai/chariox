@@ -481,6 +481,19 @@ fn native_prompt_history_uses_latest_terminal_input_attachment() {
 }
 
 #[test]
+fn native_interrupt_control_prompt_is_not_user_history() {
+    assert!(claude_native_prompt_is_internal_control(
+        "[Request interrupted by user]"
+    ));
+    assert!(claude_native_prompt_is_internal_control(
+        "  [Request interrupted by user]\n"
+    ));
+    assert!(!claude_native_prompt_is_internal_control(
+        "Please explain why the request was interrupted by the user."
+    ));
+}
+
+#[test]
 fn submit_wait_state_defers_enter_until_delay_elapses() {
     let marker = format!("submit-wait:prompt-7:{}", 1_000);
     // Before the settle delay: keep waiting (Enter stays off the lock).

@@ -210,7 +210,9 @@ pub(super) fn claude_user_prompt(value: &Value) -> Option<String> {
         return None;
     }
     let message = value.get("message")?;
-    text_from_content(message.get("content")?).and_then(clean_provider_prompt)
+    text_from_content(message.get("content")?)
+        .and_then(clean_provider_prompt)
+        .filter(|prompt| prompt.trim() != "[Request interrupted by user]")
 }
 
 pub(super) fn opencode_user_prompt(value: &Value) -> Option<String> {

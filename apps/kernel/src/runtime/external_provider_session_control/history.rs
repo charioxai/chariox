@@ -372,7 +372,14 @@ pub(super) fn consume_arroba_owned_prompt_text_match(
     let Some(text) = normalized_observed_prompt_text(observed_text) else {
         return false;
     };
-    let Some(count) = counts.get_mut(&text) else {
+    let owned_text = if counts.contains_key(&text) {
+        text
+    } else if text.ends_with("<metaagent-event/>") && counts.contains_key("<metaagent-event/>") {
+        "<metaagent-event/>".to_string()
+    } else {
+        return false;
+    };
+    let Some(count) = counts.get_mut(&owned_text) else {
         return false;
     };
     if *count == 0 {
@@ -380,7 +387,7 @@ pub(super) fn consume_arroba_owned_prompt_text_match(
     }
     *count -= 1;
     if *count == 0 {
-        counts.remove(&text);
+        counts.remove(&owned_text);
     }
     true
 }

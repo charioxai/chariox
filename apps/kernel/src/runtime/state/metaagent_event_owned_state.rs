@@ -261,42 +261,24 @@ impl KernelRuntimeState {
         .await
     }
 
-    pub(crate) async fn submit_metaagent_command_prompt_without_steering(
+    pub(crate) async fn submit_metaagent_task_notification(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,
         source_attachment_id: &str,
-        target_agent_id: &str,
         prompt_text: String,
+        allow_steer: bool,
+        force_queue: bool,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        self.submit_metaagent_command_prompt_with_steering(
+        self.submit_metaagent_prompt_with_steering_and_hidden_context(
             session_id,
             metaagent,
             source_attachment_id,
-            target_agent_id,
+            metaagent.id(),
+            "<metaagent-event/>".to_string(),
             prompt_text,
-            false,
-            false,
-        )
-        .await
-    }
-
-    pub(crate) async fn queue_metaagent_command_prompt(
-        &self,
-        session_id: &str,
-        metaagent: &crate::agent::AgentInstance,
-        source_attachment_id: &str,
-        target_agent_id: &str,
-        prompt_text: String,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        self.submit_metaagent_command_prompt_with_steering(
-            session_id,
-            metaagent,
-            source_attachment_id,
-            target_agent_id,
-            prompt_text,
-            false,
-            true,
+            allow_steer,
+            force_queue,
         )
         .await
     }
@@ -311,14 +293,39 @@ impl KernelRuntimeState {
         allow_steer: bool,
         force_queue: bool,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.submit_metaagent_prompt_with_steering_and_hidden_context(
+            session_id,
+            metaagent,
+            source_attachment_id,
+            target_agent_id,
+            prompt_text,
+            String::new(),
+            allow_steer,
+            force_queue,
+        )
+        .await
+    }
+
+    async fn submit_metaagent_prompt_with_steering_and_hidden_context(
+        &self,
+        session_id: &str,
+        metaagent: &crate::agent::AgentInstance,
+        source_attachment_id: &str,
+        target_agent_id: &str,
+        visible_prompt_text: String,
+        hidden_system_context: String,
+        allow_steer: bool,
+        force_queue: bool,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let prompt_id = self.owned.session_store.reserve_prompt_id();
         let prompt = crate::session::PromptQueueItem::new(
             prompt_id.clone(),
             source_attachment_id,
             target_agent_id,
-            prompt_text,
+            visible_prompt_text,
             crate::session::PromptStatus::Queued,
-        );
+        )
+        .with_hidden_system_context(hidden_system_context);
         self.owned
             .ensure_metaagent_prompt_target_not_workflow_busy(session_id, target_agent_id)?;
         if allow_steer {

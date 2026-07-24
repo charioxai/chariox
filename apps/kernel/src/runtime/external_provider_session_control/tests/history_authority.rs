@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn private_meta_continuation_observation_matches_its_owned_marker() {
+    let mut counts = BTreeMap::from([("<metaagent-event/>".to_string(), 1)]);
+
+    assert!(consume_arroba_owned_prompt_text_match(
+        &mut counts,
+        "The task context rendered by the provider.<metaagent-event/>"
+    ));
+    assert!(counts.is_empty());
+}
+
+#[test]
 fn observed_external_history_appends_without_creating_active_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

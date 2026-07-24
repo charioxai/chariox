@@ -55,6 +55,25 @@ fn ignores_claude_internal_resume_pair_in_observed_history() {
 }
 
 #[test]
+fn ignores_claude_native_interruption_marker_in_observed_history() {
+    let value = serde_json::json!({
+        "type": "user",
+        "uuid": "interrupted-user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "[Request interrupted by user]"
+            }]
+        },
+        "sessionId": "session-interrupted",
+        "timestamp": "2026-02-01T00:00:01.000Z"
+    });
+
+    assert!(claude_observed_turns_from_value(&value).is_empty());
+}
+
+#[test]
 fn preserves_claude_synthetic_api_errors_in_observed_history() {
     let value = serde_json::json!({
         "type": "assistant",

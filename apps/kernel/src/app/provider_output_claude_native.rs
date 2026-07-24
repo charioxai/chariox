@@ -121,6 +121,10 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
     normalize(expected).trim() == normalize(observed).trim()
 }
 
+fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
+    matches!(prompt.trim(), "[Request interrupted by user]")
+}
+
 fn claude_headless_dispatch_matches_prompt(
     context_file: &str,
     dispatch_prompt_id: &str,
@@ -263,6 +267,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 else {
                     continue;
                 };
+                // Claude emits this synthetic UserPromptSubmit hook when its
+                // process is interrupted. It is provider control state, not a
+                // user prompt, and must never create a zero-duration turn.
+                if claude_native_prompt_is_internal_control(prompt) {
+                    continue;
+                }
                 let active_prompt = self
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;

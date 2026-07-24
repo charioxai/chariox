@@ -937,11 +937,17 @@ async fn resumed_metaagent_task_uses_queued_edit_without_duplicate_notification_
         task.as_ref().map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Active)
     );
+    let active = session
+        .active_prompt_for_agent(metaagent.id())
+        .expect("the queued edit notification should become the active continuation");
+    assert_eq!(
+        active.prompt(),
+        "<metaagent-event/>",
+        "task lifecycle notifications must remain private in visible history"
+    );
     assert!(
-        session
-            .active_prompt_for_agent(metaagent.id())
-            .is_some_and(|prompt| prompt.prompt().contains("# Edited task")),
-        "the queued edit notification should become the active continuation"
+        active.hidden_system_context().contains("# Edited task"),
+        "the private continuation must still tell the provider about the edited task"
     );
     assert_eq!(
         session

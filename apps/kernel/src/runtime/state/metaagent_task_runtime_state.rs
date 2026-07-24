@@ -729,34 +729,16 @@ impl KernelRuntimeState {
             .ok()
             .and_then(|session| session.metaagent_task(metaagent.id()).cloned())
             .is_some_and(|task| task.status() == MetaagentTaskStatus::Paused);
-        let result = if paused {
-            self.queue_metaagent_command_prompt(
+        let result = self
+            .submit_metaagent_task_notification(
                 session_id,
                 metaagent,
                 &attachment_id,
-                metaagent.id(),
                 prompt_text.to_string(),
+                allow_steer && !paused,
+                paused,
             )
-            .await
-        } else if allow_steer {
-            self.submit_metaagent_command_prompt(
-                session_id,
-                metaagent,
-                &attachment_id,
-                metaagent.id(),
-                prompt_text.to_string(),
-            )
-            .await
-        } else {
-            self.submit_metaagent_command_prompt_without_steering(
-                session_id,
-                metaagent,
-                &attachment_id,
-                metaagent.id(),
-                prompt_text.to_string(),
-            )
-            .await
-        };
+            .await;
         if let Err(error) = result {
             crate::logging::warn_with_fields(
                 "metaagent.task",
