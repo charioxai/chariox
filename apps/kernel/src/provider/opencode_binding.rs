@@ -17,6 +17,9 @@ const OPENCODE_SESSION_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 const OPENCODE_SESSION_CREATE_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const OPENCODE_MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(180);
 const OPENCODE_MCP_CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const OPENCODE_ABORT_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(10);
+const OPENCODE_ABORT_SETTLEMENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const OPENCODE_ABORT_SETTLEMENT_QUIET_PERIOD: Duration = Duration::from_millis(200);
 const OPENCODE_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Default)]
@@ -343,12 +346,70 @@ fn resolve_sync_selection(
 }
 
 pub(super) fn abort_opencode_session(
-    provider_run_id: &str,
-    state: &OpenCodeRuntimeState,
+    run: &RuntimeProviderRun,
+    state: &mut OpenCodeRuntimeState,
 ) -> Result<(), DaemonError> {
-    let client = OpenCodeClient::new(provider_run_id, state.base_url())?;
+    let client = OpenCodeClient::new(run.id(), state.base_url())?;
     client.abort_session(state.session_id())?;
-    Ok(())
+    let deadline = Instant::now() + OPENCODE_ABORT_SETTLEMENT_TIMEOUT;
+    let mut idle_signature = None;
+    let mut idle_since = None;
+    loop {
+        match client.snapshot(state.session_id()) {
+            Ok(snapshot) if snapshot.status == "idle" => {
+                let signature = snapshot
+                    .messages
+                    .iter()
+                    .map(|message| (message.info.id.clone(), message.info.time.completed))
+                    .collect::<Vec<_>>();
+                if idle_signature.as_ref() != Some(&signature) {
+                    idle_signature = Some(signature);
+                    idle_since = Some(Instant::now());
+                } else if idle_since
+                    .is_some_and(|since| since.elapsed() >= OPENCODE_ABORT_SETTLEMENT_QUIET_PERIOD)
+                {
+                    let allow_native_writes =
+                        opencode_workspace_live_sync_native_writes_allowed(run);
+                    let session_permission = if run.requires_workspace_live_sync() {
+                        Some(opencode_workspace_live_sync_permission_rules(
+                            allow_native_writes,
+                            run.permission_level(),
+                        ))
+                    } else {
+                        Some(opencode_permission_rules(run.permission_level()))
+                    };
+                    let session_id = client.create_session_with_retry(
+                        session_permission,
+                        OPENCODE_SESSION_CREATE_TIMEOUT,
+                        OPENCODE_SESSION_CREATE_RETRY_INTERVAL,
+                    )?;
+                    state.switch_session_after_abort(session_id);
+                    return Ok(());
+                }
+                std::thread::sleep(OPENCODE_ABORT_SETTLEMENT_POLL_INTERVAL);
+            }
+            Ok(_) if Instant::now() < deadline => {
+                idle_signature = None;
+                idle_since = None;
+                std::thread::sleep(OPENCODE_ABORT_SETTLEMENT_POLL_INTERVAL);
+            }
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(OPENCODE_ABORT_SETTLEMENT_POLL_INTERVAL);
+            }
+            Ok(snapshot) => {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "opencode_abort_settlement_timeout",
+                    message: format!(
+                        "OpenCode session `{}` remained `{}` after abort",
+                        state.session_id(),
+                        snapshot.status,
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -717,39 +778,50 @@ mod tests {
             .expect("test listener should expose a local address")
             .port();
         let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(1)))
-                .expect("read timeout should be set");
-            let mut request = Vec::new();
-            let mut buf = [0_u8; 1024];
-            loop {
-                let size = stream.read(&mut buf).expect("request should read");
-                request.extend_from_slice(&buf[..size]);
-                let request_text = String::from_utf8_lossy(&request);
-                let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
-                    continue;
-                };
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Content-Length: "))
-                    .and_then(|value| value.trim().parse::<usize>().ok())
-                    .expect("request should include content length");
-                if body.len() >= content_length {
-                    break;
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("client should connect");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .expect("read timeout should be set");
+                let mut request = Vec::new();
+                let mut buf = [0_u8; 1024];
+                loop {
+                    let size = stream.read(&mut buf).expect("request should read");
+                    request.extend_from_slice(&buf[..size]);
+                    let request_text = String::from_utf8_lossy(&request);
+                    let Some((headers, body)) = request_text.split_once("\r\n\r\n") else {
+                        continue;
+                    };
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("Content-Length: "))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or_default();
+                    if body.len() >= content_length {
+                        break;
+                    }
                 }
+                let request_text = String::from_utf8_lossy(&request).into_owned();
+                if request_index == 0 {
+                    let response =
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]";
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("server should write message baseline");
+                    continue;
+                }
+                let (_, body) = request_text
+                    .split_once("\r\n\r\n")
+                    .expect("request should include body");
+                let body = serde_json::from_str(body).expect("request body should be JSON");
+                let response =
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("server should write response");
+                return body;
             }
-            let request_text = String::from_utf8_lossy(&request).into_owned();
-            let (_, body) = request_text
-                .split_once("\r\n\r\n")
-                .expect("request should include body");
-            let body = serde_json::from_str(body).expect("request body should be JSON");
-            let response =
-                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            stream
-                .write_all(response.as_bytes())
-                .expect("server should write response");
-            body
+            unreachable!("prompt server must receive a prompt request")
         });
         (format!("http://127.0.0.1:{port}"), handle)
     }
@@ -794,6 +866,9 @@ pub(super) fn submit_opencode_prompt(
     envelope: &crate::prompt_assembly::PromptEnvelope,
 ) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(run.id(), state.base_url())?;
+    if let Ok(messages) = client.messages(state.session_id()) {
+        state.baseline_existing_messages(&messages);
+    }
     let message_id = next_opencode_message_id();
     client.submit_prompt(
         state.session_id(),
@@ -888,7 +963,8 @@ pub(crate) fn run_opencode_utility_prompt(
         std::thread::sleep(OPENCODE_UTILITY_POLL_INTERVAL);
     }
     if !completed {
-        let _ = abort_opencode_session(run.id(), &state);
+        let _ = OpenCodeClient::new(run.id(), state.base_url())
+            .and_then(|client| client.abort_session(state.session_id()));
         state.stop();
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),

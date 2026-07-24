@@ -24,7 +24,8 @@ mod tests {
     };
     use crate::provider::{
         opencode_client::{OpenCodeMessage, OpenCodePart, OpenCodeToolState},
-        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+        AgentEndpointMode, LaunchProviderRequest, OpenCodeEvent, ProviderLaunchResult,
+        RuntimeProviderRun,
     };
     use crate::terminal::TerminalOutputKind;
 
@@ -303,6 +304,69 @@ mod tests {
         )
         .expect("historical event should be ignored");
         assert!(event_chunks.is_empty());
+    }
+
+    #[test]
+    fn rebasing_before_a_new_prompt_excludes_an_unparented_abort_message() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        let aborted = serde_json::from_value::<OpenCodeMessage>(json!({
+            "info": {
+                "id": "message-aborted",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "time": { "completed": 1 }
+            },
+            "parts": [{
+                "id": "part-aborted",
+                "sessionID": "session-1",
+                "messageID": "message-aborted",
+                "type": "text",
+                "text": "Aborted"
+            }]
+        }))
+        .expect("abort message should deserialize");
+
+        state.baseline_existing_messages(&[aborted]);
+        state.note_prompt_submitted("msg_user_next".to_string());
+        state.message_parent_ids.insert(
+            "message-next".to_string(),
+            Some("msg_user_next".to_string()),
+        );
+
+        assert!(!state.message_belongs_to_active_prompt("message-aborted"));
+        assert!(state.message_belongs_to_active_prompt("message-next"));
+    }
+
+    #[test]
+    fn abort_reset_discards_the_cancelled_turn_error_before_the_next_prompt() {
+        let (event_sender, event_receiver) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(event_receiver),
+        );
+        state.note_prompt_submitted("msg_user_cancelled".to_string());
+        event_sender
+            .send(OpenCodeEvent::SessionError {
+                session_id: "session-1".to_string(),
+                message: "Aborted".to_string(),
+            })
+            .expect("abort error should queue");
+
+        state.switch_session_after_abort("session-2".to_string());
+        state.note_prompt_submitted("msg_user_next".to_string());
+        let drained = drain_opencode_events(&test_run(), &mut state, None)
+            .expect("next prompt drain should succeed");
+
+        assert!(drained.terminal_failure.is_none());
+        assert!(drained.notices.is_empty());
+        assert!(!drained.prompt_completed);
     }
 
     #[test]

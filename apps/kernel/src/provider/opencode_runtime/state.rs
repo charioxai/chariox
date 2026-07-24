@@ -115,6 +115,24 @@ impl OpenCodeRuntimeState {
         }
     }
 
+    pub(in crate::provider) fn switch_session_after_abort(&mut self, session_id: String) {
+        while self.event_subscription.receiver.try_recv().is_ok() {}
+        self.session_id = session_id;
+        self.emitted_text_by_part.clear();
+        self.emitted_tool_summaries.clear();
+        self.buffered_text_deltas.clear();
+        self.message_roles.clear();
+        self.part_kinds.clear();
+        self.part_message_ids.clear();
+        self.message_parent_ids.clear();
+        self.preexisting_message_ids.clear();
+        self.completed_assistant_message_ids.clear();
+        self.active_user_message_id = None;
+        self.active_terminal_assistant_message_id = None;
+        self.active_prompt_observed_non_idle_status = false;
+        self.last_status_kind = Some("idle".to_string());
+    }
+
     pub(super) fn message_belongs_to_active_prompt(&self, message_id: &str) -> bool {
         let Some(active_user_message_id) = self.active_user_message_id.as_deref() else {
             return false;

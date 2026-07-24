@@ -237,6 +237,7 @@ fn is_retryable_io_error_kind(kind: ErrorKind) -> bool {
             | ErrorKind::TimedOut
             | ErrorKind::ConnectionRefused
             | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
             | ErrorKind::BrokenPipe
     )
 }
@@ -486,6 +487,20 @@ mod tests {
             Duration::from_secs(12)
         );
         assert_eq!(retry_attempts_for_request("POST", "/mcp/arroba/connect"), 6);
+    }
+
+    #[test]
+    fn retries_prompt_submission_when_the_prior_abort_closes_the_connection() {
+        let error = OpenCodeHttpFailure {
+            message: "Software caused connection abort (os error 53)".to_string(),
+            io_kind: Some(ErrorKind::ConnectionAborted),
+        };
+
+        assert!(is_retryable_opencode_http_error(
+            "POST",
+            "/session/session-1/prompt_async",
+            &error
+        ));
     }
 
     #[test]

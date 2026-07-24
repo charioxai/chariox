@@ -65,10 +65,9 @@ pub(super) fn execute_submit_command(
 
     let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
     let result = submit_opencode_prompt(&run, &mut state, &envelope);
+    let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
-    result.map(|_| ProviderPromptSubmitAcknowledgement {
-        resume_state: run.resume_state().clone(),
-    })
+    result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })
 }
 
 pub(super) fn execute_abort_command(
@@ -99,8 +98,8 @@ pub(super) fn execute_abort_command(
         return Ok(());
     }
 
-    let (slot, state) = runtime_registry.take_opencode_runtime(&run_id)?;
-    let result = abort_opencode_session(&run_id, &state);
+    let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
+    let result = abort_opencode_session(&run, &mut state);
     runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
     result
 }
