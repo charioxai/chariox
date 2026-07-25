@@ -203,6 +203,8 @@ test("publication viewer derives composer capability and one pane per exposed no
   assert.match(html, /class="invoke-form composer-under-traces"/)
   assert.match(html, /ResizeObserver/)
   assert.match(html, /traceKeys\.has\(key\)/)
+  assert.match(html, /trace\.level, trace\.timestamp_ms, trace\.message/)
+  assert.doesNotMatch(html, /trace\.level, trace\.sequence, trace\.timestamp_ms/)
   assert.match(html, /resetForInvocation\(prompt\)/)
   assert.match(html, /renderOptimisticPrompt\(prompt\)/)
   assert.match(html, /window\.addEventListener\('pointermove', move\)/)

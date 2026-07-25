@@ -648,7 +648,7 @@ function renderTrace(trace) {
   if (!pane) return;
   const key = trace.level === 'user_prompt'
     ? ['user_prompt', nodeId, trace.message].join(':')
-    : [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.sequence, trace.timestamp_ms, trace.message].join(':');
+    : [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.timestamp_ms, trace.message].join(':');
   if (traceKeys.has(key)) return;
   traceKeys.add(key);
   if (traceStatusEl) traceStatusEl.textContent = 'Live';
