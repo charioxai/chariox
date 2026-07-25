@@ -873,6 +873,15 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
             .status(),
         crate::session::WorkflowRunStatus::Completed
     );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("provider run should exist")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
     assert!(runtime.owned.active_turns.get(run.id()).is_none());
 
     let settlement_events = runtime

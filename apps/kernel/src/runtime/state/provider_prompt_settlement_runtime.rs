@@ -394,6 +394,20 @@ impl KernelRuntimeState {
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
             }
+            let reuses_provider_run = dispatches
+                .local
+                .iter()
+                .any(|dispatch| dispatch.provider_run_id == provider_run_id);
+            if completion.completion.started_next.is_none() && !reuses_provider_run {
+                if let Ok(outcome) = owned
+                    .provider_store
+                    .terminate_run_provider_only(session_id, provider_run_id)
+                {
+                    let _ = owned
+                        .clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+                    owned.provider_run_projection.update(outcome.into_run());
+                }
+            }
             self.spawn_workflow_prompt_dispatches(dispatches);
         }
         if let Some(started_next) = completion.completion.started_next.as_ref() {
