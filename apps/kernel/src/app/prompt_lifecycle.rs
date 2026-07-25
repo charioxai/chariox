@@ -138,11 +138,22 @@ impl<'a> ProviderPromptDispatcher<'a> {
             .providers
             .run_uses_structured_prompt_io(&provider_run)
         {
-            let mode = if self.app.agents.get_agent(&agent_id)?.is_metaagent() {
-                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
-            } else {
-                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
-            };
+            let source_client_id = self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+                .and_then(|active| {
+                    self.app
+                        .attachments
+                        .get_attachment(active.source_attachment_id())
+                        .ok()
+                })
+                .map(|attachment| attachment.client_id().to_string());
+            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
+                &agent_id,
+                self.app.agents.get_agent(&agent_id)?.is_metaagent(),
+                source_client_id.as_deref(),
+                hidden_system_context,
+            );
             self.app.providers.enqueue_structured_prompt_submit(
                 session_id.to_string(),
                 provider_run_id.to_string(),

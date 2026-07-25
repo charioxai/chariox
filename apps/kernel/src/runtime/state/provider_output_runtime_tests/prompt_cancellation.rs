@@ -153,7 +153,7 @@ async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {
 }
 
 #[tokio::test]
-async fn paused_metaagent_cancellation_holds_queued_user_prompt() {
+async fn paused_metaagent_cancellation_promotes_queued_user_prompt_after_abort_ack() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -255,4 +255,29 @@ async fn paused_metaagent_cancellation_holds_queued_user_prompt() {
         .expect("queued user prompt should remain");
     assert_eq!(queued.len(), 1);
     assert_eq!(queued[0].prompt(), "queued user follow-up");
+
+    let cancellation = runtime
+        .owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            session.id(),
+            agent.id(),
+            Some(run.id()),
+        )
+        .expect("provider abort acknowledgement should finalize cancellation");
+    let started_next = cancellation
+        .cancellation
+        .started_next
+        .expect("paused Meta task must yield to the queued user prompt");
+    assert_eq!(started_next.prompt(), "queued user follow-up");
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session should remain available");
+    assert_eq!(
+        snapshot
+            .active_prompt_for_agent(agent.id())
+            .expect("queued user prompt should become authoritative")
+            .id(),
+        started_next.id()
+    );
 }

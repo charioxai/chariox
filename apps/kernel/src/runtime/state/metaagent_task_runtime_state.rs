@@ -173,6 +173,14 @@ impl KernelRuntimeState {
             agent_id,
             &task_attachment_id,
         )?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        if session
+            .queued_metaagent_tasks()
+            .iter()
+            .any(|task| task.metaagent_id() == agent_id)
+        {
+            return Ok(session);
+        }
         self.sync_remote_leased_agent_meta_mode(session_id, agent_id, false)
             .await?;
         self.owned
@@ -760,7 +768,7 @@ impl KernelRuntimeState {
         }
     }
 
-    fn ensure_metaagent_task_attachment(
+    pub(super) fn ensure_metaagent_task_attachment(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,

@@ -288,6 +288,23 @@ impl KernelRuntimeOwnedState {
             let (queued_prompt, workflow_run, workflow, endpoint) = match next_workflow {
                 Ok(Some(claimed)) => claimed,
                 Ok(None) => {
+                    let queued_metaagent_is_busy = self
+                        .session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            let metaagent_id = session
+                                .queued_metaagent_tasks()
+                                .front()
+                                .map(|task| task.metaagent_id().to_string())?;
+                            let (active_prompt, queued_prompts) =
+                                self.prompt_state_owner.state_parts(&session, &metaagent_id);
+                            Some(active_prompt.is_some() || !queued_prompts.is_empty())
+                        })
+                        .unwrap_or(false);
+                    if queued_metaagent_is_busy {
+                        return WorkflowPromptDispatches::default();
+                    }
                     let queued_metaagent_task = self
                         .session_store
                         .write()

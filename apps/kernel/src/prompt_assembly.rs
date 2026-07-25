@@ -15,6 +15,10 @@ const LEGACY_WORKFLOW_TURN_HASHES: &[&str] = &[
     "ac2ffb8b8e5542bfbeda71eb61a89938215dbf2d5b2027545256d81f19c3b87e",
     "c5867472e1017d69c9426244ea9da5f5a1b03e86054fc3c6416442e55f518e4b",
 ];
+const LEGACY_METAAGENT_DELEGATION_HASHES: &[&str] =
+    &["4182ea00a5ca086d4edcaa32900e3586fdc9feef6e954559b5ace7743698816e"];
+const LEGACY_META_MODE_ENTERED_HASHES: &[&str] =
+    &["62d1df699e55d3e4213dcb7cdf3eadee471155238c48d3898985e7e264dcea5e"];
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
@@ -136,6 +140,23 @@ pub(crate) enum PromptAssemblyMode {
     McpSkillContinuationTurn,
 }
 
+pub(crate) fn provider_turn_mode_for_prompt(
+    agent_id: &str,
+    agent_is_metaagent: bool,
+    source_client_id: Option<&str>,
+    hidden_system_context: &str,
+) -> PromptAssemblyMode {
+    let metaagent_client_prefix = format!("metaagent:{agent_id}:");
+    let is_metaagent_control_turn = source_client_id
+        .is_some_and(|client_id| client_id.starts_with(&metaagent_client_prefix))
+        || hidden_system_context.contains("<meta-mode-entered-context>");
+    if agent_is_metaagent && is_metaagent_control_turn {
+        PromptAssemblyMode::MetaagentProviderTurn
+    } else {
+        PromptAssemblyMode::NormalProviderTurn
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PromptTemplateRegistry {
     root: PathBuf,
@@ -191,14 +212,14 @@ impl PromptTemplateRegistry {
             let previous_bundled_hash = previous_state
                 .as_ref()
                 .and_then(|state| state.template_sha256.get(template.id));
-            let is_known_legacy_default = existing_hash.as_deref().is_some_and(|hash| {
-                template.id == "workflow/turn" && LEGACY_WORKFLOW_TURN_HASHES.contains(&hash)
-            });
+            let is_known_legacy_default = existing_hash
+                .as_deref()
+                .is_some_and(|hash| known_legacy_bundled_default(template.id, hash));
             let should_materialize = existing_body.is_none()
                 || previous_bundled_hash
                     .zip(existing_hash.as_ref())
                     .is_some_and(|(previous, existing)| previous == existing)
-                || (previous_state.is_none() && is_known_legacy_default);
+                || is_known_legacy_default;
             if should_materialize && existing_body.as_deref() != Some(bundled_body) {
                 fs::write(&path, bundled_body)
                     .map_err(|error| prompt_io_error("write", &path, error))?;
@@ -249,6 +270,15 @@ impl PromptTemplateRegistry {
         }
         path.set_extension("md");
         path
+    }
+}
+
+fn known_legacy_bundled_default(template_id: &str, hash: &str) -> bool {
+    match template_id {
+        "workflow/turn" => LEGACY_WORKFLOW_TURN_HASHES.contains(&hash),
+        "runtime/metaagent-delegation" => LEGACY_METAAGENT_DELEGATION_HASHES.contains(&hash),
+        "runtime/meta-mode-entered" => LEGACY_META_MODE_ENTERED_HASHES.contains(&hash),
+        _ => false,
     }
 }
 
@@ -592,6 +622,32 @@ mod tests {
             .join(format!("{}-{}-{index}", name, std::process::id()))
     }
 
+    #[test]
+    fn metaagent_user_prompts_use_normal_turn_context() {
+        assert_eq!(
+            provider_turn_mode_for_prompt("agent-meta", true, Some("browser-terminal"), "",),
+            PromptAssemblyMode::NormalProviderTurn
+        );
+        assert_eq!(
+            provider_turn_mode_for_prompt(
+                "agent-meta",
+                true,
+                Some("metaagent:agent-meta:task"),
+                "",
+            ),
+            PromptAssemblyMode::MetaagentProviderTurn
+        );
+        assert_eq!(
+            provider_turn_mode_for_prompt(
+                "agent-meta",
+                true,
+                Some("browser-terminal"),
+                "<meta-mode-entered-context>task</meta-mode-entered-context>",
+            ),
+            PromptAssemblyMode::MetaagentProviderTurn
+        );
+    }
+
     fn test_run(workspace_live_sync: bool) -> RuntimeProviderRun {
         test_run_with_live_sync_mode(if workspace_live_sync {
             crate::config::WorkspaceLiveSyncMode::Managed
@@ -697,6 +753,32 @@ mod tests {
         let body = fs::read_to_string(path).expect("updated default should read");
         assert!(body.contains("do not validate the outer routing wrapper"));
         assert!(body.contains("completed incoming edge and MUST NOT be used"));
+    }
+
+    #[test]
+    fn prompt_registry_updates_known_metaagent_legacy_defaults() {
+        let root = temp_prompt_root("updates-metaagent-legacy");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("runtime").join("meta-mode-entered.md");
+        fs::write(
+            &path,
+            concat!(
+                "Kernel mode transition: this agent is now operating in Arroba meta mode for the active task.\n\n",
+                "Delegate implementation to owned regular agents or workflows. Use Arroba meta tools for planning, supervision, task state, and allowed capability provisioning. ",
+                "Finish by calling `arroba.meta.complete_task`, `arroba.meta.mark_blocked`, or by honoring user pause/abort controls.",
+            ),
+        )
+        .expect("legacy default should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("legacy Meta default should update despite current state metadata");
+
+        let body = fs::read_to_string(path).expect("updated Meta default should read");
+        assert!(body.contains("On continuation, first check `arroba.meta.session_overview`"));
     }
 
     #[test]

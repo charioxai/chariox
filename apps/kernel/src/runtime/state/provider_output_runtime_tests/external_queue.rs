@@ -1,6 +1,59 @@
 use super::*;
 
 #[tokio::test]
+async fn completed_metaagent_task_starts_queued_task_despite_stale_session_prompt_mirror() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-metaagent-fifo",
+            "worktree-metaagent-fifo",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "metaagent-fifo-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("client should attach");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), agent.id(), "first Meta task")
+        .expect("first Meta task should start");
+    app.sessions_mut()
+        .complete_metaagent_task(session.id(), agent.id(), Some("done".to_string()))
+        .expect("first Meta task should complete");
+    let queued = app
+        .sessions_mut()
+        .enqueue_metaagent_task(
+            session.id(),
+            agent.id(),
+            attachment.id(),
+            "second Meta task",
+            Vec::new(),
+        )
+        .expect("second Meta task should queue");
+    app.sessions_mut()
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            agent.id(),
+            "stale completed prompt mirror",
+            Vec::new(),
+        )
+        .expect("legacy session mirror should contain a stale active prompt");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let dispatches = runtime
+        .owned
+        .workflow_maybe_start_next_queued_prompt(session.id());
+
+    assert_eq!(dispatches.starting_metaagent_tasks.len(), 1);
+    assert_eq!(dispatches.starting_metaagent_tasks[0].id(), queued.id());
+}
+
+#[tokio::test]
 async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");

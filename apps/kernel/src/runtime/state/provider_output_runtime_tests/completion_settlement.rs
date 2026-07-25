@@ -1,6 +1,112 @@
 use super::*;
 
 #[tokio::test]
+async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-metaagent-settlement-fifo",
+            "worktree-metaagent-settlement-fifo",
+        ))
+        .expect("session should be created");
+    let agent = app
+        .agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("agent should enter Meta mode");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), agent.id(), "first Meta task")
+        .expect("first Meta task should start");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-metaagent-settlement-fifo",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "complete the first Meta task",
+        Vec::new(),
+    )
+    .expect("first Meta prompt should start");
+    app.sessions_mut()
+        .enqueue_metaagent_task(
+            session.id(),
+            agent.id(),
+            attachment.id(),
+            "second Meta task",
+            Vec::new(),
+        )
+        .expect("second Meta task should queue");
+    app.detach(attachment.id())
+        .expect("the submitting browser attachment should be allowed to disappear");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .session_store
+        .write()
+        .complete_metaagent_task(session.id(), agent.id(), Some("done".to_string()))
+        .expect("first Meta task should complete");
+    runtime
+        .deactivate_meta_mode_for_terminal_task(session.id(), agent.id(), "test completion")
+        .await
+        .expect("terminal Meta task should deactivate");
+    assert!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .is_metaagent(),
+        "Meta policy must remain loaded while another Meta task is queued"
+    );
+
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .await
+        .expect("provider settlement should complete the active turn");
+
+    let mut second_started = false;
+    for _ in 0..50 {
+        let snapshot = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available");
+        second_started = snapshot
+            .metaagent_task(agent.id())
+            .is_some_and(|task| task.task_markdown() == "second Meta task")
+            && snapshot.queued_metaagent_tasks().is_empty();
+        if second_started {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        second_started,
+        "provider settlement must start the next queued Meta task"
+    );
+}
+
+#[tokio::test]
 async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

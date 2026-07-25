@@ -301,17 +301,6 @@ impl SessionService {
         if session.has_active_session_task() {
             return Ok(None);
         }
-        if let Some(task) = session.queued_metaagent_tasks().front() {
-            if session
-                .prompt_states()
-                .get(task.metaagent_id())
-                .is_some_and(|state| {
-                    state.active_prompt().is_some() || !state.queued_prompts().is_empty()
-                })
-            {
-                return Ok(None);
-            }
-        }
         let task = session.pop_next_queued_metaagent_task();
         if task.is_some() {
             session.touch();

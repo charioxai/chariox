@@ -421,6 +421,9 @@ impl KernelRuntimeState {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
         }
+        self.spawn_workflow_prompt_dispatches(
+            owned.workflow_maybe_start_next_queued_prompt(session_id),
+        );
         let state = self.clone();
         let session_id_for_continuation = session_id.to_string();
         let agent_id_for_continuation = agent_id.clone();

@@ -761,15 +761,20 @@ impl KernelRuntimeState {
             )?;
             let hidden_system_context =
                 join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
-            let mode = if owned
-                .agent_store
-                .get_agent(&dispatch.agent_id)?
-                .is_metaagent()
-            {
-                crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
-            } else {
-                crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
-            };
+            let source_client_id = owned
+                .attachment_store
+                .get_attachment(&dispatch.source_attachment_id)
+                .ok()
+                .map(|attachment| attachment.client_id().to_string());
+            let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
+                &dispatch.agent_id,
+                owned
+                    .agent_store
+                    .get_agent(&dispatch.agent_id)?
+                    .is_metaagent(),
+                source_client_id.as_deref(),
+                &hidden_system_context,
+            );
             let result = owned.provider_store.enqueue_structured_prompt_submit(
                 dispatch.session_id.clone(),
                 dispatch.provider_run_id.clone(),
@@ -1174,9 +1179,11 @@ impl KernelRuntimeState {
         let session_id = agent.session_id().to_string();
         self.activate_meta_mode_for_prompt(&session_id, agent.id(), task.task_markdown())
             .await?;
+        let task_attachment_id =
+            self.ensure_metaagent_task_attachment(&session_id, &agent)?;
         let prompt = crate::session::PromptQueueItem::new(
             format!("pending-draft:{}", task.id()),
-            task.source_attachment_id(),
+            task_attachment_id,
             agent.id(),
             task.task_markdown(),
             crate::session::PromptStatus::Queued,

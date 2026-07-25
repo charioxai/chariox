@@ -77,11 +77,21 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
             .unwrap_or(false);
-        let hold_queued_prompts = self
-            .session_store
-            .get_session(session_id)?
+        let current_session = self.session_store.get_session(session_id)?;
+        let hold_queued_prompts = current_session
             .metaagent_task(agent_id)
-            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
+            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused)
+            && self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&current_session, agent_id)
+                .and_then(|prompt| {
+                    self.attachment_store
+                        .get_attachment(prompt.source_attachment_id())
+                        .ok()
+                })
+                .is_some_and(|attachment| {
+                    attachment.client_id() == format!("metaagent:{agent_id}:task")
+                });
         let started_next = if !hold_queued_prompts
             && self
                 .prompt_state_owner
@@ -175,11 +185,17 @@ impl KernelRuntimeOwnedState {
                     started_next.hidden_system_context(),
                     &granted_skill_context,
                 );
-                let mode = if self.agent_store.get_agent(agent_id)?.is_metaagent() {
-                    crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn
-                } else {
-                    crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn
-                };
+                let source_client_id = self
+                    .attachment_store
+                    .get_attachment(&source_attachment_id)
+                    .ok()
+                    .map(|attachment| attachment.client_id().to_string());
+                let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
+                    agent_id,
+                    self.agent_store.get_agent(agent_id)?.is_metaagent(),
+                    source_client_id.as_deref(),
+                    &hidden_system_context,
+                );
                 self.mark_active_prompt_delivery(
                     session_id,
                     agent_id,
