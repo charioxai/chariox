@@ -30,7 +30,10 @@ const DEFAULT_PUBLICATION_RUNTIME_HOST: &str = "127.0.0.1";
 const DEFAULT_PUBLICATION_RUNTIME_PORT: u16 = 3000;
 const PUBLICATION_RUNTIME_RECOVERY_BASE_DELAY_MS: u64 = 1_000;
 const PUBLICATION_RUNTIME_RECOVERY_MAX_DELAY_MS: u64 = 60_000;
-const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(10);
+// A source checkout may need to build the TypeScript gateway before it can
+// listen. Keep the readiness deadline long enough for that one-time build;
+// subsequent launches remain effectively immediate.
+const PUBLICATION_RUNTIME_START_TIMEOUT: Duration = Duration::from_secs(60);
 const PUBLICATION_RUNTIME_START_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Default)]
