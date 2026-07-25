@@ -161,7 +161,11 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
         method,
         url: publication.route ?? "/",
         handler: async (request, reply) => {
-          if (humanRootHandlesViewer && shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)) {
+          if (
+            humanRootHandlesViewer
+            && shouldReturnHumanHtml(request as unknown as GatewayRequest, publication)
+            && !hasHumanHttpPromptQuery(request.url)
+          ) {
             reply.type("text/html; charset=utf-8")
             return publicationViewerPage(publication)
           }
@@ -210,6 +214,10 @@ function isHumanRootGetPublication(publication: WorkflowPublicationConfig) {
   const transport = publication.transport ?? "human_http"
   const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
   return transport === "human_http" && (publication.route ?? "/") === "/" && methods.includes("GET")
+}
+
+function hasHumanHttpPromptQuery(url: string) {
+  return new URL(url, "http://publication.local").searchParams.has("prompt")
 }
 
 function parseHumanHttpFormBody(body: unknown): { ok: true; input: Record<string, unknown> } | { ok: false; error: string } {

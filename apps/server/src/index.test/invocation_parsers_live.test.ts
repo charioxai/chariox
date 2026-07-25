@@ -242,8 +242,10 @@ test("published transports invoke at their root defaults without viewer route co
       assert.match(await viewer.text(), /Published workflow/)
       assert.equal(invocations, 0)
 
-      const invoked = await fetch(`${address}/?prompt=${encodeURIComponent(prompt)}`, { headers: { accept: "application/json" } })
+      const invoked = await fetch(`${address}/?prompt=${encodeURIComponent(prompt)}`, { headers: { accept: "text/html" } })
       assert.equal(invoked.status, 200)
+      assert.match(invoked.headers.get("content-type") ?? "", /text\/html/)
+      assert.match(await invoked.text(), /human done/)
       assert.equal(invocations, 1)
     } finally {
       await app.close()
