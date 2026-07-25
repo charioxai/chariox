@@ -123,7 +123,15 @@ fn provider_text_reports_resource_limit(normalized: &str) -> bool {
 }
 
 fn compact_provider_error_snippet(text: &str) -> String {
-    let mut snippet = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut seen_lines = std::collections::BTreeSet::new();
+    let mut snippet = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| seen_lines.insert((*line).to_string()))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
     const MAX_CHARS: usize = 500;
     if snippet.chars().count() > MAX_CHARS {
         snippet = snippet.chars().take(MAX_CHARS).collect::<String>();
@@ -214,6 +222,16 @@ mod tests {
         assert!(failure.contains("terminal permission error"));
         assert!(failure.contains("--dangerously-skip-permissions"));
         assert!(failure.contains("root/sudo privileges"));
+    }
+
+    #[test]
+    fn terminal_classifier_deduplicates_repeated_provider_lines() {
+        let repeated = "--dangerously-skip-permissions cannot be used with root/sudo privileges";
+        let failure =
+            classify_provider_terminal_failure_text("claude", &format!("{repeated}\n{repeated}"))
+                .expect("Claude root permission restriction should be terminal");
+
+        assert_eq!(failure.matches(repeated).count(), 1, "{failure}");
     }
 
     #[test]
