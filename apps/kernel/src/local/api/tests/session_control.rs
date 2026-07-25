@@ -433,7 +433,7 @@ fn local_request_api_spawns_and_focuses_agents() {
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             session_id: session.id().to_string(),
-            alias: Some("reviewer".to_string()),
+            alias: Some("  reviewer  ".to_string()),
             provider: Some("opencode".to_string()),
             model: Some("openai/gpt-5.4".to_string()),
             effort: None,
@@ -450,6 +450,7 @@ fn local_request_api_spawns_and_focuses_agents() {
         LocalDaemonResponse::AgentSpawned { agent } => agent,
         _ => panic!("unexpected local response"),
     };
+    assert_eq!(spawned.alias(), Some("reviewer"));
 
     let (session_state, agent_activity) = match harness
         .dispatch(LocalDaemonRequest::GetSessionState(
@@ -533,6 +534,30 @@ fn local_request_api_spawns_and_focuses_agents() {
     };
 
     assert_eq!(renamed.alias(), Some("web-reviewer"));
+
+    let alias_conflict = harness
+        .dispatch(LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+            alias: "  WEB-REVIEWER  ".to_string(),
+        }))
+        .expect_err("agent aliases must remain unique within a session");
+    assert!(matches!(
+        alias_conflict,
+        DaemonError::AgentAliasConflict {
+            session_id: ref conflict_session_id,
+            alias: ref conflict_alias,
+        } if conflict_session_id == session.id() && conflict_alias == "WEB-REVIEWER"
+    ));
+    harness.with_app(|app| {
+        assert_eq!(
+            app.agents()
+                .get_agent(default_agent.id())
+                .expect("default agent should remain available")
+                .alias(),
+            default_agent.alias(),
+        );
+    });
 
     let profiled = match harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(

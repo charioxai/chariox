@@ -39,7 +39,9 @@ impl AgentRuntime {
             .find(|agent| {
                 agent
                     .alias()
-                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(alias))
+                    .is_some_and(|candidate| {
+                        candidate.trim().to_lowercase() == alias.trim().to_lowercase()
+                    })
             })
             .map(|agent| agent.id().to_string())
             .ok_or_else(|| DaemonError::AgentNotFound {

@@ -51,6 +51,10 @@ impl AgentService {
         sessions: &mut SessionService,
         operation: &'static str,
     ) -> Result<Vec<AgentInstance>, DaemonError> {
+        let mut requests = requests;
+        for request in &mut requests {
+            request.alias = normalize_agent_alias(request.alias.take());
+        }
         let Some(first) = requests.first() else {
             return Ok(Vec::new());
         };
@@ -142,6 +146,8 @@ impl AgentService {
         request: CreateAgentRequest,
         session: &RuntimeSession,
     ) -> Result<AgentInstance, DaemonError> {
+        let mut request = request;
+        request.alias = normalize_agent_alias(request.alias.take());
         if session.status() == SessionStatus::Ended {
             return Err(DaemonError::SessionOperationNotAllowed {
                 session_id: request.session_id.clone(),
@@ -591,6 +597,23 @@ impl AgentService {
         agent_id: &str,
         alias: Option<String>,
     ) -> Result<AgentInstance, DaemonError> {
+        let alias = normalize_agent_alias(alias);
+        let session_id = self
+            .store
+            .get(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?
+            .session_id()
+            .to_string();
+        if let Some(alias) = alias.as_deref() {
+            if self.is_alias_taken_by_other(&session_id, agent_id, alias) {
+                return Err(DaemonError::AgentAliasConflict {
+                    session_id,
+                    alias: alias.to_string(),
+                });
+            }
+        }
         let agent = self
             .store
             .get_mut(agent_id)
@@ -933,19 +956,34 @@ impl AgentService {
     }
 
     fn is_alias_taken(&self, session_id: &str, alias: &str) -> bool {
-        let normalized = alias.trim().to_lowercase();
+        self.is_alias_taken_by_other(session_id, "", alias)
+    }
+
+    fn is_alias_taken_by_other(&self, session_id: &str, agent_id: &str, alias: &str) -> bool {
+        let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
-            agent
-                .alias()
-                .map(|a| a.to_lowercase())
-                .map(|a| a == normalized)
-                .unwrap_or(false)
+            agent.id() != agent_id
+                && agent
+                    .alias()
+                    .map(normalized_agent_alias_key)
+                    .is_some_and(|candidate| candidate == normalized)
         })
     }
 
     pub fn store(&self) -> &AgentStore {
         &self.store
     }
+}
+
+fn normalize_agent_alias(alias: Option<String>) -> Option<String> {
+    alias.and_then(|alias| {
+        let alias = alias.trim();
+        (!alias.is_empty()).then(|| alias.to_string())
+    })
+}
+
+fn normalized_agent_alias_key(alias: &str) -> String {
+    alias.trim().to_lowercase()
 }
 
 impl Default for AgentService {

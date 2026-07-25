@@ -211,7 +211,7 @@ impl AgentStore {
         for agent_id in agent_ids {
             if let Some(agent) = self.agents.get(agent_id) {
                 if let Some(alias) = agent.alias() {
-                    summary.aliases.insert(alias.to_lowercase());
+                    summary.aliases.insert(alias.trim().to_lowercase());
                 }
             }
         }
