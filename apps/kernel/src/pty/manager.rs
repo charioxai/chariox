@@ -466,6 +466,34 @@ impl PtyManager {
             });
         }
 
+        if !process.exited {
+            let status = process
+                .child
+                .try_wait()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.to_string(),
+                    message: error.to_string(),
+                })?;
+            process.exited = status.is_some();
+        }
+        if process.exited {
+            if let Ok(bytes) = process
+                .output_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+            {
+                chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.to_string(),
+                    bytes,
+                });
+            }
+            while let Ok(bytes) = process.output_rx.try_recv() {
+                chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.to_string(),
+                    bytes,
+                });
+            }
+        }
+
         Ok(chunks)
     }
 

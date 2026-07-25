@@ -19,7 +19,13 @@ impl KernelRuntimeState {
         owned.reap_structured_prompt_jobs();
         self.reap_provider_first_output_timeouts(session_id).await?;
         self.reap_provider_inactivity_timeouts(session_id).await?;
+        let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        let uses_structured_prompt_io = provider_run.client_interface().is_arroba()
+            && owned
+                .provider_store
+                .run_uses_structured_prompt_io(&provider_run);
         if !initial_liveness_already_checked
+            && uses_structured_prompt_io
             && self
                 .reconcile_provider_run_exit(session_id, provider_run_id)
                 .await?
@@ -28,7 +34,6 @@ impl KernelRuntimeState {
                 .structured_output_records
                 .take_and_stop_polling(provider_run_id));
         }
-        let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() == crate::provider::ProviderRunState::Ended {
             return Ok(owned
                 .structured_output_records
@@ -53,11 +58,7 @@ impl KernelRuntimeState {
             );
         }
 
-        if provider_run.client_interface().is_arroba()
-            && owned
-                .provider_store
-                .run_uses_structured_prompt_io(&provider_run)
-        {
+        if uses_structured_prompt_io {
             return self
                 .pump_owned_structured_provider_output(
                     session_id,

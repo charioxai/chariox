@@ -108,7 +108,12 @@ impl<'a> ProviderOutputPump<'a> {
             .reap_provider_first_output_timeouts(request.session_id)?;
         self.context
             .reap_provider_inactivity_timeouts(request.session_id)?;
+        let mut provider_run = self
+            .context
+            .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
+        let uses_structured_prompt_io = self.context.run_uses_structured_prompt_io(&provider_run);
         if !request.initial_liveness_already_checked
+            && uses_structured_prompt_io
             && self
                 .context
                 .reconcile_provider_run_exit(request.session_id, request.provider_run_id)?
@@ -118,9 +123,6 @@ impl<'a> ProviderOutputPump<'a> {
                 .pending_structured_output_records
                 .take_and_stop_polling(request.provider_run_id));
         }
-        let mut provider_run = self
-            .context
-            .ensure_provider_run_in_session(request.session_id, request.provider_run_id)?;
         if provider_run.state() == ProviderRunState::Ended {
             return Ok(self
                 .context
@@ -151,7 +153,7 @@ impl<'a> ProviderOutputPump<'a> {
             );
         }
 
-        if self.context.run_uses_structured_prompt_io(&provider_run) {
+        if uses_structured_prompt_io {
             return self.context.pump_structured_output(
                 request.session_id,
                 request.provider_run_id,
