@@ -237,6 +237,8 @@ test("publication viewer replaces progress output and hydrates only the latest u
   assert.match(html, /parsed\.output && typeof parsed\.output === 'object'/)
   assert.match(html, /const finalMessage = outputMessage\(payload\.workflow_run\?\.final_output\)/)
   assert.match(html, /else if \(payload\.message !== undefined\) renderOutput\(payload\.message, 'final'\)/)
+  assert.match(html, /status\.latest_run && !isTerminalStatus\(status\.latest_run\.status\)/)
+  assert.match(html, /setTimeout\(\(\) => void hydrateLatestRun\(\), 1_000\)/)
   assert.doesNotMatch(html, /partialOutputs\.push/)
   assert.doesNotMatch(html, /partialOutputs\.join/)
   assert.match(html, /allow-downloads/)

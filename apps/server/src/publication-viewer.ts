@@ -210,6 +210,7 @@ if (viewerConfig.permalink) {
 setupTraceRail();
 setupRailResize();
 let latestWorkflowRun = viewerConfig.initialResult?.workflow_run || null;
+let latestRunHydrationTimer = null;
 renderRun(latestWorkflowRun);
 if (latestWorkflowRun && isTerminalStatus(latestWorkflowRun.status)) {
   setTimeout(() => postSettledRun(latestWorkflowRun.status, latestWorkflowRun), 250);
@@ -262,6 +263,10 @@ async function invokePublication(prompt, artifacts) {
 }
 
 async function hydrateLatestRun() {
+  if (latestRunHydrationTimer) {
+    clearTimeout(latestRunHydrationTimer);
+    latestRunHydrationTimer = null;
+  }
   try {
     const response = await fetch(publicationUrl('/.well-known/arroba/publication/status'), {
       headers: { accept: 'application/json' },
@@ -270,8 +275,13 @@ async function hydrateLatestRun() {
     const status = await response.json();
     if (status.latest_run) renderRun(status.latest_run);
     for (const trace of status.latest_traces || []) renderTrace(trace);
+    if (status.latest_run && !isTerminalStatus(status.latest_run.status)) {
+      latestRunHydrationTimer = setTimeout(() => void hydrateLatestRun(), 1_000);
+    }
   } catch {
-    // A missing history snapshot must not prevent a new invocation.
+    if (latestWorkflowRun && !isTerminalStatus(latestWorkflowRun.status)) {
+      latestRunHydrationTimer = setTimeout(() => void hydrateLatestRun(), 1_000);
+    }
   }
 }
 
