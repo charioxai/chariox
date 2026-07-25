@@ -528,7 +528,7 @@ fn workflow_run_output_and_node_completion_settings_can_be_updated() {
 }
 
 #[test]
-fn workflow_design_node_update_keeps_output_modes_exclusive_and_clears_stale_exit() {
+fn workflow_design_node_update_preserves_independent_output_capabilities() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -578,10 +578,10 @@ fn workflow_design_node_update_keeps_output_modes_exclusive_and_clears_stale_exi
         .node(node.id())
         .expect("updated workflow should keep the node");
     assert!(updated_node.can_emit_intermediate_run_output());
-    assert!(!updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_complete_workflow_run());
     assert!(intermediate
         .canvas_layout()
-        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
 
     service
         .update_workflow_canvas_layout(
@@ -617,7 +617,7 @@ fn workflow_design_node_update_keeps_output_modes_exclusive_and_clears_stale_exi
         .node(node.id())
         .expect("updated workflow should keep the node");
     assert!(updated_node.can_complete_workflow_run());
-    assert!(!updated_node.can_emit_intermediate_run_output());
+    assert!(updated_node.can_emit_intermediate_run_output());
     assert!(completion
         .canvas_layout()
         .is_some_and(|layout| layout.exits.contains_key(node.id())));
@@ -644,11 +644,11 @@ fn workflow_design_node_update_keeps_output_modes_exclusive_and_clears_stale_exi
     let updated_node = both
         .node(node.id())
         .expect("updated workflow should keep the node");
-    assert!(!updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_complete_workflow_run());
     assert!(updated_node.can_emit_intermediate_run_output());
     assert!(both
         .canvas_layout()
-        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
 }
 
 #[test]
