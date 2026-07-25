@@ -97,6 +97,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 bytes: record.bytes,
             })
             .collect::<Vec<_>>();
+        let worker_prompt_active = self
+            .app
+            .prompt_owner_active_prompt_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )?
+            .is_some();
+        if home_prompt_id.is_none() && !worker_prompt_active {
+            // Native provider processes can paint startup diagnostics before the first
+            // user prompt. Those frames are useful to the worker terminal but are not
+            // part of a turn and must not create a synthetic transcript entry at home.
+            // Provider errors and notices keep their distinct kinds and still project.
+            output_chunks.retain(|chunk| chunk.kind != TerminalOutputKind::ProviderTerminal);
+        }
         let mut projected_output_history_keys = Vec::new();
         output_chunks.retain(|chunk| {
             if chunk.kind != TerminalOutputKind::ProviderTool {
@@ -1378,6 +1392,70 @@ mod explicit_completion_tests {
             provider_run.map(|provider_run| provider_run.state()),
             Some(crate::provider::ProviderRunState::Parked)
         );
+    }
+
+    #[test]
+    fn native_startup_terminal_frames_do_not_create_promptless_home_output() {
+        let mut config = DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app =
+            crate::app::DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "session-1",
+                "agent-home-1",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        let leased_agent = RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should be created");
+        let mut run = provider_run(
+            "provider-run-startup-terminal",
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            "codex",
+            "codex",
+            ProviderClientInterface::NativeTui,
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.terminal_mut().fan_out_output(
+            &leased_agent.backing_session_id,
+            run.id(),
+            Some(&leased_agent.backing_agent_id),
+            TerminalOutputKind::ProviderTerminal,
+            Some("native-startup".to_string()),
+            vec![leased_agent.backing_attachment_id.clone()],
+            b"codex app-server listening on ws://127.0.0.1:40037",
+        );
+
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection(&leased_agent.id, run.id(), false)
+            .expect("startup projection should succeed")
+            .expect("new provider state should still project");
+        let RelayPeerEvent::LeasedRuntimeProjection {
+            provider_run,
+            output_chunks,
+            ..
+        } = projection.1;
+        assert_eq!(
+            provider_run.map(|provider_run| provider_run.state()),
+            Some(crate::provider::ProviderRunState::Running)
+        );
+        assert!(output_chunks.is_empty());
     }
 
     #[test]
