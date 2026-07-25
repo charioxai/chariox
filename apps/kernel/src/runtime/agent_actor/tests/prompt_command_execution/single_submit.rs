@@ -361,6 +361,76 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
 }
 
 #[tokio::test]
+async fn rejected_meta_slash_does_not_activate_meta_mode_or_create_a_task() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-meta-slash-rejected",
+            "worktree-meta-slash-rejected",
+        ))
+        .expect("session should be created");
+    launch_dev_stub_provider(&mut app, session.id(), agent.id(), "sonnet");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime_state = owned_runtime_state(&app).await;
+    let runtime = AgentRuntime::new(
+        runtime_state.clone(),
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection,
+        agent_runtime_projection,
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+    let request = SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id: "stale-browser-attachment".to_string(),
+        target_agent_id: Some(agent_id.clone()),
+        prompt: "/meta Inspect the repo by delegation.".to_string(),
+        attachments: Vec::new(),
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "rejected-meta-slash-prompt-submit",
+        None,
+        None,
+        &local_request,
+    );
+
+    let error = runtime
+        .dispatch_prompt_submit(&command, request)
+        .await
+        .expect_err("stale attachment should reject the prompt");
+
+    assert!(matches!(
+        error,
+        DaemonError::AttachmentNotFound { attachment_id }
+            if attachment_id == "stale-browser-attachment"
+    ));
+    let agent = runtime_state
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.id() == agent_id)
+        .expect("agent should exist");
+    assert!(!agent.is_metaagent());
+    let session = runtime_state
+        .session_snapshot(&session_id)
+        .await
+        .expect("session should remain readable");
+    assert!(session.metaagent_task(&agent_id).is_none());
+    assert!(session.queued_metaagent_tasks().is_empty());
+}
+
+#[tokio::test]
 async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_without_app_lock() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)

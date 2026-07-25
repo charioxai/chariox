@@ -94,6 +94,12 @@ impl AgentRuntimeCommandExecutor {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "no target agent".to_string(),
                 })?;
+        // Validate the transport attachment before Meta activation or any other
+        // prompt-side effect. A stale browser attachment must fail cleanly
+        // instead of leaving an active task with no admitted prompt.
+        self.prompt_commands
+            .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+            .await?;
         let materialized_attachments = materialize_inline_prompt_attachments(
             &request.session_id,
             &target_agent_id,

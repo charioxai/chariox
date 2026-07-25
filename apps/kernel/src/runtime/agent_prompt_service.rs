@@ -66,6 +66,16 @@ impl AgentPromptCommandService {
         self.state.submit_prepared_prompt(prepared).await
     }
 
+    pub(crate) async fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.state
+            .ensure_attachment_in_session(session_id, attachment_id)
+            .await
+    }
+
     pub(crate) async fn cancel_agent_prompt(
         &self,
         session_id: &str,
