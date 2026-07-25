@@ -86,6 +86,32 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
 
     assert_eq!(agent.provider(), "opencode");
     assert_eq!(agent.model(), Some("model-next"));
+    let durable_events = app
+        .lock()
+        .await
+        .durable_state_store()
+        .load_events_by_kind("agent.updated")
+        .expect("agent update events should load");
+    assert!(durable_events.iter().any(|event| {
+        event
+            .payload
+            .get("agent")
+            .and_then(|agent| agent.get("id"))
+            .and_then(|id| id.as_str())
+            == Some(agent_id.as_str())
+            && event
+                .payload
+                .get("agent")
+                .and_then(|agent| agent.get("provider"))
+                .and_then(|provider| provider.as_str())
+                == Some("opencode")
+            && event
+                .payload
+                .get("agent")
+                .and_then(|agent| agent.get("model"))
+                .and_then(|model| model.as_str())
+                == Some("model-next")
+    }));
 }
 
 #[tokio::test]

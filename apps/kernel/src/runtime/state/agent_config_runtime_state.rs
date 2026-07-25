@@ -974,6 +974,8 @@ impl KernelRuntimeState {
                 remote_update.effort,
             )?;
         }
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
         Ok(agent)
     }
 
