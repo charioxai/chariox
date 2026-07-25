@@ -485,7 +485,15 @@ impl KernelRuntimeState {
                     self.ensure_metaagent_task_attachment(&request.session_id, &metaagent)
                         .is_ok_and(|attachment_id| prompt.source_attachment_id() == attachment_id)
                 });
-                if queued_prompt.is_some() {
+                let has_active_prompt = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(
+                        &self.owned.session_store.get_session(&request.session_id)?,
+                        &request.metaagent_id,
+                    )
+                    .is_some();
+                if queued_prompt.is_some() && !has_active_prompt {
                     if metaagent.remote_execution().is_some() {
                         if let Some(mut submission) =
                             self.owned.advance_next_queued_remote_prompt_dispatch(

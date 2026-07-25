@@ -982,6 +982,149 @@ async fn resumed_metaagent_task_uses_queued_edit_without_duplicate_notification_
     );
 }
 
+#[test]
+fn resumed_metaagent_task_defers_private_continuation_behind_active_user_prompt() {
+    run_large_stack_async_test(
+        "resumed-metaagent-task-defers-private-continuation",
+        resumed_metaagent_task_defers_private_continuation_behind_active_user_prompt_inner,
+    );
+}
+
+async fn resumed_metaagent_task_defers_private_continuation_behind_active_user_prompt_inner() {
+    let env = TestMetaRuntimeEnv::new("paused-task-active-user");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace should be created");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .expect("session should be created");
+    let metaagent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("meta"))
+        .expect("metaagent should spawn");
+    let metaagent = activate_test_agent_meta_mode(&mut app, metaagent);
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        metaagent.id(),
+        "dev-stub",
+        "dev-stub",
+        "meta-model",
+    );
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "# Original task")
+        .expect("task should start");
+    app.sessions_mut()
+        .set_metaagent_task_status(
+            session.id(),
+            metaagent.id(),
+            crate::session::MetaagentTaskStatus::Paused,
+        )
+        .expect("task should pause");
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let attach = attach_request(session.id(), "client-active-user-before-resume");
+    let attachment_id = match router
+        .dispatch(
+            KernelCommand::from_local_request(
+                "attach-active-user-before-resume",
+                None,
+                None,
+                &attach,
+            ),
+            attach,
+        )
+        .await
+        .expect("client should attach")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment.id().to_string(),
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+
+    let update =
+        LocalDaemonRequest::UpdateMetaagentTask(crate::local::UpdateMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+            task_markdown: Some("# Edited task".to_string()),
+            plan_markdown: None,
+        });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("edit-paused-task-before-user", None, None, &update),
+            update,
+        )
+        .await
+        .expect("paused task edit should queue");
+
+    let user_text = "user priority prompt is already running";
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id,
+        target_agent_id: Some(metaagent.id().to_string()),
+        prompt: user_text.to_string(),
+        attachments: Vec::new(),
+    });
+    let submitted = router
+        .dispatch(
+            KernelCommand::from_local_request(
+                "submit-active-user-before-resume",
+                None,
+                None,
+                &submit,
+            ),
+            submit,
+        )
+        .await
+        .expect("user prompt should submit");
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome: crate::session::PromptSubmissionOutcome::Started { prompt },
+        ..
+    } = submitted
+    else {
+        panic!("user prompt should start ahead of the private continuation");
+    };
+    assert_eq!(prompt.prompt(), user_text);
+
+    let resume =
+        LocalDaemonRequest::ResumeMetaagentTask(crate::local::ResumeMetaagentTaskRequest {
+            session_id: session.id().to_string(),
+            metaagent_id: metaagent.id().to_string(),
+        });
+    let resumed = router
+        .dispatch(
+            KernelCommand::from_local_request(
+                "resume-with-active-user-prompt",
+                None,
+                None,
+                &resume,
+            ),
+            resume,
+        )
+        .await
+        .expect("resume should not try to replace the active user prompt");
+    let LocalDaemonResponse::MetaagentTaskUpdated { session, task } = resumed else {
+        panic!("unexpected resume response: {resumed:?}");
+    };
+    assert_eq!(
+        task.as_ref().map(|task| task.status()),
+        Some(crate::session::MetaagentTaskStatus::Active)
+    );
+    assert_eq!(
+        session
+            .active_prompt_for_agent(metaagent.id())
+            .map(|prompt| prompt.prompt()),
+        Some(user_text)
+    );
+    let queued = session
+        .queued_prompts_for_agent(metaagent.id())
+        .expect("private continuation should remain queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].prompt(), "<metaagent-event/>");
+    assert!(queued[0].hidden_system_context().contains("# Edited task"));
+}
+
 #[tokio::test]
 async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     let env = TestMetaRuntimeEnv::new("shared-token-tool-visibility");
