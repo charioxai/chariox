@@ -220,8 +220,29 @@ pub(super) fn apply_notification_with_manifest(
                     "turn_id": turn_id,
                 }),
             );
-            if !turn_id.is_empty() {
-                *active_turn_id = Some(turn_id);
+            if turn_id.is_empty() {
+                return;
+            }
+            let Some(submitted_turn_id) = active_turn_id.as_deref() else {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex turn start ignored without a submitted turn",
+                    json!({
+                        "turn_id": turn_id,
+                    }),
+                );
+                return;
+            };
+            if submitted_turn_id != turn_id {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex turn start ignored by active turn mismatch",
+                    json!({
+                        "active_turn_id": submitted_turn_id,
+                        "turn_id": turn_id,
+                    }),
+                );
+                return;
             }
             turn_tracker.reset_for_started();
         }

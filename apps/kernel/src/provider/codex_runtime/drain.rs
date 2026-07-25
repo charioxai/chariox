@@ -10,6 +10,7 @@ use super::{CodexPollResult, CodexRuntimeState};
 
 const CODEX_EVENT_DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CODEX_EVENT_DRAIN_MAX_LIVE_NOTIFICATIONS: usize = 64;
+const CODEX_MANAGED_BACKFILL_QUIET_GRACE: Duration = Duration::from_millis(250);
 
 pub fn drain_codex_events(
     run: &RuntimeProviderRun,
@@ -119,5 +120,7 @@ pub(super) fn codex_turn_should_backfill(
     has_active_turn
         && (endpoint_mode == AgentEndpointMode::External
             || turn_tracker.has_pending_terminal()
-            || (drained_to_quiet && turn_tracker.has_terminal_assistant_evidence()))
+            || (drained_to_quiet
+                && turn_tracker
+                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)))
 }

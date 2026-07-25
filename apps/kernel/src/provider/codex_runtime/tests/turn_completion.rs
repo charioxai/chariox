@@ -4,6 +4,126 @@ use super::super::prompt::note_codex_turn_start_response;
 use super::*;
 
 #[test]
+fn delayed_previous_turn_start_cannot_replace_the_submitted_turn() {
+    let mut active_turn_id = Some("turn-new".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnStarted {
+            turn_id: "turn-previous".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-previous".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert_eq!(active_turn_id.as_deref(), Some("turn-new"));
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+}
+
+#[test]
+fn delayed_previous_turn_start_cannot_arm_the_next_prompt_before_submission() {
+    let mut active_turn_id = None;
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TurnStarted {
+            turn_id: "turn-previous".to_string(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    apply_notification(
+        CodexNotification::TurnCompleted {
+            turn_id: "turn-previous".to_string(),
+            status: "completed".to_string(),
+            error_message: None,
+            items: Vec::new(),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert_eq!(active_turn_id, None);
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+}
+
+#[test]
 fn only_turn_completed_marks_the_prompt_as_complete() {
     let mut active_turn_id = Some("turn-1".to_string());
     let mut turn_tracker = CodexTurnTracker::default();
@@ -1238,6 +1358,8 @@ fn completed_turn_backfill_requires_final_answer_or_error_evidence() {
 
 #[test]
 fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal_notification() {
+    use std::time::Duration;
+
     let mut turn_tracker = CodexTurnTracker::default();
     turn_tracker.note_tool_started("workflow-ack-call");
     turn_tracker.note_tool_completed("workflow-ack-call");
@@ -1251,6 +1373,20 @@ fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal
         &turn_tracker,
         false,
     ));
+    assert!(!codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(249));
+    assert!(!codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
     assert!(codex_turn_should_backfill(
         crate::provider::AgentEndpointMode::Managed,
         true,

@@ -1,6 +1,7 @@
 //! Codex turn settlement tracking and terminal completion gating.
 
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -18,6 +19,7 @@ pub(super) struct CodexTurnTracker {
     pending_terminal: Option<CodexPendingTerminal>,
     tool_started: bool,
     assistant_content_after_tool_activity: bool,
+    last_activity_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,9 +40,11 @@ impl CodexTurnTracker {
         self.pending_terminal = None;
         self.tool_started = false;
         self.assistant_content_after_tool_activity = false;
+        self.last_activity_at = Some(Instant::now());
     }
 
     pub(super) fn note_tool_started(&mut self, tool_id: &str) {
+        self.note_activity();
         if !tool_id.is_empty() {
             self.active_tool_ids.insert(tool_id.to_string());
         }
@@ -49,6 +53,7 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn note_tool_completed(&mut self, tool_id: &str) {
+        self.note_activity();
         if !tool_id.is_empty() {
             self.active_tool_ids.remove(tool_id);
         }
@@ -56,12 +61,16 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn note_terminal(&mut self, signal: CodexTerminalSignal) {
+        self.note_activity();
         self.pending_terminal = Some(CodexPendingTerminal { signal });
     }
 
-    pub(super) fn note_activity(&mut self) {}
+    pub(super) fn note_activity(&mut self) {
+        self.last_activity_at = Some(Instant::now());
+    }
 
     pub(super) fn note_assistant_content(&mut self) {
+        self.note_activity();
         self.assistant_content_after_tool_activity = true;
     }
 
@@ -77,8 +86,20 @@ impl CodexTurnTracker {
         self.assistant_content_after_tool_activity
     }
 
+    pub(super) fn has_quiet_terminal_assistant_evidence(&self, quiet_for: Duration) -> bool {
+        self.has_terminal_assistant_evidence()
+            && self
+                .last_activity_at
+                .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
+    }
+
     #[cfg(test)]
     pub(super) fn force_pending_terminal_quiet_for_tests(&mut self) {}
+
+    #[cfg(test)]
+    pub(super) fn force_assistant_evidence_quiet_for_tests(&mut self, quiet_for: Duration) {
+        self.last_activity_at = Instant::now().checked_sub(quiet_for);
+    }
 }
 
 pub(super) fn note_tool_item_started(turn_tracker: &mut CodexTurnTracker, item: &Value) {

@@ -26,6 +26,35 @@ fn pending_turn_snapshot_lookup_does_not_consume_snapshot() {
 }
 
 #[test]
+fn queued_prompt_snapshot_does_not_replace_completed_prompt_snapshot() {
+    let snapshots = GitTurnSnapshotStore::default();
+    let completed_prompt = tracked_snapshot(false, "");
+    let mut promoted_prompt = completed_prompt.clone();
+    promoted_prompt.prompt_id = "prompt-2".to_string();
+    promoted_prompt.turn_id = "prompt-2".to_string();
+
+    snapshots.insert(completed_prompt.clone());
+    snapshots.insert(promoted_prompt.clone());
+
+    assert_eq!(
+        snapshots.get("provider-run-1", "prompt-1"),
+        Some(completed_prompt.clone())
+    );
+    assert_eq!(
+        snapshots.get("provider-run-1", "prompt-2"),
+        Some(promoted_prompt.clone())
+    );
+    assert_eq!(
+        snapshots.remove("provider-run-1", "prompt-1"),
+        Some(completed_prompt)
+    );
+    assert_eq!(
+        snapshots.get("provider-run-1", "prompt-2"),
+        Some(promoted_prompt)
+    );
+}
+
+#[test]
 fn prompt_settlement_remains_latest_when_git_observation_is_missing() {
     let completed = CompletedGitTurnSnapshotStore::default();
     let mut first = tracked_snapshot(false, "");
