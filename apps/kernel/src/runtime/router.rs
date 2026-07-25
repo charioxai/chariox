@@ -176,6 +176,7 @@ mod tests {
     }
 
     mod agent_messaging;
+    mod agent_prompt_schedules;
     mod credential_enrollment;
     mod interactive_command_admission;
     mod m16_runtime_extension_registration;

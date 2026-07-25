@@ -1,4 +1,5 @@
 mod agent_config;
+mod agent_prompt_scheduling;
 mod metaagent_task;
 mod owner;
 mod prompt_queue;
@@ -87,3 +88,6 @@ pub(crate) fn is_false(value: &bool) -> bool {
 pub(crate) fn is_zero(value: &usize) -> bool {
     *value == 0
 }
+pub use agent_prompt_scheduling::{
+    AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
+};

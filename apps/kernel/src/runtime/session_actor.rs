@@ -30,6 +30,8 @@ impl SessionActor {
                 | LocalDaemonRequest::PollRuntimeNotices(_)
                 | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
+                | LocalDaemonRequest::CreateAgentPromptSchedule(_)
+                | LocalDaemonRequest::CancelAgentPromptSchedule(_)
                 | LocalDaemonRequest::AliasAgent(_)
                 | LocalDaemonRequest::UpdateAgentConfig(_)
                 | LocalDaemonRequest::UpdateAgentProfile(_)

@@ -13,8 +13,9 @@ use super::types::{
     WorkflowIntermediateOutput, WorkflowRunOutputSubmission, WorkflowTurnSubmissionKind,
 };
 use super::{
-    unix_epoch_ms, CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem,
-    RuntimeSession, SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
+    unix_epoch_ms, AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
+    CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeSession,
+    SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
@@ -144,6 +145,11 @@ pub struct WorkflowWatchdogCollection {
     pub changed_session_ids: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentPromptScheduleCollection {
+    pub dispatches: Vec<AgentPromptScheduleDispatch>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
@@ -163,6 +169,7 @@ pub struct SessionService {
     next_workflow_publication_number: u64,
     next_workflow_prompt_queue_number: u64,
     next_workflow_queued_prompt_number: u64,
+    next_agent_prompt_schedule_number: u64,
     max_workflow_queues_per_workflow: usize,
     session_default_max_agents: i32,
     workflow_default_max_concurrent: u32,
@@ -172,6 +179,7 @@ pub struct SessionService {
 mod core;
 mod helpers;
 mod launches;
+mod prompt_schedules;
 mod sessions;
 #[cfg(test)]
 mod tests;

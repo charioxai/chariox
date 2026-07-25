@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
+use super::agent_prompt_scheduling::AgentPromptSchedule;
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -100,6 +101,8 @@ pub struct RuntimeSession {
     metaagent_tasks: Vec<MetaagentTask>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    agent_prompt_schedules: Vec<AgentPromptSchedule>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -181,6 +184,7 @@ impl RuntimeSession {
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
+            agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
@@ -204,6 +208,33 @@ impl RuntimeSession {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {
+        &self.agent_prompt_schedules
+    }
+
+    pub(crate) fn agent_prompt_schedules_mut(&mut self) -> &mut Vec<AgentPromptSchedule> {
+        &mut self.agent_prompt_schedules
+    }
+
+    pub(crate) fn add_agent_prompt_schedule(
+        &mut self,
+        schedule: AgentPromptSchedule,
+    ) -> AgentPromptSchedule {
+        self.agent_prompt_schedules.push(schedule.clone());
+        schedule
+    }
+
+    pub(crate) fn remove_agent_prompt_schedule(
+        &mut self,
+        schedule_id: &str,
+    ) -> Option<AgentPromptSchedule> {
+        let index = self
+            .agent_prompt_schedules
+            .iter()
+            .position(|schedule| schedule.id() == schedule_id)?;
+        Some(self.agent_prompt_schedules.remove(index))
     }
 
     pub fn workspace_id(&self) -> &str {

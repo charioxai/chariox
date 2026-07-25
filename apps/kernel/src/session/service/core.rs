@@ -24,6 +24,7 @@ impl SessionService {
             next_workflow_publication_number: 0,
             next_workflow_prompt_queue_number: 0,
             next_workflow_queued_prompt_number: 0,
+            next_agent_prompt_schedule_number: 0,
             max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
             session_default_max_agents: config.session_default_max_agents(),
             workflow_default_max_concurrent: config.workflow_code_limits().max_concurrent.max(1),

@@ -105,6 +105,8 @@ impl KernelRuntimeState {
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
+        self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
+            .await;
         for provider_run_id in pumped_provider_run_ids {
             self.observe_git_after_provider_activity_if_pending(&provider_run_id)
                 .await;
@@ -320,27 +322,14 @@ impl KernelRuntimeState {
         .min();
         transport_runtime_pump_interval_for_state(
             next_output_due_at_ms,
-            self.next_workflow_watchdog_run_at_ms(),
+            self.owned
+                .session_store
+                .read()
+                .next_scheduled_runtime_wake_at_ms(),
             now_ms,
             active_interval_ms,
             idle_interval_ms,
         )
-    }
-
-    fn next_workflow_watchdog_run_at_ms(&self) -> Option<u64> {
-        self.owned
-            .session_store
-            .list_non_ended_sessions_including_hidden()
-            .iter()
-            .flat_map(|session| session.workflow_watchdogs())
-            .filter(|watchdog| {
-                watchdog.enabled()
-                    && !watchdog
-                        .max_wakeups()
-                        .is_some_and(|limit| watchdog.wakeups_executed() >= limit)
-            })
-            .map(|watchdog| watchdog.next_run_at_ms())
-            .min()
     }
 
     fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {

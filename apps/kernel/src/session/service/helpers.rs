@@ -535,6 +535,15 @@ impl SessionService {
             unix_epoch_ms() ^ self.next_workflow_queued_prompt_number.rotate_left(19)
         )
     }
+
+    pub(super) fn next_agent_prompt_schedule_id(&mut self) -> String {
+        self.next_agent_prompt_schedule_number =
+            self.next_agent_prompt_schedule_number.wrapping_add(1);
+        format!(
+            "wait-{:016x}",
+            unix_epoch_ms() ^ self.next_agent_prompt_schedule_number.rotate_left(23)
+        )
+    }
 }
 
 pub(super) fn describe_session_match(session: &RuntimeSession) -> String {

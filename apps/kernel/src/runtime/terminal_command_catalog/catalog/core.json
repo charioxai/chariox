@@ -40,6 +40,30 @@
     ]
   },
   {
+    "id": "wait-in",
+    "label": "/wait-in",
+    "description": "Send a prompt to the focused agent after a delay in minutes",
+    "value": "/wait-in ",
+    "searchAliases": [
+      "remind agent",
+      "delayed prompt",
+      "continue later",
+      "timer"
+    ]
+  },
+  {
+    "id": "wait-every",
+    "label": "/wait-every",
+    "description": "Send a recurring prompt to the focused agent every given number of minutes",
+    "value": "/wait-every ",
+    "searchAliases": [
+      "recurring prompt",
+      "repeat reminder",
+      "continue periodically",
+      "timer"
+    ]
+  },
+  {
     "id": "session",
     "label": "/session",
     "description": "Create, attach, list, or delete sessions",

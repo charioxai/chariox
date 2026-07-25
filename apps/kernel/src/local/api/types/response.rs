@@ -199,6 +199,8 @@ pub enum LocalDaemonResponse {
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
     PromptInputHistory { entries: Vec<PromptInputHistoryEntry>, },
     PromptInputHistoryRecorded { entry: PromptInputHistoryEntry, },
+    AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
+    AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

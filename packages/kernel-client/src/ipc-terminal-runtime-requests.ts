@@ -143,6 +143,33 @@ export function submitPromptRequest(
   }
 }
 
+export function createAgentPromptScheduleRequest(options: {
+  sessionId: string
+  agentId: string
+  kind: "once" | "recurring"
+  intervalSeconds: number
+  prompt?: string | null
+}) {
+  return {
+    CreateAgentPromptSchedule: {
+      session_id: options.sessionId,
+      agent_id: options.agentId,
+      kind: options.kind,
+      interval_seconds: options.intervalSeconds,
+      prompt: options.prompt?.trim() || null,
+    },
+  }
+}
+
+export function cancelAgentPromptScheduleRequest(sessionId: string, scheduleId: string) {
+  return {
+    CancelAgentPromptSchedule: {
+      session_id: sessionId,
+      schedule_id: scheduleId,
+    },
+  }
+}
+
 export type SubmitPromptBatchItem = {
   sessionId?: string | null
   attachmentId?: string | null

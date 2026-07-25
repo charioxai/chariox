@@ -1179,8 +1179,7 @@ impl KernelRuntimeState {
         let session_id = agent.session_id().to_string();
         self.activate_meta_mode_for_prompt(&session_id, agent.id(), task.task_markdown())
             .await?;
-        let task_attachment_id =
-            self.ensure_metaagent_task_attachment(&session_id, &agent)?;
+        let task_attachment_id = self.ensure_metaagent_task_attachment(&session_id, &agent)?;
         let prompt = crate::session::PromptQueueItem::new(
             format!("pending-draft:{}", task.id()),
             task_attachment_id,

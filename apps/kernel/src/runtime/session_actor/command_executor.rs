@@ -181,6 +181,12 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::UpdateSessionConfig(request) => {
                 self.store.update_session_config(request).await
             }
+            LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
+                self.store.create_agent_prompt_schedule(request).await
+            }
+            LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
+                self.store.cancel_agent_prompt_schedule(request).await
+            }
             LocalDaemonRequest::UpdateAgentConfig(request) => {
                 self.store
                     .update_agent_config(request, caller_user_id)

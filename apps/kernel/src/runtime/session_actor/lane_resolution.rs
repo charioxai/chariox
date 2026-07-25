@@ -48,6 +48,12 @@ pub(super) async fn resolve_session_lane_key(
                 &request.attachment_id,
             )
         }
+        LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::UpdateAgentConfig(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

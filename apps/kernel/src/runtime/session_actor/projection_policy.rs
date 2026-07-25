@@ -50,6 +50,8 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentProfileUpdated { session, .. }
         | LocalDaemonResponse::AgentForked { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
+        | LocalDaemonResponse::AgentPromptScheduleCreated { session, .. }
+        | LocalDaemonResponse::AgentPromptScheduleCancelled { session, .. }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session } => {
             Some(SessionProjectionAction::Update(session.clone()))
@@ -254,6 +256,8 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::UndoTurn(request) => &request.session_id,
         LocalDaemonRequest::ForkAgent(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
+        LocalDaemonRequest::CreateAgentPromptSchedule(request) => &request.session_id,
+        LocalDaemonRequest::CancelAgentPromptSchedule(request) => &request.session_id,
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };

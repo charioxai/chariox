@@ -11,6 +11,7 @@ use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRec
 use arroba_relay::protocol::RelayKernelPresence;
 
 mod agent_lifecycle;
+mod agent_prompt_schedule;
 mod agent_utility;
 mod capability;
 mod cloud_relay;
@@ -33,6 +34,7 @@ mod workflow;
 mod workspace;
 
 pub use agent_lifecycle::*;
+pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
 pub use capability::*;
 pub use cloud_relay::*;
@@ -54,4 +56,4 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 247;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 248;

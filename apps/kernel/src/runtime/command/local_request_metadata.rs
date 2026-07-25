@@ -140,6 +140,15 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .attachment(&request.attachment_id)
         }
+        LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
+            LocalRequestMetadata::new("agent_prompt_schedule.create", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
+            LocalRequestMetadata::new("agent_prompt_schedule.cancel", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -562,6 +571,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "native_provider.interaction.request"
         }
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
+        LocalDaemonRequest::CreateAgentPromptSchedule(_) => "agent_prompt_schedule.create",
+        LocalDaemonRequest::CancelAgentPromptSchedule(_) => "agent_prompt_schedule.cancel",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",
