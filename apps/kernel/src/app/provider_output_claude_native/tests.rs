@@ -25,6 +25,27 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 }
 
 #[test]
+fn repeated_claude_permission_render_is_stored_once() {
+    let root = std::env::temp_dir().join(format!(
+        "arroba-claude-permission-recent-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    let context_file = context_file.display().to_string();
+    let rendered =
+        "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
+
+    let first = update_claude_permission_recent(&context_file, rendered);
+    let second = update_claude_permission_recent(&context_file, rendered);
+
+    assert_eq!(first, second);
+    assert_eq!(second.matches(rendered).count(), 1, "{second}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
     let mcp_permission = serde_json::json!({
         "hook_event_name": "PermissionRequest",

@@ -391,6 +391,9 @@ pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str
         return normalized;
     };
     let mut recent = fs::read_to_string(&path).unwrap_or_default();
+    if recent.trim_end().ends_with(normalized.trim()) {
+        return recent;
+    }
     recent.push(' ');
     recent.push_str(&normalized);
     if recent.chars().count() > 4000 {
