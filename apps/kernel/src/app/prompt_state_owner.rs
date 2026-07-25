@@ -569,7 +569,9 @@ mod tests {
             entries[0].source_attachment_id.as_deref(),
             Some("workflow-run:run-1")
         );
-        assert_eq!(entries[0].text.trim(), rendered_prompt);
+        assert_eq!(entries[0].text.trim(), "[{\"message\":\"20\"}]");
+        assert!(!entries[0].text.contains("node-level-prompt"));
+        assert!(!entries[0].text.contains("subtract 9"));
     }
 }
 
