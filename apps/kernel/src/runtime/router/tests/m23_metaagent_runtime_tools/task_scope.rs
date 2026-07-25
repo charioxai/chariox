@@ -573,10 +573,22 @@ async fn local_metaagent_task_update_notifies_metaagent_inner() {
     let active = session
         .active_prompt_for_agent(metaagent.id())
         .expect("task update should notify the metaagent");
+    assert_eq!(
+        active.prompt(),
+        "<metaagent-event/>",
+        "task lifecycle notifications must remain private in visible history"
+    );
     assert!(
-        active.prompt().contains("edited your task and plan"),
+        active
+            .hidden_system_context()
+            .contains("edited your task and plan"),
         "{}",
-        active.prompt()
+        active.hidden_system_context()
+    );
+    assert!(
+        active.hidden_system_context().contains("# Updated task"),
+        "{}",
+        active.hidden_system_context()
     );
     let task_attachments = app
         .lock()
@@ -707,7 +719,18 @@ async fn local_metaagent_task_pause_and_abort_cancel_active_prompt_inner() {
         .queued_prompts_for_agent(metaagent.id())
         .expect("paused task edit should queue one notification");
     assert_eq!(queued.len(), 1);
-    assert!(queued[0].prompt().contains("Edited while paused"));
+    assert_eq!(
+        queued[0].prompt(),
+        "<metaagent-event/>",
+        "paused task edits must remain private in visible history"
+    );
+    assert!(
+        queued[0]
+            .hidden_system_context()
+            .contains("Edited while paused"),
+        "{}",
+        queued[0].hidden_system_context()
+    );
 
     let abort = LocalDaemonRequest::AbortMetaagentTask(crate::local::AbortMetaagentTaskRequest {
         session_id: session.id().to_string(),
