@@ -1,16 +1,16 @@
 use super::*;
 
 #[tokio::test]
-async fn codex_cancellation_settles_once_without_waiting_for_in_flight_tool_abort() {
-    assert_structured_cancellation_orders_abort_before_queued_prompt("codex").await;
+async fn codex_cancellation_waits_for_abort_ack_before_promoting_queued_prompt() {
+    assert_structured_cancellation_waits_for_abort_ack("codex").await;
 }
 
 #[tokio::test]
-async fn claude_cancellation_preserves_abort_before_queued_prompt() {
-    assert_structured_cancellation_orders_abort_before_queued_prompt("claude").await;
+async fn claude_cancellation_waits_for_abort_ack_before_promoting_queued_prompt() {
+    assert_structured_cancellation_waits_for_abort_ack("claude").await;
 }
 
-async fn assert_structured_cancellation_orders_abort_before_queued_prompt(adapter_key: &str) {
+async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -118,33 +118,25 @@ async fn assert_structured_cancellation_orders_abort_before_queued_prompt(adapte
 
     assert!(started_at.elapsed() < std::time::Duration::from_secs(1));
     assert_eq!(cancellation.cancellation.prompt.id(), prompt_id);
-    let started_next = cancellation
-        .cancellation
-        .started_next
-        .as_ref()
-        .expect("queued prompt should start");
-    assert_ne!(started_next.id(), queued_pending_id);
-    assert_eq!(
-        started_next.prompt(),
-        "run after the blocked tool is aborted"
-    );
-    assert!(cancellation.dispatch.is_none());
-    let active_prompt = runtime
+    assert!(cancellation.cancellation.started_next.is_none());
+    assert!(cancellation.dispatch.is_some());
+    let snapshot = runtime
         .owned
         .session_snapshot(session.id())
-        .expect("session snapshot should exist")
+        .expect("session snapshot should exist");
+    let active_prompt = snapshot
         .active_prompt_for_agent(agent.id())
-        .cloned()
-        .expect("queued prompt should be promoted");
-    assert_eq!(active_prompt.id(), started_next.id());
+        .expect("interrupted prompt should remain authoritative until abort acknowledgement");
+    assert_eq!(active_prompt.id(), prompt_id);
     assert_eq!(
         active_prompt.status(),
-        crate::session::PromptStatus::Dispatching
+        crate::session::PromptStatus::Cancelling
     );
-    assert_eq!(
-        active_prompt.durable_delivery_phase(),
-        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
-    );
+    let queued = snapshot
+        .queued_prompts_for_agent(agent.id())
+        .expect("queued prompt should remain queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id(), queued_pending_id);
     assert!(runtime.owned.prompt_activity.read().contains_key(run.id()));
 
     let notices = runtime
@@ -158,31 +150,6 @@ async fn assert_structured_cancellation_orders_abort_before_queued_prompt(adapte
             .count(),
         1
     );
-
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut abort_count = 0;
-    let mut submit_count = 0;
-    loop {
-        let (aborts, submits) = {
-            let mut providers = runtime.owned.provider_store.write();
-            (
-                providers
-                    .drain_finished_structured_prompt_abort_jobs()
-                    .len(),
-                providers
-                    .drain_finished_structured_prompt_submit_jobs()
-                    .len(),
-            )
-        };
-        abort_count += aborts;
-        submit_count += submits;
-        if (abort_count > 0 && submit_count > 0) || tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(abort_count, 1);
-    assert_eq!(submit_count, 1);
 }
 
 #[tokio::test]
@@ -276,7 +243,13 @@ async fn paused_metaagent_cancellation_holds_queued_user_prompt() {
         .owned
         .session_snapshot(session.id())
         .expect("session should remain available");
-    assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
+    assert_eq!(
+        snapshot
+            .active_prompt_for_agent(agent.id())
+            .expect("interrupted prompt should await abort acknowledgement")
+            .status(),
+        crate::session::PromptStatus::Cancelling
+    );
     let queued = snapshot
         .queued_prompts_for_agent(agent.id())
         .expect("queued user prompt should remain");

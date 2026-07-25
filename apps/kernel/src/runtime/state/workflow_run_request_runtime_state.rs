@@ -184,7 +184,7 @@ impl KernelRuntimeState {
         (result, session)
     }
 
-    async fn execute_workflow_interrupt_run(
+    pub(super) async fn execute_workflow_interrupt_run(
         &self,
         session_id: &str,
         workflow_run_ref: &str,
@@ -196,24 +196,27 @@ impl KernelRuntimeState {
             .read()
             .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
-        let session = owned.session_store.get_session(session_id)?;
-        let active_agents = owned
+        let mut provider_run_ids = owned
             .agent_store
             .get_session_agents(session_id)
             .into_iter()
             .filter_map(|agent| {
                 owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, agent.id())
-                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
-                    .map(|prompt| {
-                        (
-                            agent.id().to_string(),
-                            prompt.source_attachment_id().to_string(),
-                        )
-                    })
+                    .provider_store
+                    .get_run_for_agent(session_id, agent.id())
+                    .map(|run| run.id().to_string())
             })
             .collect::<Vec<_>>();
+        provider_run_ids.sort();
+        provider_run_ids.dedup();
+        let mut _provider_run_permits = Vec::with_capacity(provider_run_ids.len());
+        for provider_run_id in provider_run_ids {
+            _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
+        }
+        let session_before_interrupt = owned.session_store.get_session(session_id)?;
+        let _ = owned
+            .prompt_state_owner
+            .remove_queued_prompts_by_workflow_run(&session_before_interrupt, &workflow_run_id);
         let expected_status = if pause {
             crate::session::WorkflowRunStatus::Paused
         } else {
@@ -236,9 +239,6 @@ impl KernelRuntimeState {
             claim.session_id == session_id && claim.operation == "workflow_node_dispatch"
         });
         let session = owned.session_store.get_session(session_id)?;
-        let _ = owned
-            .prompt_state_owner
-            .remove_queued_prompts_by_workflow_run(&session, &workflow_run_id);
         for agent in owned.agent_store.get_session_agents(session_id) {
             let (active_prompt, queued_prompts) =
                 owned.prompt_state_owner.state_parts(&session, agent.id());
@@ -252,6 +252,24 @@ impl KernelRuntimeState {
         let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
         workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
         self.spawn_workflow_prompt_dispatches(workflow_dispatches);
+        let session = owned.session_store.get_session(session_id)?;
+        let active_agents = owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter_map(|agent| {
+                owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
+                    .map(|prompt| {
+                        (
+                            agent.id().to_string(),
+                            prompt.source_attachment_id().to_string(),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
         for (agent_id, attachment_id) in active_agents {
             let cancellation = match self
                 .cancel_agent_prompt(session_id, &agent_id, &attachment_id)
@@ -319,7 +337,7 @@ impl KernelRuntimeState {
             .resolve_workflow_run_ref(session_id, workflow_run_ref)?
             .id()
             .to_string();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
         loop {
             self.owned.reap_structured_prompt_jobs();
             let session = self.owned.session_store.get_session(session_id)?;

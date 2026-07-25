@@ -140,12 +140,6 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
 }
 
-pub(crate) fn provider_run_finalizes_cancellation_on_abort_dispatch(
-    run: &RuntimeProviderRun,
-) -> bool {
-    matches!(run.adapter_key(), "claude" | "codex") && provider_run_uses_structured_prompt_io(run)
-}
-
 pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "opencode"
 }
@@ -261,8 +255,8 @@ mod tests {
     use super::{
         adapter_key_for_provider, canonical_provider_family,
         provider_adapter_supports_policy_reload, provider_batch_launch_concurrency_limit,
-        provider_id_for_launch, provider_run_finalizes_cancellation_on_abort_dispatch,
-        provider_run_is_claude_headless, provider_run_refreshes_selection_on_read,
+        provider_id_for_launch, provider_run_is_claude_headless,
+        provider_run_refreshes_selection_on_read,
         provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_policy_reload,
         provider_run_supports_selection_sync, provider_run_uses_claude_native_bridge,
         provider_run_uses_runtime_structured_utility_prompt,
@@ -300,31 +294,6 @@ mod tests {
         assert_eq!(canonical_provider_family("claude-headless"), Some("claude"));
         assert_eq!(canonical_provider_family("claude-p"), Some("claude"));
         assert_eq!(canonical_provider_family("unknown"), None);
-    }
-
-    #[test]
-    fn structured_provider_cancellation_settlement_is_provider_policy() {
-        let structured = provider_run("claude", "claude");
-        let headless = provider_run("claude", "claude-headless");
-        let native_tui = provider_run_with_client_interface(
-            "claude",
-            "claude",
-            ProviderClientInterface::NativeTui,
-        );
-        let codex = provider_run("codex", "codex");
-
-        assert!(provider_run_finalizes_cancellation_on_abort_dispatch(
-            &structured
-        ));
-        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
-            &headless
-        ));
-        assert!(!provider_run_finalizes_cancellation_on_abort_dispatch(
-            &native_tui
-        ));
-        assert!(provider_run_finalizes_cancellation_on_abort_dispatch(
-            &codex
-        ));
     }
 
     #[test]

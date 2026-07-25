@@ -252,12 +252,46 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         provider_run_id: &str,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
-        let session = self.session_store.get_session(session_id)?;
-        let Some(next_prompt) = self
-            .prompt_state_owner
-            .peek_next_queued_prompt(&session, agent_id)
-        else {
-            return Ok(None);
+        let (session, next_prompt) = loop {
+            let session = self.session_store.get_session(session_id)?;
+            let Some(next_prompt) = self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&session, agent_id)
+            else {
+                return Ok(None);
+            };
+            let workflow_is_runnable =
+                next_prompt.workflow_run_id().is_none_or(|workflow_run_id| {
+                    session
+                        .workflow_runs()
+                        .iter()
+                        .find(|workflow_run| workflow_run.id() == workflow_run_id)
+                        .is_some_and(|workflow_run| {
+                            matches!(
+                                workflow_run.status(),
+                                crate::session::WorkflowRunStatus::Created
+                                    | crate::session::WorkflowRunStatus::Running
+                                    | crate::session::WorkflowRunStatus::Waiting
+                            )
+                        })
+                });
+            if workflow_is_runnable {
+                break (session, next_prompt);
+            }
+            let removed =
+                self.prompt_state_owner
+                    .remove_queued_prompt(&session, agent_id, next_prompt.id());
+            if removed.is_none() {
+                continue;
+            }
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.mirror_prompt_owner_agent_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
         };
         if self
             .prompt_state_owner

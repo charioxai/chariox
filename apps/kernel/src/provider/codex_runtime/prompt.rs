@@ -17,6 +17,8 @@ use super::CodexRuntimeState;
 
 const CODEX_MCP_THREAD_INIT_RETRY_TIMEOUT: Duration = Duration::from_secs(150);
 const CODEX_MCP_THREAD_INIT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+const CODEX_TURN_INTERRUPT_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const CODEX_TURN_INTERRUPT_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 pub fn submit_codex_prompt(
     run: &RuntimeProviderRun,
@@ -238,9 +240,12 @@ fn codex_active_steering_preserves_thread(
 #[cfg(test)]
 mod prompt_tests {
     use super::{
-        codex_active_steering_preserves_thread, note_codex_turn_interrupt_accepted,
-        CodexNotification, CodexTurnTracker,
+        codex_active_steering_preserves_thread, codex_turn_interrupt_is_waiting_for_task_start,
+        codex_turn_is_terminal, note_codex_turn_interrupt_accepted, CodexNotification,
+        CodexTurnTracker,
     };
+    use crate::error::DaemonError;
+    use serde_json::json;
 
     #[test]
     fn active_steering_preserves_the_existing_codex_thread() {
@@ -272,6 +277,47 @@ mod prompt_tests {
         assert_eq!(turn_tracker.active_tool_count(), 0);
         assert!(!turn_tracker.has_pending_terminal());
         assert!(buffered_notifications.is_empty());
+    }
+
+    #[test]
+    fn abort_retries_only_the_codex_task_start_race() {
+        assert!(codex_turn_interrupt_is_waiting_for_task_start(
+            &DaemonError::ProviderProtocol {
+                provider_run_id: "provider-run-codex".to_string(),
+                operation: "turn/interrupt",
+                message: "no active turn to interrupt".to_string(),
+            }
+        ));
+        assert!(!codex_turn_interrupt_is_waiting_for_task_start(
+            &DaemonError::ProviderProtocol {
+                provider_run_id: "provider-run-codex".to_string(),
+                operation: "turn/interrupt",
+                message: "thread was not found".to_string(),
+            }
+        ));
+    }
+
+    #[test]
+    fn terminal_turns_make_an_already_settled_interrupt_successful() {
+        for status in ["completed", "failed", "cancelled", "canceled"] {
+            assert!(codex_turn_is_terminal(
+                &json!({
+                    "data": [
+                        {"id": "turn-other", "status": "completed"},
+                        {"id": "turn-target", "status": status}
+                    ]
+                }),
+                "turn-target"
+            ));
+        }
+        assert!(!codex_turn_is_terminal(
+            &json!({"data": [{"id": "turn-target", "status": "inProgress"}]}),
+            "turn-target"
+        ));
+        assert!(!codex_turn_is_terminal(
+            &json!({"data": [{"id": "turn-other", "status": "completed"}]}),
+            "turn-target"
+        ));
     }
 }
 
@@ -324,19 +370,73 @@ pub fn abort_codex_turn(
     };
     let thread_id = state.thread_id().to_string();
     let client = CodexClient::new(provider_run_id, state.endpoint())?;
-    client.turn_interrupt(
-        &mut state.socket,
-        &mut state.next_request_id,
-        &thread_id,
-        &turn_id,
-        &mut state.buffered_notifications,
-    )?;
-    note_codex_turn_interrupt_accepted(
-        &mut state.active_turn_id,
-        &mut state.turn_tracker,
-        &mut state.buffered_notifications,
-    );
-    Ok(())
+    let deadline = Instant::now() + CODEX_TURN_INTERRUPT_RETRY_TIMEOUT;
+    loop {
+        match client.turn_interrupt(
+            &mut state.socket,
+            &mut state.next_request_id,
+            &thread_id,
+            &turn_id,
+            &mut state.buffered_notifications,
+        ) {
+            Ok(()) => {
+                note_codex_turn_interrupt_accepted(
+                    &mut state.active_turn_id,
+                    &mut state.turn_tracker,
+                    &mut state.buffered_notifications,
+                );
+                return Ok(());
+            }
+            Err(error) if codex_turn_interrupt_is_waiting_for_task_start(&error) => {
+                if client
+                    .thread_turns_list(
+                        &mut state.socket,
+                        &mut state.next_request_id,
+                        &thread_id,
+                        &mut state.buffered_notifications,
+                    )
+                    .is_ok_and(|response| codex_turn_is_terminal(&response, &turn_id))
+                {
+                    note_codex_turn_interrupt_accepted(
+                        &mut state.active_turn_id,
+                        &mut state.turn_tracker,
+                        &mut state.buffered_notifications,
+                    );
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(error);
+                }
+                sleep(CODEX_TURN_INTERRUPT_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn codex_turn_interrupt_is_waiting_for_task_start(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::ProviderProtocol {
+            operation: "turn/interrupt",
+            message,
+            ..
+        } if message.contains("no active turn to interrupt")
+    )
+}
+
+fn codex_turn_is_terminal(response: &Value, turn_id: &str) -> bool {
+    response
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|turns| {
+            turns
+                .iter()
+                .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        })
+        .and_then(|turn| turn.get("status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "completed" | "failed" | "cancelled" | "canceled"))
 }
 
 fn note_codex_turn_interrupt_accepted(

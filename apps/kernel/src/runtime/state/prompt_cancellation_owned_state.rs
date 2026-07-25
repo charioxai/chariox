@@ -353,25 +353,6 @@ impl KernelRuntimeOwnedState {
                 provider_run.id()
             ),
         );
-        if crate::provider::provider_run_finalizes_cancellation_on_abort_dispatch(&provider_run) {
-            // Finalization can promote and enqueue the next structured prompt. Queue the abort
-            // first so the provider-run actor's FIFO cannot submit that prompt into the old turn.
-            self.provider_store.enqueue_structured_prompt_abort(
-                session_id.to_string(),
-                provider_run.id().to_string(),
-            )?;
-            let cancellation = self.finalize_local_prompt_cancellation_with_queued_advance(
-                session_id,
-                target_agent_id,
-                Some(provider_run.id()),
-            )?;
-            let session = self.session_snapshot(session_id)?;
-            return Ok(Some(crate::app::KernelPromptCancellation {
-                cancellation: cancellation.cancellation,
-                session,
-                dispatch: None,
-            }));
-        }
         let session = self.session_snapshot(session_id)?;
 
         Ok(Some(crate::app::KernelPromptCancellation {

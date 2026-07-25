@@ -1,6 +1,109 @@
 use super::*;
 
 #[tokio::test]
+async fn paused_workflow_prompt_cannot_be_promoted_after_provider_launch() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-paused-workflow-queue",
+            "worktree-paused-workflow-queue",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("paused-queue".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("run once".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "queued workflow turn".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    let queued = crate::session::PromptQueueItem::new(
+        "pending-paused-workflow",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "queued workflow turn",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued, true)
+        .expect("workflow prompt should remain queued while provider launch settles")
+    else {
+        panic!("workflow prompt should be queued");
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .execute_workflow_interrupt_run(session.id(), workflow_run.id(), true)
+        .await
+        .expect("workflow should pause through the authoritative runtime path");
+    let dispatch = runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session.id(), agent.id(), run.id())
+        .expect("paused workflow queue cleanup should not fail");
+
+    assert!(
+        dispatch.is_none(),
+        "a prompt owned by a paused workflow must never reach the provider"
+    );
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should remain available");
+    assert!(snapshot.active_prompt_for_agent(agent.id()).is_none());
+    assert!(
+        snapshot
+            .queued_prompts_for_agent(agent.id())
+            .is_none_or(|queued| queued.is_empty()),
+        "the stale paused-workflow prompt should be removed from the authoritative queue"
+    );
+}
+
+#[tokio::test]
 async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
     let mut app =
         DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
