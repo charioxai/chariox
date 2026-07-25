@@ -777,9 +777,17 @@ impl SessionService {
             .invocation_prompt()
             .map(str::trim)
             .unwrap_or("");
+        let completion_guidance = context
+            .workflow
+            .node(context.source_node_run.node_id())
+            .filter(|node| node.can_complete_workflow_run())
+            .map(|_| {
+                " If the work is accepted and the workflow should finish, do not emit an outgoing handoff. Call `validate_and_submit_workflow_run_output` with output matching the final workflow schema, and do not finish until it returns `valid: true` with no warning."
+            })
+            .unwrap_or("");
         format!(
-            "{invocation_prompt}\n\nThe previous workflow handoff for edge `{}` failed validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Put the selected `workflow_handoffs` array inside final `output.message`, validate the selected edge payload with `validate_workflow_handoff`, and do not finish until validation returns `valid: true` with no warning.",
-            failure.edge_id, failure.attempt, failure.max_attempts, failure.message
+            "{invocation_prompt}\n\nThe previous workflow handoff for edge `{}` failed validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Put the selected `workflow_handoffs` array inside final `output.message`, validate the selected edge payload with `validate_workflow_handoff`, and do not finish until validation returns `valid: true` with no warning.{completion_guidance}",
+            failure.edge_id, failure.attempt, failure.max_attempts, failure.message,
         )
         .trim()
         .to_string()

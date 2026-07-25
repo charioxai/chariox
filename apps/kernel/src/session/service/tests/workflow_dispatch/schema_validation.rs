@@ -377,6 +377,9 @@ fn repeated_invalid_handoffs_fail_after_bounded_classifier_corrections() {
     let classifier = service
         .add_workflow_node(session.id(), workflow.id(), "classifier")
         .expect("classifier should be added");
+    service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), classifier.id(), true)
+        .expect("classifier should be allowed to complete the run");
     let specialist = service
         .add_workflow_node(session.id(), workflow.id(), "specialist")
         .expect("specialist should be added");
@@ -488,6 +491,10 @@ fn repeated_invalid_handoffs_fail_after_bounded_classifier_corrections() {
                 correction_prompt.matches("classify bounded task").count(),
                 1
             );
+            assert!(correction_prompt.contains(
+                "If the work is accepted and the workflow should finish, do not emit an outgoing handoff."
+            ));
+            assert!(correction_prompt.contains("validate_and_submit_workflow_run_output"));
             node_run_id = update.dispatches[0].node_run.id().to_string();
             service
                 .start_workflow_node_run(session.id(), run.id(), &node_run_id)

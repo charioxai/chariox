@@ -41,7 +41,7 @@ const feedback = workflow.schema({
     type: "object",
     required: ["status", "notes"],
     properties: {
-      status: { enum: ["revise", "done"] },
+      status: { const: "revise" },
       notes: { type: "string" },
     },
     additionalProperties: false,
@@ -77,12 +77,13 @@ const checker = workflow.node({
   handle: "checker",
   agent: workflow.newAgent({ alias: "checker", provider: "claude", model: "haiku" }),
   publicLabel: "Checker",
-  instructions: "If work is insufficient, route feedback back to the worker. If accepted, submit final output.",
+  instructions:
+    "If work is insufficient, route revision feedback back to the worker. If accepted, do not use the revision edge: call validate_and_submit_workflow_run_output with the accepted result and finish only after it returns valid: true.",
   canCompleteWorkflowRun: true,
   maxTurns: params.max_iterations,
   canvas: { x: 300, y: 100 },
 });
 
 workflow.edge(worker, checker, { handle: "work_to_checker", handoffSchema: workProduct, validationPolicy: "halt" });
-workflow.edge(checker, worker, { handle: "revise_loop", handoffSchema: feedback, validationPolicy: "warn" });
+workflow.edge(checker, worker, { handle: "revise_loop", handoffSchema: feedback, validationPolicy: "halt" });
 workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, y: 100 } });

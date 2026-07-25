@@ -124,6 +124,21 @@ fn workflow_registry_lists_and_resolves_builtin_entries() {
             .source
             .contains("kimi-k2.6"));
     }
+    let loop_until_done = registry
+        .resolve("loop-until-done")
+        .expect("loop until done registry entry should resolve");
+    assert!(loop_until_done
+        .source
+        .contains(r#"status: { const: "revise" }"#));
+    assert!(!loop_until_done
+        .source
+        .contains(r#"status: { enum: ["revise", "done"] }"#));
+    assert!(loop_until_done
+        .source
+        .contains(r#"handle: "revise_loop", handoffSchema: feedback, validationPolicy: "halt""#));
+    assert!(loop_until_done
+        .source
+        .contains("do not use the revision edge: call validate_and_submit_workflow_run_output"));
 
     let error = registry
         .delete("prompt-chaining", None)
