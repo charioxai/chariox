@@ -287,6 +287,11 @@ impl PromptQueueItem {
         self
     }
 
+    pub(crate) fn with_prompt_text(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
     pub fn with_hidden_system_context(mut self, hidden_system_context: impl Into<String>) -> Self {
         let hidden_system_context = hidden_system_context.into();
         if hidden_system_context.is_empty() {

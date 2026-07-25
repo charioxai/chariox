@@ -102,6 +102,7 @@ impl KernelRuntimeOwnedState {
         workflow_run_id: &str,
         workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let prepared = normalize_workflow_prepared_prompt(prepared);
         let mut dispatches = WorkflowPromptDispatches::default();
         let target_agent = self
             .agent_store
@@ -131,11 +132,13 @@ impl KernelRuntimeOwnedState {
             dispatches.local.push(dispatch);
         }
         if let Some(mut dispatch) = submission.remote_dispatch.take() {
+            let prompt = match &submission.outcome {
+                crate::session::PromptSubmissionOutcome::Started { prompt }
+                | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+            };
+            dispatch.prompt =
+                join_workflow_prompt_context(prompt.hidden_system_context(), prompt.prompt());
             if dispatch.workflow_context.is_none() {
-                let prompt = match &submission.outcome {
-                    crate::session::PromptSubmissionOutcome::Started { prompt }
-                    | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
-                };
                 dispatch.workflow_context = Some(self.remote_workflow_turn_context_for_prompt(
                     &prepared.session_id,
                     prompt.target_agent_id(),
@@ -269,5 +272,73 @@ impl KernelRuntimeOwnedState {
             }
         }
         Ok(())
+    }
+}
+
+fn normalize_workflow_prepared_prompt(
+    prepared: crate::app::KernelPreparedPromptSubmission,
+) -> crate::app::KernelPreparedPromptSubmission {
+    let (visible_prompt, extracted_hidden_context) =
+        crate::prompt_transcript::split_workflow_prompt_for_hidden_context(
+            prepared.prompt.prompt().to_string(),
+        );
+    let visible_prompt = crate::prompt_transcript::workflow_visible_prompt_text(&visible_prompt);
+    if extracted_hidden_context.is_empty() {
+        return crate::app::KernelPreparedPromptSubmission {
+            prompt: prepared.prompt.with_prompt_text(visible_prompt),
+            ..prepared
+        };
+    }
+    let hidden_system_context = join_workflow_prompt_context(
+        prepared.prompt.hidden_system_context(),
+        &extracted_hidden_context,
+    );
+    crate::app::KernelPreparedPromptSubmission {
+        prompt: prepared
+            .prompt
+            .with_prompt_text(visible_prompt)
+            .with_hidden_system_context(hidden_system_context),
+        ..prepared
+    }
+}
+
+fn join_workflow_prompt_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        (first, "") => first.to_string(),
+        ("", second) => second.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
+    }
+}
+
+#[cfg(test)]
+mod workflow_prepared_prompt_tests {
+    use super::normalize_workflow_prepared_prompt;
+    use crate::session::{PromptQueueItem, PromptStatus};
+
+    #[test]
+    fn workflow_admission_separates_visible_prompt_from_private_context() {
+        let prepared = crate::app::KernelPreparedPromptSubmission {
+            session_id: "session-1".to_string(),
+            prompt: PromptQueueItem::new(
+                "pending-1",
+                "workflow-run:run-1",
+                "agent-1",
+                "<endpoint-prompt>\nvisible\n</endpoint-prompt>\n\n\
+                 <node-level-prompt>\nhidden\n</node-level-prompt>",
+                PromptStatus::Queued,
+            )
+            .with_workflow_context("run-1", "node-run-1"),
+            force_queue: false,
+            refresh_projection: true,
+        };
+
+        let normalized = normalize_workflow_prepared_prompt(prepared);
+
+        assert_eq!(normalized.prompt.prompt().trim(), "visible");
+        assert_eq!(
+            normalized.prompt.hidden_system_context(),
+            "<node-level-prompt>\nhidden\n</node-level-prompt>"
+        );
     }
 }

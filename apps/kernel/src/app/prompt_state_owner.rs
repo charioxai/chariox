@@ -322,7 +322,9 @@ impl DaemonApp {
         prompt: impl Into<String>,
     ) -> Result<PromptSubmissionOutcome, DaemonError> {
         let (visible_user_prompt, hidden_system_context) =
-            split_workflow_prompt_for_hidden_context(prompt.into());
+            crate::prompt_transcript::split_workflow_prompt_for_hidden_context(prompt.into());
+        let visible_user_prompt =
+            crate::prompt_transcript::workflow_visible_prompt_text(&visible_user_prompt);
         let prompt = PromptQueueItem::new(
             self.sessions.reserve_prompt_id(),
             source_attachment_id,
@@ -575,38 +577,9 @@ mod tests {
     }
 }
 
-fn split_workflow_prompt_for_hidden_context(prompt: String) -> (String, String) {
-    const HIDDEN_MARKERS: &[&str] = &[
-        crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START,
-        "<workflow-level-prompt>",
-        "<node-level-prompt>",
-        "<workflow-runtime-instructions>",
-        "<system-node-level-prompt>",
-        "Workflow-level prompt:\n",
-    ];
-    if let Some(index) = HIDDEN_MARKERS
-        .iter()
-        .filter_map(|marker| prompt.find(marker))
-        .min()
-    {
-        let visible = prompt[..index].to_string();
-        let hidden = prompt[index..].to_string();
-        return (visible, strip_native_hidden_markers(hidden));
-    }
-    (prompt, String::new())
-}
-
-fn strip_native_hidden_markers(value: String) -> String {
-    value
-        .replace(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, "")
-        .replace(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END, "")
-        .trim()
-        .to_string()
-}
-
 #[cfg(test)]
 mod workflow_prompt_split_tests {
-    use super::split_workflow_prompt_for_hidden_context;
+    use crate::prompt_transcript::split_workflow_prompt_for_hidden_context;
 
     #[test]
     fn tagged_workflow_components_split_visible_endpoint_from_hidden_context() {
