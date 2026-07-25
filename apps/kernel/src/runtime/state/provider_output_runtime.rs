@@ -94,7 +94,7 @@ impl KernelRuntimeState {
             }
         }
 
-        let chunks = match self
+        let mut chunks = match self
             .with_app_side_effect(|app| app.drain_provider_pty_output_for_runtime(provider_run_id))
             .await
         {
@@ -154,6 +154,13 @@ impl KernelRuntimeState {
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
         );
+        let has_active_prompt = owned.provider_run_has_active_prompt(session_id, &provider_run)?;
+        if !crate::app::provider_output::should_project_pty_output(
+            has_active_prompt,
+            terminal_failure.as_deref(),
+        ) {
+            chunks.clear();
+        }
         let records = if crate::provider::provider_run_is_claude_headless(&provider_run) {
             Vec::new()
         } else {

@@ -1,5 +1,15 @@
 use super::*;
 
+#[test]
+fn promptless_pty_output_is_only_projected_for_terminal_failures() {
+    assert!(!should_project_pty_output(false, None));
+    assert!(should_project_pty_output(true, None));
+    assert!(should_project_pty_output(
+        false,
+        Some("provider credits exhausted")
+    ));
+}
+
 fn structured_provider_test_app() -> (DaemonApp, String, String, String) {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
