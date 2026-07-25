@@ -86,8 +86,29 @@ impl<'a> ProviderPromptDispatcher<'a> {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let _ = super::provider_runtime::ProviderRunLivenessRuntime::new(self.app)
-            .reconcile_provider_run_exit(session_id, provider_run_id)?;
+        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+        let _ = crate::app::provider_output::ProviderOutputPump::new(self.app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids: recipients,
+                initial_liveness_already_checked: false,
+            })?;
+        let agent_id = self
+            .app
+            .providers
+            .get_run(provider_run_id)?
+            .agent_instance_id()
+            .unwrap_or_default()
+            .to_string();
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .as_ref()
+            .is_none_or(|active| active.id() != prompt_id)
+        {
+            return Ok(());
+        }
         let provider_run = crate::app::ProviderRunReadService::new(self.app)
             .ensure_provider_run_in_session(session_id, provider_run_id)?;
         if provider_run.state() != ProviderRunState::Running {

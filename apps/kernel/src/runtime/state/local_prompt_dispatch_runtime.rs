@@ -589,9 +589,20 @@ impl KernelRuntimeState {
                 .run_processes
                 .contains_key(&dispatch.provider_run_id);
             if has_managed_process {
+                let recipients = owned
+                    .attachment_store
+                    .list_session_attachment_ids(&dispatch.session_id);
                 let _ = self
-                    .reconcile_provider_run_exit(&dispatch.session_id, &dispatch.provider_run_id)
+                    .pump_owned_provider_output(
+                        &dispatch.session_id,
+                        &dispatch.provider_run_id,
+                        recipients,
+                        false,
+                    )
                     .await?;
+                if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
+                    return Ok(());
+                }
             }
             let result = self
                 .enqueue_prompt_dispatch_after_liveness(dispatch, owned)
