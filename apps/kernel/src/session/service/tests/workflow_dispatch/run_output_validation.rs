@@ -417,6 +417,64 @@ fn valid_correction_completes_without_exposing_the_invalid_candidate() {
 }
 
 #[test]
+fn late_correction_start_cannot_reopen_a_completed_workflow() {
+    let mut service = SessionService::new(&test_config());
+    let (session, run, _node_id, schema_path) =
+        create_schema_bound_completion_workflow(&mut service);
+    let first_node_run_id = run.node_runs()[0].id().to_string();
+    let invalid = service
+        .complete_workflow_node_run(
+            session.id(),
+            run.id(),
+            &first_node_run_id,
+            Some(completion_with_message(r#"{"stale_challenge":"OLD"}"#)),
+            None,
+        )
+        .expect("invalid output should schedule correction");
+    let retry_node_run_id = invalid.dispatches[0].node_run.id().to_string();
+
+    let corrected = service
+        .complete_workflow_node_run(
+            session.id(),
+            run.id(),
+            &retry_node_run_id,
+            Some(completion_with_message(
+                r#"{"invocation_challenge":"ROTATED-CHALLENGE"}"#,
+            )),
+            None,
+        )
+        .expect("a fast correction may complete before its start callback");
+    assert_eq!(
+        corrected.workflow_run.status(),
+        WorkflowRunStatus::Completed
+    );
+    assert_eq!(
+        corrected
+            .workflow_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == retry_node_run_id)
+            .map(|node_run| node_run.status()),
+        Some(WorkflowNodeRunStatus::Completed)
+    );
+
+    let after_late_start = service
+        .start_workflow_node_run(session.id(), run.id(), &retry_node_run_id)
+        .expect("late start should be an idempotent no-op");
+    assert_eq!(after_late_start.status(), WorkflowRunStatus::Completed);
+    assert!(after_late_start.active_node_run_id().is_none());
+    assert_eq!(
+        after_late_start
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == retry_node_run_id)
+            .map(|node_run| node_run.status()),
+        Some(WorkflowNodeRunStatus::Completed)
+    );
+    std::fs::remove_file(schema_path).ok();
+}
+
+#[test]
 fn repeated_invalid_terminal_output_fails_after_the_correction_budget() {
     let mut service = SessionService::new(&test_config());
     let (session, run, _node_id, schema_path) =

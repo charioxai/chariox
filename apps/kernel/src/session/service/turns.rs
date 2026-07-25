@@ -141,6 +141,14 @@ impl SessionService {
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
+        if matches!(
+            node_run.status(),
+            WorkflowNodeRunStatus::Completed
+                | WorkflowNodeRunStatus::Failed
+                | WorkflowNodeRunStatus::Stopped
+        ) {
+            return Ok(workflow_run.clone());
+        }
         node_run.set_status(WorkflowNodeRunStatus::Running);
         workflow_run.set_active_node_run(workflow_node_run_id.to_string());
         workflow_run.set_status(WorkflowRunStatus::Running);
