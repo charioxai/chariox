@@ -143,7 +143,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     const result = deps.invokeWorkflow
       ? await deps.invokeWorkflow(invocation)
       : await invokeKernelWorkflow(publication, invocation)
-    return forwardHumanHttpResult(reply, publication, result, invocation.request_id)
+    return forwardHumanHttpResult(reply, publication, result, invocation.request_id, true)
   })
 
   if (scheduleOnly) {

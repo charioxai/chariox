@@ -293,6 +293,7 @@ async function invokeHumanHttp(prompt, artifacts) {
     body: JSON.stringify({ prompt, artifacts }),
   });
   const html = await response.text();
+  window.history.replaceState(null, '', publicationUrl('/'));
   document.open();
   document.write(html);
   document.close();

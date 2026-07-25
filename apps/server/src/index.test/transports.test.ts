@@ -704,7 +704,8 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
     assert.match(response.headers["content-type"] as string, /text\/html/)
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
-    assert.match(response.body, /"permalink":"\/.well-known\/arroba\/publication\/viewer\/invocations\//)
+    assert.match(response.body, /"permalink":null/)
+    assert.match(response.body, /window\.history\.replaceState\(null, '', publicationUrl\('\/'\)\)/)
     assert.deepEqual(seenInput, {
       prompt: "read image",
       artifacts: [{
