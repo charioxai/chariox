@@ -96,6 +96,12 @@ impl AgentService {
                 });
             }
             if let Some(alias) = request.alias.as_deref() {
+                if self.is_alias_taken(session.id(), alias) {
+                    return Err(DaemonError::AgentAliasConflict {
+                        session_id: session.id().to_string(),
+                        alias: alias.to_string(),
+                    });
+                }
                 let normalized = alias.trim().to_lowercase();
                 if !session_summary.aliases.insert(normalized) {
                     return Err(DaemonError::AgentAliasConflict {
@@ -963,10 +969,12 @@ impl AgentService {
         let normalized = normalized_agent_alias_key(alias);
         self.store.get_by_session(session_id).iter().any(|agent| {
             agent.id() != agent_id
-                && agent
-                    .alias()
-                    .map(normalized_agent_alias_key)
-                    .is_some_and(|candidate| candidate == normalized)
+                && (normalized_agent_alias_key(agent.id()) == normalized
+                    || normalized_agent_alias_key(agent.agent_ref()) == normalized
+                    || agent
+                        .alias()
+                        .map(normalized_agent_alias_key)
+                        .is_some_and(|candidate| candidate == normalized))
         })
     }
 

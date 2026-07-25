@@ -5,6 +5,7 @@
 
 use super::*;
 
+mod agent_messaging;
 mod capability_registry;
 mod connector;
 mod credential;
@@ -47,6 +48,7 @@ impl KernelRuntimeState {
         let mut specs = Vec::new();
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             specs.extend(crate::transport::runtime_tools::meta_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(
                 crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
                     .into_iter()
@@ -61,6 +63,7 @@ impl KernelRuntimeState {
             return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
+            specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
@@ -88,7 +91,12 @@ impl KernelRuntimeState {
         {
             let owned = &self.owned;
             let canonical_tool_name =
-                crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(tool_name)
+                crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(
+                            tool_name,
+                        )
+                    })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
                     })
@@ -188,7 +196,8 @@ impl KernelRuntimeState {
             }
             if matches!(
                 canonical_tool_name,
-                crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                    | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
                     | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
@@ -404,7 +413,8 @@ fn unambiguous_runtime_tool_provider_run<'a>(
 fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
     matches!(
         tool_name,
-        crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+        crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+            | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
     ) || (slice_available

@@ -549,6 +549,17 @@ fn local_request_api_spawns_and_focuses_agents() {
             alias: ref conflict_alias,
         } if conflict_session_id == session.id() && conflict_alias == "WEB-REVIEWER"
     ));
+    let reference_conflict = harness
+        .dispatch(LocalDaemonRequest::AliasAgent(AliasAgentRequest {
+            session_id: session.id().to_string(),
+            agent_id: default_agent.id().to_string(),
+            alias: spawned.agent_ref().to_string(),
+        }))
+        .expect_err("agent aliases must not shadow another agent reference");
+    assert!(matches!(
+        reference_conflict,
+        DaemonError::AgentAliasConflict { .. }
+    ));
     harness.with_app(|app| {
         assert_eq!(
             app.agents()

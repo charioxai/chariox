@@ -175,6 +175,7 @@ mod tests {
             .expect("focus should succeed");
     }
 
+    mod agent_messaging;
     mod credential_enrollment;
     mod interactive_command_admission;
     mod m16_runtime_extension_registration;

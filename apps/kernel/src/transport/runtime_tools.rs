@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod agent_messaging_tools;
 mod credential_tools;
 mod extension_tools;
 mod meta_tool_args;
@@ -11,6 +12,7 @@ mod slice_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
+pub use agent_messaging_tools::*;
 pub use credential_tools::*;
 pub use extension_tools::*;
 pub use meta_tool_args::*;
@@ -63,6 +65,7 @@ pub const MANAGE_CREDENTIAL_VAULT_TOOL: &str = "arroba.manage_credential_vault";
 pub const MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS: &str = "manage_credential_vault";
 pub const REQUEST_POPUP_TOOL: &str = "arroba.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
+pub const SEND_AGENT_MESSAGE_TOOL: &str = "arroba.send_agent_message";
 pub const SLICE_SCREEN_STATUS_TOOL: &str = "arroba.slice_screen_status";
 pub const SLICE_SCREEN_STATUS_TOOL_ALIAS: &str = "slice_screen_status";
 pub const SLICE_SCREENSHOT_TOOL: &str = "arroba.slice_screenshot";
