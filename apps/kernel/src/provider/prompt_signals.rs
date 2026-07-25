@@ -48,6 +48,15 @@ pub(crate) fn classify_provider_terminal_failure_text(
             compact_provider_error_snippet(text)
         ));
     }
+    if adapter_key == "claude"
+        && normalized.contains("dangerously-skip-permissions")
+        && normalized.contains("cannot be used with root/sudo privileges")
+    {
+        return Some(format!(
+            "Provider reported a terminal permission error: {}",
+            compact_provider_error_snippet(text)
+        ));
+    }
     let fatal_model_error = normalized.contains("unsupported model")
         || normalized.contains("invalid model")
         || normalized.contains("model_not_found")
@@ -192,6 +201,19 @@ mod tests {
             "You've hit your usage limit."
         )
         .is_none());
+    }
+
+    #[test]
+    fn terminal_classifier_preserves_claude_root_permission_restriction() {
+        let failure = classify_provider_terminal_failure_text(
+            "claude",
+            "Error: --dangerously-skip-permissions cannot be used with root/sudo privileges",
+        )
+        .expect("Claude root permission restriction should be terminal");
+
+        assert!(failure.contains("terminal permission error"));
+        assert!(failure.contains("--dangerously-skip-permissions"));
+        assert!(failure.contains("root/sudo privileges"));
     }
 
     #[test]
