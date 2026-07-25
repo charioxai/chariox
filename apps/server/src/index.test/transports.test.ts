@@ -750,6 +750,8 @@ test("human HTTP browser GET returns an HTML status page with SSE subscription",
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /subscribeHumanHttpEvents\(viewerConfig\.eventsUrl\)/)
+    assert.match(response.body, /type === 'started' && !isTerminalStatus\(payload\.workflow_run\?\.status\)/)
+    assert.match(response.body, /setStatus\('Running', false, payload\.workflow_run\)/)
     assert.match(response.body, /let eventStreamSettled = false/)
     assert.match(response.body, /events\.addEventListener\('timeout', \(event\) => \{ applyPublicationEvent\('timeout', parseEventData\(event\)\); reconnect\(\); \}\);/)
     assert.match(response.body, /setTimeout\(\(\) => subscribeHumanHttpEvents\(path\), 1_000\)/)

@@ -430,7 +430,12 @@ function parseEventData(event) {
 
 function applyPublicationEvent(type, payload) {
   if (type === 'queued') renderQueueStatus(payload);
-  if (type === 'started' || type === 'status') renderRun(payload.workflow_run);
+  if (type === 'started' || type === 'status') {
+    renderRun(payload.workflow_run);
+    if (type === 'started' && !isTerminalStatus(payload.workflow_run?.status)) {
+      setStatus('Running', false, payload.workflow_run);
+    }
+  }
   if (type === 'partial') renderOutput(payload.message ?? '', 'progress');
   if (type === 'trace') renderTrace(payload);
   if (type === 'final') {
