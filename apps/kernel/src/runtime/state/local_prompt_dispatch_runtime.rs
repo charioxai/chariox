@@ -5,6 +5,20 @@
 
 use super::*;
 
+fn claude_native_dispatch_terminal_failure(
+    provider_run: &crate::provider::RuntimeProviderRun,
+) -> Option<String> {
+    let context_file = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT")?;
+    let recent_failure_file = std::path::Path::new(context_file)
+        .parent()?
+        .join("permission-recent.txt");
+    let recent_failure = std::fs::read_to_string(recent_failure_file).ok()?;
+    crate::provider::classify_provider_terminal_failure_text(
+        provider_run.adapter_key(),
+        &recent_failure,
+    )
+}
+
 impl KernelRuntimeOwnedState {
     fn prompt_dispatch_matches_active_prompt(
         &self,
@@ -56,6 +70,79 @@ mod tests {
     };
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    fn claude_native_run_with_context(
+        context_file: &std::path::Path,
+    ) -> crate::provider::RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "session-claude-native",
+            "claude",
+            "claude",
+            "default",
+            "haiku",
+        );
+        crate::provider::RuntimeProviderRun::new(
+            "provider-run-claude-native",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "claude-native-test".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([(
+                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.display().to_string(),
+                )]),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+
+    #[test]
+    fn claude_native_dispatch_prefers_classified_terminal_failure() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "arroba-claude-native-dispatch-failure-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
+        std::fs::write(
+            fixture_root.join("permission-recent.txt"),
+            "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons",
+        )
+        .expect("terminal failure fixture should write");
+        let run = claude_native_run_with_context(&fixture_root.join("context.json"));
+
+        let failure = claude_native_dispatch_terminal_failure(&run)
+            .expect("terminal failure should be classified");
+
+        assert!(failure.contains("terminal permission error"), "{failure}");
+        assert!(
+            failure.contains("cannot be used with root/sudo privileges"),
+            "{failure}"
+        );
+        let _ = std::fs::remove_dir_all(fixture_root);
+    }
+
+    #[test]
+    fn claude_native_dispatch_ignores_interactive_permission_request() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "arroba-claude-native-dispatch-permission-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
+        std::fs::write(
+            fixture_root.join("permission-recent.txt"),
+            "Claude wants permission to use Bash",
+        )
+        .expect("permission fixture should write");
+        let run = claude_native_run_with_context(&fixture_root.join("context.json"));
+
+        assert_eq!(claude_native_dispatch_terminal_failure(&run), None);
+        let _ = std::fs::remove_dir_all(fixture_root);
+    }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
@@ -838,6 +925,15 @@ impl KernelRuntimeState {
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        if let Some(message) =
+                            claude_native_dispatch_terminal_failure(&provider_run)
+                        {
+                            return Err(DaemonError::ProviderProtocol {
+                                provider_run_id: dispatch.provider_run_id.clone(),
+                                operation: "submit Claude headless prompt",
+                                message,
+                            });
+                        }
                         if tokio::time::Instant::now() >= deadline {
                             return Err(DaemonError::LocalTransport {
                                 operation: "submit Claude headless prompt",
