@@ -254,7 +254,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
 }
 
 #[tokio::test]
-async fn first_output_timeout_records_diagnostic_and_closes_prompt() {
+async fn first_output_timeout_projects_error_and_closes_prompt() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -358,6 +358,36 @@ async fn first_output_timeout_records_diagnostic_and_closes_prompt() {
         .terminal_diagnostic()
         .expect("timeout diagnostic should be recorded")
         .contains("Provider prompt produced no output"));
+    let provider_errors = runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(session.id(), attachment.id())
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        provider_errors.len(),
+        1,
+        "an unprojected terminal failure should surface exactly one provider error"
+    );
+    assert!(
+        String::from_utf8_lossy(&provider_errors[0].bytes)
+            .contains("Provider prompt produced no output"),
+        "the visible provider error should preserve the terminal diagnostic"
+    );
+    let durable_errors = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("canonical operational history should load")
+        .into_iter()
+        .filter(|event| event.kind == crate::history::HistoryEventKind::ProviderError)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        durable_errors.len(),
+        1,
+        "the provider error should be durable across reload"
+    );
     let notices = runtime
         .owned
         .terminal_stream

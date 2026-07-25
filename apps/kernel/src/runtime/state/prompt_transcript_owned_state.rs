@@ -18,7 +18,7 @@ pub(super) struct ActivePromptTranscriptMetadata {
 }
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn record_prompt_dispatch_failure_output(
+    pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,
         provider_run_id: &str,

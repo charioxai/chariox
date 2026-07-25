@@ -217,7 +217,7 @@ impl KernelRuntimeState {
                 .provider_store
                 .record_terminal_diagnostic(provider_run_id, message.clone())?;
             owned.provider_run_projection.update(run);
-            self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
+            self.fail_owned_provider_prompt(session_id, provider_run_id, &message, true)
                 .await?;
             return Ok(records);
         }
@@ -384,8 +384,13 @@ impl KernelRuntimeState {
                     "elapsed_ms": timeout.elapsed_ms,
                 }),
             );
-            self.fail_owned_provider_prompt(session_id, &timeout.provider_run_id, &diagnostic)
-                .await?;
+            self.fail_owned_provider_prompt(
+                session_id,
+                &timeout.provider_run_id,
+                &diagnostic,
+                true,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -419,8 +424,13 @@ impl KernelRuntimeState {
                     "elapsed_ms": timeout.elapsed_ms,
                 }),
             );
-            self.fail_owned_provider_prompt(session_id, &timeout.provider_run_id, &diagnostic)
-                .await?;
+            self.fail_owned_provider_prompt(
+                session_id,
+                &timeout.provider_run_id,
+                &diagnostic,
+                true,
+            )
+            .await?;
         }
         Ok(())
     }

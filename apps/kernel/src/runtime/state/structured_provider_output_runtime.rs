@@ -441,7 +441,7 @@ impl KernelRuntimeState {
             owned.mark_prompt_completion_recorded(provider_run_id);
         }
         if let Some(message) = terminal_failure {
-            self.fail_owned_provider_prompt(session_id, provider_run_id, &message)
+            self.fail_owned_provider_prompt(session_id, provider_run_id, &message, false)
                 .await?;
             return Ok(records);
         }

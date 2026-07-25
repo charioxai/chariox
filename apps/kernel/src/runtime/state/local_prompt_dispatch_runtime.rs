@@ -939,7 +939,7 @@ impl KernelRuntimeState {
             let failed_prompt_matches = failed_prompt.is_some();
             let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
             if failed_prompt_matches {
-                owned.record_prompt_dispatch_failure_output(
+                owned.record_provider_failure_output(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     &dispatch.agent_id,

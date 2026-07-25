@@ -83,7 +83,7 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
-                    self.record_prompt_dispatch_failure_output(
+                    self.record_provider_failure_output(
                         &finished.session_id,
                         &finished.provider_run_id,
                         &finished.agent_id,

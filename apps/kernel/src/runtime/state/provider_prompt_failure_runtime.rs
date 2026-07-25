@@ -8,6 +8,7 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         message: &str,
+        project_failure_output: bool,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -38,6 +39,9 @@ impl KernelRuntimeState {
             let _ = owned.sync_focused_provider_run_if_idle(session_id);
             let _ = owned.session_snapshot(session_id);
             return Ok(());
+        }
+        if project_failure_output {
+            owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
         }
         self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
         let _ = self.inject_metaagent_turn_failure_event(
