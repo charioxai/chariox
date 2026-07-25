@@ -54,6 +54,7 @@ export function collectPublicationTraceEvents(
     if (levels.has("assistant_messages")) {
       for (const message of workflowRun.messages ?? []) {
         if (message.source_node_run_id !== nodeRun.id) continue
+        if (message.message_type === "user_prompt") continue
         const visibleMessage = visibleAssistantWorkflowMessage(message)
         pushTraceEvent(events, state, publication, workflowRun, nodeRun, "assistant_messages", {
           key: `message:${visibleMessage.id}`,

@@ -320,6 +320,15 @@ test("publication trace events honor per-node level policy", () => {
     }],
     messages: [
       {
+        id: "publication-prompt:run-1:node-b",
+        source_node_run_id: "run-node-b",
+        target_node_id: "node-b",
+        message_type: "user_prompt",
+        summary: "Build the requested dashboard",
+        handoff_payload: "",
+        created_at_ms: 10,
+      },
+      {
         id: "message-b",
         source_node_run_id: "run-node-b",
         target_node_id: "node-c",
