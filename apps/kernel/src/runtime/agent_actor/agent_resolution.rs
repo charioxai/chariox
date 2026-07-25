@@ -3,7 +3,50 @@
 use super::*;
 use crate::runtime::projection::AgentRuntimeProjection;
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct PromptAgentAliasRoute<'a> {
+    pub(super) alias: &'a str,
+    pub(super) prompt: &'a str,
+}
+
+pub(super) fn parse_prompt_agent_alias_route(prompt: &str) -> Option<PromptAgentAliasRoute<'_>> {
+    let prompt = prompt.trim_start();
+    let route = prompt.strip_prefix('@')?;
+    let alias_end = route.find(char::is_whitespace).unwrap_or(route.len());
+    let alias = &route[..alias_end];
+    if alias.is_empty() {
+        return None;
+    }
+    Some(PromptAgentAliasRoute {
+        alias,
+        prompt: route[alias_end..].trim_start(),
+    })
+}
+
 impl AgentRuntime {
+    pub(super) async fn resolve_submit_agent_alias(
+        &self,
+        session_id: &str,
+        alias: &str,
+    ) -> Result<String, DaemonError> {
+        let session = match self.session_projection.get(session_id) {
+            Some(session) => session,
+            None => self.store.session_snapshot(session_id).await?,
+        };
+        session
+            .agents()
+            .iter()
+            .find(|agent| {
+                agent
+                    .alias()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(alias))
+            })
+            .map(|agent| agent.id().to_string())
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: format!("@{alias}"),
+            })
+    }
+
     pub(super) async fn resolve_active_prompt_agent_id(
         &self,
         session_id: &str,
@@ -163,5 +206,23 @@ fn single_agent_projection_id(projections: &[AgentRuntimeProjection]) -> Option<
         agent_ids.into_iter().next()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod alias_route_tests {
+    use super::*;
+
+    #[test]
+    fn leading_alias_route_strips_only_the_routing_prefix() {
+        assert_eq!(
+            parse_prompt_agent_alias_route("  @Reviewer   /meta inspect the repo"),
+            Some(PromptAgentAliasRoute {
+                alias: "Reviewer",
+                prompt: "/meta inspect the repo",
+            })
+        );
+        assert_eq!(parse_prompt_agent_alias_route("email @reviewer"), None);
+        assert_eq!(parse_prompt_agent_alias_route("@"), None);
     }
 }

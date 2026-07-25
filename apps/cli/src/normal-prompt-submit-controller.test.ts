@@ -46,6 +46,32 @@ test("normal prompt submit prepares attachments, submits, and records history", 
   assert.deepEqual(harness.recordedHistory(), [{ sessionId: "session-1", rawPrompt: "hello" }])
 })
 
+test("normal prompt submit lets the kernel route an alias while rendering only the prompt body", async () => {
+  const harness = createHarness({
+    submitPrompt: async () => ({
+      ...promptSubmissionResult("session-submitted", "agent-reviewer", "PromptSubmitted"),
+      payload: {
+        outcome: {},
+        session: runtimeSession("session-submitted", null, {
+          focused_agent_id: "agent-reviewer",
+          agents: [agent("agent-1"), agent("agent-reviewer")],
+        }),
+        agent_activity: {},
+        agent_activity_revision: 1,
+      },
+    }),
+  })
+
+  await harness.controller.submit("@reviewer inspect package.json")
+
+  assert.equal(harness.submissions().at(-1)?.prompt, "@reviewer inspect package.json\n")
+  assert.deepEqual(harness.appendedPrompts(), [{
+    text: "inspect package.json\n",
+    agentId: "agent-reviewer",
+  }])
+  assert.equal(harness.appliedSessions().at(-1)?.focused_agent_id, "agent-reviewer")
+})
+
 test("normal prompt submit appends prompt acknowledgement metadata", async () => {
   const harness = createHarness({
     submitPrompt: async () => ({

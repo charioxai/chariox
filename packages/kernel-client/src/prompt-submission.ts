@@ -15,6 +15,11 @@ import {
 
 export type PromptSubmissionAttachmentInput = Pick<PromptAttachmentPart, "url" | "mime" | "filename">
 
+export type PromptAgentAliasRoute = {
+  readonly alias: string
+  readonly prompt: string
+}
+
 type SparsePromptSubmissionPromptPayload = {
   readonly outcome?: Record<string, unknown> | null
   readonly session?: RuntimeSession | null
@@ -49,6 +54,23 @@ export type DetachedPromptSubmitDecision =
 
 export function formatPromptSubmissionBody(rawPrompt: string): string {
   return rawPrompt.trim() ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
+}
+
+export function parsePromptAgentAliasRoute(prompt: string): PromptAgentAliasRoute | null {
+  const leadingTrimmed = prompt.trimStart()
+  if (!leadingTrimmed.startsWith("@")) {
+    return null
+  }
+  const route = leadingTrimmed.slice(1)
+  const aliasEnd = route.search(/\s/)
+  const alias = aliasEnd < 0 ? route : route.slice(0, aliasEnd)
+  if (!alias) {
+    return null
+  }
+  return {
+    alias,
+    prompt: aliasEnd < 0 ? "" : route.slice(aliasEnd).trimStart(),
+  }
 }
 
 export function promptSubmitPreparationDecision(options: {

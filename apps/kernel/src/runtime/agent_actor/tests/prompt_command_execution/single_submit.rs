@@ -523,3 +523,149 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
         .map(|activity| activity.busy)
         .unwrap_or(false));
 }
+
+#[tokio::test]
+async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-alias-route",
+            "worktree-alias-route",
+        ))
+        .expect("session should be created");
+    let reviewer = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("Reviewer")
+                .with_worktree("worktree-alias-route"),
+        )
+        .expect("reviewer should be created");
+    app.focus_agent(session.id(), default_agent.id())
+        .expect("default agent should be focused before submission");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-alias-route",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    launch_dev_stub_provider(&mut app, session.id(), reviewer.id(), "sonnet");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let prompt_state_owner = app.prompt_state_owner();
+    let session_id = session.id().to_string();
+    let default_agent_id = default_agent.id().to_string();
+    let reviewer_id = reviewer.id().to_string();
+    let attachment_id = attachment.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = AgentRuntime::new(
+        owned_runtime_state(&app).await,
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection,
+        agent_runtime_projection,
+        prompt_state_owner,
+        crate::session::PromptIdAllocator::default(),
+    );
+    let request = SubmitPromptRequest {
+        session_id: session_id.clone(),
+        attachment_id,
+        target_agent_id: Some(default_agent_id),
+        prompt: "  @reviewer   inspect package.json".to_string(),
+        attachments: Vec::new(),
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "alias-routed-prompt-submit",
+        None,
+        None,
+        &local_request,
+    );
+
+    let response = runtime
+        .dispatch_prompt_submit(&command, request)
+        .await
+        .expect("alias-routed prompt should submit");
+    let LocalDaemonResponse::PromptSubmitted {
+        outcome, session, ..
+    } = response
+    else {
+        panic!("unexpected response");
+    };
+    let PromptSubmissionOutcome::Started { prompt } = outcome else {
+        panic!("alias-routed prompt should start");
+    };
+    assert_eq!(prompt.target_agent_id(), reviewer_id);
+    assert_eq!(prompt.prompt(), "inspect package.json");
+    assert_eq!(session.focused_agent_id(), Some(reviewer_id.as_str()));
+}
+
+#[tokio::test]
+async fn prompt_submit_rejects_unknown_leading_agent_alias_without_changing_focus() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-missing-alias-route",
+            "worktree-missing-alias-route",
+        ))
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-missing-alias-route",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let session_snapshot = crate::app::KernelSessionReadService::new(&app)
+        .session_snapshot(session.id())
+        .expect("session snapshot should be available");
+    let session_projection = app.session_state_projection_store();
+    session_projection.update(session_snapshot.clone());
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    agent_runtime_projection.update_session(&session_snapshot);
+    let app = Arc::new(Mutex::new(app));
+    let runtime = AgentRuntime::new(
+        owned_runtime_state(&app).await,
+        ProviderRunOperationLanes::default(),
+        FocusedAgentProjection::default(),
+        session_projection,
+        agent_runtime_projection,
+        PromptStateOwner::default(),
+        crate::session::PromptIdAllocator::default(),
+    );
+    let request = SubmitPromptRequest {
+        session_id: session.id().to_string(),
+        attachment_id: attachment.id().to_string(),
+        target_agent_id: Some(agent.id().to_string()),
+        prompt: "@missing inspect package.json".to_string(),
+        attachments: Vec::new(),
+    };
+    let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "missing-alias-routed-prompt-submit",
+        None,
+        None,
+        &local_request,
+    );
+
+    let error = runtime
+        .dispatch_prompt_submit(&command, request)
+        .await
+        .expect_err("unknown alias should reject submission");
+    assert!(matches!(
+        error,
+        DaemonError::AgentNotFound { agent_id } if agent_id == "@missing"
+    ));
+    let session = runtime
+        .store
+        .session_snapshot(session.id())
+        .await
+        .expect("session should remain readable");
+    assert_eq!(session.focused_agent_id(), Some(agent.id()));
+    assert!(session.active_prompt_for_agent(agent.id()).is_none());
+}

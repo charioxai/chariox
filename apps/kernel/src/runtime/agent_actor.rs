@@ -26,6 +26,7 @@ mod command_executor;
 mod command_lane;
 mod prompt_attachment_materialization;
 
+use agent_resolution::parse_prompt_agent_alias_route;
 use command_lane::{AgentCommand, AgentCommandEnvelope, PromptSubmitResponseMode};
 
 #[derive(Clone)]
@@ -105,12 +106,42 @@ impl AgentRuntime {
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller_user_id = command_agent_actor_user_id(command);
-        let agent_id = self
-            .resolve_submit_agent_id(&request.session_id, request.target_agent_id.as_deref())
-            .await?;
+        let alias_route = parse_prompt_agent_alias_route(&request.prompt)
+            .map(|route| (route.alias.to_string(), route.prompt.to_string()));
+        let agent_id = match alias_route.as_ref() {
+            Some((alias, _)) => {
+                self.resolve_submit_agent_alias(&request.session_id, alias)
+                    .await?
+            }
+            None => {
+                self.resolve_submit_agent_id(
+                    &request.session_id,
+                    request.target_agent_id.as_deref(),
+                )
+                .await?
+            }
+        };
         self.store
             .ensure_agent_prompt_access(&agent_id, &caller_user_id, "submit prompt")
             .await?;
+        if let Some((_, routed_prompt)) = alias_route {
+            if routed_prompt.is_empty() && request.attachments.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "submit prompt by agent alias",
+                    message: "enter a prompt after the agent alias".to_string(),
+                });
+            }
+            self.store
+                .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
+                .await?;
+            self.store
+                .focus_agent(&request.session_id, &agent_id, &caller_user_id)
+                .await?;
+            self.focus_projection
+                .update(&request.session_id, Some(&agent_id))
+                .await;
+            request.prompt = routed_prompt;
+        }
         request.target_agent_id = Some(agent_id.clone());
         let command_trace = CommandTrace::from_command(command);
         self.dispatch_to_agent(
@@ -531,6 +562,27 @@ impl AgentRuntimeStore {
 
     async fn focused_agent_id(&self, session_id: &str) -> Result<Option<String>, DaemonError> {
         self.state.focused_agent_id(session_id).await
+    }
+
+    async fn ensure_attachment_in_session(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.state
+            .ensure_attachment_in_session(session_id, attachment_id)
+            .await
+    }
+
+    async fn focus_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.state
+            .focus_agent(session_id, agent_id, caller_user_id)
+            .await
     }
 
     async fn ensure_agent_owner(

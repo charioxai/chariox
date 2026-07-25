@@ -14,6 +14,7 @@ import {
   promptSubmissionFailureTransition,
   promptSubmissionSuccessTransition,
   promptSubmissionAttachmentsToParts,
+  parsePromptAgentAliasRoute,
   resolvePromptSubmissionTargetAgentId,
 } from "@arroba/kernel-client/prompt-submission"
 import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
@@ -75,6 +76,8 @@ export function createNormalPromptSubmitController(
   return {
     async submit(rawPrompt, targetAgentIdOverride) {
       const prompt = formatPromptSubmissionBody(rawPrompt)
+      const aliasRoute = parsePromptAgentAliasRoute(prompt)
+      const renderedPrompt = aliasRoute?.prompt ?? prompt
       const rawAttachments = promptSubmissionAttachmentsToParts(deps.getPendingAttachments())
       let submissionUi: SubmittedPromptUiSnapshot | null = null
       try {
@@ -113,7 +116,7 @@ export function createNormalPromptSubmitController(
         })
         if (transition.shouldAppendUserPrompt) {
           deps.appendUserPrompt(
-            deps.renderPromptTranscript(prompt),
+            deps.renderPromptTranscript(renderedPrompt),
             submittedTargetAgentId,
             promptSubmissionTranscriptMetadata(payload, submittedTargetAgentId),
           )

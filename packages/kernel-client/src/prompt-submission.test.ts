@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   expectPromptSubmittedPayload,
   formatPromptSubmissionBody,
+  parsePromptAgentAliasRoute,
   formatPromptSubmissionStatusLine,
   detachedPromptSubmitDecision,
   promptSubmittedPromptIdFromResponse,
@@ -20,6 +21,15 @@ import {
   promptSubmissionTargetAgentId,
   resolvePromptSubmissionTargetAgentId,
 } from "./prompt-submission.js"
+
+test("leading agent alias routing strips only the routing prefix", () => {
+  assert.deepEqual(
+    parsePromptAgentAliasRoute("  @Reviewer   /meta inspect the repo"),
+    { alias: "Reviewer", prompt: "/meta inspect the repo" },
+  )
+  assert.equal(parsePromptAgentAliasRoute("email @reviewer"), null)
+  assert.equal(parsePromptAgentAliasRoute("@"), null)
+})
 import { promptQueueItemTranscriptMetadata } from "./transcript-entry-state.js"
 import {
   makeAgent,
