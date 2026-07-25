@@ -756,6 +756,435 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
 }
 
 #[test]
+fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-explicit-replay",
+            "agent-home-explicit-replay",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let home_prompt_id = "home-prompt-explicit-replay";
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "remote explicit completion prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-explicit-replay".to_string(),
+                home_agent_id: "agent-home-explicit-replay".to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "remote explicit completion prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+    app.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-output".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote explicit completion output",
+    );
+    app.terminal_mut().record_assistant_message_completion(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        vec![leased_agent.backing_attachment_id.clone()],
+        "assistant-explicit-replay",
+        1234,
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("backing prompt should settle");
+
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("first projection drain should succeed")
+        .expect("first projection should carry completion");
+    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = first.1;
+    assert_eq!(completions.len(), 1);
+
+    let replay = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("recovery projection drain should succeed")
+        .expect("explicit completion should remain replayable");
+    let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = replay.1;
+    assert_eq!(completions.len(), 1);
+    assert_eq!(
+        completions[0].home_prompt_id.as_deref(),
+        Some(home_prompt_id)
+    );
+}
+
+#[test]
+fn new_home_prompt_clears_prior_explicit_completion_replay() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-consecutive-explicit",
+            "agent-home-consecutive-explicit",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+
+    let first_home_prompt_id = "home-prompt-consecutive-1";
+    let (provider_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "first remote prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-consecutive-explicit".to_string(),
+                home_agent_id: "agent-home-consecutive-explicit".to_string(),
+                home_prompt_id: first_home_prompt_id.to_string(),
+                home_turn_id: first_home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "first remote prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("first leased prompt should submit");
+    assert!(matches!(
+        first_outcome,
+        PromptSubmissionOutcome::Started { .. }
+    ));
+    app.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-first".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"first output",
+    );
+    app.terminal_mut().record_assistant_message_completion(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        vec![leased_agent.backing_attachment_id.clone()],
+        "assistant-first",
+        1234,
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("first backing prompt should settle");
+    let first = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("first projection drain should succeed")
+        .expect("first completion should project");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        completions: first_completions,
+        ..
+    } = first.1;
+    assert_eq!(
+        first_completions[0].home_prompt_id.as_deref(),
+        Some(first_home_prompt_id)
+    );
+
+    let second_home_prompt_id = "home-prompt-consecutive-2";
+    let (second_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "second remote prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-consecutive-explicit".to_string(),
+                home_agent_id: "agent-home-consecutive-explicit".to_string(),
+                home_prompt_id: second_home_prompt_id.to_string(),
+                home_turn_id: second_home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "second remote prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("second leased prompt should submit");
+    assert!(matches!(
+        second_outcome,
+        PromptSubmissionOutcome::Started { .. }
+    ));
+    assert_eq!(second_provider_run_id, provider_run_id);
+    let second_snapshot = RemoteLeaseRuntime::new(&mut app)
+        .leased_agent_snapshot_for_test(&leased_agent.id)
+        .expect("leased agent should remain registered");
+    assert_eq!(
+        second_snapshot.active_home_prompt_id.as_deref(),
+        Some(second_home_prompt_id)
+    );
+    assert!(
+        second_snapshot.replayable_completion.is_none(),
+        "the prior turn completion must not remain replayable after a new home prompt starts"
+    );
+
+    app.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-second".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"second output",
+    );
+    app.terminal_mut().record_assistant_message_completion(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        vec![leased_agent.backing_attachment_id.clone()],
+        "assistant-second",
+        2345,
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("second backing prompt should settle");
+    let second = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("second projection drain should succeed")
+        .expect("second completion should project");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        completions: second_completions,
+        ..
+    } = second.1;
+    assert_eq!(second_completions.len(), 1);
+    assert_eq!(
+        second_completions[0].home_prompt_id.as_deref(),
+        Some(second_home_prompt_id)
+    );
+}
+
+#[test]
+fn explicit_provider_synthesizes_completion_after_authoritative_output_only_settlement() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-explicit-output-only",
+            "agent-home-explicit-output-only",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
+    let home_prompt_id = "home-prompt-explicit-output-only";
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "remote explicit output-only prompt\n",
+            Vec::new(),
+            None,
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-explicit-output-only".to_string(),
+                home_agent_id: "agent-home-explicit-output-only".to_string(),
+                home_prompt_id: home_prompt_id.to_string(),
+                home_turn_id: home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Arroba),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "remote explicit output-only prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    let launch_request = crate::provider::LaunchProviderRequest::new(
+        &leased_agent.backing_session_id,
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.4",
+    )
+    .with_agent_id(&leased_agent.backing_agent_id)
+    .with_client_interface(crate::provider::ProviderClientInterface::Arroba);
+    let mut running_provider = crate::provider::RuntimeProviderRun::new(
+        &provider_run_id,
+        &launch_request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "codex:codex:gpt-5.4".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    running_provider.mark_running();
+    app.providers_mut().insert_run_for_test(running_provider);
+    app.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-commentary".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"I will run the check now.",
+    );
+    let output_event = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("output projection drain should succeed")
+        .expect("active output should project");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        completions,
+        ..
+    } = output_event.1;
+    assert_eq!(output_chunks.len(), 1);
+    assert!(
+        completions.is_empty(),
+        "provider output must not settle an active backing prompt"
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("authoritative provider turn should settle the backing prompt");
+    let _locally_consumed_completion = app.terminal_mut().drain_completion_records(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_attachment_id,
+    );
+
+    let completion_event = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection_with_recovery(
+            &leased_agent.id,
+            &provider_run_id,
+            false,
+            true,
+        )
+        .expect("projection drain should succeed")
+        .expect("authoritative settlement should project");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        completions,
+        ..
+    } = completion_event.1;
+    assert!(
+        output_chunks.is_empty(),
+        "already projected output must not be duplicated"
+    );
+    assert_eq!(
+        completions.len(),
+        1,
+        "authoritative settlement with current-turn output must synthesize a home completion"
+    );
+    assert_eq!(
+        completions[0].home_prompt_id.as_deref(),
+        Some(home_prompt_id)
+    );
+}
+
+#[test]
 fn native_completion_does_not_reuse_prior_home_prompt_identity() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
@@ -1078,6 +1507,94 @@ fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
     assert_eq!(events.len(), 1);
     let (_target_kernel_id, event) = &events[0];
     let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = event;
+    assert_eq!(completions.len(), 1);
+}
+
+#[test]
+fn leased_projection_pump_leaves_home_prompt_records_for_authoritative_drain() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-home-drain",
+            "agent-home-drain",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+    let git_context = crate::transport::relay_peer::RemoteGitTurnContext {
+        home_session_id: "session-home-drain".to_string(),
+        home_agent_id: "agent-home-drain".to_string(),
+        home_prompt_id: "home-prompt-drain".to_string(),
+        home_turn_id: "home-prompt-drain".to_string(),
+        source_attachment_id: None,
+        workspace_live_sync_mode: None,
+        prompt_origin: Some(PromptOrigin::Arroba),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        prompt_summary: "home prompt drain".to_string(),
+    };
+    let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "home prompt drain\n",
+            Vec::new(),
+            None,
+            Some(git_context),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("leased prompt should submit");
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    app.fan_out_output_for_agent(
+        &leased_agent.backing_session_id,
+        &provider_run_id,
+        Some(&leased_agent.backing_agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("assistant-output".to_string()),
+        vec![leased_agent.backing_attachment_id.clone()],
+        b"remote assistant output",
+    );
+    app.complete_active_prompt(
+        &leased_agent.backing_session_id,
+        &leased_agent.backing_agent_id,
+        Some(&provider_run_id),
+    )
+    .expect("backing prompt should settle");
+
+    let events = RemoteLeaseRuntime::new(&mut app)
+        .pump_leased_runtime_projections()
+        .expect("best-effort projection pump should run");
+    assert!(events.is_empty());
+
+    let (_target_kernel_id, event) = RemoteLeaseRuntime::new(&mut app)
+        .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
+        .expect("authoritative projection drain should succeed")
+        .expect("authoritative projection drain should receive the settled turn");
+    let RelayPeerEvent::LeasedRuntimeProjection {
+        output_chunks,
+        completions,
+        ..
+    } = event;
+    assert_eq!(output_chunks.len(), 1);
+    assert_eq!(output_chunks[0].bytes, b"remote assistant output");
     assert_eq!(completions.len(), 1);
 }
 

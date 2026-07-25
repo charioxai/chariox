@@ -599,6 +599,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_leased_agent_provider_for_test(
+        &mut self,
+        leased_agent_id: &str,
+        provider: &str,
+    ) {
+        if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
+            agent.provider = provider.to_string();
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_projected_output_history_key_for_test(
         &mut self,
         leased_agent_id: &str,

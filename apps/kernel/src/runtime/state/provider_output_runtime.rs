@@ -20,10 +20,7 @@ impl KernelRuntimeState {
         self.reap_provider_first_output_timeouts(session_id).await?;
         self.reap_provider_inactivity_timeouts(session_id).await?;
         let mut provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        let uses_structured_prompt_io = provider_run.client_interface().is_arroba()
-            && owned
-                .provider_store
-                .run_uses_structured_prompt_io(&provider_run);
+        let uses_structured_prompt_io = provider_run_uses_structured_output_pump(&provider_run);
         if !initial_liveness_already_checked
             && uses_structured_prompt_io
             && self
@@ -446,7 +443,14 @@ fn provider_run_uses_transient_native_terminal(
 pub(super) fn provider_run_allows_quiet_pty_settlement(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> bool {
-    !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
+    !provider_run_uses_structured_output_pump(provider_run)
+        && !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
+}
+
+pub(super) fn provider_run_uses_structured_output_pump(
+    provider_run: &crate::provider::RuntimeProviderRun,
+) -> bool {
+    crate::provider::provider_run_uses_structured_prompt_io(provider_run)
 }
 
 fn first_output_timeout_candidates(

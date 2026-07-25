@@ -81,9 +81,29 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         delivery_phase: Option<crate::session::DurablePromptDeliveryPhase>,
+        delivery_provider_run_id: Option<&str>,
     ) -> Result<bool, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let active_worker_run = agent
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+            .is_some();
+        if delivery_phase != Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+            && !active_worker_run
+        {
+            if let Some(provider_run_id) = delivery_provider_run_id {
+                self.owned
+                    .agent_store
+                    .set_remote_execution_active_worker_provider_run_id(
+                        agent_id,
+                        Some(provider_run_id.to_string()),
+                    )?;
+            }
+        }
+        let active_worker_run = self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
             .remote_execution()
             .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
             .is_some();
@@ -1118,6 +1138,87 @@ mod tests {
 
         assert_eq!(drain_target.0.leased_agent_id, "leased-agent-1");
         assert_eq!(drain_target.1, "provider-run-worker-1");
+    }
+
+    #[tokio::test]
+    async fn delivered_remote_prompt_restores_worker_run_before_restart_drain() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-remote-restart",
+                "worktree-remote-restart",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-remote-restart",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        app.agents
+            .bind_remote_execution(
+                agent.id(),
+                crate::agent::RemoteAgentBinding {
+                    worker_kernel_id: "worker-kernel-1".to_string(),
+                    worker_machine_id: "worker-machine-1".to_string(),
+                    execution_lease_id: "lease-1".to_string(),
+                    leased_agent_id: "leased-agent-1".to_string(),
+                    active_worker_provider_run_id: None,
+                    relay_url: None,
+                    relay_token: None,
+                },
+            )
+            .expect("agent should bind to remote execution");
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt-remote-restart",
+            attachment.id(),
+            agent.id(),
+            "remote prompt",
+            crate::session::PromptStatus::Queued,
+        );
+        let prompt_id = match app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("remote prompt should start")
+        {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("remote prompt should start")
+            }
+        };
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some("provider-run-worker-1".to_string()),
+            None,
+        )
+        .expect("delivery metadata should persist");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        assert!(runtime
+            .recover_remote_prompt_after_kernel_restart(
+                session.id(),
+                agent.id(),
+                Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+                Some("provider-run-worker-1"),
+            )
+            .await
+            .expect("remote recovery should start"));
+        let restored = runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available");
+        assert_eq!(
+            restored
+                .remote_execution()
+                .and_then(|binding| binding.active_worker_provider_run_id.as_deref()),
+            Some("provider-run-worker-1")
+        );
     }
 
     #[tokio::test]

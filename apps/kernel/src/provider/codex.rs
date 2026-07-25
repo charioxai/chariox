@@ -28,6 +28,7 @@ const CODEX_SESSION_ENV_VARS: &[&str] = &[
     "CODEX_TURN_STATE_HEADER",
     "CODEX_STARTING_DIFF",
     "CODEX_ESCALATE_SOCKET",
+    "RUST_LOG",
 ];
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
@@ -261,6 +262,7 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "CODEX_TURN_STATE_HEADER"));
+        assert!(launch.pty_env_remove.iter().any(|name| name == "RUST_LOG"));
     }
 
     #[test]

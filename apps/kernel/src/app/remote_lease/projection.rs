@@ -59,7 +59,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::ExecutionLeaseNotFound {
                 lease_id: leased_agent.lease_id.clone(),
             })?;
-        let home_prompt_id = leased_agent.active_home_prompt_id.clone();
+        let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
+            replay_settled_completion
+                .then_some(())
+                .and_then(|()| leased_agent.replayable_completion.as_ref())
+                .filter(|completion| completion.provider_run_id == provider_run_id)
+                .and_then(|completion| completion.home_prompt_id.clone())
+        });
         let home_prompt_started_at_ms = leased_agent.active_home_prompt_started_at_ms;
         let mut pumped_output_records = Vec::new();
         let mut settled_quiet = false;
@@ -290,9 +296,24 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.provider,
             provider_run.as_ref(),
         );
-        let completion_waits_for_native_prompt_settlement = provider_run
-            .as_ref()
-            .is_some_and(crate::provider::provider_run_uses_claude_native_bridge);
+        // For explicit-completion providers, message/item completion is not turn
+        // completion. Codex can finish a commentary message before running a tool,
+        // and Claude can likewise finish intermediate native items. Only the
+        // provider-owned prompt transition may release the home turn.
+        let completion_waits_for_native_prompt_settlement = requires_explicit_completion;
+        if completion_waits_for_native_prompt_settlement
+            && !backing_prompt_active
+            && leased_agent
+                .replayable_completion
+                .as_ref()
+                .is_some_and(|replay| replay.provider_run_id == provider_run_id)
+        {
+            // Prompt-state settlement also emits a generic prompt completion
+            // record. Prefer the provider message identity retained while the
+            // explicit turn was active; it is the stable replay identity shared
+            // with the home kernel.
+            completions.retain(|completion| !completion.message_id.starts_with("prompt-complete:"));
+        }
         let has_settleable_output_history =
             current_batch_has_provider_output && !requires_explicit_completion;
         let provider_run_ended = provider_run
@@ -353,6 +374,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_some_and(|replay| replay.provider_run_id == provider_run_id);
         let explicit_completion_waiting = explicit_completion_waiting_for_output
             || explicit_completion_waiting_for_prompt_settlement;
+        let explicit_completion_already_projected = leased_agent
+            .replayable_completion
+            .as_ref()
+            .filter(|replay| replay.provider_run_id == provider_run_id)
+            .is_some_and(|replay| {
+                let completion_key = leased_provider_run_completion_key(
+                    &leased_agent,
+                    provider_run_id,
+                    &replay.message_id,
+                );
+                leased_agent
+                    .projected_completion_keys
+                    .iter()
+                    .any(|key| key == &completion_key)
+            });
         if completions.is_empty()
             && requires_explicit_completion
             && !explicit_completion_waiting_for_prompt_settlement
@@ -424,8 +460,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if completions.is_empty()
             && !backing_prompt_active
             && !explicit_completion_waiting
+            && !(requires_explicit_completion && explicit_completion_already_projected)
             && (settled_quiet
                 || has_settleable_output_history
+                || (requires_explicit_completion && provider_run_has_projected_output)
                 || provider_run_ended
                 || provider_run_failed)
         {
@@ -624,6 +662,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let leased_agents = self.app.leased_agents.values().cloned().collect::<Vec<_>>();
         let mut events = Vec::new();
         for leased_agent in leased_agents {
+            // Home-origin prompts have their own authoritative drain loop. Let that
+            // request/response path consume output and completion records so the
+            // best-effort relay event pump cannot race it and mark records projected
+            // before the home kernel has actually received them.
+            if leased_agent.active_home_prompt_id.is_some() {
+                continue;
+            }
             let Some(provider_run_id) = self
                 .app
                 .providers
@@ -1235,6 +1280,12 @@ fn leased_home_prompt_projection_key(leased_agent: &LeasedAgent) -> String {
         .clone()
         .or_else(|| {
             leased_agent
+                .replayable_completion
+                .as_ref()
+                .and_then(|completion| completion.home_prompt_id.clone())
+        })
+        .or_else(|| {
+            leased_agent
                 .active_home_prompt_started_at_ms
                 .map(|started_at_ms| format!("started-{started_at_ms}"))
         })
@@ -1458,11 +1509,34 @@ mod explicit_completion_tests {
             "assistant-msg-explicit",
             completed_at_ms,
         );
-        let second = RemoteLeaseRuntime::new(&mut app)
+        assert!(RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("explicit completion projection should succeed")
-            .expect("explicit completion should be projected");
-        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = second.1;
+            .is_none());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
+
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("provider turn completion should settle the backing prompt");
+        let settled = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("settled completion projection should succeed")
+            .expect("provider turn completion should release the deferred message");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = settled.1;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "assistant-msg-explicit");
         assert_eq!(completions[0].completed_at_ms, completed_at_ms);
@@ -1565,7 +1639,7 @@ mod explicit_completion_tests {
         let transcript_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("transcript output projection should succeed")
-            .expect("transcript output should release the deferred completion");
+            .expect("transcript output should project without settling the turn");
         let RelayPeerEvent::LeasedRuntimeProjection {
             output_chunks,
             completions,
@@ -1573,6 +1647,31 @@ mod explicit_completion_tests {
         } = transcript_output.1;
         assert_eq!(output_chunks.len(), 1);
         assert_eq!(output_chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert!(completions.is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
+
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("provider turn completion should settle the backing prompt");
+        let settled = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("settled completion projection should succeed")
+            .expect("provider turn completion should release the deferred message");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = settled.1;
         assert_eq!(completions.len(), 1);
         assert_eq!(
             completions[0].message_id,
@@ -1654,13 +1753,38 @@ mod explicit_completion_tests {
         let after_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("output projection should succeed")
-            .expect("output should release the deferred completion");
+            .expect("output should project without settling the turn");
         let RelayPeerEvent::LeasedRuntimeProjection {
             output_chunks,
             completions,
             ..
         } = after_output.1;
         assert_eq!(output_chunks.len(), 1);
+        assert!(completions.is_empty());
+        assert!(app
+            .prompt_owner_active_prompt_for_agent_snapshot(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .expect("active prompt should load")
+            .is_some());
+
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("provider turn completion should settle the backing prompt");
+        let settled = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("settled completion projection should succeed")
+            .expect("provider turn completion should release the deferred message");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = settled.1;
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].message_id, "assistant-msg-before-output");
         assert!(app
@@ -1736,13 +1860,30 @@ mod explicit_completion_tests {
         let first_projection = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("first projection should succeed")
-            .expect("first output should release first completion");
+            .expect("first output should project without settling the turn");
         let RelayPeerEvent::LeasedRuntimeProjection {
             output_chunks,
             completions,
             ..
         } = first_projection.1;
         assert_eq!(output_chunks.len(), 1);
+        assert!(completions.is_empty());
+        app.complete_active_prompt(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+            Some(&provider_run_id),
+        )
+        .expect("first provider turn should settle");
+        let first_settled = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(
+                &leased_agent.id,
+                &provider_run_id,
+                false,
+                true,
+            )
+            .expect("first completion projection should succeed")
+            .expect("first provider turn should release its completion");
+        let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = first_settled.1;
         assert_eq!(completions.len(), 1);
 
         let (reused_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
@@ -1770,7 +1911,11 @@ mod explicit_completion_tests {
         let before_second_output = RemoteLeaseRuntime::new(&mut app)
             .drain_leased_runtime_projection(&leased_agent.id, &provider_run_id, false)
             .expect("second completion-only projection should succeed");
-        assert!(before_second_output.is_none());
+        if let Some((_, RelayPeerEvent::LeasedRuntimeProjection { completions, .. })) =
+            before_second_output
+        {
+            assert!(completions.is_empty());
+        }
         assert!(app
             .prompt_owner_active_prompt_for_agent_snapshot(
                 &leased_agent.backing_session_id,

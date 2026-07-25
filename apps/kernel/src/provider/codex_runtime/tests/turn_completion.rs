@@ -1394,3 +1394,20 @@ fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal
         true,
     ));
 }
+
+#[test]
+fn managed_turn_does_not_backfill_from_pre_tool_commentary() {
+    use std::time::Duration;
+
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_assistant_content();
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_secs(1));
+
+    assert!(!turn_tracker.has_terminal_assistant_evidence());
+    assert!(!codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+}

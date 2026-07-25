@@ -138,6 +138,7 @@ impl KernelRuntimeState {
                             session.id(),
                             agent_id,
                             delivery_phase,
+                            prompt.durable_delivery_provider_run_id(),
                         )
                         .await
                     {

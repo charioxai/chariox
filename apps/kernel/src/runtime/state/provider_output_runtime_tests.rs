@@ -1,5 +1,6 @@
 use super::provider_output_runtime::{
     provider_run_allows_quiet_pty_settlement, provider_run_ids_for_owned_output_pump,
+    provider_run_uses_structured_output_pump,
 };
 use super::*;
 use std::collections::VecDeque;
@@ -185,4 +186,35 @@ fn claude_native_runs_never_use_quiet_pty_settlement() {
     );
 
     assert!(!provider_run_allows_quiet_pty_settlement(&native_run));
+}
+
+#[test]
+fn native_client_codex_runs_keep_structured_output_authority() {
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-1",
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6-sol",
+    )
+    .with_agent_id("agent-1")
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-native-codex",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "native-codex-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://127.0.0.1:45000".to_string()),
+        },
+    );
+
+    assert!(provider_run_uses_structured_output_pump(&run));
+    assert!(!provider_run_allows_quiet_pty_settlement(&run));
 }

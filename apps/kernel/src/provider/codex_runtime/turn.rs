@@ -71,7 +71,9 @@ impl CodexTurnTracker {
 
     pub(super) fn note_assistant_content(&mut self) {
         self.note_activity();
-        self.assistant_content_after_tool_activity = true;
+        if self.tool_started {
+            self.assistant_content_after_tool_activity = true;
+        }
     }
 
     pub(super) fn has_pending_terminal(&self) -> bool {

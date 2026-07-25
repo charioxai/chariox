@@ -262,6 +262,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if let Some(agent) = self.app.leased_agents.get_mut(&leased_agent.id) {
                 if agent.active_home_prompt_id.as_deref() != home_prompt_id.as_deref() {
                     agent.applied_home_steer_ids.clear();
+                    agent.replayable_completion = None;
                 }
                 agent.active_home_prompt_id = home_prompt_id;
                 agent.active_home_prompt_started_at_ms = Some(accepted_prompt.created_at_ms());
