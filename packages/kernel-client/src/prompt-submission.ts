@@ -56,12 +56,39 @@ export function formatPromptSubmissionBody(rawPrompt: string): string {
   return rawPrompt.trim() ? (rawPrompt.endsWith("\n") ? rawPrompt : `${rawPrompt}\n`) : ""
 }
 
+export function formatPromptAgentAliasAddress(alias: string): string {
+  const trimmedAlias = alias.trim()
+  return /[\s"\\]/.test(trimmedAlias) ? `@${JSON.stringify(trimmedAlias)}` : `@${trimmedAlias}`
+}
+
 export function parsePromptAgentAliasRoute(prompt: string): PromptAgentAliasRoute | null {
   const leadingTrimmed = prompt.trimStart()
   if (!leadingTrimmed.startsWith("@")) {
     return null
   }
   const route = leadingTrimmed.slice(1)
+  if (route.startsWith('"')) {
+    const aliasEnd = quotedAliasEnd(route)
+    if (aliasEnd === null) {
+      return null
+    }
+    const remainder = route.slice(aliasEnd)
+    if (remainder && !/^\s/.test(remainder)) {
+      return null
+    }
+    try {
+      const alias = JSON.parse(route.slice(0, aliasEnd))
+      if (typeof alias !== "string" || !alias.trim()) {
+        return null
+      }
+      return {
+        alias,
+        prompt: remainder.trimStart(),
+      }
+    } catch {
+      return null
+    }
+  }
   const aliasEnd = route.search(/\s/)
   const alias = aliasEnd < 0 ? route : route.slice(0, aliasEnd)
   if (!alias) {
@@ -71,6 +98,21 @@ export function parsePromptAgentAliasRoute(prompt: string): PromptAgentAliasRout
     alias,
     prompt: aliasEnd < 0 ? "" : route.slice(aliasEnd).trimStart(),
   }
+}
+
+function quotedAliasEnd(route: string): number | null {
+  let escaped = false
+  for (let index = 1; index < route.length; index += 1) {
+    const character = route[index]
+    if (escaped) {
+      escaped = false
+    } else if (character === "\\") {
+      escaped = true
+    } else if (character === '"') {
+      return index + 1
+    }
+  }
+  return null
 }
 
 export function promptSubmitPreparationDecision(options: {

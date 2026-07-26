@@ -1,26 +1,63 @@
 //! Prompt target and active-agent resolution for the agent actor.
 
+use std::borrow::Cow;
+
 use super::*;
 use crate::runtime::projection::AgentRuntimeProjection;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct PromptAgentAliasRoute<'a> {
-    pub(super) alias: &'a str,
+    pub(super) alias: Cow<'a, str>,
     pub(super) prompt: &'a str,
 }
 
 pub(super) fn parse_prompt_agent_alias_route(prompt: &str) -> Option<PromptAgentAliasRoute<'_>> {
     let prompt = prompt.trim_start();
     let route = prompt.strip_prefix('@')?;
+    if route.starts_with('"') {
+        let alias_end = quoted_alias_end(route)?;
+        let remainder = &route[alias_end..];
+        if !remainder.is_empty()
+            && !remainder
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+        {
+            return None;
+        }
+        let alias = serde_json::from_str::<String>(&route[..alias_end]).ok()?;
+        if alias.trim().is_empty() {
+            return None;
+        }
+        return Some(PromptAgentAliasRoute {
+            alias: Cow::Owned(alias),
+            prompt: remainder.trim_start(),
+        });
+    }
     let alias_end = route.find(char::is_whitespace).unwrap_or(route.len());
     let alias = &route[..alias_end];
     if alias.is_empty() {
         return None;
     }
     Some(PromptAgentAliasRoute {
-        alias,
+        alias: Cow::Borrowed(alias),
         prompt: route[alias_end..].trim_start(),
     })
+}
+
+fn quoted_alias_end(route: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (offset, character) in route[1..].char_indices() {
+        let index = offset + 1;
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            return Some(index + character.len_utf8());
+        }
+    }
+    None
 }
 
 impl AgentRuntime {
@@ -218,11 +255,26 @@ mod alias_route_tests {
         assert_eq!(
             parse_prompt_agent_alias_route("  @Reviewer   /meta inspect the repo"),
             Some(PromptAgentAliasRoute {
-                alias: "Reviewer",
+                alias: Cow::Borrowed("Reviewer"),
                 prompt: "/meta inspect the repo",
+            })
+        );
+        assert_eq!(
+            parse_prompt_agent_alias_route(r#"  @"Review Agent" inspect the repo"#),
+            Some(PromptAgentAliasRoute {
+                alias: Cow::Owned("Review Agent".to_string()),
+                prompt: "inspect the repo",
+            })
+        );
+        assert_eq!(
+            parse_prompt_agent_alias_route(r#"@"Review \"Agent\"" inspect the repo"#),
+            Some(PromptAgentAliasRoute {
+                alias: Cow::Owned(r#"Review "Agent""#.to_string()),
+                prompt: "inspect the repo",
             })
         );
         assert_eq!(parse_prompt_agent_alias_route("email @reviewer"), None);
         assert_eq!(parse_prompt_agent_alias_route("@"), None);
+        assert_eq!(parse_prompt_agent_alias_route(r#"@"unterminated"#), None);
     }
 }
