@@ -37,6 +37,7 @@ type CommandCenterControllerOptions<TBox = unknown> = {
   getFocusedProvider: () => BackendProviderId | null
   getCurrentModel: () => string
   getCurrentVariant: () => string
+  getAgentAliases?: () => readonly string[]
   getWorkflowRegistryEntries?: () => readonly CommandCenterWorkflowRegistryEntry[]
   refreshWorkflowRegistryEntries?: (input: string) => void
   getPromptText: () => string
@@ -69,7 +70,7 @@ export function createCommandCenterController<TBox = unknown>(
   let selectedIndex = 0
   let box: TBox | undefined
 
-  const open = () => items.length > 0 && query.startsWith("/")
+  const open = () => items.length > 0 && (query.startsWith("/") || query.startsWith("@"))
 
   const render = () => {
     options.render({
@@ -96,6 +97,7 @@ export function createCommandCenterController<TBox = unknown>(
       focusedProvider: options.getFocusedProvider(),
       currentModel: options.getCurrentModel(),
       currentVariant: options.getCurrentVariant(),
+      ...(options.getAgentAliases ? { agentAliases: options.getAgentAliases() } : {}),
       ...(options.getWorkflowRegistryEntries ? { workflowRegistryEntries: options.getWorkflowRegistryEntries() } : {}),
     })
     selectedIndex = nextCommandCenterIndex(selectedIndex, items, value, previousValue)

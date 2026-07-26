@@ -18,6 +18,7 @@ export type CommandCenterContext = {
   focusedProvider: BackendProviderId | null
   currentModel: string
   currentVariant: string
+  agentAliases?: readonly string[]
   workflowRegistryEntries?: readonly CommandCenterWorkflowRegistryEntry[]
 }
 

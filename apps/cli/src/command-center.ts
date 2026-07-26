@@ -19,6 +19,10 @@ import type { CommandCenterItem } from "./command-center-types.js"
 export type { CommandCenterItem } from "./command-center-types.js"
 
 export function buildCommandCenterItems(input: string, context: CommandCenterContext): CommandCenterItem[] {
+  const agentItems = buildAgentAliasItems(input, context.agentAliases ?? [])
+  if (agentItems) {
+    return agentItems
+  }
   if (!input.startsWith("/")) {
     return []
   }
@@ -67,4 +71,31 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
   }
 
   return filterCommandCenterItems(buildCommandCenterRootItems(context), normalized.slice(1).toLowerCase())
+}
+
+function buildAgentAliasItems(
+  input: string,
+  aliases: readonly string[],
+): CommandCenterItem[] | null {
+  if (!input.startsWith("@")) {
+    return null
+  }
+  const match = input.match(/^@([^\s]*)$/)
+  if (!match) {
+    return []
+  }
+  const query = (match[1] ?? "").toLowerCase()
+  return [...new Map(aliases
+    .map((alias) => alias.trim())
+    .filter((alias) => alias && !/\s/.test(alias))
+    .map((alias) => [alias.toLowerCase(), alias])).values()]
+    .filter((alias) => alias.toLowerCase().includes(query))
+    .sort((left, right) => left.localeCompare(right))
+    .map((alias) => ({
+      id: `agent-${alias.toLowerCase()}`,
+      label: `@${alias}`,
+      description: `Send the prompt to ${alias} and focus its pane`,
+      kind: "agent" as const,
+      value: alias,
+    }))
 }

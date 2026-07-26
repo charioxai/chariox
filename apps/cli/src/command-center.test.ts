@@ -41,6 +41,26 @@ test("buildCommandCenterItems shows root slash commands", () => {
   assert.equal(items.find((item) => item.kind === "group" && item.label === "/extension")?.description, "Inspect worker-local, home-proxy, and skill snapshot extension state (7)")
 })
 
+test("buildCommandCenterItems lists and filters session agent aliases", () => {
+  const context = {
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode" as const,
+    focusedProvider: "opencode" as const,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+    agentAliases: ["reviewer", "goal-worker", "agent-1"],
+  }
+
+  assert.deepEqual(buildCommandCenterItems("@", context).map((item) => item.label), [
+    "@agent-1",
+    "@goal-worker",
+    "@reviewer",
+  ])
+  assert.deepEqual(buildCommandCenterItems("@go", context).map((item) => item.value), ["goal-worker"])
+  assert.deepEqual(buildCommandCenterItems("@goal-worker ", context), [])
+})
+
 test("buildCommandCenterItems includes config subcommands", () => {
   const items = buildCommandCenterItems("/config", {
     providerCatalog: fallbackProviderCatalog(),

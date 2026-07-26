@@ -2,6 +2,9 @@ import type { CommandCenterItem } from "./command-center-types.js"
 import { parseSlashCommand } from "./commands.js"
 
 export function commandCenterCompletionText(item: CommandCenterItem): string {
+  if (item.kind === "agent") {
+    return `@${item.value} `
+  }
   if (item.kind === "provider") {
     return `/provider ${item.value}`
   }
@@ -15,6 +18,9 @@ export function commandCenterCompletionText(item: CommandCenterItem): string {
 }
 
 export function commandCenterExecutionCommand(item: CommandCenterItem): string | null {
+  if (item.kind === "agent") {
+    return null
+  }
   if (item.kind === "command") {
     return item.value
   }
@@ -46,7 +52,7 @@ export function nextCommandCenterIndex(
 
   if (previousInput !== input) {
     const normalized = input.trim()
-    if (normalized === "/") {
+    if (normalized === "/" || input.startsWith("@")) {
       return 0
     }
     const exactGroupIndex = items.findIndex((item) => (

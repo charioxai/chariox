@@ -26,6 +26,7 @@ function createHarness(initialPrompt = "") {
     getFocusedProvider: () => "opencode",
     getCurrentModel: () => "opencode/gpt-5.4",
     getCurrentVariant: () => "high",
+    getAgentAliases: () => ["reviewer", "goal-worker", "agent-1"],
     getPromptText: () => promptText,
     replacePromptText: (value) => {
       promptText = value
@@ -123,6 +124,21 @@ test("command center controller completes expandable items without executing", (
   assert.equal(harness.promptText, "/workflow ")
   assert.equal(harness.executed.length, 0)
   assert.equal(harness.controller.query(), "/workflow ")
+})
+
+test("command center controller completes a filtered agent route without executing it", () => {
+  const harness = createHarness("@go")
+  harness.controller.sync()
+
+  assert.equal(harness.controller.open(), true)
+  assert.deepEqual(harness.controller.items().map((item) => item.label), ["@goal-worker"])
+
+  const enter = handledKey("enter")
+  assert.equal(harness.controller.handleKey(enter.event), true)
+
+  assert.equal(harness.promptText, "@goal-worker ")
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.controller.open(), false)
 })
 
 test("command center controller opens misc children without executing", () => {

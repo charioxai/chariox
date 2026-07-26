@@ -432,6 +432,9 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     getFocusedProvider: focusedBackendProvider,
     getCurrentModel: currentModelId,
     getCurrentVariant: currentVariantId,
+    getAgentAliases: () => isAttached()
+      ? sessionState().agents.flatMap((agent) => agent.alias?.trim() ? [agent.alias.trim()] : [])
+      : [],
     getWorkflowRegistryEntries: workflowRegistrySuggestions.entries,
     refreshWorkflowRegistryEntries: workflowRegistrySuggestions.refresh,
     getPromptText: promptTextController.currentText,
