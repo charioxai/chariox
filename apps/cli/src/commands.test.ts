@@ -52,6 +52,33 @@ test("parseSlashCommand parses workflow commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses durable agent wait schedules", () => {
+  assert.deepEqual(parseSlashCommand("/wait-in 0.05 Check once"), {
+    kind: "wait",
+    raw: "/wait-in 0.05 Check once",
+    scheduleKind: "once",
+    minutes: 0.05,
+    prompt: "Check once",
+    error: null,
+  })
+  assert.deepEqual(parseSlashCommand("/wait-every 5"), {
+    kind: "wait",
+    raw: "/wait-every 5",
+    scheduleKind: "recurring",
+    minutes: 5,
+    prompt: "",
+    error: null,
+  })
+  assert.deepEqual(parseSlashCommand("/wait-in later"), {
+    kind: "wait",
+    raw: "/wait-in later",
+    scheduleKind: "once",
+    minutes: null,
+    prompt: "",
+    error: "usage: /wait-in <minutes> [prompt]",
+  })
+})
+
 test("parseSlashCommand parses workspace link commands and args", () => {
   assert.deepEqual(parseSlashCommand("/workspace link attach shared"), {
     kind: "workspace",
@@ -113,8 +140,50 @@ test("shouldClearCommandCenterForSlashCommand only clears selector-backed comman
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/loop Build a Kanban app")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/goal Build a Kanban app")!), true)
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/wait-in 5 Check")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/session list")!), false)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/stop")!), false)
+})
+
+test("executeSlashCommand dispatches agent wait schedules", async () => {
+  const calls: string[] = []
+  const command = await executeSlashCommand("/wait-every 5 Check repeatedly", {
+    onExit: () => undefined,
+    onWaiting: () => undefined,
+    onStop: () => undefined,
+    onAttachment: () => undefined,
+    onSession: () => undefined,
+    onProvider: () => undefined,
+    onModel: () => undefined,
+    onVariant: () => undefined,
+    onView: () => undefined,
+    onUndo: () => undefined,
+    onFork: () => undefined,
+    onAgent: () => undefined,
+    onKernel: () => undefined,
+    onMachine: () => undefined,
+    onSlice: () => undefined,
+    onRelay: () => undefined,
+    onCloud: () => undefined,
+    onCollab: () => undefined,
+    onConfig: () => undefined,
+    onWorkspace: () => undefined,
+    onWorktree: () => undefined,
+    onWorkflow: () => undefined,
+    onLoop: () => undefined,
+    onGoal: () => undefined,
+    onWait: (wait) => calls.push(`${wait.scheduleKind}:${wait.minutes}:${wait.prompt}`),
+    onMcp: () => undefined,
+    onSkill: () => undefined,
+    onEnv: () => undefined,
+    onScript: () => undefined,
+    onCredential: () => undefined,
+    onConnector: () => undefined,
+    onExtension: () => undefined,
+  })
+
+  assert.deepEqual(calls, ["recurring:5:Check repeatedly"])
+  assert.equal(command?.kind, "wait")
 })
 
 test("executeSlashCommand dispatches to the matching handler", async () => {

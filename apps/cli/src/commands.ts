@@ -31,6 +31,14 @@ export type ParsedSlashCommand =
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
+  | {
+      kind: "wait"
+      raw: string
+      scheduleKind: "once" | "recurring"
+      minutes: number | null
+      prompt: string
+      error: string | null
+    }
   | { kind: "mcp"; raw: string; args: string[] }
   | { kind: "skill"; raw: string; args: string[] }
   | { kind: "env"; raw: string; args: string[] }
@@ -64,6 +72,7 @@ export type SlashCommandHandlers = {
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
+  onWait?: (command: Extract<ParsedSlashCommand, { kind: "wait" }>) => Promise<unknown> | unknown
   onMcp: (command: Extract<ParsedSlashCommand, { kind: "mcp" }>) => Promise<unknown> | unknown
   onSkill: (command: Extract<ParsedSlashCommand, { kind: "skill" }>) => Promise<unknown> | unknown
   onEnv: (command: Extract<ParsedSlashCommand, { kind: "env" }>) => Promise<unknown> | unknown
@@ -226,6 +235,12 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       prompt: trimmed.replace(/^\/goal\s*/, "").trim(),
     }
   }
+  if (trimmed === "/wait-in" || trimmed.startsWith("/wait-in ")) {
+    return parseAgentWaitCommand(trimmed, "/wait-in", "once")
+  }
+  if (trimmed === "/wait-every" || trimmed.startsWith("/wait-every ")) {
+    return parseAgentWaitCommand(trimmed, "/wait-every", "recurring")
+  }
   if (trimmed.startsWith("/workflow")) {
     return {
       kind: "workflow",
@@ -284,6 +299,34 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     }
   }
   return null
+}
+
+function parseAgentWaitCommand(
+  command: string,
+  prefix: "/wait-in" | "/wait-every",
+  scheduleKind: "once" | "recurring",
+): Extract<ParsedSlashCommand, { kind: "wait" }> {
+  const remainder = command.slice(prefix.length).trim()
+  const [rawMinutes = "", ...promptParts] = remainder.split(/\s+/)
+  const minutes = Number(rawMinutes)
+  if (!rawMinutes || !Number.isFinite(minutes) || minutes <= 0) {
+    return {
+      kind: "wait",
+      raw: command,
+      scheduleKind,
+      minutes: null,
+      prompt: promptParts.join(" "),
+      error: `usage: ${prefix} <minutes> [prompt]`,
+    }
+  }
+  return {
+    kind: "wait",
+    raw: command,
+    scheduleKind,
+    minutes,
+    prompt: promptParts.join(" "),
+    error: null,
+  }
 }
 
 export async function executeSlashCommand(
@@ -367,6 +410,9 @@ export async function executeSlashCommand(
     case "goal":
       await handlers.onGoal(command)
       break
+    case "wait":
+      await handlers.onWait?.(command)
+      break
     case "mcp":
       await handlers.onMcp(command)
       break
@@ -413,6 +459,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "workflow":
     case "loop":
     case "goal":
+    case "wait":
     case "mcp":
     case "skill":
     case "env":
