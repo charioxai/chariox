@@ -69,6 +69,12 @@ impl SessionStore {
             .filter(|session| session.status() != SessionStatus::Ended)
     }
 
+    pub fn non_ended_sessions_mut(&mut self) -> impl Iterator<Item = &mut RuntimeSession> {
+        self.sessions
+            .values_mut()
+            .filter(|session| session.status() != SessionStatus::Ended)
+    }
+
     pub fn visible_non_ended_sessions(&self) -> impl Iterator<Item = &RuntimeSession> {
         self.non_ended_sessions()
             .filter(|session| !session.is_hidden())

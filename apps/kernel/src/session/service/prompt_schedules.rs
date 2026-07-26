@@ -20,6 +20,7 @@ impl SessionService {
                 let agent_prompts = session
                     .agent_prompt_schedules()
                     .iter()
+                    .filter(|schedule| !schedule.dispatch_in_flight())
                     .map(|schedule| schedule.next_run_at_ms());
                 watchdogs.chain(agent_prompts)
             })
@@ -83,13 +84,17 @@ impl SessionService {
             })
     }
 
-    pub fn collect_due_agent_prompt_schedules(&self, now_ms: u64) -> AgentPromptScheduleCollection {
+    pub fn claim_due_agent_prompt_schedules(
+        &mut self,
+        now_ms: u64,
+    ) -> AgentPromptScheduleCollection {
         let mut collection = AgentPromptScheduleCollection::default();
-        for session in self.store.non_ended_sessions() {
-            for schedule in session.agent_prompt_schedules() {
-                if now_ms >= schedule.next_run_at_ms() {
+        for session in self.store.non_ended_sessions_mut() {
+            let session_id = session.id().to_string();
+            for schedule in session.agent_prompt_schedules_mut() {
+                if schedule.claim_dispatch(now_ms) {
                     collection.dispatches.push(AgentPromptScheduleDispatch {
-                        session_id: session.id().to_string(),
+                        session_id: session_id.clone(),
                         schedule_id: schedule.id().to_string(),
                         agent_id: schedule.agent_id().to_string(),
                         prompt: schedule.prompt().to_string(),
@@ -149,5 +154,49 @@ impl SessionService {
         };
         schedule.mark_dispatch_failed(now_ms, error);
         Ok(Some(schedule.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn due_agent_prompt_schedule_is_claimed_once_until_dispatch_settles() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut service = SessionService::new(&config);
+        let session = service
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let schedule = service
+            .create_agent_prompt_schedule(
+                session.id(),
+                "agent-1",
+                AgentPromptScheduleKind::Recurring,
+                1,
+                Some("Check once.".to_string()),
+            )
+            .expect("schedule should create");
+        let due_at_ms = schedule.next_run_at_ms();
+
+        let first = service.claim_due_agent_prompt_schedules(due_at_ms);
+        let overlapping = service.claim_due_agent_prompt_schedules(due_at_ms);
+
+        assert_eq!(first.dispatches.len(), 1);
+        assert!(overlapping.dispatches.is_empty());
+        assert_eq!(service.next_scheduled_runtime_wake_at_ms(), None);
+
+        service
+            .mark_agent_prompt_schedule_failed(
+                session.id(),
+                schedule.id(),
+                due_at_ms,
+                "retry".to_string(),
+            )
+            .expect("failed dispatch should release the claim");
+        assert_eq!(
+            service.next_scheduled_runtime_wake_at_ms(),
+            Some(due_at_ms.saturating_add(1_000))
+        );
     }
 }

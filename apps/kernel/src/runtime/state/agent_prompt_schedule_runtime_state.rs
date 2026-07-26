@@ -50,8 +50,8 @@ impl KernelRuntimeState {
         let dispatches = self
             .owned
             .session_store
-            .read()
-            .collect_due_agent_prompt_schedules(now_ms)
+            .write()
+            .claim_due_agent_prompt_schedules(now_ms)
             .dispatches;
         for dispatch in dispatches {
             let result = self.dispatch_agent_prompt_schedule(&dispatch).await;

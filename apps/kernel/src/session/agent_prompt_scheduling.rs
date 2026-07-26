@@ -22,6 +22,8 @@ pub struct AgentPromptSchedule {
     last_triggered_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_error: Option<String>,
+    #[serde(skip)]
+    dispatch_in_flight: bool,
 }
 
 impl AgentPromptSchedule {
@@ -44,6 +46,7 @@ impl AgentPromptSchedule {
             runs_dispatched: 0,
             last_triggered_at_ms: None,
             last_error: None,
+            dispatch_in_flight: false,
         }
     }
 
@@ -87,7 +90,20 @@ impl AgentPromptSchedule {
         self.last_error.as_deref()
     }
 
+    pub(crate) fn dispatch_in_flight(&self) -> bool {
+        self.dispatch_in_flight
+    }
+
+    pub(crate) fn claim_dispatch(&mut self, now_ms: u64) -> bool {
+        if self.dispatch_in_flight || now_ms < self.next_run_at_ms {
+            return false;
+        }
+        self.dispatch_in_flight = true;
+        true
+    }
+
     pub(crate) fn mark_dispatch_succeeded(&mut self, now_ms: u64) {
+        self.dispatch_in_flight = false;
         self.runs_dispatched = self.runs_dispatched.saturating_add(1);
         self.last_triggered_at_ms = Some(now_ms);
         self.last_error = None;
@@ -98,6 +114,7 @@ impl AgentPromptSchedule {
     }
 
     pub(crate) fn mark_dispatch_failed(&mut self, now_ms: u64, error: String) {
+        self.dispatch_in_flight = false;
         self.last_triggered_at_ms = Some(now_ms);
         self.last_error = Some(error);
         self.next_run_at_ms =
