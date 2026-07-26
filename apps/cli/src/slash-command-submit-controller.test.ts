@@ -51,6 +51,19 @@ test("slash command submit keeps command center for session commands", async () 
   assert.equal(harness.commandCenterClearCount(), 0)
 })
 
+test("slash command submit dispatches agent wait commands", async () => {
+  const harness = createHarness({ attached: true })
+  const controller = createSlashCommandSubmitController(harness.deps)
+
+  const command = await controller.submit("/wait-every 2 Review health", {
+    allowSlashCommandSubmission: true,
+  })
+
+  assert.equal(command?.kind, "wait")
+  assert.deepEqual(harness.calls(), ["wait:recurring:2:Review health"])
+  assert.equal(harness.clearPromptCount(), 1)
+})
+
 test("slash command submit reports unknown session commands", async () => {
   const harness = createHarness({
     handleSessionCommand: () => false,
@@ -150,6 +163,7 @@ function createHarness(options: {
     handleWorkflowCommand: (command) => calls.push(`workflow:${command.args.join(" ")}`),
     handleLoopCommand: (command) => calls.push(`loop:${command.prompt}`),
     handleGoalCommand: (command) => calls.push(`goal:${command.prompt}`),
+    handleWaitCommand: (command) => calls.push(`wait:${command.scheduleKind}:${command.minutes}:${command.prompt}`),
     handleMcpCommand: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     handleSkillCommand: (command) => calls.push(`skill:${command.args.join(" ")}`),
     handleEnvCommand: (command) => calls.push(`env:${command.args.join(" ")}`),
