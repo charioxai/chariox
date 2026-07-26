@@ -19,6 +19,12 @@ const LEGACY_METAAGENT_DELEGATION_HASHES: &[&str] =
     &["4182ea00a5ca086d4edcaa32900e3586fdc9feef6e954559b5ace7743698816e"];
 const LEGACY_META_MODE_ENTERED_HASHES: &[&str] =
     &["62d1df699e55d3e4213dcb7cdf3eadee471155238c48d3898985e7e264dcea5e"];
+const LEGACY_SLICE_HASHES: &[&str] = &[
+    "ba79f023be2bcb85d9ab22ceebe992ada13b1fc2e5c3bbfe5b8aef60237ff412",
+    "5b2723aede2fc23f4de963cc9aea35c7a0af4c1677e7ee5b64e0d74276be0a22",
+    "fd8f931980e7a9645e79d24517b01e74d915e3592d366c4d003e0eba476a7ca6",
+    "a9115e43cc0332fafcecdc29105b6151af4ed20bc584dc9f48ba00a267776b71",
+];
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
 const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
@@ -278,6 +284,7 @@ fn known_legacy_bundled_default(template_id: &str, hash: &str) -> bool {
         "workflow/turn" => LEGACY_WORKFLOW_TURN_HASHES.contains(&hash),
         "runtime/metaagent-delegation" => LEGACY_METAAGENT_DELEGATION_HASHES.contains(&hash),
         "runtime/meta-mode-entered" => LEGACY_META_MODE_ENTERED_HASHES.contains(&hash),
+        "runtime/slice" => LEGACY_SLICE_HASHES.contains(&hash),
         _ => false,
     }
 }
@@ -784,6 +791,34 @@ mod tests {
 
         let body = fs::read_to_string(path).expect("updated Meta default should read");
         assert!(body.contains("On continuation, first check `arroba.meta.session_overview`"));
+    }
+
+    #[test]
+    fn prompt_registry_updates_known_slice_legacy_defaults() {
+        let root = temp_prompt_root("updates-slice-legacy");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("runtime").join("slice.md");
+        fs::write(
+            &path,
+            concat!(
+                "You are running inside an Arroba slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
+                "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.\n\n",
+                "Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.\n\n",
+                "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
+            ),
+        )
+        .expect("legacy slice default should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("legacy slice default should update despite current state metadata");
+
+        let body = fs::read_to_string(path).expect("updated slice default should read");
+        assert!(body.contains("replace the loopback hostname with `host.docker.internal`"));
+        assert!(body.contains("prefer DOM tools before OCR or coordinates"));
     }
 
     #[test]
