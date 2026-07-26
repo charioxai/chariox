@@ -133,6 +133,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@arroba/kernel-client/session-config-projection"
+import { createAgentPromptScheduleRequest } from "@arroba/kernel-client/ipc-terminal-runtime-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -604,6 +605,24 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       resumeMetaagentTask(client, sessionId, metaagentId),
     abortMetaagentTask: (sessionId, metaagentId, reason) =>
       abortMetaagentTask(client, sessionId, metaagentId, reason),
+    createAgentPromptSchedule: async (sessionId, agentId, kind, intervalSeconds, prompt) => {
+      const response = await client.send<Record<string, unknown>>(
+        createAgentPromptScheduleRequest({
+          sessionId,
+          agentId,
+          kind,
+          intervalSeconds,
+          prompt,
+        }),
+      )
+      const payload = "AgentPromptScheduleCreated" in response
+        ? response.AgentPromptScheduleCreated as { session?: BootstrapState["session"] }
+        : null
+      if (!payload?.session) {
+        throw new Error("kernel did not return the scheduled session")
+      }
+      return { session: payload.session }
+    },
     applySessionState,
     refreshAgentPanes,
     createWorkspaceLink: (name) => createWorkspaceLink(client, sessionState().id, name),

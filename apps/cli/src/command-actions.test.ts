@@ -17,6 +17,51 @@ test("parseRequestedViewLayout handles summary, invalid, and set cases", () => {
   })
 })
 
+test("agent wait commands create durable kernel schedules for the focused agent", async () => {
+  const calls: string[] = []
+  const scheduledSession = makeSession({
+    agent_prompt_schedules: [{
+      id: "schedule-1",
+      agent_id: "agent-1",
+      kind: "once",
+      interval_seconds: 3,
+      prompt: "Check once",
+      created_at_ms: 0,
+      next_run_at_ms: 3_000,
+      runs_dispatched: 0,
+      last_triggered_at_ms: null,
+      last_error: null,
+    }],
+  })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    createAgentPromptSchedule: async (
+      sessionId: string,
+      agentId: string,
+      kind: string,
+      intervalSeconds: number,
+      prompt: string,
+    ) => {
+      calls.push(`${sessionId}:${agentId}:${kind}:${intervalSeconds}:${prompt}`)
+      return { session: scheduledSession }
+    },
+    flashFooter: (message: string, tone: string) => calls.push(`${tone}:${message}`),
+  }))
+
+  await handlers.handleWaitCommand({
+    kind: "wait",
+    raw: "/wait-in 0.05 Check once",
+    scheduleKind: "once",
+    minutes: 0.05,
+    prompt: "Check once",
+    error: null,
+  })
+
+  assert.deepEqual(calls, [
+    "session-1:agent-1:once:3:Check once",
+    "info:/wait-in scheduled for 0.05 minutes",
+  ])
+})
+
 test("formatAgentListSummary renders aliases and pluralization", () => {
   const agents: AgentInstance[] = [
     {

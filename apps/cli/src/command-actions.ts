@@ -120,6 +120,13 @@ type CommandActionDeps =
   currentVariantId: () => string
   currentProviderId: () => string
   focusedAgentId: () => string | null
+  createAgentPromptSchedule?: (
+    sessionId: string,
+    agentId: string,
+    kind: "once" | "recurring",
+    intervalSeconds: number,
+    prompt: string,
+  ) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
     name: string,
     endpointRef: string,
@@ -339,6 +346,42 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleRootWorkflowShortcut(deps, ROOT_WORKFLOW_SHORTCUTS.goal, command.prompt)
   }
 
+  const handleWaitCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "wait" }>,
+  ): Promise<void> => {
+    const commandName = command.scheduleKind === "once" ? "/wait-in" : "/wait-every"
+    if (command.error || command.minutes === null || !command.prompt.trim()) {
+      deps.flashFooter(command.error ?? `usage: ${commandName} <minutes> <prompt>`, "error")
+      return
+    }
+    if (!deps.isAttached()) {
+      deps.flashFooter("must be attached to a session to schedule agent prompts", "error")
+      return
+    }
+    const agentId = deps.focusedAgentId()
+    if (!agentId) {
+      deps.flashFooter("no focused agent", "error")
+      return
+    }
+    if (!deps.createAgentPromptSchedule) {
+      deps.flashFooter(`${commandName} is unavailable in this daemon`, "error")
+      return
+    }
+    const result = await deps.createAgentPromptSchedule(
+      deps.sessionState().id,
+      agentId,
+      command.scheduleKind,
+      Math.max(1, Math.round(command.minutes * 60)),
+      command.prompt,
+    )
+    deps.applySessionState(result.session)
+    await deps.refreshAgentPanes(result.session)
+    deps.flashFooter(
+      `${commandName} scheduled for ${command.minutes} ${command.minutes === 1 ? "minute" : "minutes"}`,
+      "info",
+    )
+  }
+
   return {
     handleSessionCommand,
     handleProviderCommand,
@@ -361,6 +404,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorkflowCommand,
     handleLoopCommand,
     handleGoalCommand,
+    handleWaitCommand,
     handleMcpCommand,
     handleSkillCommand,
     handleEnvCommand,
