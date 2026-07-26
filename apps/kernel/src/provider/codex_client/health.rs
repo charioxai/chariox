@@ -1,4 +1,8 @@
+use std::time::Duration;
+
 use super::CodexClient;
+
+pub const CODEX_ENDPOINT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub fn codex_endpoint_is_healthy(endpoint: &str) -> bool {
     codex_readyz_is_healthy(endpoint)

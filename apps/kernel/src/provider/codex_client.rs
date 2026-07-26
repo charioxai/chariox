@@ -29,7 +29,7 @@ use notifications::parse_notification;
 use permission::{codex_permission_policy, workspace_live_sync_codex_permission_grant};
 
 pub use auth::{ProviderAuthStatus, ProviderLoginStart};
-pub use health::codex_endpoint_is_healthy;
+pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
 pub use notifications::CodexNotification;
 pub use socket_io::CodexSocket;
 pub use thread_runtime::{CodexThread, CodexThreadStartResponse};

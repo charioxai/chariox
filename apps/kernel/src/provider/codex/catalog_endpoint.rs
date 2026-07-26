@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, ProviderCatalogEndpoint};
 
-use super::super::codex_client::codex_endpoint_is_healthy;
+use super::super::codex_client::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
 use super::ports::{clear_codex_catalog_port_if_unset, resolve_codex_catalog_port};
 
 pub fn codex_catalog_endpoint() -> Result<String, DaemonError> {
@@ -66,7 +66,7 @@ pub(crate) fn lease_codex_catalog_endpoint() -> Result<ProviderCatalogEndpoint, 
         }
     })?;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + CODEX_ENDPOINT_STARTUP_TIMEOUT;
     loop {
         if codex_endpoint_is_healthy(&endpoint) {
             return Ok(ProviderCatalogEndpoint::managed(endpoint, child));

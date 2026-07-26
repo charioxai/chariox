@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, CodexRunSelection, RuntimeProviderRun};
 
-use super::super::codex_client::codex_endpoint_is_healthy;
+use super::super::codex_client::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
 use super::run_config::{codex_client_for_run, normalize_codex_model};
 use super::{CodexRuntimeBinding, CodexRuntimeState};
 
@@ -21,7 +21,7 @@ pub fn initialize_codex_runtime(
             message: "codex run did not expose a structured endpoint".to_string(),
         })?
         .to_string();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + CODEX_ENDPOINT_STARTUP_TIMEOUT;
     while !codex_endpoint_is_healthy(&endpoint) {
         if Instant::now() >= deadline {
             return Err(DaemonError::ProviderProtocol {
