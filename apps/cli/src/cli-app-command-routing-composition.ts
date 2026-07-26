@@ -42,6 +42,7 @@ export function createCliAppCommandRoutingComposition(
     onWorkflow: commandHandlers.handleWorkflowCommand,
     onLoop: commandHandlers.handleLoopCommand,
     onGoal: commandHandlers.handleGoalCommand,
+    onWait: commandHandlers.handleWaitCommand,
     onMcp: commandHandlers.handleMcpCommand,
     onSkill: commandHandlers.handleSkillCommand,
     onEnv: commandHandlers.handleEnvCommand,

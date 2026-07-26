@@ -35,6 +35,14 @@ test("command center command executor lets uncontained command failures propagat
   assert.deepEqual(harness.flashes, [])
 })
 
+test("command center command executor dispatches wait commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/wait-in 3 Check later")
+
+  assert.deepEqual(harness.calls, ["wait:once:3:Check later"])
+})
+
 function createHarness(overrides: Partial<Parameters<typeof createCommandCenterCommandExecutor>[0]> = {}) {
   const calls: string[] = []
   const flashes: string[] = []
@@ -63,6 +71,7 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onWorkflow: (command) => calls.push(`workflow:${command.args.join(" ")}`),
     onLoop: (command) => calls.push(`loop:${command.prompt}`),
     onGoal: (command) => calls.push(`goal:${command.prompt}`),
+    onWait: (command) => calls.push(`wait:${command.scheduleKind}:${command.minutes}:${command.prompt}`),
     onMcp: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     onSkill: (command) => calls.push(`skill:${command.args.join(" ")}`),
     onEnv: (command) => calls.push(`env:${command.args.join(" ")}`),

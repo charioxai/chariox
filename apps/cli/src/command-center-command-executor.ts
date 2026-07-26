@@ -32,6 +32,7 @@ type CommandCenterCommandExecutorDeps = {
   onWorkflow: CommandHandler<"workflow">
   onLoop: CommandHandler<"loop">
   onGoal: CommandHandler<"goal">
+  onWait: CommandHandler<"wait">
   onMcp: CommandHandler<"mcp">
   onSkill: CommandHandler<"skill">
   onEnv: CommandHandler<"env">
@@ -81,6 +82,7 @@ export function createCommandCenterCommandExecutor(
       onWorkflow: contained(deps.onWorkflow),
       onLoop: contained(deps.onLoop),
       onGoal: contained(deps.onGoal),
+      onWait: contained(deps.onWait),
       onMcp: contained(deps.onMcp),
       onSkill: contained(deps.onSkill),
       onEnv: contained(deps.onEnv),
