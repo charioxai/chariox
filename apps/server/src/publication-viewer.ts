@@ -46,6 +46,7 @@ export function publicationViewerResultPage(
   result: WorkflowInvocationResult,
   invocationRequestId?: string,
   preserveRequestUrl = false,
+  invocationInput?: unknown,
 ) {
   const workflowRunId = result.workflow_run?.id ?? null
   const terminal = isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
@@ -59,6 +60,7 @@ export function publicationViewerResultPage(
     eventsUrl,
     invocationRequestId: invocationRequestId ?? null,
     preserveRequestUrl,
+    invocationInput,
   })
 }
 
@@ -69,6 +71,7 @@ export function publicationViewerPage(
     eventsUrl?: string | null
     invocationRequestId?: string | null
     preserveRequestUrl?: boolean
+    invocationInput?: unknown
   } = {},
 ) {
   const transport = viewerTransport(publication) ?? "human_http"
@@ -86,6 +89,7 @@ export function publicationViewerPage(
     initialTraces: options.result?.workflow_run
       ? collectPublicationTraceEvents(publication, options.result.workflow_run, createPublicationTraceStreamState())
       : [],
+    optimisticPrompt: publicationInputPrompt(options.invocationInput),
     traceNodes,
     eventsUrl: options.eventsUrl ?? null,
     apiSseInvokePath: apiSseInvokePath(publication),
@@ -144,6 +148,13 @@ export function viewerComposerEnabled(publication: WorkflowPublicationConfig): b
   if (transport === "api_sse_json" || transport === "websocket_json") return true
   if (transport !== "human_http") return false
   return (publication.methods ?? ["GET", "POST"]).includes("POST")
+}
+
+function publicationInputPrompt(input: unknown): string | null {
+  if (typeof input === "string") return input.trim() || null
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null
+  const prompt = (input as Record<string, unknown>).prompt
+  return typeof prompt === "string" ? prompt.trim() || null : null
 }
 
 function viewerTransport(publication: WorkflowPublicationConfig) {
@@ -215,6 +226,7 @@ renderRun(latestWorkflowRun);
 if (latestWorkflowRun && isTerminalStatus(latestWorkflowRun.status)) {
   setTimeout(() => postSettledRun(latestWorkflowRun.status, latestWorkflowRun), 250);
 }
+renderOptimisticPrompt(viewerConfig.optimisticPrompt);
 for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);
 if (!latestWorkflowRun) void hydrateLatestRun();
 if (viewerConfig.eventsUrl) subscribeHumanHttpEvents(viewerConfig.eventsUrl);
@@ -293,7 +305,9 @@ async function invokeHumanHttp(prompt, artifacts) {
     body: JSON.stringify({ prompt, artifacts }),
   });
   const html = await response.text();
-  window.history.replaceState(null, '', publicationUrl('/'));
+  const rootUrl = new URL(publicationUrl('/'), window.location.href);
+  if (outputOnlyEmbed) rootUrl.searchParams.set('arroba_embed', 'output');
+  window.history.replaceState(null, '', rootUrl.pathname + rootUrl.search);
   document.open();
   document.write(html);
   document.close();
@@ -656,6 +670,9 @@ function renderTrace(trace) {
   feed.querySelector('.trace-empty')?.remove();
   const item = document.createElement('article');
   item.className = 'trace-item trace-' + String(trace.level || 'event').replace(/[^a-z0-9_-]/gi, '-');
+  item.dataset.traceLevel = String(trace.level || 'event');
+  item.dataset.traceRun = String(trace.workflow_node_run_id || trace.workflow_run_id || '');
+  item.dataset.traceTimestamp = String(Number(trace.timestamp_ms) || 0);
   const label = traceLevelLabel(trace.level);
   const meta = document.createElement('div');
   meta.className = 'trace-meta';
@@ -668,7 +685,35 @@ function renderTrace(trace) {
   item.append(meta);
   renderTraceContent(item, trace);
   feed.append(item);
+  reorderTraceFeed(feed);
   feed.scrollTop = feed.scrollHeight;
+}
+
+function reorderTraceFeed(feed) {
+  const items = Array.from(feed.querySelectorAll('.trace-item'));
+  const firstTimestampByRun = new Map();
+  for (const item of items) {
+    const run = item.dataset.traceRun || '';
+    const timestamp = Number(item.dataset.traceTimestamp) || 0;
+    firstTimestampByRun.set(run, Math.min(firstTimestampByRun.get(run) ?? timestamp, timestamp));
+  }
+  items.sort((left, right) => {
+    const leftLevel = left.dataset.traceLevel || '';
+    const rightLevel = right.dataset.traceLevel || '';
+    if (leftLevel === 'user_prompt' || rightLevel === 'user_prompt') {
+      return leftLevel === rightLevel ? 0 : leftLevel === 'user_prompt' ? -1 : 1;
+    }
+    const leftRun = left.dataset.traceRun || '';
+    const rightRun = right.dataset.traceRun || '';
+    if (leftRun !== rightRun) {
+      return (firstTimestampByRun.get(leftRun) ?? 0) - (firstTimestampByRun.get(rightRun) ?? 0);
+    }
+    const leftSummary = leftLevel === 'output_summary';
+    const rightSummary = rightLevel === 'output_summary';
+    if (leftSummary !== rightSummary) return leftSummary ? 1 : -1;
+    return Number(left.dataset.traceTimestamp || 0) - Number(right.dataset.traceTimestamp || 0);
+  });
+  for (const item of items) feed.append(item);
 }
 
 function renderTraceContent(item, trace) {

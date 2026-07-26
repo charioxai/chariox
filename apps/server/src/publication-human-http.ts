@@ -160,11 +160,12 @@ export function forwardHumanHttpResult(
   result: WorkflowInvocationResult,
   invocationRequestId?: string,
   preserveRequestUrl = false,
+  invocationInput?: unknown,
 ) {
   registerAgentAppWorkflowRunEffects(publication, result.workflow_run, invocationRequestId)
   result = visibleWorkflowInvocationResult(publication, result)
   reply.code(200).type("text/html; charset=utf-8")
-  return publicationViewerResultPage(publication, result, invocationRequestId, preserveRequestUrl)
+  return publicationViewerResultPage(publication, result, invocationRequestId, preserveRequestUrl, invocationInput)
 }
 
 function isHumanHttpPublication(publication: WorkflowPublicationConfig) {

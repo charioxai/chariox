@@ -227,7 +227,7 @@ async function invokeAgentAppRoute(
       accepted: true,
       queued: true,
       response: { agent_app_pool_queued: true, invocation_id: requestId },
-    }, requestId)
+    }, requestId, false, { prompt })
   }
 
   const { selectedPublication, result } = await invokeSelectedAgentAppRoute({
@@ -240,7 +240,7 @@ async function invokeAgentAppRoute(
     caller,
     deps,
   })
-  return forwardHumanHttpResult(reply as never, selectedPublication, result, requestId)
+  return forwardHumanHttpResult(reply as never, selectedPublication, result, requestId, false, { prompt })
 }
 
 async function invokeSelectedAgentAppRoute(options: {

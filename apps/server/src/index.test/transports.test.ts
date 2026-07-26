@@ -124,11 +124,17 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     transport: "human_http",
     route: "/final/*",
     methods: ["GET"],
-  }, { accepted: true, queued: true }, "request-2", true)
+  }, { accepted: true, queued: true }, "request-2", true, { prompt: "Visible immediately" })
   const directGetConfig = JSON.parse(
     directGetHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
   )
   assert.equal(directGetConfig.permalink, null)
+  assert.equal(directGetConfig.optimisticPrompt, "Visible immediately")
+  assert.equal(
+    directGetHtml.indexOf("renderOptimisticPrompt(viewerConfig.optimisticPrompt);")
+      < directGetHtml.indexOf("for (const trace of viewerConfig.initialTraces || []) renderTrace(trace);"),
+    true,
+  )
 
   const agentAppHtml = publicationViewerPage({
     ...baseConfig,
@@ -207,6 +213,9 @@ test("publication viewer derives composer capability and one pane per exposed no
   assert.doesNotMatch(html, /trace\.level, trace\.sequence, trace\.timestamp_ms/)
   assert.match(html, /resetForInvocation\(prompt\)/)
   assert.match(html, /renderOptimisticPrompt\(prompt\)/)
+  assert.match(html, /if \(outputOnlyEmbed\) rootUrl\.searchParams\.set\('arroba_embed', 'output'\)/)
+  assert.match(html, /reorderTraceFeed\(feed\)/)
+  assert.match(html, /leftLevel === 'output_summary'/)
   assert.match(html, /window\.addEventListener\('pointermove', move\)/)
   assert.match(html, /window\.addEventListener\('pointerup', done\)/)
   assert.match(html, /startWidth \+ startX - moveEvent\.clientX/)
@@ -707,7 +716,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
     assert.match(response.body, /EventSource/)
     assert.match(response.body, /events\.addEventListener\('partial'/)
     assert.match(response.body, /"permalink":null/)
-    assert.match(response.body, /window\.history\.replaceState\(null, '', publicationUrl\('\/'\)\)/)
+    assert.match(response.body, /window\.history\.replaceState\(null, '', rootUrl\.pathname \+ rootUrl\.search\)/)
     assert.deepEqual(seenInput, {
       prompt: "read image",
       artifacts: [{
