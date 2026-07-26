@@ -660,18 +660,34 @@ function renderTrace(trace) {
   const nodeId = String(trace.node_id || '');
   const pane = document.querySelector('[data-trace-node="' + cssEscape(nodeId) + '"]');
   if (!pane) return;
+  const feed = pane.querySelector('.trace-feed');
+  const workflowRunId = String(trace.workflow_run_id || 'pending');
   const key = trace.level === 'user_prompt'
-    ? ['user_prompt', nodeId, trace.message].join(':')
+    ? ['user_prompt', nodeId, workflowRunId, trace.message].join(':')
     : [trace.workflow_run_id, trace.workflow_node_run_id, trace.level, trace.timestamp_ms, trace.message].join(':');
+  if (trace.level === 'user_prompt' && workflowRunId !== 'pending') {
+    const pendingKey = ['user_prompt', nodeId, 'pending', trace.message].join(':');
+    const pendingItem = Array.from(feed.querySelectorAll('.trace-item'))
+      .find((item) => item.dataset.traceKey === pendingKey);
+    if (pendingItem) {
+      traceKeys.delete(pendingKey);
+      traceKeys.add(key);
+      pendingItem.dataset.traceKey = key;
+      pendingItem.dataset.traceRun = String(trace.workflow_node_run_id || workflowRunId);
+      pendingItem.dataset.traceTimestamp = String(Number(trace.timestamp_ms) || 0);
+      reorderTraceFeed(feed);
+      return;
+    }
+  }
   if (traceKeys.has(key)) return;
   traceKeys.add(key);
   if (traceStatusEl) traceStatusEl.textContent = 'Live';
-  const feed = pane.querySelector('.trace-feed');
   feed.querySelector('.trace-empty')?.remove();
   const item = document.createElement('article');
   item.className = 'trace-item trace-' + String(trace.level || 'event').replace(/[^a-z0-9_-]/gi, '-');
+  item.dataset.traceKey = key;
   item.dataset.traceLevel = String(trace.level || 'event');
-  item.dataset.traceRun = String(trace.workflow_node_run_id || trace.workflow_run_id || '');
+  item.dataset.traceRun = String(trace.workflow_node_run_id || workflowRunId);
   item.dataset.traceTimestamp = String(Number(trace.timestamp_ms) || 0);
   const label = traceLevelLabel(trace.level);
   const meta = document.createElement('div');
@@ -700,13 +716,13 @@ function reorderTraceFeed(feed) {
   items.sort((left, right) => {
     const leftLevel = left.dataset.traceLevel || '';
     const rightLevel = right.dataset.traceLevel || '';
-    if (leftLevel === 'user_prompt' || rightLevel === 'user_prompt') {
-      return leftLevel === rightLevel ? 0 : leftLevel === 'user_prompt' ? -1 : 1;
-    }
     const leftRun = left.dataset.traceRun || '';
     const rightRun = right.dataset.traceRun || '';
     if (leftRun !== rightRun) {
       return (firstTimestampByRun.get(leftRun) ?? 0) - (firstTimestampByRun.get(rightRun) ?? 0);
+    }
+    if (leftLevel === 'user_prompt' || rightLevel === 'user_prompt') {
+      return leftLevel === rightLevel ? 0 : leftLevel === 'user_prompt' ? -1 : 1;
     }
     const leftSummary = leftLevel === 'output_summary';
     const rightSummary = rightLevel === 'output_summary';
