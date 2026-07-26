@@ -49,13 +49,18 @@ test("buildCommandCenterItems lists and filters session agent aliases", () => {
     focusedProvider: "opencode" as const,
     currentModel: "opencode/gpt-5.4",
     currentVariant: "high",
-    agentAliases: ["reviewer", "goal-worker", "agent-1"],
+    agentAliases: ["reviewer", "goal-worker", "agent-1", "Review Agent"],
   }
 
   assert.deepEqual(buildCommandCenterItems("@", context).map((item) => item.label), [
     "@agent-1",
     "@goal-worker",
+    "@Review Agent",
     "@reviewer",
+  ])
+  assert.deepEqual(buildCommandCenterItems("@rev", context).map((item) => item.value), [
+    "Review Agent",
+    "reviewer",
   ])
   assert.deepEqual(buildCommandCenterItems("@go", context).map((item) => item.value), ["goal-worker"])
   assert.deepEqual(buildCommandCenterItems("@goal-worker ", context), [])

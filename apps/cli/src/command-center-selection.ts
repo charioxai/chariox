@@ -1,9 +1,10 @@
 import type { CommandCenterItem } from "./command-center-types.js"
 import { parseSlashCommand } from "./commands.js"
+import { formatPromptAgentAliasAddress } from "@arroba/kernel-client/prompt-submission"
 
 export function commandCenterCompletionText(item: CommandCenterItem): string {
   if (item.kind === "agent") {
-    return `@${item.value} `
+    return `${formatPromptAgentAliasAddress(item.value)} `
   }
   if (item.kind === "provider") {
     return `/provider ${item.value}`
