@@ -1,6 +1,78 @@
 use super::*;
 
 #[test]
+fn local_request_api_queues_workflow_code_run_behind_active_meta_task() {
+    let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
+        eprintln!("skipping workflow-code local API test because node is not available");
+        return;
+    };
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-meta-queue", "worktree-meta-queue"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        _ => panic!("unexpected local response"),
+    };
+    harness.with_app_mut(|app| {
+        app.agents_mut()
+            .activate_agent_meta_mode(agent.id(), None)
+            .expect("agent should enter meta mode");
+        app.sessions_mut()
+            .start_or_update_metaagent_task(session.id(), agent.id(), "finish the active task")
+            .expect("meta task should start");
+    });
+    let source = format!(
+        r#"
+workflow.define({{ alias: "queued_behind_meta" }})
+const worker = workflow.node({{
+  handle: "worker",
+  agent: workflow.existingAgent("{}"),
+  instructions: "Complete the queued task.",
+  canCompleteWorkflowRun: true
+}})
+workflow.endpoint(worker, {{ handle: "entry", alias: "entry" }})
+"#,
+        agent.id()
+    );
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::RunWorkflowCode(
+            crate::local::RunWorkflowCodeRequest {
+                session_id: session.id().to_string(),
+                node_path: node_path.display().to_string(),
+                source,
+                language: None,
+                provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
+                endpoint: Some("entry".to_string()),
+                queue_ref: None,
+                prompt: "run after Meta".to_string(),
+            },
+        ))
+        .expect("workflow-code run should enqueue behind active Meta");
+
+    let LocalDaemonResponse::WorkflowCodeRun {
+        result,
+        session: queued_session,
+    } = response
+    else {
+        panic!("unexpected local response");
+    };
+    let crate::workflow_code::WorkflowCodeRunInvocation::Enqueued { queued_prompt, .. } =
+        result.invocation
+    else {
+        panic!("workflow-code run should be enqueued");
+    };
+    assert_eq!(queued_prompt.prompt(), Some("run after Meta"));
+    assert_eq!(queued_session.workflow_queued_prompts().len(), 1);
+    assert!(queued_session.has_active_metaagent_task());
+    assert!(queued_session.workflow_runs().is_empty());
+}
+
+#[test]
 fn local_request_api_validates_and_applies_workflow_code() {
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!("skipping workflow-code local API test because node is not available");

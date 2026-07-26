@@ -123,6 +123,45 @@ fn workflow_code_apply_rejects_metaagent_as_existing_node_agent_without_partial_
 }
 
 #[test]
+fn workflow_code_apply_allows_direct_user_to_bind_active_meta_task_agent() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let agent = app
+        .agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("agent should enter meta mode");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), agent.id(), "finish the active task")
+        .expect("meta task should start");
+    let definition = existing_agent_workflow_code_definition(agent.id());
+
+    let report = app
+        .apply_workflow_code_definition(
+            session.id(),
+            &definition,
+            &WorkflowCodeLimitsConfig::default(),
+            "local-user".to_string(),
+            None,
+        )
+        .expect(
+            "direct user workflow should bind the active Meta task agent for deferred execution",
+        );
+
+    assert_eq!(
+        report.agent_ids.get("planner").map(String::as_str),
+        Some(agent.id())
+    );
+    let session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should exist");
+    assert_eq!(session.workflows().len(), 1);
+    assert!(session.has_active_metaagent_task());
+}
+
+#[test]
 fn workflow_code_apply_grants_satisfied_node_extension_requirement() {
     let workspace = unique_workflow_code_test_workspace("extension-satisfied");
     install_test_skill(&workspace, "workflow-code-skill");

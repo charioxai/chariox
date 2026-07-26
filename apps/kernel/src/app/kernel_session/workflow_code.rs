@@ -56,6 +56,7 @@ impl<'a> KernelSessionService<'a> {
             });
         }
 
+        let binding_session = self.app.sessions().get_session(session_id)?;
         let mut node_agent_ids = BTreeMap::new();
         for node in &definition.nodes {
             let agent_id = match &node.agent {
@@ -94,7 +95,13 @@ impl<'a> KernelSessionService<'a> {
                             ),
                         });
                     }
-                    if agent.is_metaagent() {
+                    if agent.is_metaagent()
+                        && !direct_user_can_defer_workflow_for_active_metaagent(
+                            &binding_session,
+                            agent.id(),
+                            controlled_by_metaagent_id.as_deref(),
+                        )
+                    {
                         return Err(DaemonError::LocalTransport {
                             operation: "workflow_code.apply",
                             message: format!(
@@ -570,7 +577,13 @@ impl<'a> KernelSessionService<'a> {
                 WorkflowCodeAgentBinding::Existing(existing) => {
                     match self.app.agents.get_agent(&existing.agent_ref) {
                         Ok(agent) if agent.session_id() == session_id => {
-                            if agent.is_metaagent() {
+                            if agent.is_metaagent()
+                                && !direct_user_can_defer_workflow_for_active_metaagent(
+                                    &session,
+                                    agent.id(),
+                                    caller_metaagent_id,
+                                )
+                            {
                                 push_workflow_code_target_validation_error(
                                     validation,
                                     "invalid_existing_agent_binding",
@@ -960,4 +973,19 @@ impl<'a> KernelSessionService<'a> {
 
         self.app.pty.resize(provider_run_id, cols, rows)
     }
+}
+
+fn direct_user_can_defer_workflow_for_active_metaagent(
+    session: &crate::session::RuntimeSession,
+    agent_id: &str,
+    caller_metaagent_id: Option<&str>,
+) -> bool {
+    caller_metaagent_id.is_none()
+        && session.metaagent_task(agent_id).is_some_and(|task| {
+            matches!(
+                task.status(),
+                crate::session::MetaagentTaskStatus::Active
+                    | crate::session::MetaagentTaskStatus::Paused
+            )
+        })
 }
