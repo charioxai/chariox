@@ -86,7 +86,11 @@ RUN apt-get update \
 USER slice
 
 ARG ARROBA_RELAY_PEER_PROTOCOL_VERSION=unknown
+ARG ARROBA_RUNTIME_SOURCE_REVISION=unknown
 LABEL io.arroba.relay-peer-protocol-version="${ARROBA_RELAY_PEER_PROTOCOL_VERSION}"
+LABEL io.arroba.runtime-source-revision="${ARROBA_RUNTIME_SOURCE_REVISION}"
+
+RUN printf '%s\n' "${ARROBA_RUNTIME_SOURCE_REVISION}" > /opt/arroba-slice/runtime-source-revision
 
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace

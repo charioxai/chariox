@@ -108,7 +108,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
 }
 
 #[test]
-fn linux_docker_slice_auto_build_replaces_protocol_incompatible_workers() {
+fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_workers() {
     let script = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("slice-linux-docker/provision-linux-docker-slice.sh"),
@@ -120,8 +120,14 @@ fn linux_docker_slice_auto_build_replaces_protocol_incompatible_workers() {
     .expect("slice Dockerfile should be readable");
 
     assert!(script.contains("io.arroba.relay-peer-protocol-version"));
+    assert!(script.contains("io.arroba.runtime-source-revision"));
+    assert!(script.contains("refresh_saved_state_runtime"));
+    assert!(script.contains("preserving saved state image"));
+    assert!(script.contains("git rev-parse --is-inside-work-tree"));
+    assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
     assert!(dockerfile.contains("io.arroba.relay-peer-protocol-version"));
+    assert!(dockerfile.contains("io.arroba.runtime-source-revision"));
 }
 
 #[test]

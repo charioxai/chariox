@@ -4,6 +4,35 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+hash_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{ print $1 }'
+    return
+  fi
+  shasum -a 256 | awk '{ print $1 }'
+}
+
+runtime_source_revision() {
+  (
+    cd "$REPO_ROOT"
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      git ls-files --cached --others --exclude-standard \
+        apps/kernel apps/relay examples/workflow-code
+    else
+      find apps/kernel apps/relay examples/workflow-code -type f \
+        ! -path '*/target/*' \
+        ! -path '*/node_modules/*' \
+        | LC_ALL=C sort
+    fi \
+      | grep -v '^apps/kernel/slice-linux-docker/' \
+      | while IFS= read -r path; do
+          [[ -f "$path" ]] || continue
+          printf '%s ' "$path"
+          hash_stdin < "$path"
+        done
+  ) | hash_stdin
+}
+
 SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux}"
 SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${ARROBA_SLICE_BASE_IMAGE:-arroba-slice-linux:0.1.0}"
@@ -51,6 +80,7 @@ SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/P
 SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${ARROBA_SLICE_AUTH_PROVIDER:-all}"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
+SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
 log() {
   printf '[slice-linux] %s\n' "$*" >&2
@@ -272,48 +302,114 @@ require_slice_free_space() {
   done
 }
 
+image_runtime_compatible() {
+  local image="$1"
+  local image_protocol_version
+  local image_runtime_revision
+  image_protocol_version="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.relay-peer-protocol-version" }}' "$image" 2>/dev/null || true)"
+  image_runtime_revision="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.runtime-source-revision" }}' "$image" 2>/dev/null || true)"
+  [[ "$image_protocol_version" == "$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+    && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
+}
+
+build_standard_runtime_image() {
+  local image="$1"
+  log "building $image"
+  docker build \
+    --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+    --build-arg "ARROBA_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
+    -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
+    -t "$image" \
+    "$REPO_ROOT"
+}
+
+ensure_runtime_base_image() {
+  if [[ "$SLICE_BUILD_IMAGE" != "always" ]] && image_runtime_compatible "$SLICE_BASE_IMAGE"; then
+    return 0
+  fi
+  if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
+    fail "runtime image $SLICE_BASE_IMAGE is stale and build policy is never"
+  fi
+  build_standard_runtime_image "$SLICE_BASE_IMAGE"
+}
+
 build_image() {
   [[ -n "$SLICE_RELAY_PEER_PROTOCOL_VERSION" ]] \
     || fail "could not read relay peer protocol version from the kernel source"
+  [[ -n "$SLICE_RUNTIME_SOURCE_REVISION" ]] \
+    || fail "could not fingerprint the kernel and relay runtime source"
   case "$SLICE_BUILD_IMAGE" in
     auto|always|never) ;;
     *) fail "ARROBA_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
 
   if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
-    if docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
-      log "using existing $SLICE_IMAGE"
+    if image_runtime_compatible "$SLICE_IMAGE"; then
+      log "using compatible existing $SLICE_IMAGE"
       return 0
+    fi
+    if docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+      fail "runtime image $SLICE_IMAGE is stale and build policy is never"
     fi
     fail "Docker image $SLICE_IMAGE does not exist and build policy is never"
   fi
 
-  if [[ "$SLICE_BUILD_IMAGE" == "auto" ]] && docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
-    local image_protocol_version
-    image_protocol_version="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.relay-peer-protocol-version" }}' "$SLICE_IMAGE" 2>/dev/null || true)"
-    if [[ "$image_protocol_version" == "$SLICE_RELAY_PEER_PROTOCOL_VERSION" ]]; then
-      log "using compatible cached $SLICE_IMAGE (relay peer protocol $image_protocol_version)"
-      return 0
-    fi
-    log "cached $SLICE_IMAGE uses relay peer protocol ${image_protocol_version:-unknown}; rebuilding for $SLICE_RELAY_PEER_PROTOCOL_VERSION"
+  if [[ "$SLICE_BUILD_IMAGE" == "auto" ]] && image_runtime_compatible "$SLICE_IMAGE"; then
+    log "using compatible cached $SLICE_IMAGE (protocol $SLICE_RELAY_PEER_PROTOCOL_VERSION, runtime $SLICE_RUNTIME_SOURCE_REVISION)"
+    return 0
   fi
 
-  log "building $SLICE_IMAGE"
+  if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
+    ensure_runtime_base_image
+    log "preserving saved state image $SLICE_IMAGE; its worker runtime will be refreshed after startup"
+    return 0
+  fi
+
   if [[ -n "$SLICE_EXTENSION_DOCKERFILE" ]]; then
+    ensure_runtime_base_image
+    log "building $SLICE_IMAGE"
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
     docker build \
       --build-arg "ARROBA_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
       --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+      --build-arg "ARROBA_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
       "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
     return 0
   fi
-  docker build \
-    --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
-    -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
-    -t "$SLICE_IMAGE" \
-    "$REPO_ROOT"
+  build_standard_runtime_image "$SLICE_IMAGE"
+}
+
+refresh_saved_state_runtime() {
+  [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
+  local installed_revision=""
+  installed_revision="$(run_with_timeout 20 docker exec -u slice "$SLICE_NAME" cat /opt/arroba-slice/runtime-source-revision 2>/dev/null || true)"
+  if [[ "$installed_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]; then
+    return 0
+  fi
+
+  ensure_runtime_base_image
+  local helper="${SLICE_NAME}-runtime-refresh-$$"
+  local runtime_dir
+  runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/arroba-slice-runtime.XXXXXX")"
+  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+  if ! run_with_timeout 60 docker create --name "$helper" "$SLICE_BASE_IMAGE" sleep infinity >/dev/null \
+    || ! run_with_timeout 60 docker cp "$helper:/opt/arroba-slice/bin/." "$runtime_dir/" \
+    || ! run_with_timeout 60 docker cp "$runtime_dir/." "$SLICE_NAME:/opt/arroba-slice/bin/"; then
+    run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+    rm -rf "$runtime_dir"
+    fail "failed to refresh the saved slice worker runtime from $SLICE_BASE_IMAGE"
+  fi
+  if ! run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
+    sh -lc "chown -R slice:slice /opt/arroba-slice/bin && chmod 0755 /opt/arroba-slice/bin/arroba-kernel /opt/arroba-slice/bin/arroba-relay && printf '%s\n' '$SLICE_RUNTIME_SOURCE_REVISION' > /opt/arroba-slice/runtime-source-revision && chown slice:slice /opt/arroba-slice/runtime-source-revision"; then
+    run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+    rm -rf "$runtime_dir"
+    fail "failed to activate the refreshed saved slice worker runtime"
+  fi
+  run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
+  rm -rf "$runtime_dir"
+  log "refreshed saved slice worker runtime to $SLICE_RUNTIME_SOURCE_REVISION"
 }
 
 ensure_container() {
@@ -413,6 +509,7 @@ ensure_container() {
   configure_chromium_browser_policy
   configure_slice_state_directory
   refresh_slice_support_files
+  refresh_saved_state_runtime
 }
 
 ensure_auth_target_container() {
