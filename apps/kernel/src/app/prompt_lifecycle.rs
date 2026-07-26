@@ -86,14 +86,6 @@ impl<'a> ProviderPromptDispatcher<'a> {
         hidden_system_context: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
-        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
-        let _ = crate::app::provider_output::ProviderOutputPump::new(self.app)
-            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
-                session_id,
-                provider_run_id,
-                recipient_attachment_ids: recipients,
-                initial_liveness_already_checked: false,
-            })?;
         let agent_id = self
             .app
             .providers
@@ -132,6 +124,22 @@ impl<'a> ProviderPromptDispatcher<'a> {
             Some(provider_run_id.to_string()),
             provider_run.provider_session_id().map(str::to_string),
         )?;
+        let recipients = self.app.attachments.list_session_attachment_ids(session_id);
+        let _ = crate::app::provider_output::ProviderOutputPump::new(self.app)
+            .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                session_id,
+                provider_run_id,
+                recipient_attachment_ids: recipients,
+                initial_liveness_already_checked: false,
+            })?;
+        if self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
+            .as_ref()
+            .is_none_or(|active| active.id() != prompt_id)
+        {
+            return Ok(());
+        }
 
         if self
             .app

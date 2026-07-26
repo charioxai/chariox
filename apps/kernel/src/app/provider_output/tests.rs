@@ -476,6 +476,114 @@ fn app_side_structured_pump_defers_empty_poll_reenqueue() {
 }
 
 #[test]
+fn provider_dispatch_marks_new_workflow_prompt_before_draining_stale_completion() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let agent_id = app
+        .providers
+        .get_run(&provider_run_id)
+        .expect("provider run should exist")
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("stale-completion-dispatch".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(&session_id, workflow.id(), &agent_id)
+        .expect("workflow node should be added");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            &session_id,
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            &session_id,
+            workflow.id(),
+            endpoint.id(),
+            Some("finish the workflow".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            &session_id,
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "workflow prompt".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    let workflow_prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        &agent_id,
+        "workflow prompt",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(&session_id, workflow_prompt, false)
+        .expect("workflow prompt should start")
+    else {
+        panic!("workflow prompt should be active");
+    };
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt.id().to_string()));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "stale-previous-turn-completion".to_string(),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                }],
+                prompt_completed: true,
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+
+    crate::app::ProviderPromptDispatcher::new(&mut app)
+        .dispatch_prompt_to_provider(
+            &session_id,
+            &provider_run_id,
+            prompt.id(),
+            &attachment_id,
+            prompt.prompt(),
+            prompt.hidden_system_context(),
+            prompt.attachments(),
+        )
+        .expect("new workflow prompt should enter provider dispatch");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("active prompt should load")
+        .expect("stale completion must not settle the new workflow prompt");
+    assert_eq!(active.id(), prompt.id());
+    assert_eq!(
+        active.durable_delivery_phase(),
+        Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+    );
+    let current_run = app
+        .sessions()
+        .resolve_workflow_run_ref(&session_id, workflow_run.id())
+        .expect("workflow run should remain available");
+    assert_eq!(
+        current_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::Ready
+    );
+}
+
+#[test]
 fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
     let agent_id = app
