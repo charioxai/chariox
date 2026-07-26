@@ -103,6 +103,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    next_provider_process_gc_at_ms: Arc<AtomicU64>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
         Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
@@ -475,6 +476,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),

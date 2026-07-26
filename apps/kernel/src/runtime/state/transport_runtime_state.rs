@@ -1,6 +1,8 @@
 use super::*;
 
 const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
+const MAX_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 30_000;
+const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
 
 impl KernelRuntimeState {
     pub(crate) fn waiting_room_auxiliary_projection(
@@ -43,14 +45,16 @@ impl KernelRuntimeState {
             self,
         )
         .await;
-        if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
-            crate::logging::warn_with_fields(
-                "daemon.provider_process_gc",
-                "provider process gc failed",
-                serde_json::json!({
-                    "error": error.to_string(),
-                }),
-            );
+        if self.claim_provider_process_gc(now_ms) {
+            if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_process_gc",
+                    "provider process gc failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
         let mut ready_provider_run_ids = self.owned.pty_output_signal.take_ready_provider_run_ids();
         ready_provider_run_ids.extend(
@@ -206,6 +210,19 @@ impl KernelRuntimeState {
             );
         }
         Ok(summary)
+    }
+
+    fn claim_provider_process_gc(&self, now_ms: u64) -> bool {
+        let config = self.owned.config_projection.snapshot();
+        let interval_ms = provider_process_gc_interval_ms(
+            config.provider_process_idle_ttl_ms,
+            config.provider_process_orphan_ttl_ms,
+        );
+        claim_periodic_sweep(
+            &self.owned.next_provider_process_gc_at_ms,
+            now_ms,
+            interval_ms,
+        )
     }
 
     pub(crate) async fn wait_for_terminal_attachment_change_after(
@@ -452,9 +469,38 @@ fn transport_runtime_pump_interval_for_state(
         .min(idle_interval_ms)
 }
 
+fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
+    idle_ttl_ms
+        .min(orphan_ttl_ms)
+        .min(MAX_PROVIDER_PROCESS_GC_INTERVAL_MS)
+        .max(MIN_PROVIDER_PROCESS_GC_INTERVAL_MS)
+}
+
+fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {
+    let mut next_at = next_at_ms.load(Ordering::Acquire);
+    loop {
+        if now_ms < next_at {
+            return false;
+        }
+        match next_at_ms.compare_exchange_weak(
+            next_at,
+            now_ms.saturating_add(interval_ms),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(current) => next_at = current,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::transport_runtime_pump_interval_for_state;
+    use super::{
+        claim_periodic_sweep, provider_process_gc_interval_ms,
+        transport_runtime_pump_interval_for_state,
+    };
+    use std::sync::atomic::AtomicU64;
 
     #[test]
     fn transport_runtime_pump_interval_uses_idle_sweep_without_active_work() {
@@ -498,5 +544,21 @@ mod tests {
             transport_runtime_pump_interval_for_state(Some(9_999), None, 10_000, 500, 5_000),
             500,
         );
+    }
+
+    #[test]
+    fn provider_process_gc_interval_respects_short_ttls_and_caps_default_work() {
+        assert_eq!(provider_process_gc_interval_ms(1_000, u64::MAX), 1_000);
+        assert_eq!(provider_process_gc_interval_ms(300_000, 30_000), 30_000);
+        assert_eq!(provider_process_gc_interval_ms(0, 30_000), 250);
+    }
+
+    #[test]
+    fn periodic_sweep_claims_once_per_interval() {
+        let next_at_ms = AtomicU64::new(0);
+        assert!(claim_periodic_sweep(&next_at_ms, 10_000, 30_000));
+        assert!(!claim_periodic_sweep(&next_at_ms, 10_001, 30_000));
+        assert!(!claim_periodic_sweep(&next_at_ms, 39_999, 30_000));
+        assert!(claim_periodic_sweep(&next_at_ms, 40_000, 30_000));
     }
 }
