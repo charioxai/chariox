@@ -1076,6 +1076,9 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/slice"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("replace the loopback hostname with `host.docker.internal`"));
     }
 
     #[test]

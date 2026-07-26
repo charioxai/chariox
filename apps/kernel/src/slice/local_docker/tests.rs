@@ -123,6 +123,9 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(script.contains("io.arroba.runtime-source-revision"));
     assert!(script.contains("refresh_saved_state_runtime"));
     assert!(script.contains("preserving saved state image"));
+    assert!(script.contains(
+        "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
+    ));
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));

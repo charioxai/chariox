@@ -361,6 +361,10 @@ build_image() {
 
   if [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]]; then
     ensure_runtime_base_image
+    if ! docker image inspect "$SLICE_IMAGE" >/dev/null 2>&1; then
+      log "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
+      SLICE_IMAGE="$SLICE_BASE_IMAGE"
+    fi
     log "preserving saved state image $SLICE_IMAGE; its worker runtime will be refreshed after startup"
     return 0
   fi
