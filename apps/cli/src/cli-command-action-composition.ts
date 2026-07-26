@@ -133,7 +133,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@arroba/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@arroba/kernel-client/ipc-terminal-runtime-requests"
+import { createAgentPromptScheduleRequest } from "@arroba/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
