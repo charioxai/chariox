@@ -50,6 +50,41 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
             .any(|spec| { spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL }),
         "regular agents should receive the agent messaging tool"
     );
+    assert!(specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL }));
+    assert!(specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL }));
+
+    let listed = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &sender_token,
+            "mcp__arroba__list_session_agents",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("session agent discovery should dispatch");
+    assert!(listed.ok, "{:?}", listed.payload);
+    assert_eq!(
+        listed.payload["agents"]
+            .as_array()
+            .expect("agents should be an array")
+            .len(),
+        2
+    );
+    let listed_reviewer = listed.payload["agents"]
+        .as_array()
+        .expect("agents should be an array")
+        .iter()
+        .find(|agent| agent["alias"] == "reviewer")
+        .expect("reviewer should be discoverable");
+    assert_eq!(listed_reviewer["address"], "@reviewer");
+    assert_eq!(listed_reviewer["provider"], "dev-stub");
+    assert_eq!(listed_reviewer["model"], "reviewer-model");
+    assert_eq!(listed_reviewer["location"]["kind"], "local");
+    assert_eq!(listed_reviewer["is_self"], false);
 
     let first = router
         .runtime_state
@@ -81,6 +116,28 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         .expect("busy target message should queue");
     assert!(second.ok, "{:?}", second.payload);
     assert_eq!(second.payload["status"], "queued");
+
+    let inspected = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &sender_token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({ "agent": "@REVIEWER" }),
+        )
+        .await
+        .expect("session agent inspection should dispatch");
+    assert!(inspected.ok, "{:?}", inspected.payload);
+    assert_eq!(inspected.payload["agent"]["id"], reviewer.id());
+    assert_eq!(inspected.payload["agent"]["has_active_prompt"], true);
+    assert_eq!(inspected.payload["agent"]["queued_prompt_count"], 1);
+    assert_eq!(
+        inspected.payload["agent"]["extensions"]["mcps"],
+        serde_json::json!([])
+    );
+    assert!(inspected.payload["agent"]
+        .get("provider_resume_state")
+        .is_none());
+    assert!(inspected.payload["agent"].get("relay_token").is_none());
 
     let reply = router
         .runtime_state
@@ -168,6 +225,19 @@ async fn runtime_mcp_agent_message_rejects_unknown_and_self_targets_without_prom
             .expect("invalid target should return a structured tool failure");
         assert!(!result.ok, "{:?}", result.payload);
     }
+    let missing = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({ "agent": "missing" }),
+        )
+        .await
+        .expect("unknown discovery target should return a structured failure");
+    assert!(!missing.ok, "{:?}", missing.payload);
+    assert!(missing.payload["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("available agents")));
     let snapshot = router
         .runtime_state
         .session_snapshot(session.id())

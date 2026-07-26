@@ -237,6 +237,14 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         match tool_name {
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
+                self.handle_list_session_agents_runtime_tool(&session, &agent),
+                None,
+            )),
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok((
+                self.handle_get_session_agent_runtime_tool(&session, &agent, arguments),
+                None,
+            )),
             crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
                 self.handle_send_agent_message_runtime_tool(&session, &agent, arguments)
                     .await?,

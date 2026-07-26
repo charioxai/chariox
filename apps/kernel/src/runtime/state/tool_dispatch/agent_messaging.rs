@@ -1,6 +1,60 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(super) fn handle_list_session_agents_runtime_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        requester: &crate::agent::AgentInstance,
+    ) -> crate::transport::runtime_tools::RuntimeToolResult {
+        let mut agents = self.session_agents(session.id());
+        agents.sort_by(|left, right| {
+            left.created_at_ms()
+                .cmp(&right.created_at_ms())
+                .then_with(|| left.id().cmp(right.id()))
+        });
+        crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "session_id": session.id(),
+                "focused_agent_id": session.focused_agent_id(),
+                "agents": agents
+                    .iter()
+                    .map(|agent| session_agent_description(session, requester, agent))
+                    .collect::<Vec<_>>(),
+            }),
+        }
+    }
+
+    pub(super) fn handle_get_session_agent_runtime_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        requester: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> crate::transport::runtime_tools::RuntimeToolResult {
+        let args = match serde_json::from_value::<
+            crate::transport::runtime_tools::GetSessionAgentArgs,
+        >(arguments)
+        {
+            Ok(args) => args,
+            Err(error) => {
+                return agent_message_failure(format!(
+                    "invalid get-session-agent arguments: {error}"
+                ));
+            }
+        };
+        let agents = self.session_agents(session.id());
+        match resolve_session_agent(&agents, &args.agent) {
+            Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "session_id": session.id(),
+                    "agent": session_agent_description(session, requester, agent),
+                }),
+            },
+            Err(message) => agent_message_failure(message),
+        }
+    }
+
     pub(super) async fn handle_send_agent_message_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,
@@ -18,32 +72,12 @@ impl KernelRuntimeState {
         if message.is_empty() {
             return Ok(agent_message_failure("message must not be empty"));
         }
-        let reference = args.agent.trim().trim_start_matches('@');
-        if reference.is_empty() {
-            return Ok(agent_message_failure(
-                "agent must be a unique alias, agent ref, or agent id",
-            ));
-        }
         let agents = self.session_agents(session.id());
-        let target = agents.iter().find(|agent| {
-            agent.id() == reference
-                || agent.agent_ref() == reference
-                || agent
-                    .alias()
-                    .is_some_and(|alias| alias.trim().to_lowercase() == reference.to_lowercase())
-        });
-        let Some(target) = target else {
-            let mut available = agents
-                .iter()
-                .map(agent_message_target_label)
-                .collect::<Vec<_>>();
-            available.sort();
-            return Ok(agent_message_failure(format!(
-                "agent `{}` does not exist in session `{}`; available agents: {}",
-                args.agent.trim(),
-                session.id(),
-                available.join(", ")
-            )));
+        let target = match resolve_session_agent(&agents, &args.agent) {
+            Ok(target) => target,
+            Err(message) => {
+                return Ok(agent_message_failure(message));
+            }
         };
         if target.id() == sender.id() {
             return Ok(agent_message_failure(
@@ -156,6 +190,100 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
             ))?;
         Ok(attachment.id().to_string())
     }
+}
+
+fn resolve_session_agent<'a>(
+    agents: &'a [crate::agent::AgentInstance],
+    reference: &str,
+) -> Result<&'a crate::agent::AgentInstance, String> {
+    let reference = reference.trim().trim_start_matches('@');
+    if reference.is_empty() {
+        return Err("agent must be a unique alias, agent ref, or agent id".to_string());
+    }
+    agents
+        .iter()
+        .find(|agent| {
+            agent.id() == reference
+                || agent.agent_ref() == reference
+                || agent
+                    .alias()
+                    .is_some_and(|alias| alias.trim().eq_ignore_ascii_case(reference))
+        })
+        .ok_or_else(|| {
+            let mut available = agents
+                .iter()
+                .map(agent_message_target_label)
+                .collect::<Vec<_>>();
+            available.sort();
+            format!(
+                "agent `{reference}` does not exist in this session; available agents: {}",
+                available.join(", ")
+            )
+        })
+}
+
+fn session_agent_description(
+    session: &crate::session::RuntimeSession,
+    requester: &crate::agent::AgentInstance,
+    agent: &crate::agent::AgentInstance,
+) -> serde_json::Value {
+    let effective = crate::session::effective_agent_execution_config(session, Some(agent));
+    let location = agent.remote_execution().map_or_else(
+        || serde_json::json!({ "kind": "local" }),
+        |remote| {
+            serde_json::json!({
+                "kind": "remote",
+                "kernel_id": remote.worker_kernel_id,
+                "machine_id": remote.worker_machine_id,
+            })
+        },
+    );
+    let extension_names = |kind| {
+        agent
+            .extension_grants()
+            .iter()
+            .filter(|grant| grant.kind == kind)
+            .map(|grant| grant.name.clone())
+            .collect::<Vec<_>>()
+    };
+    serde_json::json!({
+        "id": agent.id(),
+        "agent_ref": agent.agent_ref(),
+        "alias": agent.alias(),
+        "address": agent_message_target_label(agent),
+        "is_self": agent.id() == requester.id(),
+        "is_focused": session.focused_agent_id() == Some(agent.id()),
+        "provider": agent.provider(),
+        "model": agent.model(),
+        "effort": agent.effort(),
+        "account_profile": agent.provider_account_profile(),
+        "execution_mode": effective.mode.as_str(),
+        "permission_level": effective.permission_level.as_str(),
+        "operating_mode": match agent.operating_mode() {
+            crate::agent::AgentOperatingMode::Regular => "regular",
+            crate::agent::AgentOperatingMode::Meta => "meta",
+        },
+        "state": match agent.state() {
+            crate::agent::AgentState::Idle => "idle",
+            crate::agent::AgentState::Working => "working",
+            crate::agent::AgentState::Focused => "focused",
+            crate::agent::AgentState::Error => "error",
+        },
+        "is_processing": agent.is_processing(),
+        "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
+        "queued_prompt_count": session
+            .queued_prompts_for_agent(agent.id())
+            .map_or(0, std::collections::VecDeque::len),
+        "controlled_by_metaagent_id": agent.controlled_by_metaagent_id(),
+        "visible_in_freeform": agent.visible_in_freeform(),
+        "location": location,
+        "extensions": {
+            "mcps": extension_names(crate::extension::ExtensionKind::Mcp),
+            "skills": extension_names(crate::extension::ExtensionKind::Skill),
+            "scripts": extension_names(crate::extension::ExtensionKind::Script),
+            "connectors": extension_names(crate::extension::ExtensionKind::Connector),
+        },
+    })
 }
 
 fn agent_message_failure(

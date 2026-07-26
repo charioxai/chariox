@@ -196,7 +196,9 @@ impl KernelRuntimeState {
             }
             if matches!(
                 canonical_tool_name,
-                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+                    | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+                    | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
@@ -413,7 +415,9 @@ fn unambiguous_runtime_tool_provider_run<'a>(
 fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
     matches!(
         tool_name,
-        crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+        crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+            | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+            | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
