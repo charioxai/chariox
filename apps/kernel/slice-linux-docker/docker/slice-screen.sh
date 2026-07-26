@@ -11,6 +11,7 @@ VNC_PORT="${ARROBA_SLICE_VNC_PORT:-5900}"
 NOVNC_PORT="${ARROBA_SLICE_NOVNC_PORT:-6080}"
 CHROME_URL="${ARROBA_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${ARROBA_SLICE_CHROME_PROFILE:-$HOME/.config/arroba-slice-chromium}"
+CHROME_TRUSTED_INSECURE_ORIGINS="${ARROBA_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
 
 export DISPLAY="$DISPLAY_ID"
 
@@ -192,6 +193,13 @@ require_screen_available() {
 }
 
 start_desktop() {
+  local -a chrome_secure_context_args=()
+  if [[ -n "$CHROME_TRUSTED_INSECURE_ORIGINS" ]]; then
+    chrome_secure_context_args+=(
+      "--unsafely-treat-insecure-origin-as-secure=$CHROME_TRUSTED_INSECURE_ORIGINS"
+    )
+  fi
+
   if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
     stop_desktop || true
   fi
@@ -225,6 +233,7 @@ start_desktop() {
     --disable-gpu \
     --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port=9222 \
+    "${chrome_secure_context_args[@]}" \
     "$CHROME_URL" >"$LOGS/chromium-gui.log" 2>&1 &
 
   sleep 2
