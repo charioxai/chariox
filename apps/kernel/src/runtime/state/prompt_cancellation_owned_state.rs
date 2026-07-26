@@ -84,13 +84,9 @@ impl KernelRuntimeOwnedState {
             && self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&current_session, agent_id)
-                .and_then(|prompt| {
-                    self.attachment_store
-                        .get_attachment(prompt.source_attachment_id())
-                        .ok()
-                })
-                .is_some_and(|attachment| {
-                    attachment.client_id() == format!("metaagent:{agent_id}:task")
+                .is_some_and(|prompt| {
+                    prompt.prompt()
+                        == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
                 });
         let started_next = if !hold_queued_prompts
             && self

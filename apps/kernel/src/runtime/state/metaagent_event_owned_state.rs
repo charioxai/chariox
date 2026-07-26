@@ -652,18 +652,25 @@ impl KernelRuntimeOwnedState {
         event_id: &str,
         prompt: crate::session::PromptQueueItem,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
-        if let Some(dispatches) = self.steer_active_metaagent_prompt(session_id, &prompt)? {
-            self.update_metaagent_event_prompt_delivery(
-                event_id,
-                crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Steered,
-                None,
-            );
-            return Ok(dispatches);
+        let paused = self
+            .session_store
+            .get_session(session_id)?
+            .metaagent_task(prompt.target_agent_id())
+            .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
+        if !paused {
+            if let Some(dispatches) = self.steer_active_metaagent_prompt(session_id, &prompt)? {
+                self.update_metaagent_event_prompt_delivery(
+                    event_id,
+                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Steered,
+                    None,
+                );
+                return Ok(dispatches);
+            }
         }
         let prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt,
-            force_queue: false,
+            force_queue: paused,
             refresh_projection: true,
         };
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {

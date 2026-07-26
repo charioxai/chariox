@@ -490,8 +490,8 @@ impl KernelRuntimeState {
                     &request.metaagent_id,
                 );
                 let queued_task_notification = queued_prompt.as_ref().is_some_and(|prompt| {
-                    self.ensure_metaagent_task_attachment(&request.session_id, &metaagent)
-                        .is_ok_and(|attachment_id| prompt.source_attachment_id() == attachment_id)
+                    prompt.prompt()
+                        == crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
                 });
                 let has_active_prompt = self
                     .owned

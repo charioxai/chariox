@@ -281,3 +281,222 @@ async fn paused_metaagent_cancellation_promotes_queued_user_prompt_after_abort_a
         started_next.id()
     );
 }
+
+#[tokio::test]
+async fn paused_metaagent_cancellation_holds_queued_private_event_after_abort_ack() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-paused-meta-private-event",
+            "worktree-paused-meta-private-event",
+        ))
+        .expect("session should be created");
+    let agent = app
+        .agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("agent should enter meta mode");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), agent.id(), "keep private events paused")
+        .expect("meta task should start");
+    app.sessions_mut()
+        .set_metaagent_task_status(
+            session.id(),
+            agent.id(),
+            crate::session::MetaagentTaskStatus::Paused,
+        )
+        .expect("meta task should pause");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "paused-meta-private-event-source",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("event source should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-paused-meta-private-event",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-paused-meta-private-event".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-paused-meta-private-event".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let active = crate::session::PromptQueueItem::new(
+        "prompt-paused-meta-private-event",
+        attachment.id(),
+        agent.id(),
+        "active meta turn",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), active, false)
+        .expect("active prompt should start");
+    let queued = crate::session::PromptQueueItem::new(
+        "queued-paused-meta-private-event",
+        attachment.id(),
+        agent.id(),
+        crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT,
+        crate::session::PromptStatus::Queued,
+    )
+    .with_hidden_system_context("<metaagent-event>worker completed</metaagent-event>");
+    app.prompt_owner_submit_prepared_prompt(session.id(), queued, false)
+        .expect("private event should queue");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let cancellation = runtime
+        .owned
+        .cancel_local_prompt(session.id(), agent.id(), attachment.id())
+        .expect("cancellation should succeed")
+        .expect("local cancellation should be owned");
+    assert!(cancellation.cancellation.started_next.is_none());
+
+    let cancellation = runtime
+        .owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            session.id(),
+            agent.id(),
+            Some(run.id()),
+        )
+        .expect("provider abort acknowledgement should finalize cancellation");
+    assert!(
+        cancellation.cancellation.started_next.is_none(),
+        "paused Meta task must not start a queued private event"
+    );
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session should remain available");
+    assert!(
+        snapshot.active_prompt_for_agent(agent.id()).is_none(),
+        "paused Meta task must remain idle"
+    );
+    let queued = snapshot
+        .queued_prompts_for_agent(agent.id())
+        .expect("private event should remain queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued[0].prompt(),
+        crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
+    );
+}
+
+#[tokio::test]
+async fn paused_metaagent_queues_new_private_event_without_dispatch() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, metaagent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-paused-meta-new-event",
+            "worktree-paused-meta-new-event",
+        ))
+        .expect("session should be created");
+    let metaagent = app
+        .agents_mut()
+        .activate_agent_meta_mode(metaagent.id(), None)
+        .expect("agent should enter meta mode");
+    let worker = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_alias("worker"),
+        )
+        .expect("worker should spawn");
+    app.sessions_mut()
+        .start_or_update_metaagent_task(session.id(), metaagent.id(), "wait for worker")
+        .expect("meta task should start");
+    app.sessions_mut()
+        .set_metaagent_task_status(
+            session.id(),
+            metaagent.id(),
+            crate::session::MetaagentTaskStatus::Paused,
+        )
+        .expect("meta task should pause");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "paused-meta-new-event-source",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("event source should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6",
+    )
+    .with_agent_id(metaagent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-paused-meta-new-event",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-paused-meta-new-event".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("ws://test-paused-meta-new-event".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let dispatches = runtime.owned.metaagent_event_prompt_for_metaagent(
+        session.id(),
+        &metaagent,
+        "agent.turn.completed",
+        Some(worker.id()),
+        attachment.id(),
+        "worker completed",
+        "worker completed while the Meta task was paused",
+        serde_json::json!({ "worker_id": worker.id() }),
+        worker.agent_ref().to_string(),
+    );
+    assert!(dispatches.local.is_empty());
+    assert!(dispatches.remote.is_empty());
+
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session should remain available");
+    assert!(
+        snapshot.active_prompt_for_agent(metaagent.id()).is_none(),
+        "a new private event must not start the paused Meta agent"
+    );
+    let queued = snapshot
+        .queued_prompts_for_agent(metaagent.id())
+        .expect("new private event should remain queued");
+    assert_eq!(queued.len(), 1);
+    assert_eq!(
+        queued[0].prompt(),
+        crate::scheduler::prompt_injection::METAAGENT_EVENT_VISIBLE_PROMPT
+    );
+}
