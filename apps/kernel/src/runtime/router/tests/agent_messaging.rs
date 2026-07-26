@@ -93,7 +93,8 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
             "mcp__arroba__send_agent_message",
             serde_json::json!({
                 "agent": "@REVIEWER",
-                "message": "Inspect package.json and report the package name."
+                "message": "Inspect package.json and report the package name.",
+                "idempotency_key": "review-package-name"
             }),
         )
         .await
@@ -101,6 +102,22 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
     assert!(first.ok, "{:?}", first.payload);
     assert_eq!(first.payload["status"], "started");
     assert_eq!(first.payload["target_agent_id"], reviewer.id());
+
+    let retried = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &sender_token,
+            "mcp__arroba__send_agent_message",
+            serde_json::json!({
+                "agent": "@REVIEWER",
+                "message": "Inspect package.json and report the package name.",
+                "idempotency_key": "review-package-name"
+            }),
+        )
+        .await
+        .expect("idempotent agent message retry should replay");
+    assert!(retried.ok, "{:?}", retried.payload);
+    assert_eq!(retried.payload["prompt_id"], first.payload["prompt_id"]);
 
     let second = router
         .runtime_state
@@ -180,10 +197,84 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
     );
     assert_eq!(
         snapshot
+            .queued_prompts_for_agent(reviewer.id())
+            .map(|prompts| prompts.len()),
+        Some(1),
+        "the idempotent retry must not append a duplicate prompt"
+    );
+    assert_eq!(
+        snapshot
             .active_prompt_for_agent(sender.id())
             .map(|prompt| prompt.prompt()),
         Some("Message from @reviewer:\n\nThe review has started.")
     );
+}
+
+#[tokio::test]
+async fn runtime_mcp_agent_message_rejects_reused_idempotency_key_for_different_message() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-agent-message-idempotency",
+            "worktree-agent-message-idempotency",
+        ))
+        .expect("session should be created");
+    let target = spawn_test_agent(&mut app, session.id(), "target", "dev-stub");
+    let sender_run = launch_test_provider(
+        &mut app,
+        session.id(),
+        sender.id(),
+        "dev-stub",
+        "dev-stub",
+        "sender-model",
+    );
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        target.id(),
+        "dev-stub",
+        "dev-stub",
+        "target-model",
+    );
+    let auth_token = sender_run
+        .runtime_mcp_auth_token()
+        .expect("sender run should expose runtime MCP auth")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+
+    let first = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            serde_json::json!({
+                "agent": "target",
+                "message": "First message.",
+                "idempotency_key": "shared-send"
+            }),
+        )
+        .await
+        .expect("first message should dispatch");
+    assert!(first.ok, "{:?}", first.payload);
+
+    let conflict = router
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth_token,
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+            serde_json::json!({
+                "agent": "target",
+                "message": "Different message.",
+                "idempotency_key": "shared-send"
+            }),
+        )
+        .await
+        .expect("a reused key with another message should return a structured failure");
+    assert!(!conflict.ok, "{:?}", conflict.payload);
+    assert!(conflict.payload["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("already used")));
 }
 
 #[tokio::test]

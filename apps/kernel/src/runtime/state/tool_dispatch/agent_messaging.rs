@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 impl KernelRuntimeState {
     pub(super) fn handle_list_session_agents_runtime_tool(
@@ -72,6 +73,16 @@ impl KernelRuntimeState {
         if message.is_empty() {
             return Ok(agent_message_failure("message must not be empty"));
         }
+        let idempotency_key = args
+            .idempotency_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty());
+        if args.idempotency_key.is_some() && idempotency_key.is_none() {
+            return Ok(agent_message_failure(
+                "idempotency_key must not be empty when provided",
+            ));
+        }
         let agents = self.session_agents(session.id());
         let target = match resolve_session_agent(&agents, &args.agent) {
             Ok(target) => target,
@@ -84,6 +95,35 @@ impl KernelRuntimeState {
                 "send_agent_message requires a different target agent",
             ));
         }
+        let durable_identity = idempotency_key.map(|key| {
+            let operation_id = format!(
+                "agent-message:{}:{:x}",
+                sender.id(),
+                Sha256::digest(key.as_bytes())
+            );
+            let fingerprint = serde_json::to_vec(&serde_json::json!({
+                "target_agent_id": target.id(),
+                "message": message,
+            }))
+            .map(|payload| format!("sha256:{:x}", Sha256::digest(payload)))
+            .unwrap_or_default();
+            (operation_id, fingerprint)
+        });
+        let mut idempotency_store =
+            if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
+                let store = self.owned.agent_message_idempotency.lock().await;
+                if let Some(existing) = store.entries.get(operation_id) {
+                    if existing.fingerprint == *fingerprint {
+                        return Ok(existing.result.clone());
+                    }
+                    return Ok(agent_message_failure(
+                        "idempotency_key was already used for a different agent message",
+                    ));
+                }
+                Some(store)
+            } else {
+                None
+            };
 
         let sender_label = sender
             .alias()
@@ -110,7 +150,7 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
 </arroba-agent-message>",
             source_identity,
         );
-        let prompt = crate::session::PromptQueueItem::new(
+        let mut prompt = crate::session::PromptQueueItem::new(
             prompt_id.clone(),
             source_attachment_id,
             target.id(),
@@ -118,6 +158,9 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
             crate::session::PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_context);
+        if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
+            prompt = prompt.with_durable_operation(operation_id, fingerprint);
+        }
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session.id().to_string(),
@@ -151,7 +194,7 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
         if let Some(dispatch) = submission.remote_dispatch.take() {
             self.spawn_remote_prompt_dispatch(dispatch);
         }
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+        let result = crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "status": status,
@@ -162,7 +205,13 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
                 "target_agent_alias": target_label,
                 "provider_run_id": provider_run_id,
             }),
-        })
+        };
+        if let (Some(store), Some((operation_id, fingerprint))) =
+            (idempotency_store.as_mut(), durable_identity)
+        {
+            store.record(operation_id, fingerprint, result.clone());
+        }
+        Ok(result)
     }
 
     fn ensure_agent_message_attachment(

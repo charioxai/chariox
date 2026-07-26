@@ -6,6 +6,8 @@ use super::*;
 pub struct SendAgentMessageArgs {
     pub agent: String,
     pub message: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +55,10 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "message": {
                         "type": "string",
                         "description": "The message that should become the target agent's next visible prompt."
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "Optional stable key for safely retrying the same send without creating another prompt."
                     }
                 },
                 "additionalProperties": false

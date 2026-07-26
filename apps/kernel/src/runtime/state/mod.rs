@@ -4,7 +4,7 @@
 //! This root keeps the public `KernelRuntimeState` entry points, shared fields, and cross-domain
 //! plumbing that would otherwise create cycles between those modules.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -102,6 +102,7 @@ struct KernelRuntimeOwnedState {
     remote_home_extension_inflight:
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
+    agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     remote_prompt_projection_drains:
         Arc<std::sync::Mutex<BTreeMap<(String, String), u64>>>,
@@ -129,6 +130,45 @@ struct RemoteWorkspaceLiveSyncInvocationState {
     result: Option<RemoteWorkspaceLiveSyncInvocationResult>,
     completion_tx: tokio::sync::watch::Sender<Option<RemoteWorkspaceLiveSyncInvocationResult>>,
     finalized: bool,
+}
+
+#[derive(Debug, Default)]
+struct AgentMessageIdempotencyStore {
+    entries: BTreeMap<String, AgentMessageIdempotencyEntry>,
+    order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentMessageIdempotencyEntry {
+    fingerprint: String,
+    result: crate::transport::runtime_tools::RuntimeToolResult,
+}
+
+impl AgentMessageIdempotencyStore {
+    const LIMIT: usize = 1_024;
+
+    fn record(
+        &mut self,
+        operation_id: String,
+        fingerprint: String,
+        result: crate::transport::runtime_tools::RuntimeToolResult,
+    ) {
+        if !self.entries.contains_key(&operation_id) {
+            self.order.push_back(operation_id.clone());
+        }
+        self.entries.insert(
+            operation_id,
+            AgentMessageIdempotencyEntry {
+                fingerprint,
+                result,
+            },
+        );
+        while self.entries.len() > Self::LIMIT {
+            if let Some(expired) = self.order.pop_front() {
+                self.entries.remove(&expired);
+            }
+        }
+    }
 }
 
 type RemoteWorkspaceLiveSyncInvocationResult = (
@@ -432,6 +472,9 @@ impl KernelRuntimeState {
                 )),
                 remote_home_extension_inflight: Arc::new(Mutex::new(BTreeMap::new())),
                 remote_extension_manifest_retry_counts: Arc::new(Mutex::new(BTreeMap::new())),
+                agent_message_idempotency: Arc::new(Mutex::new(
+                    AgentMessageIdempotencyStore::default(),
+                )),
                 relay_state,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 remote_prompt_recoveries: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
