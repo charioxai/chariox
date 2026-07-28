@@ -1214,9 +1214,13 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               <code>arroba-aegs-dummy</code>, the public protocol and SDK, conformance contracts,
               kernel integration, and a cross-repository local drill. Service-specific containers,
               TLS, systemd, migrations, credentials, and operational tooling are owned by the
-              corresponding private repository. The final cleanup gate requires searches and
-              build graphs in both <code>arroba</code> and <code>arroba-cloud</code> to show no
-              duplicate production runtime.
+              corresponding private repository. Every first-wave AEGS repository also owns its
+              publisher-signed catalog manifest and validates its generator identity and supported
+              event set with the public SDK. Operator, verification, availability, recommendation,
+              and installation metadata remain independently authenticated registry fields rather
+              than publisher-signed manifest content. The final cleanup gate requires searches
+              and build graphs in both <code>arroba</code> and <code>arroba-cloud</code> to show
+              no duplicate production runtime.
             </p>
           </div>
           <p>
