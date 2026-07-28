@@ -1294,7 +1294,10 @@ arroba-cloud
               unable to start because of the account billing/spending-limit gate, not a workflow
               or test failure. Remote acceptance still requires the separately provisioned
               Hetzner AEDS and AEGS hosts, their TLS and secret configuration, and the full
-              cross-host failure matrix.
+              cross-host failure matrix. A read-only 2026-07-28 snapshot of the existing relay
+              host showed negligible load and 3.1 GiB available memory, but only 14 GiB free disk
+              at 82% utilization; no event service was installed there and the host remains
+              protected relay-only capacity.
             </p>
           </div>
 
