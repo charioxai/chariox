@@ -13,7 +13,7 @@ const PROVIDER_TOOL_LARGE_PAYLOAD_REPORT_BYTES: usize = 1024 * 1024;
 const PROVIDER_OUTPUT_TRUNCATION_LOG_DELTA_BYTES: usize = 1024 * 1024;
 const PROVIDER_TOOL_METADATA_HASH_STRING_BYTES: usize = 4096;
 
-pub(super) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[u8]) -> Vec<u8> {
     if bytes.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES {
         return bytes.to_vec();
     }
@@ -25,7 +25,7 @@ pub(super) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[
     bounded_text_bytes(bytes)
 }
 
-pub(super) fn terminal_output_delta_bytes(
+pub(crate) fn terminal_output_delta_bytes(
     session_id: &str,
     provider_run_id: &str,
     agent_id: Option<&str>,
@@ -482,7 +482,7 @@ fn provider_output_truncation_log_gate(
     GATE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-pub(super) fn should_log_provider_output_truncation(
+pub(crate) fn should_log_provider_output_truncation(
     session_id: &str,
     provider_run_id: &str,
     agent_id: Option<&str>,

@@ -11,7 +11,7 @@ struct ProviderToolHistoryState {
     status: String,
 }
 
-pub(super) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) -> bool {
+pub(crate) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) -> bool {
     if entry.kind != SessionHistoryEntryKind::ProviderTool {
         return true;
     }
@@ -72,7 +72,7 @@ fn provider_tool_history_gate() -> &'static Mutex<BTreeMap<String, ProviderToolH
     GATE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-pub(super) fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
+pub(crate) fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
     matches!(
         entry.kind,
         SessionHistoryEntryKind::ProviderOutput

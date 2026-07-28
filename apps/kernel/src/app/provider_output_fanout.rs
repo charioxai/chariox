@@ -4,20 +4,18 @@ use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
 use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
 use crate::provider::ProviderProcessServiceStore;
+use crate::provider_output_policy::output_bounds::{
+    bounded_terminal_output_bytes, should_log_provider_output_truncation,
+    terminal_output_delta_bytes,
+};
+use crate::provider_output_policy::tool_history::{
+    is_unread_output_history_entry, should_persist_provider_tool_history,
+};
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 use crate::terminal::{
     RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
 };
-pub(super) mod output_bounds;
-pub(super) mod tool_history;
-
-use output_bounds::{
-    bounded_terminal_output_bytes, should_log_provider_output_truncation,
-    terminal_output_delta_bytes,
-};
-use tool_history::{is_unread_output_history_entry, should_persist_provider_tool_history};
-
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
     prompt_state_owner: PromptStateOwner,

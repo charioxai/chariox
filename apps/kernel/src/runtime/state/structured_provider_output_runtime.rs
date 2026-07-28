@@ -420,7 +420,6 @@ impl KernelRuntimeState {
                     kind: chunk.kind,
                     merge_key: chunk.merge_key,
                     bytes: chunk.bytes,
-                    history_text: Some(history_text),
                 }
             })
             .collect::<Vec<_>>();

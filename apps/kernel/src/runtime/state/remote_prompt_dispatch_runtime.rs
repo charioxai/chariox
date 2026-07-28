@@ -813,7 +813,6 @@ impl KernelRuntimeState {
                                 kind: crate::terminal::TerminalOutputKind::ProviderError,
                                 merge_key: merge_key.clone(),
                                 bytes: message.as_bytes().to_vec(),
-                                history_text: None,
                             },
                         ],
                     );

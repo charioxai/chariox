@@ -197,7 +197,6 @@ impl KernelRuntimeState {
                         },
                         merge_key: None,
                         bytes: chunk.bytes,
-                        history_text,
                     }
                 })
                 .collect::<Vec<_>>();
