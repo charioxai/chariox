@@ -79,14 +79,26 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
             "manifest protocol_version {protocol_version} is not supported"
         ));
     }
-    for party in ["publisher", "operator"] {
-        let party_value = object
-            .get(party)
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("manifest {party} must be an object"))?;
-        require_manifest_string(party_value.get("id"), &format!("{party}.id"))?;
-        require_manifest_string(party_value.get("name"), &format!("{party}.name"))?;
+    for registry_field in [
+        "operator",
+        "verification",
+        "installed_count",
+        "recommended",
+        "availability",
+        "manifest_digest",
+    ] {
+        if object.contains_key(registry_field) {
+            return Err(format!(
+                "manifest {registry_field} is registry metadata and must not be publisher-signed"
+            ));
+        }
     }
+    let publisher = object
+        .get("publisher")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "manifest publisher must be an object".to_string())?;
+    require_manifest_string(publisher.get("id"), "publisher.id")?;
+    require_manifest_string(publisher.get("name"), "publisher.name")?;
     let events = object
         .get("events")
         .and_then(Value::as_array)
@@ -208,5 +220,20 @@ mod tests {
         .unwrap();
         assert_eq!(request.event_type_version, 1);
         assert_eq!(request.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn rejects_registry_operator_metadata_in_publisher_manifest() {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .unwrap();
+        manifest.as_object_mut().unwrap().insert(
+            "operator".to_string(),
+            serde_json::json!({"id": "hosted.arroba", "name": "Arroba hosted service"}),
+        );
+        assert!(validate_manifest_envelope(&manifest)
+            .unwrap_err()
+            .contains("operator is registry metadata"));
     }
 }

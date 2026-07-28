@@ -437,7 +437,7 @@ fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
             url: None,
         },
         verification: "arroba".to_string(),
-        manifest_digest: "sha256:03b694a033a58a9e29b8ed947c6f5fb332def989b4deb0f5810f2b6e6bbd054f"
+        manifest_digest: "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718"
             .to_string(),
         protocol_version: arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
         categories: vec!["Developer tools".to_string(), "Testing".to_string()],
@@ -473,10 +473,10 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             required_scopes: Vec::new(),
         }],
         signature: serde_json::json!({
-            "key_id": "dev.arroba.fixture.2026-07",
+            "key_id": "dev.arroba.fixture.2026-07-v2",
             "algorithm": "ed25519",
-            "digest": "sha256:03b694a033a58a9e29b8ed947c6f5fb332def989b4deb0f5810f2b6e6bbd054f",
-            "value": "E19Yh8KIo5BA+YlDdVeA6mGnwSUxp7CDWCsCiD3VF/WusEWTnfYqNtmCbyWuNsUIl1mqfvC/w0vi4swC579+Ag=="
+            "digest": "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718",
+            "value": "gsy1flHq1+l4uYdal/3/B1z4r16ETwukdeLdPAMZ4aMNHMwWiY9gCJEHZMm2rPCUky0z9DjFP1oTL/9JK0dSDw=="
         }),
         deprecation: None,
     })
@@ -499,6 +499,31 @@ fn builtin_categories() -> Vec<EventCatalogCategory> {
 fn fetch_page(url: url::Url) -> Result<LocalDaemonResponse, DaemonError> {
     let page = fetch_json::<EventGeneratorCatalogPage>(url)?;
     Ok(LocalDaemonResponse::EventGeneratorCatalogPage { page })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_dummy_catalog_matches_publisher_manifest_fixture() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .expect("dummy manifest fixture must be valid JSON");
+        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+
+        assert_eq!(
+            detail.summary.manifest_digest,
+            manifest
+                .pointer("/signature/digest")
+                .and_then(serde_json::Value::as_str)
+                .expect("signed manifest digest")
+        );
+        assert_eq!(detail.signature, manifest["signature"]);
+        assert!(manifest.get("operator").is_none());
+        assert!(manifest.get("verification").is_none());
+    }
 }
 
 fn fetch_json<T: serde::de::DeserializeOwned>(url: url::Url) -> Result<T, DaemonError> {

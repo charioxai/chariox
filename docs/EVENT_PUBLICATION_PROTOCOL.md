@@ -24,9 +24,10 @@ registry or a kernel.
 The signed manifest contains generator identity and version, display metadata,
 upstream provider, publisher, protocol version, categories, authorization contract,
 event definitions, and deprecation metadata. Registry attestations that change
-without a generator release—operator, verification level, install count, recommended
-placement, and the resulting `manifest_digest`—are deliberately outside the signed
-payload. The registry supplies and authenticates those catalog fields separately.
+without a generator release—operator, verification level, availability, install
+count, recommended placement, and the resulting `manifest_digest`—are deliberately
+outside the signed payload and are rejected if embedded in a publisher manifest.
+The registry supplies and authenticates those catalog fields separately.
 
 ## Identities
 

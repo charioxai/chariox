@@ -4,7 +4,7 @@
   "title": "Arroba Event Generator Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "generator_id", "version", "name", "publisher", "operator", "protocol_version", "events", "signature"],
+  "required": ["schema_version", "generator_id", "version", "name", "publisher", "protocol_version", "events", "signature"],
   "properties": {
     "schema_version": { "const": 1 },
     "generator_id": { "type": "string", "minLength": 1, "maxLength": 200 },
@@ -13,8 +13,6 @@
     "summary": { "type": "string", "maxLength": 1000 },
     "provider": { "type": "string", "minLength": 1, "maxLength": 200 },
     "publisher": { "$ref": "#/$defs/party" },
-    "operator": { "$ref": "#/$defs/party" },
-    "verification": { "enum": ["arroba", "official_provider", "verified_community", "community", "self_hosted"] },
     "protocol_version": { "type": "integer", "minimum": 1 },
     "categories": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
     "authorization": {

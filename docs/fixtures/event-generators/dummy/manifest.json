@@ -9,11 +9,6 @@
     "id": "dev.arroba",
     "name": "Arroba"
   },
-  "operator": {
-    "id": "local",
-    "name": "Local operator"
-  },
-  "verification": "arroba",
   "protocol_version": 1,
   "categories": ["Developer tools", "Testing"],
   "authorization": {
@@ -37,9 +32,9 @@
     }
   ],
   "signature": {
-    "key_id": "dev.arroba.fixture.2026-07",
+    "key_id": "dev.arroba.fixture.2026-07-v2",
     "algorithm": "ed25519",
-    "digest": "sha256:03b694a033a58a9e29b8ed947c6f5fb332def989b4deb0f5810f2b6e6bbd054f",
-    "value": "E19Yh8KIo5BA+YlDdVeA6mGnwSUxp7CDWCsCiD3VF/WusEWTnfYqNtmCbyWuNsUIl1mqfvC/w0vi4swC579+Ag=="
+    "digest": "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718",
+    "value": "gsy1flHq1+l4uYdal/3/B1z4r16ETwukdeLdPAMZ4aMNHMwWiY9gCJEHZMm2rPCUky0z9DjFP1oTL/9JK0dSDw=="
   }
 }
