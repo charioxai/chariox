@@ -210,8 +210,7 @@ impl CommandRouter {
     }
 
     pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {
-        self.provider_catalog_projection
-            .get(crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL)
+        self.provider_catalog_projection.cached()
     }
 
     pub(crate) fn transport_slices_snapshot(&self) -> Vec<SliceRecord> {
