@@ -142,6 +142,68 @@ fn arroba_owned_turn_with_generated_runtime_context_is_not_imported_again() {
 }
 
 #[test]
+fn arroba_owned_agent_message_with_provider_attachment_suffix_is_not_imported_again() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let prompt = "agent agent-2 message:\n\nReview the attached evidence.";
+    app.append_user_prompt_history(session.id(), attachment.id(), agent.id(), prompt, &[]);
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-owned".to_string(),
+        "codex".to_string(),
+        "thread-owned".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: format!(
+                        "{prompt}Attachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8="
+                    ),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "done".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed history should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_external_provider_observed());
+}
+
+#[test]
 fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
