@@ -21,7 +21,8 @@ export COMPOSE_PARALLEL_LIMIT=1
 "${compose[@]}" up --build -d --wait aeds
 
 start_aegs() {
-  "${compose[@]}" up --build -d --wait "$1"
+  "${compose[@]}" build "$1"
+  "${compose[@]}" up --no-build --no-deps -d --wait "$1"
 }
 
 stop_aegs() {
