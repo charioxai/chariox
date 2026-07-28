@@ -1299,6 +1299,16 @@ arroba-cloud
               at 82% utilization; no event service was installed there and the host remains
               protected relay-only capacity.
             </p>
+            <p>
+              The OSS deployment orchestrator now includes a guarded Hetzner acceptance runner.
+              It consumes the exact clean host-separation evidence, rechecks machine identities
+              and role markers, requires public HTTPS health, rejects concurrent first-wave AEGSs,
+              and handles AEDS then one selected AEGS sequentially. Its default mode is read-only;
+              service restarts require an explicit flag and can affect only the two exact systemd
+              units. It never performs host reboot, firewall mutation, container removal, or
+              Docker pruning. The preflight and acceptance harnesses pass ten focused tests,
+              including stale-revision and dirty-worktree refusal.
+            </p>
           </div>
 
           <h3>Target host roles</h3>

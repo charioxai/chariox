@@ -80,11 +80,31 @@ a checksum-protected `<name>.db-wal` sidecar; the database and WAL are one backu
 set and must be retained together. The AEGS subscription stores use the same
 stop/copy/checksum pattern when promoted to persistent hosts.
 
-`host-separation-preflight.mjs` is the only production-facing orchestration
-kept here: it performs a read-only check that AEDS, AEGS, and the existing
-relay resolve to distinct machines. All service-specific containers, TLS
-examples, systemd units, migrations, and operational scripts belong to their
-private component repositories.
+`host-separation-preflight.mjs` performs the mandatory read-only check that
+AEDS, AEGS, and the existing relay resolve to distinct machines. After the
+private component runbooks install pinned services,
+`hetzner-acceptance.mjs` binds acceptance to that exact clean preflight
+evidence, rechecks machine IDs and role markers, requires public HTTPS health,
+and proves that only the selected first-wave AEGS is active. Its default mode
+is read-only. `--execute-restarts` restarts only the exact AEDS and selected
+AEGS systemd units and retains bounded, secret-free evidence. It never reboots
+a host, changes firewall policy, removes containers, or prunes Docker.
+
+```sh
+node ./hetzner-acceptance.mjs \
+  --preflight .artifacts/event-publication-hetzner/event-001/preflight.json \
+  --run-id event-001 \
+  --component github \
+  --aeds-host root@aeds.example \
+  --aegs-host root@aegs.example \
+  --relay-host root@relay.example \
+  --ssh-key ~/.ssh/arroba_event_staging \
+  --aeds-url https://aeds.example \
+  --aegs-url https://github-events.example
+```
+
+All service-specific containers, TLS examples, systemd units, migrations, and
+operational scripts remain in their private component repositories.
 
 Every production AEGS also exposes a capability-protected, authoritative
 `PUT /v1/subscriptions/reconcile` endpoint. It persists logical event interests
