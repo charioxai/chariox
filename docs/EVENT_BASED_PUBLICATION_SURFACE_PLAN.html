@@ -1280,10 +1280,17 @@ arroba-cloud
               operations, and deployment runbook. Each package has passed local syntax,
               ShellCheck, Compose rendering, Rust tests, formatting, and Clippy validation. AEDS
               and every AEGS were handled sequentially; no provider matrix was built or run
-              concurrently. Hosted GitHub Actions verification is currently unable to start
-              because of the account billing/spending-limit gate, not a workflow or test failure.
-              Remote acceptance still requires the separately provisioned Hetzner AEDS and AEGS
-              hosts, their TLS and secret configuration, and the full cross-host failure matrix.
+              concurrently. Every production release workflow now scans the exact published image
+              digest with a commit-pinned vulnerability scanner and refuses fixed high or critical
+              findings before provenance attestation. Exact local AEDS and GitHub AEGS images
+              passed that policy with zero findings; all seven workflow definitions parse and
+              enforce the same gate. The ownership-scoped cleanup removed all event-service
+              containers, images, build layers, scanner caches, and build-step containers without
+              pruning unrelated Docker state. Hosted GitHub Actions verification is currently
+              unable to start because of the account billing/spending-limit gate, not a workflow
+              or test failure. Remote acceptance still requires the separately provisioned
+              Hetzner AEDS and AEGS hosts, their TLS and secret configuration, and the full
+              cross-host failure matrix.
             </p>
           </div>
 
