@@ -39,6 +39,7 @@ tar = "0.4.43"
 ureq = "2.12.1"
 url = "2.5.4"
 zeroize = "1.8.1"
+arroba-event-protocol = { path = "../../packages/event-protocol" }
 
 [lib]
 name = "arroba_kernel"

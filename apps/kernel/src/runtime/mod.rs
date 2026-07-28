@@ -19,6 +19,7 @@ pub(crate) mod command_response_refresh;
 pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
 pub(crate) mod debug_bundle_control;
+pub(crate) mod event_catalog_control;
 pub mod event_log;
 pub(crate) mod external_provider_session_control;
 pub(crate) mod history_executor;

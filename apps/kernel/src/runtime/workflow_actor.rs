@@ -361,6 +361,13 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::GetWorkflowPublication(request) => request.session_id.clone(),
         LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => request.session_id.clone(),
         LocalDaemonRequest::DisableWorkflowPublication(request) => request.session_id.clone(),
+        LocalDaemonRequest::CreateWorkflowEventBinding(request) => request.session_id.clone(),
+        LocalDaemonRequest::ListWorkflowEventBindings(request) => request.session_id.clone(),
+        LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => request.session_id.clone(),
+        LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
+            request.source_session_id.clone()
+        }
+        LocalDaemonRequest::TestWorkflowEventBinding(request) => request.session_id.clone(),
         LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
             format!("publication-materialize:{}", request.publication_id)
         }

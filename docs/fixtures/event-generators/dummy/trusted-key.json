@@ -1,0 +1,5 @@
+{
+  "key_id": "dev.arroba.fixture.2026-07",
+  "algorithm": "ed25519",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAyFQmnS06dxJFkG8wLnbgQQAYGeLqTDgFmOhkw64A9Ug=\n-----END PUBLIC KEY-----\n"
+}

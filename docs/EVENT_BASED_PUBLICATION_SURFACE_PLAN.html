@@ -1,0 +1,1823 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cross-repository implementation plan for Arroba event-based workflow publication, AEGS discovery, and AEDS delivery."
+    />
+    <title>Event-based Workflow Publication — Implementation Plan</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #0b0f0d;
+        --canvas-soft: #101713;
+        --panel: #151d18;
+        --panel-raised: #1a251e;
+        --ink: #f2f0e7;
+        --muted: #aeb9ae;
+        --quiet: #748078;
+        --line: #354139;
+        --accent: #b8f34a;
+        --accent-soft: #203414;
+        --signal: #f4a261;
+        --signal-soft: #392718;
+        --danger: #ff7b72;
+        --code: #080c0a;
+        --measure: 74ch;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(rgba(184, 243, 74, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(184, 243, 74, 0.025) 1px, transparent 1px),
+          var(--canvas);
+        background-size: 32px 32px;
+        color: var(--ink);
+        font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: #dcff94;
+      }
+
+      code {
+        padding: 0.12rem 0.32rem;
+        border: 1px solid #2f3a33;
+        border-radius: 3px;
+        background: var(--code);
+        color: #d9efb2;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.9em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 1rem 0 0;
+        padding: 1rem 1.1rem;
+        border: 1px solid var(--line);
+        background: var(--code);
+        color: #d9efb2;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.86rem;
+        line-height: 1.55;
+      }
+
+      pre code {
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(190px, 240px) minmax(0, 1040px);
+        gap: clamp(2rem, 5vw, 6rem);
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 clamp(1.25rem, 4vw, 4rem) 6rem;
+      }
+
+      aside {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100vh;
+        padding: 2.5rem 0;
+      }
+
+      .nav-mark {
+        display: inline-grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-weight: 800;
+        letter-spacing: -0.08em;
+      }
+
+      nav {
+        margin-top: 2rem;
+      }
+
+      nav a {
+        display: block;
+        margin: 0.55rem 0;
+        color: var(--quiet);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      nav a:hover {
+        color: var(--ink);
+      }
+
+      .aside-meta {
+        position: absolute;
+        bottom: 2.5rem;
+        max-width: 210px;
+        color: var(--quiet);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+        line-height: 1.5;
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      .hero {
+        min-height: 78vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 5rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .kicker {
+        margin: 0 0 1.2rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        font-weight: 600;
+        line-height: 1.08;
+      }
+
+      h1 {
+        max-width: 900px;
+        font-size: clamp(3rem, 7vw, 6.7rem);
+        letter-spacing: -0.045em;
+      }
+
+      h1 span {
+        color: var(--accent);
+      }
+
+      h2 {
+        margin-top: 0;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        letter-spacing: -0.035em;
+      }
+
+      h3 {
+        margin-top: 1.6rem;
+        font-size: 1.35rem;
+      }
+
+      p {
+        max-width: var(--measure);
+        margin: 0.8rem 0 0;
+        color: var(--muted);
+      }
+
+      .lead {
+        max-width: 760px;
+        margin-top: 1.8rem;
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        font-size: clamp(1.15rem, 2.2vw, 1.6rem);
+        line-height: 1.45;
+      }
+
+      .facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        margin-top: 2rem;
+      }
+
+      .fact {
+        padding: 0.42rem 0.65rem;
+        border: 1px solid var(--line);
+        background: rgba(21, 29, 24, 0.74);
+        color: var(--muted);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      section {
+        padding: 5rem 0 1rem;
+        scroll-margin-top: 2rem;
+      }
+
+      .section-no {
+        display: block;
+        margin-bottom: 0.85rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .rule {
+        width: 64px;
+        height: 3px;
+        margin: 1.4rem 0;
+        border: 0;
+        background: var(--accent);
+      }
+
+      .callout {
+        max-width: 860px;
+        margin-top: 1.5rem;
+        padding: 1.15rem 1.25rem;
+        border-left: 3px solid var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .callout.warning {
+        border-left-color: var(--signal);
+        background: var(--signal-soft);
+      }
+
+      .callout strong {
+        color: var(--ink);
+      }
+
+      .callout p {
+        margin-top: 0.3rem;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 1.5rem;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+
+      .card {
+        min-width: 0;
+        padding: 1.35rem;
+        background: var(--panel);
+      }
+
+      .card h3 {
+        margin-top: 0;
+      }
+
+      .card p {
+        font-size: 0.92rem;
+      }
+
+      ul,
+      ol {
+        max-width: var(--measure);
+        margin: 0.85rem 0 0;
+        padding-left: 1.25rem;
+        color: var(--muted);
+      }
+
+      li {
+        margin: 0.45rem 0;
+        padding-left: 0.2rem;
+      }
+
+      li::marker {
+        color: var(--accent);
+      }
+
+      table {
+        width: 100%;
+        margin-top: 1.5rem;
+        border-collapse: collapse;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      th,
+      td {
+        padding: 0.85rem 0.95rem;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--panel-raised);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      td {
+        color: var(--muted);
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0.65rem;
+        margin-top: 1.7rem;
+      }
+
+      .flow-node {
+        position: relative;
+        min-height: 118px;
+        padding: 1rem;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .flow-node:not(:last-child)::after {
+        content: "→";
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        right: -0.72rem;
+        width: 0.78rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-weight: 800;
+        transform: translateY(-50%);
+      }
+
+      .flow-node b {
+        display: block;
+        color: var(--ink);
+      }
+
+      .flow-node span {
+        display: block;
+        margin-top: 0.45rem;
+        color: var(--quiet);
+        font-size: 0.78rem;
+        line-height: 1.4;
+      }
+
+      .milestones {
+        margin-top: 1.8rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .milestone {
+        display: grid;
+        grid-template-columns: 100px minmax(0, 1fr);
+        gap: 1.2rem;
+        padding: 1.6rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .milestone-id {
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .milestone h3 {
+        margin-top: 0;
+      }
+
+      .acceptance {
+        border-color: var(--accent);
+      }
+
+      .phase-two {
+        opacity: 0.78;
+      }
+
+      footer {
+        margin-top: 5rem;
+        padding-top: 2rem;
+        border-top: 1px solid var(--line);
+        color: var(--quiet);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+      }
+
+      @media (max-width: 960px) {
+        .shell {
+          display: block;
+        }
+
+        aside {
+          position: static;
+          height: auto;
+          padding: 1.5rem 0 0;
+        }
+
+        nav,
+        .aside-meta {
+          display: none;
+        }
+
+        .hero {
+          min-height: auto;
+          padding: 4rem 0;
+        }
+
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-node:not(:last-child)::after {
+          content: "↓";
+          top: auto;
+          right: auto;
+          bottom: -0.85rem;
+          left: 1rem;
+          transform: none;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .milestone {
+          grid-template-columns: 1fr;
+          gap: 0.5rem;
+        }
+
+        table {
+          display: block;
+          overflow-x: auto;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+          --canvas: #ffffff;
+          --panel: #ffffff;
+          --panel-raised: #f1f3ef;
+          --ink: #111511;
+          --muted: #343c36;
+          --quiet: #58615a;
+          --line: #aab1aa;
+          --accent: #376400;
+          --accent-soft: #eef5e7;
+          --code: #f1f3ef;
+        }
+
+        body {
+          background: #ffffff;
+        }
+
+        .shell {
+          display: block;
+          max-width: none;
+          padding: 0;
+        }
+
+        aside {
+          display: none;
+        }
+
+        .hero {
+          min-height: auto;
+          padding: 1rem 0 2rem;
+        }
+
+        section {
+          padding-top: 2rem;
+        }
+
+        .card,
+        .flow-node,
+        table,
+        .callout {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside aria-label="Document navigation">
+        <div class="nav-mark" aria-hidden="true">A·E</div>
+        <nav>
+          <a href="#decision">Decision</a>
+          <a href="#invariants">Invariants</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#registry">Registry at scale</a>
+          <a href="#identity">Identity &amp; trust</a>
+          <a href="#product">Product UX</a>
+          <a href="#runtime">Runtime model</a>
+          <a href="#lifecycle">Lifecycle</a>
+          <a href="#ownership">Repository ownership</a>
+          <a href="#deployment">Hetzner deployment</a>
+          <a href="#milestones">Milestones</a>
+          <a href="#validation">Validation</a>
+          <a href="#acceptance">Acceptance</a>
+        </nav>
+        <p class="aside-meta">
+          Status: implementation-ready plan<br />
+          Scope: first-wave integrations<br />
+          Updated: 2026-07-27
+        </p>
+      </aside>
+
+      <main>
+        <header class="hero">
+          <p class="kicker">Arroba · Cross-repository implementation plan</p>
+          <h1>Event-based workflow <span>publication</span></h1>
+          <p class="lead">
+            Make external events a first-class workflow publication surface, backed by scalable
+            AEGS discovery, AEDS delivery, kernel-owned queueing, and equivalent product flows in
+            the web terminal and PTY-based TUI.
+          </p>
+          <div class="facts" aria-label="Plan facts">
+            <span class="fact">Runtime: arroba</span>
+            <span class="fact">Registry + web: arroba-cloud</span>
+            <span class="fact">Protocol bump required</span>
+            <span class="fact">No agent-owned subscriptions</span>
+            <span class="fact">AEDS / AEGS host separation</span>
+            <span class="fact">First wave in scope</span>
+          </div>
+        </header>
+
+        <section id="decision">
+          <span class="section-no">01 · Decision</span>
+          <h2>Build one vertical slice before building the marketplace.</h2>
+          <hr class="rule" />
+          <p>
+            Freeze the manifest, identity, subscription, and delivery contracts first. Then build
+            AEDS, a dummy AEGS, and the kernel event-publication path as one end-to-end slice. Add
+            the shared TUI/web management protocol next, followed by the paginated registry,
+            product catalog, GitHub AEGS, SDK, conformance suite, and the remaining first-wave
+            integrations.
+          </p>
+          <div class="callout">
+            <strong>AEDS is the canonical name.</strong>
+            <p>
+              AEGS means Arroba Event Generation Server. AEDS means Arroba Event Delivery Server.
+              Event publication is kernel core behavior, not a new agent extension type.
+            </p>
+          </div>
+          <div class="callout warning">
+            <strong>Mandatory product validation.</strong>
+            <p>
+              No implementation milestone is complete until the real product frontend has been
+              exercised through the web terminal and the real TUI has been exercised inside a PTY.
+              Backend tests, component tests, and mocked clients are necessary but insufficient.
+            </p>
+          </div>
+        </section>
+
+        <section id="invariants">
+          <span class="section-no">02 · Product and architecture invariants</span>
+          <h2>What must remain true.</h2>
+          <div class="grid">
+            <article class="card">
+              <h3>Workflow-owned</h3>
+              <p>
+                A published workflow endpoint owns event publications. Agents do not register
+                subscriptions, and deleting an agent does not revoke a published workflow.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Queue-native</h3>
+              <p>
+                After durable insertion, an event is an ordinary queued workflow prompt. Existing
+                queue ordering, idle dispatch, runtime interaction, and execution behavior apply.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Environment-exclusive</h3>
+              <p>
+                The same canonical event interest may have only one active route in an execution
+                environment. This prevents two publications from acting on the same worktree.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Host-independent</h3>
+              <p>
+                A publication binds to a stable environment identity rather than a transient kernel
+                process. Rebinding moves delivery without recreating the logical publication.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Runtime-independent registry</h3>
+              <p>
+                Registry discovery is on demand and never sits in the delivery path. Existing
+                publications continue working while the registry is unavailable.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Shared product path</h3>
+              <p>
+                Web and TUI use the same kernel services and serialized protocol. Cloud must not
+                fork runtime behavior or proxy event delivery.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Declarative catalog</h3>
+              <p>
+                Registry entries are signed data and schemas. Browsing a service never downloads or
+                executes publisher code in the browser or kernel.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Endpoint-shaped input</h3>
+              <p>
+                An AEGS produces a prompt plus optional artifacts. AEDS carries routing and delivery
+                metadata but does not invent workflow execution semantics.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Separate failure domains</h3>
+              <p>
+                Hosted AEDS and hosted AEGSs do not share a machine. Delivery remains available
+                independently of a generator failure, and generator load cannot exhaust AEDS.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="architecture">
+          <span class="section-no">03 · System boundary</span>
+          <h2>Discovery is control plane. Delivery is runtime.</h2>
+          <div class="flow" aria-label="Event delivery flow">
+            <div class="flow-node">
+              <b>External provider</b>
+              <span>GitHub, Jira, Slack, or another source emits a native event.</span>
+            </div>
+            <div class="flow-node">
+              <b>AEGS</b>
+              <span>Authenticates the provider, normalizes the event, and applies source filters.</span>
+            </div>
+            <div class="flow-node">
+              <b>AEDS</b>
+              <span>Authenticates publication, stores pending delivery, and routes to the environment.</span>
+            </div>
+            <div class="flow-node">
+              <b>Kernel</b>
+              <span>Maintains an outbound connection and durably enqueues the prompt once.</span>
+            </div>
+            <div class="flow-node">
+              <b>Workflow queue</b>
+              <span>Uses the existing dispatch policy and invokes the published endpoint.</span>
+            </div>
+          </div>
+          <p>
+            Separately, the web and TUI ask the kernel to search the registry, inspect an AEGS,
+            authorize a connection, enumerate provider resources, and configure event bindings.
+            The registry is not contacted for each event and is not required after activation.
+          </p>
+          <p>
+            AEDS routes and AEGS logical subscriptions are deliberately separate durable records.
+            The kernel reconciles each AEGS through its operator endpoint using a distinct scoped
+            management capability. That authoritative, revision-fenced reconciliation gives the
+            AEGS the binding, opaque connection, provider scope, canonical event-interest key,
+            event type, and filter it needs to manage upstream subscriptions and map incoming
+            provider events. AEDS receives only normalized occurrences and never provider
+            credentials or source-specific subscription state.
+          </p>
+
+          <h3>Responsibility split</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Owns</th>
+                <th>Must not own</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Registry</td>
+                <td>Search index, publisher identity, signed manifests, categories, ranking metadata</td>
+                <td>Runtime event traffic, workflow state, provider credentials</td>
+              </tr>
+              <tr>
+                <td>AEGS</td>
+                <td>Provider auth, upstream subscription strategy, normalization, source reconciliation</td>
+                <td>Kernel execution state or workflow scheduling</td>
+              </tr>
+              <tr>
+                <td>AEDS</td>
+                <td>Producer authentication, durable pending deliveries, environment routing, retry</td>
+                <td>Prompt interpretation, workflow dispatch policy, agent state</td>
+              </tr>
+              <tr>
+                <td>Kernel</td>
+                <td>Publication state, environment claims, durable queue insertion, dispatch, lifecycle</td>
+                <td>Marketplace ranking or provider webhook semantics</td>
+              </tr>
+              <tr>
+                <td>Cloud web</td>
+                <td>Product presentation and interaction through shared kernel protocol</td>
+                <td>Alternate subscription, queue, or delivery authority</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="registry">
+          <span class="section-no">04 · Registry at scale</span>
+          <h2>Search and browse pages—not catalog snapshots.</h2>
+          <p>
+            The catalog is expected to become large. Selecting Event-based notifications must not
+            cause the kernel or browser to fetch every service or every event definition. The
+            registry API returns small summaries, opaque cursors, and facet counts. Details and
+            event schemas are loaded only when opened.
+          </p>
+
+          <h3>Public query surface</h3>
+          <pre><code>GET /v1/event-generators
+    ?query=pull+request
+    &amp;category=developer-tools
+    &amp;publisher_trust=official,arroba
+    &amp;sort=recommended
+    &amp;cursor=&lt;opaque&gt;
+    &amp;limit=24
+
+GET /v1/event-generators/{generator_id}
+GET /v1/event-generators/{generator_id}/versions/{version}
+GET /v1/event-generators/{generator_id}/events
+    ?query=assigned
+    &amp;category=issues
+    &amp;cursor=&lt;opaque&gt;
+    &amp;limit=50
+GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
+
+          <div class="grid">
+            <article class="card">
+              <h3>Landing request</h3>
+              <p>
+                Returns bounded sections such as featured, most connected, recently added, and
+                category summaries. Each section has an independent continuation cursor.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Search request</h3>
+              <p>
+                Searches provider, publisher, service description, event names, and capability
+                tags. Results are relevance-ranked and cursor-paginated.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Category request</h3>
+              <p>
+                Returns a page plus subcategory and trust facets. The client may prefetch only the
+                next page after the current page becomes visible.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Service detail</h3>
+              <p>
+                Loads the selected version, authentication model, operator disclosure, and a
+                separately paginated/searchable event list.
+              </p>
+            </article>
+          </div>
+
+          <h3>Scalability requirements</h3>
+          <ul>
+            <li>
+              Use cursor pagination; do not expose offsets whose cost grows with catalog depth.
+              Registry continuations are query-bound keyset cursors, not encoded numeric offsets.
+            </li>
+            <li>
+              Treat cursors as opaque and bind them to the query, filters, sort, and catalog
+              revision.
+            </li>
+            <li>
+              Return summary projections in browse/search. Fetch full manifests and JSON schemas
+              only for the selected implementation and version.
+            </li>
+            <li>
+              Add explicit limits, maximum page sizes, request timeouts, and response-size budgets.
+            </li>
+            <li>
+              Support ETags and cache-control for landing sections, query pages, service details,
+              icons, and pinned manifests.
+            </li>
+            <li>
+              Keep a bounded kernel cache keyed by registry, query fingerprint, cursor, locale, and
+              compatible protocol range. Eviction must not affect configured publications.
+            </li>
+            <li>
+              Debounce product search and cancel superseded requests. Never accumulate every result
+              page in an unbounded client store.
+            </li>
+            <li>
+              Filter or clearly mark incompatible AEGS versions using the requesting kernel's
+              protocol capabilities.
+            </li>
+            <li>
+              Return an explicit lifecycle state: <code>available</code>,
+              <code>development_preview</code>, or <code>coming_soon</code>. Browse remains
+              possible for every state, but clients must not create subscriptions for
+              <code>coming_soon</code> entries.
+            </li>
+            <li>
+              Never seed fictional installation totals. “Most connected” ranking is enabled only
+              after the registry has privacy-safe, measured usage; editorial recommendation and
+              implementation availability remain separate fields.
+            </li>
+            <li>
+              Do not auto-subscribe users when a publisher adds a new event. Publications pin an
+              event type and version until explicitly migrated.
+            </li>
+          </ul>
+
+          <h3>Kernel-facing protocol</h3>
+          <p>
+            Web and TUI send bounded operations such as
+            <code>EventCatalogLanding</code>, <code>EventCatalogSearch</code>,
+            <code>EventCatalogBrowseCategory</code>, <code>EventGeneratorGet</code>, and
+            <code>EventTypesList</code>. Responses preserve opaque cursors. There is deliberately no
+            <code>ListEntireEventCatalog</code> request.
+          </p>
+          <div class="callout">
+            <strong>Failure behavior:</strong>
+            <p>
+              A registry outage disables new discovery but does not disable configured
+              publications. The UI may display a clearly dated cached page, while authorization,
+              subscription health, and event delivery continue through their existing endpoints.
+            </p>
+          </div>
+        </section>
+
+        <section id="identity">
+          <span class="section-no">05 · Identity and trust</span>
+          <h2>Provider, publisher, and operator are separate facts.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Publisher</th>
+                <th>Operator</th>
+                <th>Product presentation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GitHub</td>
+                <td>Arroba</td>
+                <td>Arroba</td>
+                <td>GitHub by Arroba · Arroba-maintained</td>
+              </tr>
+              <tr>
+                <td>GitHub</td>
+                <td>GitHub</td>
+                <td>GitHub</td>
+                <td>GitHub · Official</td>
+              </tr>
+              <tr>
+                <td>GitHub</td>
+                <td>Acme</td>
+                <td>User</td>
+                <td>GitHub by Acme · Community · Self-hosted</td>
+              </tr>
+            </tbody>
+          </table>
+          <ul>
+            <li>
+              Implementation IDs are publisher-scoped. Arroba-owned integrations use names such as
+              <code>dev.arroba.github</code>; provider-owned namespaces remain reserved.
+            </li>
+            <li>
+              “Official” requires explicit registry verification that the provider published or
+              endorsed the implementation. Domain control alone is not sufficient.
+            </li>
+            <li>
+              An official implementation may coexist with an Arroba-maintained implementation. It
+              does not silently replace, migrate, or revoke existing publications.
+            </li>
+            <li>
+              The authorization screen prominently identifies the operator because the operator,
+              not the catalog, may handle provider credentials and event data.
+            </li>
+            <li>
+              Registry records and version manifests are signed. The kernel verifies the registry
+              record, publisher identity, content digest, and supported protocol range.
+            </li>
+            <li>
+              “Most connected” is based on privacy-preserving aggregates of successful active
+              connections, not manifest downloads. Low-volume exact counts are not exposed.
+            </li>
+          </ul>
+        </section>
+
+        <section id="product">
+          <span class="section-no">06 · Product UX</span>
+          <h2>One model, adapted to two interfaces.</h2>
+
+          <h3>Web workflow side panel</h3>
+          <ol>
+            <li>Select <strong>Event-based notifications</strong> in the Publication tab.</li>
+            <li>
+              Open the catalog landing view: recommended, most connected, recently added, and
+              category navigation, each independently paged.
+            </li>
+            <li>Search or browse, then select a provider implementation.</li>
+            <li>
+              Inspect its publisher/operator badges, permissions, supported event categories, and
+              data-handling links.
+            </li>
+            <li>
+              Search and select multiple event types. The event list may itself be paginated.
+            </li>
+            <li>
+              Authorize once, then enumerate accessible repositories, projects, sites, mailboxes,
+              workspaces, or channels.
+            </li>
+            <li>Configure event-specific filters, target queue, and optional prompt templates.</li>
+            <li>Review combined scopes, duplicate conflicts, and resulting bindings.</li>
+            <li>Activate and display health, last delivery, and test-event controls.</li>
+          </ol>
+
+          <h3>TUI and slash commands</h3>
+          <p>
+            The TUI presents the same pages as navigable lists with incremental loading. Slash
+            commands use the same kernel requests rather than a reduced secondary implementation.
+          </p>
+          <pre><code>/workflow publication event browse [category]
+/workflow publication event search &lt;query&gt;
+/workflow publication event show &lt;generator-id&gt;
+/workflow publication event events &lt;generator-id&gt; [query]
+/workflow publication event add
+/workflow publication event status
+/workflow publication event test
+/workflow publication event remove</code></pre>
+          <p>
+            Search results expose a “load more” action tied to the returned cursor. Interactive
+            authorization shows an external URL or device flow without requiring a graphical
+            browser inside the TUI.
+          </p>
+
+          <h3>Duplicate conflict UX</h3>
+          <div class="callout warning">
+            <strong>Already routed in this environment.</strong>
+            <p>
+              If the canonical event interest already targets another publication, show that
+              workflow, endpoint, and queue. The allowed actions are Open existing, Transfer route,
+              or Cancel. There is no “subscribe anyway” path in the same environment.
+            </p>
+          </div>
+        </section>
+
+        <section id="runtime">
+          <span class="section-no">07 · Runtime and data model</span>
+          <h2>Separate catalog identity, event interest, route, and occurrence.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Record</th>
+                <th>Purpose</th>
+                <th>Stable identity</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>EventGeneratorVersion</code></td>
+                <td>Pinned AEGS implementation, protocol version, and signed manifest digest</td>
+                <td>Publisher-scoped generator ID + version</td>
+              </tr>
+              <tr>
+                <td><code>EventConnection</code></td>
+                <td>Opaque authorized connection to one provider tenant/account</td>
+                <td>AEGS-issued connection handle</td>
+              </tr>
+              <tr>
+                <td><code>EventBinding</code></td>
+                <td>Event type, canonical filter, prompt configuration, endpoint, and queue</td>
+                <td>Publication-owned binding ID</td>
+              </tr>
+              <tr>
+                <td><code>EventInterest</code></td>
+                <td>Deduplication key for equivalent source event plus filter</td>
+                <td>Hash of AEGS, event type/version, connection scope, canonical filter</td>
+              </tr>
+              <tr>
+                <td><code>EnvironmentRoute</code></td>
+                <td>Maps one interest to one active workflow endpoint in an environment</td>
+                <td>Environment ID + event-interest key</td>
+              </tr>
+              <tr>
+                <td><code>EventOccurrence</code></td>
+                <td>One provider fact transformed into prompt plus optional artifacts</td>
+                <td>AEGS occurrence ID and AEDS delivery ID</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>
+            Enforce a unique active route on
+            <code>(execution_environment_id, event_interest_key)</code>. A single publication may
+            hold many bindings, but each binding is independently versioned, reconciled, tested,
+            paused, transferred, and deleted.
+          </p>
+
+          <h3>Delivery envelope</h3>
+          <pre><code>{
+  "delivery_id": "opaque-aeds-id",
+  "binding_id": "opaque-publication-binding-id",
+  "event_type": "pull-request.opened",
+  "event_type_version": 1,
+  "occurred_at": "2026-07-27T09:45:00Z",
+  "prompt": "Review pull request #482 in owner/repository.",
+  "artifacts": [
+    {
+      "name": "pull-request.json",
+      "media_type": "application/json",
+      "reference": "opaque-artifact-reference"
+    }
+  ]
+}</code></pre>
+          <p>
+            Prompt and artifact limits reuse the workflow endpoint contract. AEDS may enforce a
+            defensive transport envelope ceiling, but it does not introduce a separate product
+            payload model. Canonical event metadata stays inline. An AEGS includes an artifact
+            only when the reference is durable and retrievable by the workflow; it must not
+            advertise synthetic adapter-local references.
+          </p>
+
+          <h3>Connection and acknowledgement</h3>
+          <ul>
+            <li>The kernel opens one authenticated outbound persistent connection to AEDS.</li>
+            <li>
+              On reconnect it presents stable kernel/environment identity, active route claims, and
+              the last accepted delivery cursor.
+            </li>
+            <li>
+              The kernel acknowledges a delivery only after the durable, idempotent queue
+              transaction succeeds.
+            </li>
+            <li>
+              A lost acknowledgement may cause network redelivery, but the existing
+              <code>delivery_id</code> prevents a second queued prompt.
+            </li>
+            <li>
+              After insertion there are no special event semantics: ordinary workflow queue and
+              dispatch rules apply.
+            </li>
+          </ul>
+        </section>
+
+        <section id="lifecycle">
+          <span class="section-no">08 · Publication and deployment lifecycle</span>
+          <h2>The publication persists; the route can move.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Operation</th>
+                <th>Required behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Republish in same environment</td>
+                <td>Preserve binding identity and upstream subscription; update endpoint revision atomically.</td>
+              </tr>
+              <tr>
+                <td>Move environment to new kernel</td>
+                <td>Rebind the route, fence the old kernel, and resume from the durable delivery cursor.</td>
+              </tr>
+              <tr>
+                <td>Deploy to a distinct environment</td>
+                <td>Create an independent environment route and, when needed, an independent logical AEGS subscription.</td>
+              </tr>
+              <tr>
+                <td>Publish same interest twice in one environment</td>
+                <td>Reject activation and expose the existing owner; permit an explicit atomic transfer.</td>
+              </tr>
+              <tr>
+                <td>Pause publication</td>
+                <td>Stop new delivery for its route without deleting workflow definition or authorization.</td>
+              </tr>
+              <tr>
+                <td>Delete published workflow</td>
+                <td>Tombstone routes, revoke delivery capabilities, reconcile AEGS state, and retain auditable status.</td>
+              </tr>
+              <tr>
+                <td>Kernel or computer reboot</td>
+                <td>Reconnect automatically, reassert claims, reconcile subscriptions, and drain pending delivery.</td>
+              </tr>
+              <tr>
+                <td>AEGS manifest deprecation</td>
+                <td>Keep the pinned version active where safe; surface migration health and require explicit migration.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="ownership">
+          <span class="section-no">09 · Cross-repository ownership</span>
+          <h2>Runtime below clients; presentation above protocol.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Repository</th>
+                <th>Implementation ownership</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>arroba</code></td>
+                <td>
+                  Shared contracts; kernel publication service; durable event binding and inbox
+                  state; public AEDS client; local/remote TUI and slash commands; public AEGS SDK,
+                  dummy/reference generator, conformance tools, protocol snapshots, and runtime
+                  drills. Production AEDS and AEGS implementations do not live here.
+                </td>
+              </tr>
+              <tr>
+                <td><code>arroba-aeds</code> <span class="badge">private</span></td>
+                <td>
+                  The independently versioned and deployed AEDS product: subscription route
+                  registry, authenticated producer ingress, durable delivery, kernel connections,
+                  acknowledgements, operational endpoints, self-host packaging, and deployment
+                  runbooks. One repository produces an image that may be deployed as multiple
+                  AEDS instances.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>arroba-aegs-&lt;provider&gt;</code>
+                  <span class="badge">private · one per integration</span>
+                </td>
+                <td>
+                  One independently versioned, secured, and deployed repository for every
+                  Arroba-maintained production integration, beginning with
+                  <code>arroba-aegs-github</code> and then Jira, Linear, GitLab, Sentry, and Slack.
+                  Each owns only its provider authorization, webhook/subscription lifecycle,
+                  normalization, protected credentials, and catalog manifest.
+                </td>
+              </tr>
+              <tr>
+                <td><code>arroba-cloud</code></td>
+                <td>
+                  Hosted registry API and search index; publisher verification and editorial
+                  metadata; search, categories, recommendations, pagination, and installation
+                  metadata; browser authorization callbacks where required; web workflow
+                  side-panel catalog and configuration; web minimum-protocol gates and
+                  browser-terminal drills. It may configure service discovery but does not own or
+                  embed AEDS/AEGS runtimes.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The public registry endpoint is configurable in the kernel. Hosted Cloud may operate
+            the default registry and AEDS, but it must not proxy browser-to-kernel terminal traffic,
+            become workflow authority, or inspect provider execution state.
+          </p>
+          <div class="callout good">
+            <strong>Repository extraction completed for the implementation branch.</strong>
+            <p>
+              The temporary <code>apps/aeds</code> and combined <code>apps/aegs</code> incubators
+              have been split. AEDS now lives in the private <code>arroba-aeds</code> repository;
+              GitHub, Jira, Linear, GitLab, Sentry, and Slack each live in a separate private
+              <code>arroba-aegs-&lt;provider&gt;</code> repository. OSS retains only
+              <code>arroba-aegs-dummy</code>, the public protocol and SDK, conformance contracts,
+              kernel integration, and a cross-repository local drill. Service-specific containers,
+              TLS, systemd, migrations, credentials, and operational tooling are owned by the
+              corresponding private repository. The final cleanup gate requires searches and
+              build graphs in both <code>arroba</code> and <code>arroba-cloud</code> to show no
+              duplicate production runtime.
+            </p>
+          </div>
+          <p>
+            Catalog identity is publisher-scoped rather than reserved by service name. For
+            example, Arroba's GitHub implementation uses <code>dev.arroba.github</code>; a future
+            verified implementation published by GitHub uses GitHub's own namespace and may
+            coexist as the official implementation.
+          </p>
+
+          <h3>Implementation workspaces</h3>
+          <pre><code>arroba
+  branch:   codex/event-based-publication
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/arroba
+
+arroba-cloud
+  branch:   codex/event-based-publication
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/arroba-cloud</code></pre>
+        </section>
+
+        <section id="deployment">
+          <span class="section-no">10 · Hetzner deployment</span>
+          <h2>Promote locally proven services into separate failure domains.</h2>
+          <p>
+            After the complete local product slice passes, deploy AEDS and the dummy AEGS to
+            Hetzner and repeat the acceptance matrix over public TLS. During implementation, a new
+            Hetzner machine will be reserved. The deployment design must keep AEDS and AEGSs on
+            different machines and must not assume that the existing relay machine has spare
+            capacity. If the new machine is not yet available, isolated containers on the local
+            development machine provide a nonblocking deployment rehearsal.
+          </p>
+          <div class="callout">
+            <strong>Host-separation rule.</strong>
+            <p>
+              AEDS and AEGSs must never be co-located on the same host. The existing relay host is
+              protected capacity: it may receive a bounded temporary staging role only after a
+              fresh CPU, memory, disk, network, and port preflight. If the new reservation plus
+              safely available capacity cannot provide distinct AEDS and AEGS hosts, provision
+              another machine rather than weakening isolation.
+            </p>
+          </div>
+          <div class="callout warning">
+            <strong>Local-container fallback.</strong>
+            <p>
+              Machine procurement does not block implementation. Run AEDS and each AEGS as
+              separately limited local containers with distinct networks, volumes, secrets,
+              identities, and published loopback ports. Exercise the same images, configuration,
+              persistence, restart, rollback, and product drills intended for Hetzner. This proves
+              deployability but not physical failure-domain separation, public TLS, host reboot,
+              or cross-machine recovery; those gates remain required on Hetzner.
+            </p>
+          </div>
+
+          <h3>Target host roles</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Host role</th>
+                <th>Services</th>
+                <th>Isolation and persistence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Relay host</td>
+                <td>Existing hosted relay and its Caddy edge</td>
+                <td>
+                  Remains relay-first. It is not general event-runtime capacity and is not changed
+                  without a passing capacity and regression preflight.
+                </td>
+              </tr>
+              <tr>
+                <td>AEDS host</td>
+                <td>AEDS, loopback health/metrics, Caddy HTTPS/WSS edge</td>
+                <td>
+                  Dedicated service identity, delivery database/volume, backup target, and
+                  producer/kernel credentials. No provider OAuth secrets.
+                </td>
+              </tr>
+              <tr>
+                <td>AEGS host</td>
+                <td>Dummy AEGS initially; GitHub and later first-wave AEGSs as isolated services</td>
+                <td>
+                  Separate container, identity, secrets, limits, state, and logs per AEGS. No
+                  access to AEDS storage or another AEGS's provider credentials.
+                </td>
+              </tr>
+              <tr>
+                <td>Additional AEGS hosts</td>
+                <td>Generators moved out as traffic, privilege, or provider isolation requires</td>
+                <td>
+                  Same deployment contract. Registry identity remains stable when the operator
+                  changes placement.
+                </td>
+              </tr>
+              <tr>
+                <td>Local fallback</td>
+                <td>One AEDS container plus separately isolated dummy and first-party AEGS containers</td>
+                <td>
+                  Development-only deployment rehearsal. Separate networks, volumes, secrets,
+                  resource limits, and ports emulate host roles but do not satisfy Hetzner
+                  acceptance.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Deployment shape</h3>
+          <ul>
+            <li>
+              Produce immutable Linux OCI images for AEDS and every Arroba-maintained AEGS. Deploy
+              pinned digests tied to the exact revision of each owning service repository plus
+              compatible OSS and Cloud revisions; do not deploy by pulling a mutable branch on the
+              host.
+            </li>
+            <li>
+              Run persistent staging containers under systemd with restart limits, explicit
+              service users, read-only roots where practical, bounded CPU/memory, and separately
+              mounted data and secret paths.
+            </li>
+            <li>
+              Bind application ports to loopback. Caddy exposes distinct HTTPS/WSS hostnames for
+              AEDS and for each externally reachable AEGS webhook/OAuth surface.
+            </li>
+            <li>
+              Permit only SSH and public HTTP/TLS at the host firewall. Cross-machine AEGS-to-AEDS
+              traffic uses public or private TLS with scoped producer credentials; it never uses a
+              shared filesystem.
+            </li>
+            <li>
+              Store AEDS pending deliveries and route state on a durable volume. The first
+              single-node staging implementation may use SQLite/WAL behind a storage interface,
+              but must prove restart and backup/restore before acceptance.
+            </li>
+            <li>
+              Give each AEGS its own durable connection/subscription store. Provider credentials
+              and webhook secrets remain in that AEGS's protected secret boundary and never enter
+              AEDS, the registry, publication packages, or workflow prompts.
+            </li>
+            <li>
+              Export readiness, structured logs, bounded metrics, build/version identity, storage
+              health, connection counts, pending-delivery depth, retry age, and subscription
+              reconciliation status without exposing prompts, artifacts, or credentials.
+            </li>
+            <li>
+              Keep the current image and one known-good rollback image. Upgrade one service at a
+              time and verify delivery continuity before promoting the new version.
+            </li>
+          </ul>
+
+          <h3>Promotion ladder</h3>
+          <ol>
+            <li>
+              <strong>Local fixtures:</strong> protocol, state-machine, retry, dedupe, lifecycle,
+              and conformance tests.
+            </li>
+            <li>
+              <strong>Local product:</strong> real web-terminal and PTY/TUI setup, delivery,
+              conflict, health, test-event, and deletion flows.
+            </li>
+            <li>
+              <strong>Local deployment rehearsal:</strong> run the immutable AEDS and AEGS images
+              in isolated local containers with persistent volumes, restart policies, resource
+              limits, upgrade/rollback, backup/restore, and product validation. Use this whenever
+              the new Hetzner machine is not yet available.
+            </li>
+            <li>
+              <strong>Ephemeral Hetzner:</strong> use the existing SSH preflight, artifact
+              provenance, run ownership, resource safety lease, and cleanup machinery to stage
+              temporary AEDS and AEGS services on their designated hosts.
+            </li>
+            <li>
+              <strong>Persistent Hetzner staging:</strong> install systemd-managed pinned images,
+              Caddy routes, durable volumes, secret files, backup, monitoring, and rollback.
+            </li>
+            <li>
+              <strong>Failure validation:</strong> restart each service, reboot each host,
+              interrupt the cross-host network, lose an acknowledgement, exhaust a bounded queue,
+              rotate credentials, restore from backup, and verify recovery.
+            </li>
+            <li>
+              <strong>Live provider:</strong> receive a real provider event and execute the target
+              workflow exactly once through both product surfaces.
+            </li>
+            <li>
+              <strong>Registry promotion:</strong> only then mark an Arroba-operated AEGS
+              available or recommended. The dummy AEGS remains a development fixture.
+            </li>
+          </ol>
+
+          <h3>Deployment artifacts and runbooks</h3>
+          <ul>
+            <li>OCI build definitions, digests, SBOM/provenance record, and version endpoint.</li>
+            <li>Systemd unit templates and least-privilege environment/secret-file contract.</li>
+            <li>Caddy host routing and TLS readiness checks without embedding credentials.</li>
+            <li>Install, upgrade, health-check, rollback, backup, restore, and removal commands.</li>
+            <li>
+              Guarded Hetzner drill that targets exact configured hosts, refuses broad cleanup,
+              labels every owned resource, and removes only run-owned temporary artifacts.
+            </li>
+            <li>
+              Retained evidence containing source revisions, image digests, host roles, service
+              versions, restart/reboot timeline, queue/delivery results, web screenshots, and
+              PTY/TUI transcripts.
+            </li>
+          </ul>
+        </section>
+
+        <section id="milestones">
+          <span class="section-no">11 · Implementation milestones</span>
+          <h2>Executable scope ends with the first wave.</h2>
+          <div class="milestones">
+            <article class="milestone">
+              <div class="milestone-id">M0 · Contract</div>
+              <div>
+                <h3>ADR, schemas, and fixtures</h3>
+                <ul>
+                  <li>Finalize terminology, boundaries, identity, and environment uniqueness.</li>
+                  <li>
+                    Establish the public/private repository boundary and extract production
+                    service runtimes before deployment: one private AEDS repository and one
+                    private repository per Arroba-maintained AEGS.
+                  </li>
+                  <li>
+                    Specify registry summary/detail pages, cursors, manifests, AEGS management, and
+                    AEDS delivery protocols.
+                  </li>
+                  <li>
+                    Define lifecycle state machines, error taxonomy, version negotiation, and
+                    security/threat model updates.
+                  </li>
+                  <li>Create signed dummy registry and AEGS fixtures.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M1 · Runtime</div>
+              <div>
+                <h3>AEDS + dummy AEGS + kernel vertical slice</h3>
+                <ul>
+                  <li>Implement durable AEDS pending delivery and scoped producer capabilities.</li>
+                  <li>Implement kernel connection, heartbeat, reconnect, resume, and reconciliation.</li>
+                  <li>
+                    Add event publication and binding persistence, environment claims, and
+                    idempotent queue insertion.
+                  </li>
+                  <li>
+                    Extend the existing queued prompt source metadata without introducing a
+                    parallel scheduler.
+                  </li>
+                  <li>Prove test-event delivery through the real workflow endpoint queue.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M2 · Protocol</div>
+              <div>
+                <h3>Shared management surface and TUI</h3>
+                <ul>
+                  <li>Add bounded catalog search/browse/detail/event-list requests with cursors.</li>
+                  <li>Add authorization, resource enumeration, CRUD, health, transfer, and test requests.</li>
+                  <li>
+                    Increment the local daemon protocol version and update shape/hash snapshots.
+                  </li>
+                  <li>Add TUI views and slash commands using the shared requests.</li>
+                  <li>Add focused PTY drills for search paging, configuration, and delivery.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M3 · Catalog</div>
+              <div>
+                <h3>Registry and web product slice</h3>
+                <ul>
+                  <li>
+                    Implement cursor-paginated search, categories, facets, signed details, and
+                    compatibility filtering.
+                  </li>
+                  <li>
+                    Implement the Event-based notifications side-panel landing, search, browse,
+                    service detail, event selection, and configuration states.
+                  </li>
+                  <li>
+                    Add publisher/operator trust badges, authorization disclosures, pagination,
+                    loading, empty, stale-cache, and failure states.
+                  </li>
+                  <li>
+                    Validate in the actual browser terminal with screenshots at desktop and narrow
+                    widths.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M4 · Deployment</div>
+              <div>
+                <h3>Local-container fallback and Hetzner gate</h3>
+                <ul>
+                  <li>
+                    Build deployment images from the extracted private AEDS and per-provider AEGS
+                    repositories; OSS cross-repository Compose is only a local orchestrator and is
+                    not deployable production provenance.
+                  </li>
+                  <li>
+                    Package AEDS and the dummy AEGS as immutable OCI images and prove their complete
+                    deployment contract first in separately isolated local containers.
+                  </li>
+                  <li>
+                    Treat the local-container path as sufficient to continue implementation while
+                    machine procurement is pending, but not as Hetzner or production evidence.
+                  </li>
+                  <li>
+                    Reserve and preflight the new Hetzner machine, assign distinct AEDS and AEGS
+                    host roles, and refuse unsafe co-location or relay-host overload.
+                  </li>
+                  <li>
+                    Add immutable OCI builds, systemd units, Caddy routes, durable volumes,
+                    protected secrets, readiness/metrics, backup/restore, and rollback.
+                  </li>
+                  <li>
+                    Run ephemeral remote validation before installing persistent staging services.
+                  </li>
+                  <li>
+                    Connect a real local kernel to remote AEDS over WSS and deliver from the dummy
+                    AEGS running on its separate host.
+                  </li>
+                  <li>
+                    Repeat web-terminal and PTY/TUI acceptance, then service restart, host reboot,
+                    cross-host partition, ACK loss, credential rotation, and restore drills.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M5 · GitHub</div>
+              <div>
+                <h3>First production AEGS</h3>
+                <ul>
+                  <li>
+                    Extract the implementation into the private
+                    <code>arroba-aegs-github</code> repository with independent CI, image,
+                    versioning, security scanning, deployment configuration, and catalog manifest.
+                  </li>
+                  <li>
+                    Implement GitHub App authorization, installation/repository discovery, webhook
+                    verification, source deduplication, and event normalization.
+                  </li>
+                  <li>
+                    Ship pull request opened first, then the approved GitHub event set through the
+                    same manifest and event-binding model.
+                  </li>
+                  <li>
+                    Validate offline kernel delivery, reboot, retry, duplicate conflict, transfer,
+                    and publication deletion end to end locally.
+                  </li>
+                  <li>
+                    Deploy the GitHub AEGS to its Hetzner AEGS host, receive a real GitHub webhook,
+                    publish across machines to AEDS, and repeat product and failure validation
+                    before registry promotion.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M6 · Platform</div>
+              <div>
+                <h3>AEGS SDK and conformance suite</h3>
+                <ul>
+                  <li>
+                    Provide manifest validation, auth helpers, AEDS client, event/artifact builders,
+                    signature/replay helpers, and a local test harness.
+                  </li>
+                  <li>
+                    Add lifecycle, retry, schema compatibility, security, and registry publication
+                    conformance tests.
+                  </li>
+                  <li>Document first-party, official-provider, community, and self-hosted paths.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M7 · First wave</div>
+              <div>
+                <h3>Complete the initial integration set</h3>
+                <ul>
+                  <li>
+                    Give every Arroba-maintained integration its own private repository, CI,
+                    immutable image, protected credential boundary, and publisher-scoped catalog
+                    identity.
+                  </li>
+                  <li><strong>Jira Cloud:</strong> OAuth 2.0 dynamic webhooks and renewal.</li>
+                  <li><strong>Linear:</strong> organization/team webhook subscriptions.</li>
+                  <li><strong>GitLab:</strong> project/group events and self-managed host support.</li>
+                  <li><strong>Sentry:</strong> alerts, issues, and project service hooks.</li>
+                  <li><strong>Slack:</strong> Events API, workspace auth, event filtering, and scopes.</li>
+                  <li>
+                    Run the complete web-terminal, PTY/TUI, reconnect, deletion, and environment
+                    exclusivity matrix locally and against the separate Hetzner AEDS/AEGS hosts
+                    for every first-wave AEGS.
+                  </li>
+                </ul>
+              </div>
+            </article>
+          </div>
+
+          <div class="callout phase-two">
+            <strong>Second phase — mentioned, not planned here.</strong>
+            <p>
+              After first-wave completion, plan a second integration phase covering Notion, Gmail,
+              Google Calendar, Discord, Microsoft Outlook/Calendar through Graph, additional CI and
+              observability providers, and Stripe. Gmail and Calendar require source
+              reconciliation and expiring watch renewal; Discord may require Gateway support for
+              events not exposed through HTTP webhooks. That phase gets its own plan after the SDK,
+              registry, and first-wave operational evidence exist.
+            </p>
+          </div>
+        </section>
+
+        <section id="validation">
+          <span class="section-no">12 · Validation matrix</span>
+          <h2>Test the product, not only the services.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Required evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Unit and state-machine tests</td>
+                <td>Canonical filters, uniqueness, lifecycle transitions, cursor validation, retry, and dedupe</td>
+              </tr>
+              <tr>
+                <td>Protocol tests</td>
+                <td>Version bump, serialized shape snapshots, compatibility gates, bounded pagination</td>
+              </tr>
+              <tr>
+                <td>AEDS/AEGS conformance</td>
+                <td>Auth, signing, replay protection, renewal, retry, ordering tolerance, deletion</td>
+              </tr>
+              <tr>
+                <td>Kernel drills</td>
+                <td>Offline backlog, reboot, ACK loss, stale kernel fencing, environment transfer, durable queue insertion</td>
+              </tr>
+              <tr>
+                <td>Hetzner deployment</td>
+                <td>
+                  Separate AEDS/AEGS hosts, pinned artifacts, TLS, durable state, backup/restore,
+                  service restart, host reboot, cross-host partition, rollback, and clean removal
+                </td>
+              </tr>
+              <tr>
+                <td>Local deployment fallback</td>
+                <td>
+                  The same pinned AEDS/AEGS images in isolated local containers with separate
+                  networks, volumes, secrets, limits, restart, backup/restore, rollback, and both
+                  product surfaces; explicitly recorded as non-Hetzner evidence
+                </td>
+              </tr>
+              <tr>
+                <td>Product frontend — web terminal</td>
+                <td>
+                  Real browser session against a live kernel: landing pages, category paging,
+                  search paging, service detail, multi-event selection, authorization,
+                  configuration, conflict handling, health, test event, and deletion; final
+                  screenshots required
+                </td>
+              </tr>
+              <tr>
+                <td>Product frontend — TUI in PTY</td>
+                <td>
+                  Real TUI process under a PTY: slash discovery, incremental results, keyboard
+                  navigation, external auth handoff, multi-event setup, duplicate conflict,
+                  resize/repaint, queued event visibility, reconnect, and deletion
+                </td>
+              </tr>
+              <tr>
+                <td>Cross-surface parity</td>
+                <td>A publication created in either surface is inspectable, testable, transferable, and removable in the other</td>
+              </tr>
+              <tr>
+                <td>Live provider drill</td>
+                <td>Real provider event reaches the configured workflow endpoint and executes exactly once in the target environment</td>
+              </tr>
+              <tr>
+                <td>Repository extraction and cleanup</td>
+                <td>
+                  AEDS and every Arroba-maintained production AEGS build, test, and deploy from
+                  their owning private repositories. Production runtime, provider adapter,
+                  container, migration, deployment, and operational files are removed from
+                  <code>arroba</code> and <code>arroba-cloud</code>; no duplicate implementation
+                  remains. OSS retains only kernel/publication behavior, public schemas and SDK,
+                  conformance tests, and the dummy/local-development AEGS.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Mandatory runtime scenarios</h3>
+          <ul>
+            <li>Registry has millions of entries in the test index; first page remains bounded.</li>
+            <li>Rapid search replacement cancels stale requests and does not reorder results.</li>
+            <li>Category and event cursors remain stable within a catalog revision.</li>
+            <li>Registry unavailable while an existing publication continues receiving events.</li>
+            <li>Kernel offline when an event occurs; prompt appears after reboot and reconnect.</li>
+            <li>Connection drops between durable enqueue and ACK; only one prompt is visible.</li>
+            <li>Two workflows request the same event interest in one environment; second activation fails visibly.</li>
+            <li>Workflow moves to a different kernel; old kernel is fenced and pending delivery resumes.</li>
+            <li>Same workflow deploys to a distinct environment; independent routing is explicit.</li>
+            <li>Publication deletion revokes delivery and upstream subscription state reconciles.</li>
+            <li>
+              AEDS and AEGS run on different Hetzner machines; stopping or saturating an AEGS does
+              not make AEDS unavailable.
+            </li>
+            <li>
+              AEDS restarts and its host reboots while pending deliveries survive and resume from
+              durable state.
+            </li>
+            <li>
+              The AEGS host restarts, reconnects to its providers and AEDS, and reconciles logical
+              subscriptions without creating duplicate environment routes.
+            </li>
+            <li>
+              A cross-host partition recovers without lost accepted events or duplicate workflow
+              prompts.
+            </li>
+            <li>
+              A pinned release is rolled back on one host without modifying the other host or the
+              existing relay service.
+            </li>
+          </ul>
+        </section>
+
+        <section id="acceptance">
+          <span class="section-no">13 · Definition of done</span>
+          <h2>The first wave is complete only when all surfaces agree.</h2>
+          <div class="grid acceptance">
+            <article class="card">
+              <h3>Architecture</h3>
+              <ul>
+                <li>Event-based is a first-class workflow publication surface.</li>
+                <li>Kernel remains workflow and queue authority.</li>
+                <li>Registry is paginated, searchable, cacheable, and absent from delivery.</li>
+                <li>AEDS and AEGS responsibilities remain distinct.</li>
+                <li>
+                  Production AEDS and AEGSs live only in their private owning repositories; OSS
+                  and Cloud contain no duplicate production implementation.
+                </li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Safety</h3>
+              <ul>
+                <li>One active event interest per execution environment.</li>
+                <li>Signed manifests and clear publisher/operator identity.</li>
+                <li>Durable enqueue and delivery-ID dedupe.</li>
+                <li>Explicit transfer, deletion, and credential revocation.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Product</h3>
+              <ul>
+                <li>Large-catalog browse, search, categories, and paging work in web and TUI.</li>
+                <li>Multiple events can be configured in one publication flow.</li>
+                <li>Conflict and health states are understandable and actionable.</li>
+                <li>Real web-terminal screenshots and PTY/TUI transcripts are retained.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Integrations</h3>
+              <ul>
+                <li>GitHub, Jira, Linear, GitLab, Sentry, and Slack pass conformance.</li>
+                <li>Each passes live delivery, reboot, retry, transfer, and deletion drills.</li>
+                <li>SDK and documentation are sufficient for a non-Arroba publisher.</li>
+                <li>Second-phase integrations remain explicitly deferred.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Deployment</h3>
+              <ul>
+                <li>AEDS and AEGSs run on separate Hetzner machines.</li>
+                <li>The existing relay host remains within measured resource headroom.</li>
+                <li>Images are immutable and support a proven rollback.</li>
+                <li>Local containers keep implementation unblocked before host procurement.</li>
+                <li>Restart, reboot, partition, backup/restore, TLS, and clean-removal drills pass.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <footer>
+          EVENT_BASED_PUBLICATION_SURFACE_PLAN.html · Arroba architecture · 2026-07-27
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

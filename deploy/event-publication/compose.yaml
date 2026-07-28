@@ -1,0 +1,410 @@
+name: arroba-event-publication
+
+services:
+  aeds:
+    image: arroba-aeds:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aeds
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEDS_KERNEL_ADDR: 0.0.0.0:43130
+      ARROBA_AEDS_PRODUCER_ADDR: 0.0.0.0:43131
+      ARROBA_AEDS_DATABASE_PATH: /var/lib/arroba/aeds/aeds.db
+      ARROBA_AEDS_KERNEL_TOKENS_FILE: /run/secrets/aeds_kernel_tokens
+      ARROBA_AEDS_PRODUCER_CAPABILITIES_FILE: /run/secrets/aeds_producer_capabilities
+      ARROBA_AEDS_RETRY_MS: "250"
+      ARROBA_AEDS_HEARTBEAT_MS: "1000"
+    secrets:
+      - aeds_kernel_tokens
+      - aeds_producer_capabilities
+    volumes:
+      - aeds-data:/var/lib/arroba/aeds
+    networks:
+      - kernel-delivery
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_AEDS_KERNEL_PORT:-43130}:43130"
+      - "127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT:-43131}:43131"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43131/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+
+  dummy-aegs:
+    image: arroba-aegs-dummy:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: docker/aegs-dummy/Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.dummy
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/dummy_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/dummy_aegs_management_token
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - dummy_aegs_producer_token
+      - dummy_aegs_management_token
+    volumes:
+      - dummy-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_DUMMY_AEGS_PORT:-43132}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  github-aegs:
+    image: arroba-aegs-github:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-github
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.github
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/github_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/github_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/github_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - github_aegs_producer_token
+      - github_aegs_management_token
+      - github_aegs_webhook_secret
+    volumes:
+      - github-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_GITHUB_AEGS_PORT:-43133}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  jira-aegs:
+    image: arroba-aegs-jira:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-jira
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.jira-cloud
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/jira_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/jira_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/jira_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - jira_aegs_producer_token
+      - jira_aegs_management_token
+      - jira_aegs_webhook_secret
+    volumes:
+      - jira-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_JIRA_AEGS_PORT:-43134}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  linear-aegs:
+    image: arroba-aegs-linear:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-linear
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.linear
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/linear_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/linear_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/linear_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - linear_aegs_producer_token
+      - linear_aegs_management_token
+      - linear_aegs_webhook_secret
+    volumes:
+      - linear-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_LINEAR_AEGS_PORT:-43135}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  gitlab-aegs:
+    image: arroba-aegs-gitlab:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-gitlab
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.gitlab
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/gitlab_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/gitlab_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/gitlab_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - gitlab_aegs_producer_token
+      - gitlab_aegs_management_token
+      - gitlab_aegs_webhook_secret
+    volumes:
+      - gitlab-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_GITLAB_AEGS_PORT:-43136}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  sentry-aegs:
+    image: arroba-aegs-sentry:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-sentry
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.sentry
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/sentry_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/sentry_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/sentry_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - sentry_aegs_producer_token
+      - sentry_aegs_management_token
+      - sentry_aegs_webhook_secret
+    volumes:
+      - sentry-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_SENTRY_AEGS_PORT:-43137}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+  slack-aegs:
+    image: arroba-aegs-slack:${ARROBA_EVENT_IMAGE_TAG:-local}
+    build:
+      context: ../../../arroba-aegs-slack
+      dockerfile: Dockerfile
+      args:
+        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.slack
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/slack_aegs_producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/slack_aegs_management_token
+      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/slack_aegs_webhook_secret
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+    secrets:
+      - slack_aegs_producer_token
+      - slack_aegs_management_token
+      - slack_aegs_webhook_secret
+    volumes:
+      - slack-aegs-data:/var/lib/arroba/aegs
+    networks:
+      - producer-delivery
+    ports:
+      - "127.0.0.1:${ARROBA_SLACK_AEGS_PORT:-43138}:43132"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    depends_on:
+      aeds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+
+networks:
+  kernel-delivery: {}
+  producer-delivery: {}
+
+volumes:
+  aeds-data:
+  dummy-aegs-data:
+  github-aegs-data:
+  jira-aegs-data:
+  linear-aegs-data:
+  gitlab-aegs-data:
+  sentry-aegs-data:
+  slack-aegs-data:
+
+secrets:
+  aeds_kernel_tokens:
+    file: ./secrets/aeds-kernel-tokens.json
+  aeds_producer_capabilities:
+    file: ./secrets/aeds-producer-capabilities.json
+  dummy_aegs_producer_token:
+    file: ./secrets/dummy-aegs-producer-token
+  dummy_aegs_management_token:
+    file: ./secrets/dummy-aegs-management-token
+  github_aegs_producer_token:
+    file: ./secrets/github-aegs-producer-token
+  github_aegs_management_token:
+    file: ./secrets/github-aegs-management-token
+  github_aegs_webhook_secret:
+    file: ./secrets/github-aegs-webhook-secret
+  jira_aegs_producer_token:
+    file: ./secrets/jira-aegs-producer-token
+  jira_aegs_management_token:
+    file: ./secrets/jira-aegs-management-token
+  jira_aegs_webhook_secret:
+    file: ./secrets/jira-aegs-webhook-secret
+  linear_aegs_producer_token:
+    file: ./secrets/linear-aegs-producer-token
+  linear_aegs_management_token:
+    file: ./secrets/linear-aegs-management-token
+  linear_aegs_webhook_secret:
+    file: ./secrets/linear-aegs-webhook-secret
+  gitlab_aegs_producer_token:
+    file: ./secrets/gitlab-aegs-producer-token
+  gitlab_aegs_management_token:
+    file: ./secrets/gitlab-aegs-management-token
+  gitlab_aegs_webhook_secret:
+    file: ./secrets/gitlab-aegs-webhook-secret
+  sentry_aegs_producer_token:
+    file: ./secrets/sentry-aegs-producer-token
+  sentry_aegs_management_token:
+    file: ./secrets/sentry-aegs-management-token
+  sentry_aegs_webhook_secret:
+    file: ./secrets/sentry-aegs-webhook-secret
+  slack_aegs_producer_token:
+    file: ./secrets/slack-aegs-producer-token
+  slack_aegs_management_token:
+    file: ./secrets/slack-aegs-management-token
+  slack_aegs_webhook_secret:
+    file: ./secrets/slack-aegs-webhook-secret

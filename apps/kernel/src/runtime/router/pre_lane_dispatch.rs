@@ -6,6 +6,7 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
+use crate::runtime::event_catalog_control::execute_event_catalog_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::projected_provider_run_response;
@@ -114,6 +115,22 @@ impl CommandRouter {
             | LocalDaemonRequest::GetProviderCommandCatalogs(_)) => {
                 return execute_provider_catalog_request(
                     &self.provider_catalog_projection,
+                    &self.config_projection,
+                    request.clone(),
+                )
+                .await
+                .map(Some);
+            }
+            request @ (LocalDaemonRequest::GetEventGeneratorCatalogLanding(_)
+            | LocalDaemonRequest::SearchEventGeneratorCatalog(_)
+            | LocalDaemonRequest::BrowseEventGeneratorCategory(_)
+            | LocalDaemonRequest::GetEventGeneratorDetail(_)
+            | LocalDaemonRequest::BrowseEventGeneratorEvents(_)
+            | LocalDaemonRequest::StartEventGeneratorAuthorization(_)
+            | LocalDaemonRequest::ListEventGeneratorResources(_)
+            | LocalDaemonRequest::GetEventDeliveryStatus(_)) => {
+                return execute_event_catalog_request(
+                    &self.runtime_state,
                     &self.config_projection,
                     request.clone(),
                 )

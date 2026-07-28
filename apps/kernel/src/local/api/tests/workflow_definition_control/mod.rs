@@ -1,8 +1,9 @@
 use super::*;
 use crate::local::{
-    CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
-    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, ListWorkflowPublicationsRequest,
-    RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
+    CreateWorkflowEventBindingRequest, CreateWorkflowPublicationRequest,
+    CreateWorkflowScheduleRequest, ExportWorkflowPublicationPackageRequest, InstallSkillRequest,
+    ListWorkflowPublicationsRequest, RegisterEnvironmentRequest, RegisterScriptRequest,
+    RegisterWorkflowPublicationEndpointRequest, TestWorkflowEventBindingRequest,
 };
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -13,6 +14,7 @@ mod workflow_code_artifact_imports;
 mod workflow_code_artifact_persistence;
 mod workflow_code_extensions_queues;
 mod workflow_code_validation_limits;
+mod workflow_event_publication;
 mod workflow_graph_runtime;
 mod workflow_publication_package;
 

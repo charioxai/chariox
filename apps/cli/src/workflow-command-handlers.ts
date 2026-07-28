@@ -63,6 +63,7 @@ import {
   isWorkflowSettingsCommand,
 } from "./workflow-settings-command-handlers.js"
 import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
+import { handleWorkflowEventPublicationCommand } from "./workflow-event-publication-command-handler.js"
 import {
   handleWorkflowWatchdogCommand,
   type WorkflowWatchdogPayload,
@@ -77,6 +78,9 @@ export type WorkflowCommandHandlerDeps = {
   attachmentState: () => RuntimeAttachment | null
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
+  sendWorkflowEventPublicationRequest?: (
+    request: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>
   updateSessionConfig: (
     sessionId: string,
     attachmentId: string,
@@ -329,6 +333,18 @@ export async function handleWorkflowSlashCommand(
 
   if (subcommand === "schedule" || subcommand === "watchdog") {
     await handleWorkflowWatchdogCommand(deps, context, args)
+    return
+  }
+
+  if (subcommand === "publication" && (args[1] === "event" || args[1] === "events")) {
+    if (!deps.sendWorkflowEventPublicationRequest) {
+      deps.flashFooter("event publication commands are unavailable", "error")
+      return
+    }
+    await handleWorkflowEventPublicationCommand({
+      ...deps,
+      sendWorkflowEventPublicationRequest: deps.sendWorkflowEventPublicationRequest,
+    }, args.slice(2))
     return
   }
 

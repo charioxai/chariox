@@ -3,6 +3,9 @@ resolver = "2"
 members = [
     "apps/kernel",
     "apps/relay",
+    "apps/aegs-dummy",
+    "packages/aegs-sdk",
+    "packages/event-protocol",
     "adapters/rust",
 ]
 # Vendored upstreams and scratch worktrees carry their own Cargo manifests;

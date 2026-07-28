@@ -157,11 +157,53 @@ dependencies = [
 ]
 
 [[package]]
+name = "arroba-aegs-dummy"
+version = "0.1.0"
+dependencies = [
+ "arroba-aegs-sdk",
+ "arroba-event-protocol",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "arroba-aegs-sdk"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "arroba-event-protocol",
+ "base64",
+ "bytes",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.6",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "arroba-event-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "arroba-kernel"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
+ "arroba-event-protocol",
  "arroba-relay",
  "base64",
  "bytes",
@@ -3177,6 +3219,8 @@ dependencies = [
  "once_cell",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "url",
  "webpki-roots 0.26.11",
 ]

@@ -9,6 +9,7 @@ mod deployment_contract;
 pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     snapshot: &crate::session::WorkflowPublicationSnapshot,
+    event_bindings: &[crate::session::WorkflowEventBinding],
     kernel_url: Option<&str>,
     agent_app: Option<&serde_json::Value>,
     agent_app_assets_dir: Option<&str>,
@@ -28,6 +29,7 @@ pub(super) fn workflow_publication_package_files(
         workflow_publication_package_json(publication, &publication_value, agent_app);
     let requirements = workflow_publication_requirements_json(&snapshot.agents);
     let bindings = workflow_publication_bindings_json(snapshot);
+    let event_bindings = workflow_publication_event_bindings_json(publication, event_bindings);
     let config =
         workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
     let mut files = vec![
@@ -39,6 +41,11 @@ pub(super) fn workflow_publication_package_files(
         package_file("workflow.snapshot.json", pretty_json(snapshot)?, false),
         package_file("requirements.json", pretty_json(&requirements)?, false),
         package_file("bindings.example.json", pretty_json(&bindings)?, false),
+        package_file(
+            "event-bindings.example.json",
+            pretty_json(&event_bindings)?,
+            false,
+        ),
         package_file("publication.config.json", pretty_json(&config)?, false),
         package_file(
             ".env.example",
@@ -181,6 +188,10 @@ fn workflow_publication_package_json(
             "schema_version": 1,
         },
     });
+    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
+        package["event_bindings_path"] =
+            serde_json::Value::String("event-bindings.local.json".to_string());
+    }
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
@@ -365,6 +376,42 @@ fn workflow_publication_bindings_json(
     })
 }
 
+fn workflow_publication_event_bindings_json(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    bindings: &[crate::session::WorkflowEventBinding],
+) -> serde_json::Value {
+    let bindings = bindings
+        .iter()
+        .map(|binding| {
+            serde_json::json!({
+                "source_binding_id": binding.id,
+                "generator_id": binding.generator_id,
+                "generator_version": binding.generator_version,
+                "manifest_digest": binding.manifest_digest,
+                "event_type": binding.event_type,
+                "event_type_version": binding.event_type_version,
+                "filter": binding.filter,
+                "requested_scope": binding.connection_scope,
+                "endpoint_id": binding.endpoint_id,
+                "queue_ref": binding.queue_ref,
+                "source_environment_id": binding.environment_id,
+                "source_revision": binding.revision,
+                "activation": {
+                    "connection_id": null,
+                    "environment_id": null,
+                    "mode": "authorize_or_explicit_transfer",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": 1,
+        "publication_id": publication.id(),
+        "secrets_included": false,
+        "bindings": bindings,
+    })
+}
+
 fn workflow_publication_gateway_config_json(
     publication: &crate::session::WorkflowPublicationDefinition,
     publication_value: &serde_json::Value,
@@ -496,6 +543,7 @@ fn workflow_publication_readme(
         "- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents",
         "- `requirements.json`: required extensions and credential handles",
         "- `bindings.example.json`: provider/model override template",
+        "- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route",
         "- `publication.config.json`: gateway config for existing scripts",
         "- `.env.example`: environment template",
         "- `run.sh`: launcher for `arroba-workflow-gateway`",

@@ -122,6 +122,10 @@ impl LocalRouterTestHarness {
         f(&mut app)
     }
 
+    pub(crate) fn runtime_state(&self) -> crate::runtime::state::KernelRuntimeState {
+        self.router.runtime_state()
+    }
+
     pub(crate) fn pump_transport_runtime(&self) {
         self.runtime.block_on(self.router.pump_transport_runtime());
     }

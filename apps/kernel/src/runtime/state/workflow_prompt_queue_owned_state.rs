@@ -238,7 +238,7 @@ impl KernelRuntimeOwnedState {
         ))
     }
 
-    fn workflow_start_next_queued_prompt_for_response(
+    pub(super) fn workflow_start_next_queued_prompt_for_response(
         &self,
         session_id: &str,
     ) -> Result<

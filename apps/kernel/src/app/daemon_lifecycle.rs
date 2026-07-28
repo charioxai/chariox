@@ -135,6 +135,26 @@ impl DaemonApp {
                 shutdown_rx.clone(),
             ),
         );
+        let event_delivery_config = {
+            let app = app.lock().await;
+            crate::transport::event_delivery_client::EventDeliveryClientConfig {
+                url: app.config().event_delivery_url.clone(),
+                token: app.config().event_delivery_token.clone(),
+                kernel_id: app.config().daemon_id.clone(),
+                environment_id: app.config().event_delivery_environment_id.clone(),
+                generator_management_targets: app
+                    .config()
+                    .event_generator_management_targets
+                    .clone(),
+            }
+        };
+        let event_delivery_task = tokio::spawn(
+            crate::transport::event_delivery_client::run_event_delivery_connector(
+                runtime_state.clone(),
+                event_delivery_config,
+                shutdown_rx.clone(),
+            ),
+        );
         runtime_state.spawn_durable_restart_recovery();
         let external_provider_session_discovery_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
@@ -157,6 +177,7 @@ impl DaemonApp {
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
+        let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
         result
     }

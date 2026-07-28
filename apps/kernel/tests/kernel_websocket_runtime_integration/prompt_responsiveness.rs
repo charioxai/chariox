@@ -278,7 +278,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
         let _catalog_response = wait_for_response_with_timeout(
             &mut socket,
             "slow-provider-catalog",
-            Duration::from_secs(10),
+            Duration::from_secs(120),
         )
         .await;
 

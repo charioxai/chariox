@@ -707,7 +707,8 @@ mod tests {
         assert!(base.contains("arroba.get_session_agent"));
         assert!(base.contains("arroba.send_agent_message"));
         assert!(base.contains("Treat every interaction as an equal-level, self-contained message"));
-        assert!(base.contains("Include a follow-up destination only when the sender explicitly requests"));
+        assert!(base
+            .contains("Include a follow-up destination only when the sender explicitly requests"));
         let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
             .expect("workflow turn prompt should read");
         assert!(workflow_turn.contains("workflow_handoffs"));

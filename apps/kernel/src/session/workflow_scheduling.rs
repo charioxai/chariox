@@ -26,6 +26,7 @@ pub enum WorkflowQueuedPromptSource {
     Manual,
     #[serde(alias = "watchdog")]
     Scheduled,
+    Event,
 }
 
 pub type WorkflowWatchdogDefinition = WorkflowScheduleDefinition;

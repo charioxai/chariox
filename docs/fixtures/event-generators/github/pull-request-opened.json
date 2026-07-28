@@ -1,0 +1,16 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "number": 482,
+    "title": "Validate event-based publication end to end",
+    "updated_at": "2026-07-28T00:00:00Z",
+    "html_url": "https://github.com/arroba/arroba/pull/482"
+  },
+  "repository": {
+    "full_name": "arroba/arroba",
+    "html_url": "https://github.com/arroba/arroba"
+  },
+  "sender": {
+    "login": "arroba-validation"
+  }
+}

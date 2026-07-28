@@ -639,6 +639,21 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "workflow_publication.package.export"
         }
         LocalDaemonRequest::DisableWorkflowPublication(_) => "workflow_publication.disable",
+        LocalDaemonRequest::GetEventGeneratorCatalogLanding(_) => "event_catalog.landing",
+        LocalDaemonRequest::SearchEventGeneratorCatalog(_) => "event_catalog.search",
+        LocalDaemonRequest::BrowseEventGeneratorCategory(_) => "event_catalog.category.browse",
+        LocalDaemonRequest::GetEventGeneratorDetail(_) => "event_catalog.generator.get",
+        LocalDaemonRequest::BrowseEventGeneratorEvents(_) => "event_catalog.events.browse",
+        LocalDaemonRequest::StartEventGeneratorAuthorization(_) => {
+            "event_generator.authorization.start"
+        }
+        LocalDaemonRequest::ListEventGeneratorResources(_) => "event_generator.resources.list",
+        LocalDaemonRequest::CreateWorkflowEventBinding(_) => "workflow_event_binding.create",
+        LocalDaemonRequest::ListWorkflowEventBindings(_) => "workflow_event_binding.list",
+        LocalDaemonRequest::SetWorkflowEventBindingStatus(_) => "workflow_event_binding.status.set",
+        LocalDaemonRequest::TransferWorkflowEventBinding(_) => "workflow_event_binding.transfer",
+        LocalDaemonRequest::TestWorkflowEventBinding(_) => "workflow_event_binding.test",
+        LocalDaemonRequest::GetEventDeliveryStatus(_) => "event_delivery.status",
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(_) => {
             "workflow_publication.runtime.control"
         }

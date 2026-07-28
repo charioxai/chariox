@@ -12,7 +12,7 @@ RUN pnpm --filter @arroba/tool-display run build \
   && pnpm --filter @arroba/server run build
 
 FROM rust:1.88-bookworm AS rust-builder
-ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=243
+ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=250
 WORKDIR /opt/arroba
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -32,7 +32,7 @@ LABEL org.opencontainers.image.description="Standalone Arroba kernel plus workfl
 ARG ARROBA_CODEX_VERSION=0.144.0
 ARG ARROBA_OPENCODE_VERSION=1.4.1
 ARG ARROBA_CLAUDE_VERSION=2.1.207
-ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=243
+ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=250
 LABEL dev.arroba.provider.codex.version="${ARROBA_CODEX_VERSION}"
 LABEL dev.arroba.provider.opencode.version="${ARROBA_OPENCODE_VERSION}"
 LABEL dev.arroba.provider.claude.version="${ARROBA_CLAUDE_VERSION}"

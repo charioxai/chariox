@@ -110,8 +110,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
 #[test]
 fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
     let script = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("slice-linux-docker/docker/slice-screen.sh"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
     )
     .expect("slice screen script should be readable");
 

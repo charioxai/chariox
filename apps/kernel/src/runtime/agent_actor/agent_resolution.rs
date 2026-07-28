@@ -17,12 +17,7 @@ pub(super) fn parse_prompt_agent_alias_route(prompt: &str) -> Option<PromptAgent
     if route.starts_with('"') {
         let alias_end = quoted_alias_end(route)?;
         let remainder = &route[alias_end..];
-        if !remainder.is_empty()
-            && !remainder
-                .chars()
-                .next()
-                .is_some_and(char::is_whitespace)
-        {
+        if !remainder.is_empty() && !remainder.chars().next().is_some_and(char::is_whitespace) {
             return None;
         }
         let alias = serde_json::from_str::<String>(&route[..alias_end]).ok()?;

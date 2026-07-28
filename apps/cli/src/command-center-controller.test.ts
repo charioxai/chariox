@@ -184,6 +184,18 @@ test("command center controller lets exact leaf commands submit normally", () =>
   assert.equal(harness.promptText, "/exit")
 })
 
+test("command center lets event authorization commands with arguments submit normally", () => {
+  const command = "/workflow publication event authorize dev.arroba.dummy"
+  const harness = createHarness(command)
+  harness.controller.sync()
+
+  assert.deepEqual(harness.controller.items(), [])
+  assert.equal(harness.controller.open(), false)
+  assert.equal(harness.controller.selectFromSubmit(), false)
+  assert.deepEqual(harness.executed, [])
+  assert.equal(harness.promptText, command)
+})
+
 test("command center controller bypasses session alias submit selection", () => {
   const harness = createHarness("/session docs")
   harness.controller.sync()

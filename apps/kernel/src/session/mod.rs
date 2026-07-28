@@ -75,9 +75,10 @@ pub use types::{
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub use workflow_publication::{
+    WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
     WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
-    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
-    WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+    WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
+    WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
 };
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 

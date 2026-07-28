@@ -245,14 +245,24 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
 
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let _ = arroba_kernel::transport::TransportService::pump_provider_output(
-        &mut app,
-        session.id(),
-        run.id(),
-        recipients,
-    )
-    .expect("poll should enqueue");
-    wait_for_provider_runtime_state(&app, run.id(), false, "output poll I/O is in flight");
+    let deadline = Instant::now() + Duration::from_millis(output_timeout_ms().max(4_000));
+    while app
+        .providers()
+        .structured_runtime_state_bound_for_tests(run.id())
+    {
+        let _ = arroba_kernel::transport::TransportService::pump_provider_output(
+            &mut app,
+            session.id(),
+            run.id(),
+            recipients.clone(),
+        )
+        .expect("poll should enqueue when the empty-poll backoff expires");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for output poll I/O to start"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 
     app.providers_mut().clear_runtime(run.id());
     thread::sleep(Duration::from_millis(700));

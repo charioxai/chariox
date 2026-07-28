@@ -41,6 +41,7 @@ mod provider_output_deadline_store;
 mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
+mod event_delivery_runtime_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;

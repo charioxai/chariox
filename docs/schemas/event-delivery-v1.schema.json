@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arroba.dev/schemas/event-delivery-v1.schema.json",
+  "title": "Arroba Event Delivery Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["delivery_id", "binding_id", "event_type", "event_type_version", "occurrence_id", "occurred_at", "prompt", "expires_at_ms"],
+  "properties": {
+    "delivery_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "binding_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "event_type": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "event_type_version": { "type": "integer", "minimum": 1 },
+    "occurrence_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "prompt": { "type": "string", "minLength": 1, "maxLength": 1048576 },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "media_type", "reference"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "media_type": { "type": "string", "minLength": 1 },
+          "reference": { "type": "string", "minLength": 1 },
+          "size_bytes": { "type": "integer", "minimum": 0 },
+          "digest": { "type": "string" }
+        }
+      }
+    },
+    "metadata": {},
+    "expires_at_ms": { "type": "integer", "minimum": 1 }
+  }
+}

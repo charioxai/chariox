@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::session::{
     WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
-    WORKFLOW_PUBLICATION_KIND_INGRESS, WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY,
-    WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
+    WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
+    WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -368,14 +368,28 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        let publication = session
-            .workflow_publication_mut(&publication_id)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "disable workflow publication",
-                message: format!("workflow publication `{publication_ref}` was not found"),
-            })?;
-        publication.disable();
-        Ok(publication.clone())
+        let publication = {
+            let publication = session
+                .workflow_publication_mut(&publication_id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "disable workflow publication",
+                    message: format!("workflow publication `{publication_ref}` was not found"),
+                })?;
+            publication.disable();
+            publication.clone()
+        };
+        let binding_ids = session
+            .workflow_event_bindings()
+            .iter()
+            .filter(|binding| binding.publication_id == publication_id && binding.active())
+            .map(|binding| binding.id.clone())
+            .collect::<Vec<_>>();
+        for binding_id in binding_ids {
+            if let Some(binding) = session.workflow_event_binding_mut(&binding_id) {
+                binding.set_status(crate::session::WorkflowEventBindingStatus::Tombstoned);
+            }
+        }
+        Ok(publication)
     }
 
     pub fn register_workflow_publication_endpoint(
@@ -1024,6 +1038,19 @@ fn validate_workflow_publication_options(
 ) -> Result<(), DaemonError> {
     validate_workflow_publication_mode(mode)?;
     validate_workflow_publication_route(route)?;
+    if publication_kind == WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
+        if route.is_some_and(|route| !route.trim().is_empty())
+            || !methods.is_empty()
+            || parser.is_some()
+            || mode.is_some()
+            || transport.is_some()
+        {
+            return invalid_workflow_publication_option(
+                "event_based publications use event bindings and do not configure ingress transport, route, methods, parser, or response mode",
+            );
+        }
+        return Ok(());
+    }
     if publication_kind == WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY {
         if route.is_some_and(|route| !route.trim().is_empty()) {
             return invalid_workflow_publication_option(
@@ -1135,9 +1162,9 @@ fn resolve_workflow_publication_kind(
         return inferred();
     };
     match kind {
-        WORKFLOW_PUBLICATION_KIND_INGRESS | WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY => {
-            Ok(kind.to_string())
-        }
+        WORKFLOW_PUBLICATION_KIND_INGRESS
+        | WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+        | WORKFLOW_PUBLICATION_KIND_EVENT_BASED => Ok(kind.to_string()),
         _ => invalid_workflow_publication_option(&format!(
             "unsupported workflow publication kind `{kind}`"
         )),

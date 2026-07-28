@@ -101,6 +101,28 @@ impl SessionService {
                         .ok_or_else(|| DaemonError::SessionNotFound {
                             session_id: session_id.to_string(),
                         })?;
+                let publication_ids = session
+                    .workflow_publications()
+                    .iter()
+                    .filter(|publication| publication.workflow_id() == workflow_id)
+                    .map(|publication| publication.id().to_string())
+                    .collect::<Vec<_>>();
+                for publication_id in &publication_ids {
+                    if let Some(publication) = session.workflow_publication_mut(publication_id) {
+                        publication.disable();
+                    }
+                }
+                let binding_ids = session
+                    .workflow_event_bindings()
+                    .iter()
+                    .filter(|binding| publication_ids.contains(&binding.publication_id))
+                    .map(|binding| binding.id.clone())
+                    .collect::<Vec<_>>();
+                for binding_id in binding_ids {
+                    if let Some(binding) = session.workflow_event_binding_mut(&binding_id) {
+                        binding.set_status(crate::session::WorkflowEventBindingStatus::Tombstoned);
+                    }
+                }
                 session
                     .remove_workflow(&workflow_id)
                     .ok_or_else(|| DaemonError::WorkflowNotFound {

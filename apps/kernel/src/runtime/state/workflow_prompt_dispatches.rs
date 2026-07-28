@@ -7,6 +7,13 @@ pub(super) struct WorkflowPromptDispatches {
 }
 
 impl WorkflowPromptDispatches {
+    pub(super) fn is_empty(&self) -> bool {
+        self.local.is_empty()
+            && self.remote.is_empty()
+            && self.starting_provider_runs.is_empty()
+            && self.starting_metaagent_tasks.is_empty()
+    }
+
     pub(super) fn extend(&mut self, other: Self) {
         self.local.extend(other.local);
         self.remote.extend(other.remote);

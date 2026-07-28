@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,6 +52,12 @@ pub use user_config_schema::UserConfigSchemaEntry;
 pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventGeneratorManagementTarget {
+    pub url: String,
+    pub token: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
     pub user_config_path: PathBuf,
@@ -68,6 +75,11 @@ pub struct DaemonConfig {
     pub relay_heartbeat_ms: u64,
     pub relay_request_timeout_ms: u64,
     pub accept_remote_leases: bool,
+    pub event_delivery_url: Option<String>,
+    pub event_delivery_token: Option<String>,
+    pub event_delivery_environment_id: String,
+    pub event_registry_url: Option<String>,
+    pub event_generator_management_targets: BTreeMap<String, EventGeneratorManagementTarget>,
     pub os_user: String,
     pub local_socket_path: PathBuf,
     pub kernel_websocket_host: String,
@@ -150,7 +162,7 @@ impl DaemonConfig {
             provider_process_idle_ttl_ms: 300_000,
             provider_process_orphan_ttl_ms: 30_000,
             provider_runtime_init_delay_ms: 0,
-            daemon_id,
+            daemon_id: daemon_id.clone(),
             host_machine_id: host_machine_id.into(),
             host_machine_alias: None,
             os_name: default_os_name(),
@@ -163,6 +175,11 @@ impl DaemonConfig {
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
             relay_request_timeout_ms: 60_000,
             accept_remote_leases: true,
+            event_delivery_url: None,
+            event_delivery_token: None,
+            event_delivery_environment_id: daemon_id.clone(),
+            event_registry_url: None,
+            event_generator_management_targets: BTreeMap::new(),
             os_user: os_user.into(),
         }
     }

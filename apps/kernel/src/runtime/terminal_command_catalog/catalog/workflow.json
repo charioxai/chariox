@@ -406,6 +406,98 @@
             "value": "/workflow publication config "
           },
           {
+            "id": "workflow-publication-event",
+            "label": "event",
+            "description": "Discover event generators and manage event subscriptions",
+            "value": "/workflow publication event ",
+            "searchAliases": [
+              "event notifications",
+              "subscribe webhook",
+              "notification server",
+              "AEGS"
+            ],
+            "children": [
+              {
+                "id": "workflow-publication-event-catalog",
+                "label": "catalog",
+                "description": "Open the recommended catalog or search by app, event, or publisher",
+                "value": "/workflow publication event catalog "
+              },
+              {
+                "id": "workflow-publication-event-category",
+                "label": "category",
+                "description": "Browse one paginated event-generator category",
+                "value": "/workflow publication event category "
+              },
+              {
+                "id": "workflow-publication-event-show",
+                "label": "show",
+                "description": "Show one event generator and its supported events",
+                "value": "/workflow publication event show "
+              },
+              {
+                "id": "workflow-publication-event-events",
+                "label": "events",
+                "description": "Search and page through a generator's supported event types",
+                "value": "/workflow publication event events "
+              },
+              {
+                "id": "workflow-publication-event-authorize",
+                "label": "authorize",
+                "description": "Authorize an event generator connection",
+                "value": "/workflow publication event authorize "
+              },
+              {
+                "id": "workflow-publication-event-resources",
+                "label": "resources",
+                "description": "Search and page through resources available to an authorized connection",
+                "value": "/workflow publication event resources "
+              },
+              {
+                "id": "workflow-publication-event-list",
+                "label": "list",
+                "description": "List event subscriptions, optionally for one publication",
+                "value": "/workflow publication event list"
+              },
+              {
+                "id": "workflow-publication-event-bind",
+                "label": "bind",
+                "description": "Subscribe an event-based workflow publication",
+                "value": "/workflow publication event bind "
+              },
+              {
+                "id": "workflow-publication-event-pause",
+                "label": "pause",
+                "description": "Pause a workflow event subscription",
+                "value": "/workflow publication event pause "
+              },
+              {
+                "id": "workflow-publication-event-resume",
+                "label": "resume",
+                "description": "Resume a workflow event subscription after exclusivity validation",
+                "value": "/workflow publication event resume "
+              },
+              {
+                "id": "workflow-publication-event-transfer",
+                "label": "transfer",
+                "description": "Move the exclusive event route to another published workflow",
+                "value": "/workflow publication event transfer "
+              },
+              {
+                "id": "workflow-publication-event-test",
+                "label": "test",
+                "description": "Queue a test notification through the selected workflow endpoint",
+                "value": "/workflow publication event test "
+              },
+              {
+                "id": "workflow-publication-event-status",
+                "label": "status",
+                "description": "Inspect the kernel connection to AEDS",
+                "value": "/workflow publication event status"
+              }
+            ]
+          },
+          {
             "id": "workflow-publication-disable",
             "label": "disable",
             "description": "Disable a workflow publication; append its reference",

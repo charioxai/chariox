@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arroba.dev/schemas/aegs-subscription-reconcile-v1.schema.json",
+  "title": "Arroba AEGS Authoritative Subscription Reconciliation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["owner_id", "generator_id", "subscriptions"],
+  "properties": {
+    "owner_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "generator_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "subscriptions": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/subscription" }
+    }
+  },
+  "$defs": {
+    "subscription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_id",
+        "generator_id",
+        "connection_id",
+        "connection_scope",
+        "event_interest_key",
+        "event_type",
+        "event_type_version",
+        "revision",
+        "active"
+      ],
+      "properties": {
+        "binding_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "generator_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "connection_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "connection_scope": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "event_interest_key": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "event_type": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "event_type_version": { "type": "integer", "minimum": 1 },
+        "filter": {},
+        "revision": { "type": "integer", "minimum": 1 },
+        "active": { "type": "boolean" }
+      }
+    }
+  }
+}

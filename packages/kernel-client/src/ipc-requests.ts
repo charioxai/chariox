@@ -1,4 +1,5 @@
 export * from "./ipc-workflow-requests.js"
+export * from "./ipc-event-publication-requests.js"
 export * from "./ipc-workspace-requests.js"
 export * from "./ipc-remote-connection-requests.js"
 export * from "./ipc-relay-control-requests.js"

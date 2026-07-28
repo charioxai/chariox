@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -46,6 +48,11 @@ impl DaemonConfig {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| runtime_identity.daemon_id.clone());
+        let event_delivery_environment_id = env::var("ARROBA_EVENT_ENVIRONMENT_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| daemon_id.clone());
         let default_machine_alias = runtime_display_machine_name();
         let host_machine_alias = env::var("ARROBA_MACHINE_ALIAS")
             .ok()
@@ -162,6 +169,20 @@ impl DaemonConfig {
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(DEFAULT_RELAY_HEARTBEAT_MS),
+            event_delivery_url: env::var("ARROBA_AEDS_URL")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            event_delivery_token: env::var("ARROBA_AEDS_TOKEN")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            event_delivery_environment_id,
+            event_registry_url: env::var("ARROBA_EVENT_REGISTRY_URL")
+                .ok()
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty()),
+            event_generator_management_targets: load_event_generator_management_targets(),
             relay_request_timeout_ms: env::var("ARROBA_RELAY_REQUEST_TIMEOUT_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
@@ -173,6 +194,100 @@ impl DaemonConfig {
                 .unwrap_or_else(|_| "unknown".to_string()),
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+struct EventGeneratorManagementTargetInput {
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    token_file: Option<PathBuf>,
+}
+
+fn load_event_generator_management_targets(
+) -> BTreeMap<String, super::EventGeneratorManagementTarget> {
+    let encoded = env::var("ARROBA_AEGS_MANAGEMENT_TARGETS_JSON")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var_os("ARROBA_AEGS_MANAGEMENT_TARGETS_FILE")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .map(|path| {
+                    fs::read_to_string(&path).unwrap_or_else(|error| {
+                        panic!(
+                            "failed to read ARROBA_AEGS_MANAGEMENT_TARGETS_FILE {}: {error}",
+                            path.display()
+                        )
+                    })
+                })
+        });
+    let Some(encoded) = encoded else {
+        return BTreeMap::new();
+    };
+    parse_event_generator_management_targets(&encoded).unwrap_or_else(|error| {
+        panic!("invalid AEGS management targets: {error}");
+    })
+}
+
+fn parse_event_generator_management_targets(
+    encoded: &str,
+) -> Result<BTreeMap<String, super::EventGeneratorManagementTarget>, String> {
+    let values: BTreeMap<String, EventGeneratorManagementTargetInput> =
+        serde_json::from_str(encoded).map_err(|error| format!("invalid JSON: {error}"))?;
+    let mut targets = BTreeMap::new();
+    for (raw_generator_id, value) in values {
+        let generator_id = raw_generator_id.trim().to_string();
+        if generator_id.is_empty() {
+            return Err("generator ID must not be empty".to_string());
+        }
+        let url = value.url.trim().trim_end_matches('/').to_string();
+        let loopback_http = url
+            .strip_prefix("http://")
+            .and_then(|authority| authority.split('/').next())
+            .and_then(|authority| authority.rsplit_once(':'))
+            .is_some_and(|(host, port)| {
+                matches!(host, "127.0.0.1" | "localhost") && port.parse::<u16>().is_ok()
+            });
+        let remote_https = url
+            .strip_prefix("https://")
+            .and_then(|authority| authority.split('/').next())
+            .is_some_and(|authority| !authority.is_empty());
+        if !loopback_http && !remote_https {
+            return Err(format!(
+                "target {generator_id} must use HTTPS or loopback HTTP"
+            ));
+        }
+        let token = value
+            .token
+            .filter(|token| !token.trim().is_empty())
+            .map(Ok)
+            .or_else(|| {
+                value.token_file.map(|path| {
+                    fs::read_to_string(&path).map_err(|error| {
+                        format!(
+                            "failed to read token file {} for {generator_id}: {error}",
+                            path.display()
+                        )
+                    })
+                })
+            })
+            .transpose()?
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| format!("target {generator_id} requires a token"))?;
+        if targets
+            .insert(
+                generator_id.clone(),
+                super::EventGeneratorManagementTarget { url, token },
+            )
+            .is_some()
+        {
+            return Err(format!("duplicate target {generator_id}"));
+        }
+    }
+    Ok(targets)
 }
 
 pub(super) fn runtime_display_machine_name() -> Option<String> {
@@ -216,7 +331,9 @@ fn default_kernel_alias(machine_alias: Option<&str>, port: u16) -> Option<String
 
 #[cfg(test)]
 mod tests {
-    use super::{default_kernel_alias, normalize_hostname};
+    use super::{
+        default_kernel_alias, normalize_hostname, parse_event_generator_management_targets,
+    };
 
     #[test]
     fn normalize_hostname_removes_bonjour_suffix() {
@@ -238,6 +355,56 @@ mod tests {
         );
         assert_eq!(default_kernel_alias(Some(" "), 43118), None);
         assert_eq!(default_kernel_alias(None, 43118), None);
+    }
+
+    #[test]
+    fn event_generator_management_targets_allow_https_and_loopback_http() {
+        let targets = parse_event_generator_management_targets(
+            r#"{
+                "dev.arroba.dummy": {
+                    "url": "http://127.0.0.1:43132/",
+                    "token": " local-token "
+                },
+                "dev.arroba.github": {
+                    "url": "https://events.example.test/github",
+                    "token": "remote-token"
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(targets["dev.arroba.dummy"].url, "http://127.0.0.1:43132");
+        assert_eq!(targets["dev.arroba.dummy"].token, "local-token");
+        assert_eq!(
+            targets["dev.arroba.github"].url,
+            "https://events.example.test/github"
+        );
+    }
+
+    #[test]
+    fn event_generator_management_targets_reject_remote_plaintext() {
+        let error = parse_event_generator_management_targets(
+            r#"{
+                "dev.arroba.github": {
+                    "url": "http://events.example.test:43132",
+                    "token": "token"
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("HTTPS or loopback HTTP"));
+    }
+
+    #[test]
+    fn event_generator_management_targets_require_credentials() {
+        let error = parse_event_generator_management_targets(
+            r#"{
+                "dev.arroba.github": {
+                    "url": "https://events.example.test/github"
+                }
+            }"#,
+        )
+        .unwrap_err();
+        assert!(error.contains("requires a token"));
     }
 }
 

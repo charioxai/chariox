@@ -265,8 +265,38 @@ mod tests {
                 "/workflow publication show ",
                 "/workflow publication export ",
                 "/workflow publication config ",
+                "/workflow publication event ",
                 "/workflow publication disable ",
             ]
         );
+    }
+
+    #[test]
+    fn terminal_command_catalog_registers_event_generator_management() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let event = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "workflow")
+            .and_then(|node| {
+                node.children
+                    .iter()
+                    .find(|child| child.id == "workflow-publication")
+            })
+            .and_then(|node| {
+                node.children
+                    .iter()
+                    .find(|child| child.id == "workflow-publication-event")
+            })
+            .expect("workflow event publication commands should be present");
+
+        assert!(event
+            .children
+            .iter()
+            .any(|node| node.value == "/workflow publication event authorize "));
+        assert!(event
+            .children
+            .iter()
+            .any(|node| node.value == "/workflow publication event resources "));
     }
 }

@@ -26,7 +26,10 @@ use super::session_lifecycle::{
 use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
-use super::workflow_publication::{WorkflowPublicationDefinition, WorkflowPublicationSnapshot};
+use super::workflow_publication::{
+    WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPublicationDefinition,
+    WorkflowPublicationSnapshot,
+};
 use super::workflow_run_records::WorkflowNodeRun;
 use super::workflow_runs::WorkflowRun;
 use super::workflow_scheduling::{
@@ -60,6 +63,10 @@ struct WorkflowPublicationState {
     workflow_publications: Vec<WorkflowPublicationDefinition>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflow_event_bindings: Vec<WorkflowEventBinding>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    workflow_event_delivery_receipts: BTreeMap<String, WorkflowEventDeliveryReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -840,6 +847,18 @@ impl RuntimeSession {
 
     pub fn workflow_publications(&self) -> &[WorkflowPublicationDefinition] {
         &self.workflow_publication_state.workflow_publications
+    }
+
+    pub fn workflow_event_bindings(&self) -> &[WorkflowEventBinding] {
+        &self.workflow_publication_state.workflow_event_bindings
+    }
+
+    pub fn workflow_event_delivery_receipts(
+        &self,
+    ) -> &BTreeMap<String, WorkflowEventDeliveryReceipt> {
+        &self
+            .workflow_publication_state
+            .workflow_event_delivery_receipts
     }
 
     pub(crate) fn workflow_publication_snapshot(

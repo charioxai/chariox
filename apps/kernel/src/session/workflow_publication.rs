@@ -14,10 +14,88 @@ use super::workflow_scheduling::{WorkflowPromptQueueDefinition, WorkflowSchedule
 const MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS: usize = 20;
 pub const WORKFLOW_PUBLICATION_KIND_INGRESS: &str = "ingress";
 pub const WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY: &str = "schedule_only";
+pub const WORKFLOW_PUBLICATION_KIND_EVENT_BASED: &str = "event_based";
 pub const WORKFLOW_PUBLICATION_WORKSPACE_ROOT: &str = "/workspace";
 
 fn default_workflow_publication_kind() -> String {
     WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEventBinding {
+    pub id: String,
+    pub publication_id: String,
+    pub generator_id: String,
+    pub generator_version: String,
+    pub manifest_digest: String,
+    pub connection_id: String,
+    pub connection_scope: String,
+    pub event_type: String,
+    pub event_type_version: u32,
+    #[serde(default, skip_serializing_if = "serde_json_value_is_null")]
+    pub filter: Value,
+    pub event_interest_key: String,
+    pub environment_id: String,
+    pub endpoint_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub revision: u64,
+    pub status: WorkflowEventBindingStatus,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowEventBindingStatus {
+    Active,
+    Paused,
+    Conflict,
+    Tombstoned,
+}
+
+impl WorkflowEventBinding {
+    pub fn active(&self) -> bool {
+        self.status == WorkflowEventBindingStatus::Active
+    }
+
+    pub fn route_claim(
+        &self,
+        kernel_id: impl Into<String>,
+    ) -> arroba_event_protocol::EnvironmentRouteClaim {
+        arroba_event_protocol::EnvironmentRouteClaim {
+            environment_id: self.environment_id.clone(),
+            event_interest_key: self.event_interest_key.clone(),
+            kernel_id: kernel_id.into(),
+            publication_id: self.publication_id.clone(),
+            binding_id: self.id.clone(),
+            endpoint_id: self.endpoint_id.clone(),
+            queue_ref: self.queue_ref.clone(),
+            binding_revision: self.revision,
+            active: self.active(),
+        }
+    }
+
+    pub fn set_status(&mut self, status: WorkflowEventBindingStatus) {
+        self.status = status;
+        self.revision = self.revision.saturating_add(1);
+        self.updated_at_ms = unix_epoch_ms();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEventDeliveryReceipt {
+    pub delivery_id: String,
+    pub binding_id: String,
+    pub occurrence_id: String,
+    #[serde(default)]
+    pub queued_prompt_id: String,
+    pub accepted_at_ms: u64,
+    pub expires_at_ms: u64,
+}
+
+fn serde_json_value_is_null(value: &Value) -> bool {
+    value.is_null()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

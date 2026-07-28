@@ -1,0 +1,18 @@
+[package]
+name = "arroba-aegs-dummy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arroba-aegs-sdk = { path = "../../packages/aegs-sdk" }
+arroba-event-protocol = { path = "../../packages/event-protocol" }
+serde_json = "1.0.140"
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
+
+[lib]
+name = "arroba_aegs_dummy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arroba-aegs-dummy"
+path = "src/main.rs"

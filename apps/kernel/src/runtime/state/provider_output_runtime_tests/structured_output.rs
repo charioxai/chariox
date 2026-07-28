@@ -547,6 +547,16 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     app.pty_mut()
         .spawn_for_run(&run)
         .expect("pty-backed provider run should spawn");
+    let prompt_id = app.sessions_mut().reserve_prompt_id();
+    let prompt = crate::session::PromptQueueItem::new(
+        prompt_id,
+        attachment.id(),
+        agent.id(),
+        "capture provider output",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("provider output test prompt should start");
 
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 

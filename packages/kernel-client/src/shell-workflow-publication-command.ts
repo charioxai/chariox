@@ -26,6 +26,7 @@ import {
   formatWorkflowPublicationLabel,
   formatWorkflowPublications,
 } from "./shell-workflow-format.js"
+import { executeWorkflowEventPublicationCommand } from "./shell-workflow-event-publication-command.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -110,6 +111,10 @@ export async function executeWorkflowPublicationCommand(
     return executeWorkflowPublicationConfigCommand(rest, context)
   }
 
+  if (action === "event" || action === "events") {
+    return executeWorkflowEventPublicationCommand(rest, context, deps.client)
+  }
+
   if (action === "disable" || action === "remove") {
     const publicationRef = rest[0]
     if (!publicationRef) {
@@ -146,7 +151,7 @@ export async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|export|config|disable" }
+  return { ok: false, message: "usage: workflow publication list|create|show|export|config|event|disable" }
 }
 
 async function executeWorkflowPublicationConfigCommand(args: string[], context: ShellContext): Promise<ShellCommandResult> {
@@ -239,6 +244,10 @@ function parseWorkflowPublicationCreateOptions(
       const value = args[++index]
       if (!value) return { ok: false, message: "usage: workflow publication create ... --mode <sync|async>" }
       options.mode = value
+    } else if (arg === "--kind") {
+      const value = args[++index]
+      if (!value) return { ok: false, message: "usage: workflow publication create ... --kind <ingress|schedule_only|event_based>" }
+      options.kind = value
     } else if (arg.startsWith("--")) {
       return { ok: false, message: `unknown publication option: ${arg}` }
     } else {

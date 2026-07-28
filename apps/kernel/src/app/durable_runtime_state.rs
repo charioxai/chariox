@@ -89,6 +89,16 @@ impl RestoredExternalProviderAttachmentState {
                     self.live_session_ids.insert(session.id().to_string());
                 }
             }
+            "sessions.updated" => {
+                if let Ok(sessions) = decode_durable_payload_field::<Vec<RuntimeSession>>(
+                    event,
+                    "sessions",
+                    "durable_state.scan_external_provider_attachment_session_batch",
+                ) {
+                    self.live_session_ids
+                        .extend(sessions.into_iter().map(|session| session.id().to_string()));
+                }
+            }
             "agent.created"
             | "agent.mcp_granted"
             | "agent.mcp_revoked"
@@ -645,6 +655,21 @@ impl DaemonApp {
                 self.prompt_state_owner.restore_session_state(&session);
                 self.sessions.restore_session(session.clone());
                 self.update_session_projection(session);
+            }
+            "sessions.updated" => {
+                let sessions: Vec<RuntimeSession> = decode_durable_payload_field(
+                    &event,
+                    "sessions",
+                    "durable_state.restore_session_batch_update",
+                )?;
+                for session in sessions {
+                    if !self.session_belongs_to_current_kernel(&session) {
+                        continue;
+                    }
+                    self.prompt_state_owner.restore_session_state(&session);
+                    self.sessions.restore_session(session.clone());
+                    self.update_session_projection(session);
+                }
             }
             "agent.created" => {
                 let agent: AgentInstance =

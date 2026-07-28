@@ -1,3 +1,4 @@
+pub(crate) mod event_delivery_client;
 pub(crate) mod flow_control;
 pub(crate) mod kernel_protocol;
 pub(crate) mod mcp_server;

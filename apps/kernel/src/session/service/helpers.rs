@@ -518,6 +518,16 @@ impl SessionService {
         )
     }
 
+    pub(super) fn next_workflow_event_binding_id(&mut self) -> String {
+        self.next_workflow_event_binding_number =
+            self.next_workflow_event_binding_number.wrapping_add(1);
+        format!(
+            "event-binding-{:032x}",
+            rand::random::<u128>()
+                ^ u128::from(self.next_workflow_event_binding_number).rotate_left(23)
+        )
+    }
+
     pub(super) fn next_workflow_prompt_queue_id(&mut self) -> String {
         self.next_workflow_prompt_queue_number =
             self.next_workflow_prompt_queue_number.wrapping_add(1);

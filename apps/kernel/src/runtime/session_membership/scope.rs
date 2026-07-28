@@ -311,6 +311,21 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::CreateWorkflowEventBinding(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowEventBindings(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::TransferWorkflowEventBinding(request) => Some(
+            SessionMembershipScope::SessionId(request.source_session_id.clone()),
+        ),
+        LocalDaemonRequest::TestWorkflowEventBinding(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::ControlWorkflowPublicationRuntime(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

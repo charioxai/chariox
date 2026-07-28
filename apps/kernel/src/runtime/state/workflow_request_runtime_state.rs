@@ -216,6 +216,44 @@ impl KernelRuntimeState {
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
+            LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
+                let result = owned.workflow_create_event_binding(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::ListWorkflowEventBindings(request) => {
+                (owned.workflow_list_event_bindings(request), None)
+            }
+            LocalDaemonRequest::SetWorkflowEventBindingStatus(request) => {
+                let result = owned.workflow_set_event_binding_status(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
+                let result = owned.workflow_transfer_event_binding(request, &caller_user_id);
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
+            LocalDaemonRequest::TestWorkflowEventBinding(request) => {
+                let session_id = request.session_id.clone();
+                let result = owned
+                    .workflow_test_event_delivery_envelope(request, &caller_user_id)
+                    .and_then(|delivery| {
+                        self.accept_workflow_event_delivery(delivery)
+                            .map(|accepted| LocalDaemonResponse::WorkflowEventBindingTested {
+                                delivery_id: accepted.delivery_id,
+                                queued_prompt_id: accepted.queued_prompt_id,
+                                duplicate: accepted.duplicate,
+                                session: accepted.session,
+                            })
+                    });
+                let session = result
+                    .as_ref()
+                    .ok()
+                    .and_then(workflow_response_session)
+                    .or_else(|| owned.session_snapshot(&session_id).ok());
+                (result, session)
+            }
             LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
                 let result = owned.workflow_materialize_publication(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
@@ -443,6 +481,9 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. }
         | LocalDaemonResponse::WorkflowAliased { session, .. }
         | LocalDaemonResponse::WorkflowPublicationCreated { session, .. }
+        | LocalDaemonResponse::WorkflowEventBindingCreated { session, .. }
+        | LocalDaemonResponse::WorkflowEventBindingUpdated { session, .. }
+        | LocalDaemonResponse::WorkflowEventBindingTested { session, .. }
         | LocalDaemonResponse::WorkflowPublicationDisabled { session, .. }
         | LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. }
         | LocalDaemonResponse::WorkflowEndpointCreated { session, .. }
@@ -479,6 +520,7 @@ pub(super) fn workflow_response_session(
         | LocalDaemonResponse::QueuedWorkflowPromptRemoved { session, .. }
         | LocalDaemonResponse::WorkflowPromptQueueCleared { session, .. }
         | LocalDaemonResponse::WorkflowTurnAcknowledged { session, .. } => Some(session.clone()),
+        LocalDaemonResponse::WorkflowEventBindingTransferred { .. } => None,
         _ => None,
     }
 }

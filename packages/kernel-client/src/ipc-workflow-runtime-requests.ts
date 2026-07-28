@@ -8,7 +8,7 @@ export type CreateWorkflowPublicationOptions = {
   operationKey?: string | null
   alias?: string | null
   queueRef?: string | null
-  kind?: "ingress" | "schedule_only" | string | null
+  kind?: "ingress" | "schedule_only" | "event_based" | string | null
   route?: string | null
   methods?: string[]
   transport?: unknown | null

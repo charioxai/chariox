@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "generator_id": "dev.arroba.dummy",
+  "version": "1.0.0",
+  "name": "Dummy Events",
+  "summary": "Deterministic event source for local and deployment validation.",
+  "provider": "Arroba test harness",
+  "publisher": {
+    "id": "dev.arroba",
+    "name": "Arroba"
+  },
+  "operator": {
+    "id": "local",
+    "name": "Local operator"
+  },
+  "verification": "arroba",
+  "protocol_version": 1,
+  "categories": ["Developer tools", "Testing"],
+  "authorization": {
+    "kind": "none",
+    "disclosure": "This deterministic fixture does not contact an external provider."
+  },
+  "events": [
+    {
+      "event_type": "dummy.test",
+      "version": 1,
+      "name": "Test event",
+      "description": "Emits a user-supplied prompt and optional artifact references.",
+      "filter_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "channel": { "type": "string", "default": "default" }
+        }
+      },
+      "required_scopes": []
+    }
+  ],
+  "signature": {
+    "key_id": "dev.arroba.fixture.2026-07",
+    "algorithm": "ed25519",
+    "digest": "sha256:03b694a033a58a9e29b8ed947c6f5fb332def989b4deb0f5810f2b6e6bbd054f",
+    "value": "E19Yh8KIo5BA+YlDdVeA6mGnwSUxp7CDWCsCiD3VF/WusEWTnfYqNtmCbyWuNsUIl1mqfvC/w0vi4swC579+Ag=="
+  }
+}

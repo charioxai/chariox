@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arroba.dev/schemas/aegs-authorization-start-v1.schema.json",
+  "title": "Arroba AEGS Authorization Start",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["generator_id"],
+  "properties": {
+    "generator_id": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "return_url": { "type": ["string", "null"], "format": "uri", "maxLength": 2048 }
+  }
+}

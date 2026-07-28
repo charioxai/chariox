@@ -2,6 +2,7 @@ use super::*;
 use crate::session::WorkflowPublicationSnapshot;
 use std::path::Path;
 
+mod event_publication;
 mod publication;
 
 impl SessionService {
@@ -11,6 +12,7 @@ impl SessionService {
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
+            event_environment_id: config.event_delivery_environment_id.clone(),
             prompt_id_allocator: PromptIdAllocator::default(),
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
@@ -22,6 +24,7 @@ impl SessionService {
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_workflow_publication_number: 0,
+            next_workflow_event_binding_number: 0,
             next_workflow_prompt_queue_number: 0,
             next_workflow_queued_prompt_number: 0,
             next_agent_prompt_schedule_number: 0,

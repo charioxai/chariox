@@ -13,6 +13,251 @@ use package::{
 };
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_create_event_binding(
+        &self,
+        request: crate::local::CreateWorkflowEventBindingRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let publication = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)?;
+        if publication.created_by_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                publication.created_by_user_id(),
+                format!("workflow publication `{}`", publication.id()),
+                "create workflow event binding",
+            ));
+        }
+        let binding = self.session_store.write().create_workflow_event_binding(
+            &request.session_id,
+            &request.publication_ref,
+            request.generator_id,
+            request.generator_version,
+            request.manifest_digest,
+            request.connection_id,
+            request.connection_scope,
+            request.event_type,
+            request.event_type_version,
+            request.filter,
+            request.environment_id,
+            request.queue_ref,
+        )?;
+        Ok(LocalDaemonResponse::WorkflowEventBindingCreated {
+            binding,
+            session: self.workflow_session(&request.session_id)?,
+        })
+    }
+
+    pub(super) fn workflow_list_event_bindings(
+        &self,
+        request: crate::local::ListWorkflowEventBindingsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        Ok(LocalDaemonResponse::WorkflowEventBindingsListed {
+            bindings: self.session_store.read().list_workflow_event_bindings(
+                &request.session_id,
+                request.publication_ref.as_deref(),
+            )?,
+        })
+    }
+
+    pub(super) fn workflow_set_event_binding_status(
+        &self,
+        request: crate::local::SetWorkflowEventBindingStatusRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let binding = self
+            .session_store
+            .read()
+            .get_session(&request.session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == request.binding_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "set workflow event binding status",
+                message: format!(
+                    "workflow event binding `{}` was not found",
+                    request.binding_id
+                ),
+            })?;
+        let publication = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(&request.session_id, &binding.publication_id)?;
+        if publication.created_by_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                publication.created_by_user_id(),
+                format!("workflow publication `{}`", publication.id()),
+                "set workflow event binding status",
+            ));
+        }
+        let binding = self
+            .session_store
+            .write()
+            .set_workflow_event_binding_status(
+                &request.session_id,
+                &request.binding_id,
+                request.status,
+            )?;
+        Ok(LocalDaemonResponse::WorkflowEventBindingUpdated {
+            binding,
+            session: self.workflow_session(&request.session_id)?,
+        })
+    }
+
+    pub(super) fn workflow_transfer_event_binding(
+        &self,
+        request: crate::local::TransferWorkflowEventBindingRequest,
+        caller_user_id: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let source_before = self.session_snapshot(&request.source_session_id)?;
+        let target_before = if request.source_session_id == request.target_session_id {
+            None
+        } else {
+            Some(self.session_snapshot(&request.target_session_id)?)
+        };
+        let source_binding = self
+            .session_store
+            .read()
+            .get_session(&request.source_session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == request.binding_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "transfer workflow event binding",
+                message: format!(
+                    "workflow event binding `{}` was not found",
+                    request.binding_id
+                ),
+            })?;
+        let source_publication = self.session_store.read().resolve_workflow_publication_ref(
+            &request.source_session_id,
+            &source_binding.publication_id,
+        )?;
+        let target_publication = self.session_store.read().resolve_workflow_publication_ref(
+            &request.target_session_id,
+            &request.target_publication_ref,
+        )?;
+        for publication in [&source_publication, &target_publication] {
+            if publication.created_by_user_id() != caller_user_id {
+                return Err(Self::deny_owner(
+                    caller_user_id,
+                    publication.created_by_user_id(),
+                    format!("workflow publication `{}`", publication.id()),
+                    "transfer workflow event binding",
+                ));
+            }
+        }
+        let binding = self.session_store.write().transfer_workflow_event_binding(
+            &request.source_session_id,
+            &request.binding_id,
+            &request.target_session_id,
+            &request.target_publication_ref,
+        )?;
+        let target_session = self.workflow_session(&request.target_session_id)?;
+        if request.source_session_id != request.target_session_id {
+            let source_session = self.workflow_session(&request.source_session_id)?;
+            if let Err(error) = self.durable_state_store.append_event(
+                "sessions.updated",
+                None,
+                serde_json::json!({
+                    "sessions": [&source_session, &target_session],
+                    "reason": "workflow_event_binding_transferred",
+                }),
+            ) {
+                let mut sessions = self.session_store.write();
+                sessions.restore_session(source_before);
+                if let Some(target_before) = target_before {
+                    sessions.restore_session(target_before);
+                }
+                return Err(error);
+            }
+        } else if let Err(error) = self.persist_workflow_runtime_session(
+            &request.source_session_id,
+            "workflow_event_binding_transferred",
+        ) {
+            self.session_store.write().restore_session(source_before);
+            return Err(error);
+        }
+        Ok(LocalDaemonResponse::WorkflowEventBindingTransferred {
+            binding,
+            session: target_session,
+        })
+    }
+
+    pub(super) fn workflow_test_event_delivery_envelope(
+        &self,
+        request: crate::local::TestWorkflowEventBindingRequest,
+        caller_user_id: &str,
+    ) -> Result<arroba_event_protocol::EventDeliveryEnvelope, DaemonError> {
+        let binding = self
+            .session_store
+            .read()
+            .get_session(&request.session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == request.binding_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "test workflow event binding",
+                message: format!(
+                    "workflow event binding `{}` was not found",
+                    request.binding_id
+                ),
+            })?;
+        let publication = self
+            .session_store
+            .read()
+            .resolve_workflow_publication_ref(&request.session_id, &binding.publication_id)?;
+        if publication.created_by_user_id() != caller_user_id {
+            return Err(Self::deny_owner(
+                caller_user_id,
+                publication.created_by_user_id(),
+                format!("workflow publication `{}`", publication.id()),
+                "test workflow event binding",
+            ));
+        }
+        if !binding.active() {
+            let status = match binding.status {
+                crate::session::WorkflowEventBindingStatus::Active => "active",
+                crate::session::WorkflowEventBindingStatus::Paused => "paused",
+                crate::session::WorkflowEventBindingStatus::Conflict => "in conflict",
+                crate::session::WorkflowEventBindingStatus::Tombstoned => "tombstoned",
+            };
+            return Err(DaemonError::LocalTransport {
+                operation: "test workflow event binding",
+                message: format!("workflow event binding is {status}"),
+            });
+        }
+        if !publication.enabled() {
+            return Err(DaemonError::LocalTransport {
+                operation: "test workflow event binding",
+                message:
+                    "the owning workflow publication is disabled; create a new event-based publication before testing"
+                        .to_string(),
+            });
+        }
+        let now_ms = crate::session::unix_epoch_ms();
+        Ok(arroba_event_protocol::EventDeliveryEnvelope {
+            delivery_id: format!("test-delivery-{}-{now_ms}", binding.id),
+            binding_id: binding.id,
+            event_type: binding.event_type,
+            event_type_version: binding.event_type_version,
+            occurrence_id: format!("test-occurrence-{now_ms}"),
+            occurred_at: format!("{now_ms}"),
+            prompt: request
+                .prompt
+                .unwrap_or_else(|| "Process this Arroba event notification test.".to_string()),
+            artifacts: Vec::new(),
+            metadata: serde_json::json!({"test": true}),
+            expires_at_ms: now_ms.saturating_add(60 * 60 * 1000),
+        })
+    }
+
     pub(super) fn workflow_create_publication(
         &self,
         request: crate::local::CreateWorkflowPublicationRequest,
@@ -121,9 +366,22 @@ impl KernelRuntimeOwnedState {
                     publication.id()
                 ),
             })?;
+        let event_bindings = self
+            .session_store
+            .read()
+            .get_session(&request.session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .filter(|binding| {
+                binding.publication_id == publication.id()
+                    && binding.status != crate::session::WorkflowEventBindingStatus::Tombstoned
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let package_files = workflow_publication_package_files(
             &publication,
             &snapshot,
+            &event_bindings,
             request.kernel_url.as_deref(),
             request.agent_app.as_ref(),
             request.agent_app_assets_dir.as_deref(),

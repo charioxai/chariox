@@ -157,9 +157,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .active_prompt_for_agent(first_agent.id())
         .expect("workflow invoke should create an active prompt");
     let active_mechanics = workflow_mechanics_text(active_prompt);
-    assert!(active_prompt
-        .prompt()
-        .contains("<endpoint-prompt>\nkick off the ack flow\n</endpoint-prompt>"));
+    assert_eq!(active_prompt.prompt(), "kick off the ack flow");
     assert!(active_mechanics.contains("<node-instruction-reference>"));
     assert!(active_mechanics.contains("`ack_workflow_turn`"));
     assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
@@ -280,7 +278,12 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
             .expect("second node prompt should be active")
     });
     let second_mechanics = workflow_mechanics_text(&second_active_prompt);
-    assert!(second_mechanics.contains("<workflow-handoff-payloads>"));
+    assert!(second_active_prompt
+        .prompt()
+        .contains("\"message_type\":\"handoff\""));
+    assert!(!second_active_prompt
+        .prompt()
+        .contains("<workflow-handoff-payloads>"));
     assert!(second_mechanics.contains("`ack_workflow_turn`"));
     let second_history_prompts = harness.with_app(|app| {
         app.operational_history_store()
@@ -293,8 +296,11 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .expect("second agent workflow prompt should be recorded");
     assert!(second_history_prompt
         .text
+        .contains("\"message_type\":\"handoff\""));
+    assert!(!second_history_prompt
+        .text
         .contains("<workflow-handoff-payloads>"));
-    assert!(second_history_prompt.text.contains("`ack_workflow_turn`"));
+    assert!(!second_history_prompt.text.contains("`ack_workflow_turn`"));
 
     let second_run_id = routed
         .active_node_run_id()
@@ -576,10 +582,9 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         .active_prompt_for_agent(second_agent.id())
         .expect("second node should be active")
         .clone();
-    assert!(second_active_prompt.prompt().contains("<control-mailbox>"));
-    assert!(second_active_prompt
-        .prompt()
-        .contains("output.message is not valid JSON"));
+    let second_mechanics = workflow_mechanics_text(&second_active_prompt);
+    assert!(second_mechanics.contains("<control-mailbox>"));
+    assert!(second_mechanics.contains("output.message is not valid JSON"));
     let first_completed = after_warning
         .node_runs()
         .iter()
@@ -645,20 +650,15 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         .active_prompt_for_agent(first_agent.id())
         .expect("first node should be active again")
         .clone();
-    assert!(active_prompt.prompt().contains("<control-mailbox>"));
-    assert!(active_prompt
-        .prompt()
-        .contains("output.message is not valid JSON"));
-    assert!(active_prompt
-        .prompt()
-        .contains("Treat the control mailbox as authoritative runtime feedback"));
-    assert!(active_prompt.prompt().contains("<outgoing-edge-contracts>"));
-    assert!(active_prompt
-        .prompt()
-        .contains(schema_path.to_string_lossy().as_ref()));
-    assert!(!active_prompt
-        .prompt()
-        .contains("Control mailbox (daemon-managed):"));
+    let active_mechanics = workflow_mechanics_text(&active_prompt);
+    assert!(active_mechanics.contains("<control-mailbox>"));
+    assert!(active_mechanics.contains("output.message is not valid JSON"));
+    assert!(
+        active_mechanics.contains("Treat the control mailbox as authoritative runtime feedback")
+    );
+    assert!(active_mechanics.contains("<outgoing-edge-contracts>"));
+    assert!(active_mechanics.contains(schema_path.to_string_lossy().as_ref()));
+    assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
 }
 
 fn workflow_mechanics_text(prompt: &crate::session::PromptQueueItem) -> &str {
