@@ -550,7 +550,7 @@
           <a href="#acceptance">Acceptance</a>
         </nav>
         <p class="aside-meta">
-          Status: local first-wave slice validated; Hetzner gate pending<br />
+          Status: local first-wave slice and deployment packages validated; Hetzner gate pending<br />
           Scope: first-wave integrations<br />
           Updated: 2026-07-28
         </p>
@@ -1269,6 +1269,21 @@ arroba-cloud
               for Hetzner. This proves deployability but not physical failure-domain separation,
               public TLS, host reboot, or cross-machine recovery; those gates remain required on
               Hetzner.
+            </p>
+          </div>
+          <div class="callout good">
+            <strong>Host-independent deployment packaging completed.</strong>
+            <p>
+              The private <code>arroba-aeds</code> repository and every first-wave private AEGS
+              repository now own their immutable image workflow, bounded production Compose
+              definition, systemd unit, configuration preflight, health check, backup/restore
+              operations, and deployment runbook. Each package has passed local syntax,
+              ShellCheck, Compose rendering, Rust tests, formatting, and Clippy validation. AEDS
+              and every AEGS were handled sequentially; no provider matrix was built or run
+              concurrently. Hosted GitHub Actions verification is currently unable to start
+              because of the account billing/spending-limit gate, not a workflow or test failure.
+              Remote acceptance still requires the separately provisioned Hetzner AEDS and AEGS
+              hosts, their TLS and secret configuration, and the full cross-host failure matrix.
             </p>
           </div>
 
