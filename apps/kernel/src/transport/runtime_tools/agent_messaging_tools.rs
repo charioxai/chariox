@@ -7,6 +7,8 @@ pub struct SendAgentMessageArgs {
     pub agent: String,
     pub message: String,
     #[serde(default)]
+    pub attachments: Vec<crate::session::PromptAttachment>,
+    #[serde(default)]
     pub idempotency_key: Option<String>,
 }
 
@@ -43,7 +45,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible prompt to another existing agent in the current Arroba session. Address the target by its unique alias, agent ref, or agent id. The prompt starts immediately when the target is idle and enters its normal queue when it is busy. This tool never creates agents. Use arroba.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable prompt to another existing agent in the current Arroba session. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The prompt starts immediately when the target is idle and enters its normal queue when it is busy. This tool never creates agents. Use arroba.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message"],
@@ -54,7 +56,34 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "message": {
                         "type": "string",
-                        "description": "The message that should become the target agent's next visible prompt."
+                        "description": "Natural-language text that should become the target agent's next visible prompt. Do not wrap it in a JSON envelope."
+                    },
+                    "attachments": {
+                        "type": "array",
+                        "description": "Optional images or files displayed above the message, using the same attachment format as a user prompt.",
+                        "items": {
+                            "type": "object",
+                            "required": ["url", "mime"],
+                            "properties": {
+                                "url": {
+                                    "type": "string",
+                                    "description": "Attachment URL or data URL."
+                                },
+                                "mime": {
+                                    "type": "string",
+                                    "description": "Attachment MIME type."
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Optional display filename."
+                                },
+                                "contents_base64": {
+                                    "type": "string",
+                                    "description": "Optional base64-encoded attachment contents."
+                                }
+                            },
+                            "additionalProperties": false
+                        }
                     },
                     "idempotency_key": {
                         "type": "string",
