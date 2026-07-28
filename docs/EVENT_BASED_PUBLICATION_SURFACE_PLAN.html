@@ -1260,12 +1260,15 @@ arroba-cloud
           <div class="callout warning">
             <strong>Local-container fallback.</strong>
             <p>
-              Machine procurement does not block implementation. Run AEDS and each AEGS as
-              separately limited local containers with distinct networks, volumes, secrets,
-              identities, and published loopback ports. Exercise the same images, configuration,
-              persistence, restart, rollback, and product drills intended for Hetzner. This proves
-              deployability but not physical failure-domain separation, public TLS, host reboot,
-              or cross-machine recovery; those gates remain required on Hetzner.
+              Machine procurement does not block implementation. Keep one limited AEDS container
+              running and validate exactly one AEGS container at a time, with distinct volumes,
+              secrets, identities, and published loopback ports. Build, start, exercise, stop, and
+              remove each AEGS before advancing to the next; do not run or build the complete
+              provider matrix concurrently on a constrained development machine. Exercise the same
+              images, configuration, persistence, restart, rollback, and product drills intended
+              for Hetzner. This proves deployability but not physical failure-domain separation,
+              public TLS, host reboot, or cross-machine recovery; those gates remain required on
+              Hetzner.
             </p>
           </div>
 
@@ -1313,11 +1316,11 @@ arroba-cloud
               </tr>
               <tr>
                 <td>Local fallback</td>
-                <td>One AEDS container plus separately isolated dummy and first-party AEGS containers</td>
+                <td>One AEDS container plus one sequentially selected dummy or first-party AEGS container</td>
                 <td>
                   Development-only deployment rehearsal. Separate networks, volumes, secrets,
-                  resource limits, and ports emulate host roles but do not satisfy Hetzner
-                  acceptance.
+                  resource limits, and ports emulate host roles without exceeding the local
+                  machine budget, but do not satisfy Hetzner acceptance.
                 </td>
               </tr>
             </tbody>
@@ -1528,6 +1531,11 @@ arroba-cloud
                     deployment contract first in separately isolated local containers.
                   </li>
                   <li>
+                    Keep local builds and runtime resource-bounded: AEDS remains available while
+                    each AEGS is built, exercised, stopped, and removed one at a time. The full
+                    provider matrix is a CI/Hetzner gate, not a concurrent laptop workload.
+                  </li>
+                  <li>
                     Treat the local-container path as sufficient to continue implementation while
                     machine procurement is pending, but not as Hetzner or production evidence.
                   </li>
@@ -1678,9 +1686,9 @@ arroba-cloud
               <tr>
                 <td>Local deployment fallback</td>
                 <td>
-                  The same pinned AEDS/AEGS images in isolated local containers with separate
-                  networks, volumes, secrets, limits, restart, backup/restore, rollback, and both
-                  product surfaces; explicitly recorded as non-Hetzner evidence
+                  The same pinned AEDS/AEGS images validated sequentially as AEDS plus one AEGS,
+                  with separate volumes, secrets, limits, restart, backup/restore, rollback, and
+                  both product surfaces; explicitly recorded as non-Hetzner evidence
                 </td>
               </tr>
               <tr>

@@ -12,10 +12,26 @@ set -a
 source "${deployment_dir}/.env"
 set +a
 
-docker compose --project-directory "${deployment_dir}" -f "${deployment_dir}/compose.yaml" up --build -d --wait
+compose=(
+  docker compose
+  --project-directory "${deployment_dir}"
+  -f "${deployment_dir}/compose.yaml"
+)
+export COMPOSE_PARALLEL_LIMIT=1
+"${compose[@]}" up --build -d --wait aeds
+
+start_aegs() {
+  "${compose[@]}" up --build -d --wait "$1"
+}
+
+stop_aegs() {
+  "${compose[@]}" stop "$1"
+  "${compose[@]}" rm --force "$1"
+}
 
 kernel_token="$(tr -d '\r\n' < "${deployment_dir}/secrets/local-kernel-token")"
 dummy_management_token="$(tr -d '\r\n' < "${deployment_dir}/secrets/dummy-aegs-management-token")"
+start_aegs dummy-aegs
 authorization="$(
   curl --fail --silent \
     -H "authorization: Bearer ${dummy_management_token}" \
@@ -44,32 +60,34 @@ ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
 ARROBA_DRILL_AEGS_URL="http://127.0.0.1:${ARROBA_DUMMY_AEGS_PORT}/v1/emit" \
   cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
     --example deployment_drill
+stop_aegs dummy-aegs
 
-ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
-ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
-ARROBA_DRILL_GITHUB_AEGS_URL="http://127.0.0.1:${ARROBA_GITHUB_AEGS_PORT}" \
-ARROBA_DRILL_GITHUB_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/github-aegs-management-token")" \
-ARROBA_DRILL_GITHUB_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/github-aegs-webhook-secret")" \
-ARROBA_DRILL_JIRA_AEGS_URL="http://127.0.0.1:${ARROBA_JIRA_AEGS_PORT}" \
-ARROBA_DRILL_JIRA_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/jira-aegs-management-token")" \
-ARROBA_DRILL_JIRA_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/jira-aegs-webhook-secret")" \
-ARROBA_DRILL_LINEAR_AEGS_URL="http://127.0.0.1:${ARROBA_LINEAR_AEGS_PORT}" \
-ARROBA_DRILL_LINEAR_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/linear-aegs-management-token")" \
-ARROBA_DRILL_LINEAR_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/linear-aegs-webhook-secret")" \
-ARROBA_DRILL_GITLAB_AEGS_URL="http://127.0.0.1:${ARROBA_GITLAB_AEGS_PORT}" \
-ARROBA_DRILL_GITLAB_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/gitlab-aegs-management-token")" \
-ARROBA_DRILL_GITLAB_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/gitlab-aegs-webhook-secret")" \
-ARROBA_DRILL_SENTRY_AEGS_URL="http://127.0.0.1:${ARROBA_SENTRY_AEGS_PORT}" \
-ARROBA_DRILL_SENTRY_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/sentry-aegs-management-token")" \
-ARROBA_DRILL_SENTRY_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/sentry-aegs-webhook-secret")" \
-ARROBA_DRILL_SLACK_AEGS_URL="http://127.0.0.1:${ARROBA_SLACK_AEGS_PORT}" \
-ARROBA_DRILL_SLACK_MANAGEMENT_TOKEN="$(tr -d '\r\n' < "${deployment_dir}/secrets/slack-aegs-management-token")" \
-ARROBA_DRILL_SLACK_WEBHOOK_SECRET="$(tr -d '\r\n' < "${deployment_dir}/secrets/slack-aegs-webhook-secret")" \
-  cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
-    --example first_wave_provider_drill
+provider_specs=(
+  "github-aegs|github|GITHUB|ARROBA_GITHUB_AEGS_PORT|github"
+  "jira-aegs|jira-cloud|JIRA|ARROBA_JIRA_AEGS_PORT|jira"
+  "linear-aegs|linear|LINEAR|ARROBA_LINEAR_AEGS_PORT|linear"
+  "gitlab-aegs|gitlab|GITLAB|ARROBA_GITLAB_AEGS_PORT|gitlab"
+  "sentry-aegs|sentry|SENTRY|ARROBA_SENTRY_AEGS_PORT|sentry"
+  "slack-aegs|slack|SLACK|ARROBA_SLACK_AEGS_PORT|slack"
+)
+for provider_spec in "${provider_specs[@]}"; do
+  IFS="|" read -r service fixture prefix port_variable secret_stem <<< "${provider_spec}"
+  port="${!port_variable}"
+  start_aegs "${service}"
+  env \
+    ARROBA_DRILL_PROVIDERS="${fixture}" \
+    ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
+    ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
+    "ARROBA_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
+    "ARROBA_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
+    "ARROBA_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
+    cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
+      --example first_wave_provider_drill
+  stop_aegs "${service}"
+done
 
 curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics"
-docker compose --project-directory "${deployment_dir}" -f "${deployment_dir}/compose.yaml" restart aeds
+"${compose[@]}" restart aeds
 ready=false
 for attempt in {1..30}; do
   if curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/readyz"; then

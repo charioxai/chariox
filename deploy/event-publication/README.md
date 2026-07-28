@@ -13,10 +13,15 @@ stores, limits, and webhook ports remain isolated per instance.
 Run:
 
 ```sh
-./prepare-secrets.sh
-docker compose up --build -d --wait
 ./drill.sh
 ```
+
+The drill limits Compose to one build at a time. It keeps AEDS running and
+builds, starts, exercises, stops, and removes exactly one AEGS at a time:
+dummy, GitHub, Jira Cloud, Linear, GitLab, Sentry, then Slack. Peak runtime is
+therefore AEDS plus one AEGS. Every AEGS has an explicit Compose profile, so a
+plain `docker compose up` starts only AEDS and cannot accidentally launch the
+whole integration matrix.
 
 `prepare-secrets.sh` also pins the selected loopback host ports in the ignored
 compose `.env` file. Set `ARROBA_AEDS_KERNEL_PORT`,
@@ -44,8 +49,8 @@ Use `docker compose down` to stop the rehearsal. Do not add `--volumes` when
 testing restart or upgrade continuity. Use it only for explicit final cleanup.
 The files below `secrets/` and `backups/` are ignored.
 
-The fallback runs dummy, GitHub, Jira Cloud, Linear, GitLab, Sentry, and Slack
-AEGS instances with separate tokens, webhook secrets, stores, volumes, and
+The fallback validates dummy, GitHub, Jira Cloud, Linear, GitLab, Sentry, and
+Slack sequentially with separate tokens, webhook secrets, stores, volumes, and
 loopback ports. Provider instances remain in webhook-only mode until their
 public base URL, encrypted credential key, and provider application credentials
 are configured.

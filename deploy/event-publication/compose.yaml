@@ -44,6 +44,7 @@ services:
           memory: 256M
 
   dummy-aegs:
+    profiles: ["dummy"]
     image: arroba-aegs-dummy:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../..
@@ -86,6 +87,7 @@ services:
           memory: 128M
 
   github-aegs:
+    profiles: ["github"]
     image: arroba-aegs-github:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-github
@@ -130,6 +132,7 @@ services:
           memory: 128M
 
   jira-aegs:
+    profiles: ["jira"]
     image: arroba-aegs-jira:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-jira
@@ -174,6 +177,7 @@ services:
           memory: 128M
 
   linear-aegs:
+    profiles: ["linear"]
     image: arroba-aegs-linear:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-linear
@@ -218,6 +222,7 @@ services:
           memory: 128M
 
   gitlab-aegs:
+    profiles: ["gitlab"]
     image: arroba-aegs-gitlab:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-gitlab
@@ -262,6 +267,7 @@ services:
           memory: 128M
 
   sentry-aegs:
+    profiles: ["sentry"]
     image: arroba-aegs-sentry:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-sentry
@@ -306,6 +312,7 @@ services:
           memory: 128M
 
   slack-aegs:
+    profiles: ["slack"]
     image: arroba-aegs-slack:${ARROBA_EVENT_IMAGE_TAG:-local}
     build:
       context: ../../../arroba-aegs-slack
