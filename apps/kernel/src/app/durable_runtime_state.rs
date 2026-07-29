@@ -13,6 +13,8 @@ use crate::session::{DurablePromptPrivateState, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+const DURABLE_EVENT_REPLAY_BATCH_SIZE: usize = 128;
+
 fn decode_durable_payload_field<T>(
     event: &DurableStateEvent,
     field: &'static str,
@@ -39,6 +41,42 @@ where
             event.event_id, event.kind
         ),
     })
+}
+
+fn durable_payload_entity_belongs_to_other_owner(
+    event: &DurableStateEvent,
+    field: &str,
+    owner_field: &str,
+    current_owner_id: &str,
+) -> bool {
+    event
+        .payload
+        .get(field)
+        .and_then(|entity| entity.get(owner_field))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|owner_id| owner_id != current_owner_id)
+}
+
+fn durable_snapshot_belongs_to_other_kernel(
+    payload: &serde_json::Value,
+    current_daemon_id: &str,
+) -> bool {
+    let session_owners = payload
+        .get("sessions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|session| session.get("host_daemon_id"))
+        .filter_map(serde_json::Value::as_str);
+    let slice_owners = payload
+        .get("slices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|slice| slice.get("owner_kernel_id"))
+        .filter_map(serde_json::Value::as_str);
+    let owners = session_owners.chain(slice_owners).collect::<Vec<_>>();
+    !owners.is_empty() && owners.iter().all(|owner| *owner != current_daemon_id)
 }
 
 #[derive(Default)]
@@ -172,11 +210,18 @@ impl DaemonApp {
             }
             None => 0,
         };
-        for event in self
-            .durable_state
-            .load_events_after(replay_after_sequence)?
-        {
-            self.restore_durable_state_event(event)?;
+        let mut replay_cursor = replay_after_sequence;
+        loop {
+            let events = self
+                .durable_state
+                .load_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                replay_cursor = event.sequence;
+                self.restore_durable_state_event(event)?;
+            }
         }
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
@@ -240,6 +285,9 @@ impl DaemonApp {
         &mut self,
         payload: serde_json::Value,
     ) -> Result<bool, DaemonError> {
+        if durable_snapshot_belongs_to_other_kernel(&payload, &self.config.daemon_id) {
+            return Ok(false);
+        }
         let snapshot: DurableKernelSnapshotPayload =
             serde_json::from_value(payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.restore_snapshot",
@@ -409,8 +457,17 @@ impl DaemonApp {
             }
             None => 0,
         };
-        for event in store.load_events_after(replay_after_sequence)? {
-            attachment_state.apply_event(&event);
+        let mut replay_cursor = replay_after_sequence;
+        loop {
+            let events =
+                store.load_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                replay_cursor = event.sequence;
+                attachment_state.apply_event(&event);
+            }
         }
         let mut marker_count = 0usize;
         for agent in attachment_state.live_agents.values() {
@@ -553,6 +610,14 @@ impl DaemonApp {
     fn restore_durable_state_event(&mut self, event: DurableStateEvent) -> Result<(), DaemonError> {
         match event.kind.as_str() {
             "session.created" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -618,6 +683,14 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "session.updated" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -699,6 +772,14 @@ impl DaemonApp {
                 self.refresh_restored_agent_session_projection(&session_id)?;
             }
             "session.ended" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -717,6 +798,14 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "session.deleted" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
