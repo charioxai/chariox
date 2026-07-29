@@ -22,7 +22,7 @@ use crate::app::{
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
-use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::runtime::metaagent_event::MetaagentEventStore;
@@ -66,7 +66,6 @@ struct KernelRuntimeOwnedState {
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
-    history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
@@ -293,7 +292,6 @@ impl KernelRuntimeState {
         slice_store: crate::slice::SliceStore,
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
-        history_store: SessionHistoryStore,
         operational_history_store: OperationalHistoryStore,
         durable_state_store: DurableKernelStateStore,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
@@ -338,7 +336,6 @@ impl KernelRuntimeState {
             slice_store,
             session_projection,
             provider_run_projection,
-            history_store,
             operational_history_store,
             durable_state_store,
             prompt_state_owner,
@@ -369,7 +366,6 @@ impl KernelRuntimeState {
         slice_store: crate::slice::SliceStore,
         session_projection: crate::runtime::projection::SessionStateProjectionStore,
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
-        history_store: SessionHistoryStore,
         operational_history_store: OperationalHistoryStore,
         durable_state_store: DurableKernelStateStore,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
@@ -433,7 +429,6 @@ impl KernelRuntimeState {
                 session_projection,
                 provider_run_projection,
                 provider_process_projection,
-                history_store,
                 operational_history_store,
                 transcript_history_append_lock: Arc::new(std::sync::Mutex::new(())),
                 durable_state_store,

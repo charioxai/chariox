@@ -534,7 +534,7 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
                 "-lc".to_string(),
-                "printf pty-one; sleep 0.05; printf pty-two; sleep 5".to_string(),
+                "sleep 0.1; printf pty-one; sleep 0.05; printf pty-two; sleep 5".to_string(),
             ],
             pty_env: std::collections::BTreeMap::new(),
             pty_env_remove: Vec::new(),
@@ -544,11 +544,20 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     );
     run.mark_running();
     app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
     app.pty_mut()
         .spawn_for_run(&run)
         .expect("pty-backed provider run should spawn");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
 
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;

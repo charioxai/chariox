@@ -261,7 +261,6 @@ pub(super) fn compose_command_router(
         slice_store.clone(),
         session_projection.clone(),
         provider_run_projection.clone(),
-        history_store.clone(),
         operational_history_store.clone(),
         durable_state_store.clone(),
         prompt_state_owner.clone(),

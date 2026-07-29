@@ -17,7 +17,6 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
     let slice_store = app.slices();
     let session_projection = app.session_state_projection_store();
     let provider_run_projection = app.provider_run_projection_store();
-    let history_store = app.history_store();
     let operational_history_store = app.operational_history_store();
     let durable_state_store = app.durable_state_store();
     let prompt_state_owner = app.prompt_state_owner();
@@ -40,7 +39,6 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
         slice_store,
         session_projection,
         provider_run_projection,
-        history_store,
         operational_history_store,
         durable_state_store,
         prompt_state_owner,

@@ -2,14 +2,14 @@ use crate::agent::AgentServiceStore;
 use crate::app::ActiveTurnStore;
 use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
-use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
 use crate::provider::ProviderProcessServiceStore;
 use crate::provider_output_policy::output_bounds::{
     bounded_terminal_output_bytes, should_log_provider_output_truncation,
     terminal_output_delta_bytes,
 };
 use crate::provider_output_policy::tool_history::{
-    is_unread_output_history_entry, should_persist_provider_tool_history,
+    bounded_history_entry, is_unread_output_history_entry,
 };
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
@@ -23,7 +23,6 @@ pub(crate) struct ProviderOutputFanout {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     session_store: SessionStateStore,
-    history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     archive_enabled: bool,
     terminal: TerminalStreamStore,
@@ -45,7 +44,6 @@ impl ProviderOutputFanout {
             agent_store: app.agents.clone(),
             attachment_store: app.attachments.clone(),
             session_store: app.sessions.clone(),
-            history_store: app.history_store(),
             operational_history_store: app.operational_history_store(),
             archive_enabled: app.history_archive_enabled(),
             terminal: app.terminal.clone(),
@@ -398,23 +396,20 @@ impl ProviderOutputFanout {
     }
 
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        if !should_persist_provider_tool_history(&entry) {
+        let Some(entry) = bounded_history_entry(entry) else {
+            return;
+        };
+        if let Err(error) = self.session_store.get_session(session_id) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "skipping provider-output history append because session lookup failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
             return;
         }
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
         let context = crate::app::HistoryEventContextResolver::new(
             self.provider_store.clone(),
             self.session_store.clone(),
@@ -422,7 +417,6 @@ impl ProviderOutputFanout {
             self.active_turns.clone(),
         )
         .resolve(&entry);
-        // Make authoritative history visible before readers can import the legacy copy.
         match self
             .operational_history_store
             .append_transcript(&entry, context)
@@ -463,16 +457,6 @@ impl ProviderOutputFanout {
                     }),
                 );
             }
-        }
-        if let Err(error) = self.history_store.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append provider-output session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
         }
     }
 }

@@ -130,12 +130,24 @@ fn ensure_operational_history_for_outline(
     session: &crate::session::RuntimeSession,
 ) -> Result<(), DaemonError> {
     let _import_guard = operational_history_store.lock_legacy_import()?;
-    if operational_history_store.legacy_fallback_disabled(session.id())?
-        && operational_history_has_arroba_prompt(operational_history_store, session)?
-    {
+    if operational_history_store.legacy_fallback_disabled(session.id())? {
         return Ok(());
     }
-    let entries = history_store.load(session)?;
+    let entries = match history_store.load(session) {
+        Ok(entries) => entries,
+        Err(error) if operational_history_store.has_session_events(session.id())? => {
+            crate::logging::warn_with_fields(
+                "history.outline",
+                "legacy transcript migration deferred; using operational history",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "error": error.to_string(),
+                }),
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     if entries.is_empty() {
         operational_history_store.mark_legacy_fallback_disabled(session.id())?;
         return Ok(());
@@ -153,21 +165,6 @@ fn ensure_operational_history_for_outline(
         );
     }
     Ok(())
-}
-
-fn operational_history_has_arroba_prompt(
-    operational_history_store: &OperationalHistoryStore,
-    session: &crate::session::RuntimeSession,
-) -> Result<bool, DaemonError> {
-    for agent in session.agents() {
-        if !operational_history_store
-            .load_arroba_owned_prompt_texts(session.id(), agent.id())?
-            .is_empty()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 pub(crate) async fn execute_prompt_input_history_request(
@@ -290,7 +287,7 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::history::{
         HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
-        SessionHistoryEntryKind, SessionHistoryPromptAttachment, SessionHistoryStore,
+        SessionHistoryEntryKind, SessionHistoryStore,
     };
     use crate::session::{CreateSessionRequest, SessionService};
     use crate::terminal::TerminalOutputKind;
@@ -386,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn outline_history_retries_legacy_backfill_after_an_empty_marked_attempt() {
+    fn outline_history_does_not_rescan_legacy_jsonl_after_migration_marker() {
         let config = DaemonConfig::for_tests();
         let mut sessions = SessionService::new(&config);
         let session = sessions
@@ -408,57 +405,25 @@ mod tests {
             .legacy_fallback_disabled(session.id())
             .expect("legacy import marker should load"));
 
-        let mut image_prompt = SessionHistoryEntry::user_prompt(
-            session.id(),
-            "attachment-1",
-            "agent-image",
-            "inspect",
-        );
-        image_prompt.attachments = vec![SessionHistoryPromptAttachment {
-            url: "data:image/png;base64,aW1hZ2U=".to_string(),
-            mime: "image/png".to_string(),
-            filename: Some("screen.png".to_string()),
-            preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
-        }];
-        let primary_prompt = SessionHistoryEntry::user_prompt(
-            session.id(),
-            "attachment-2",
-            "agent-primary",
-            "resume",
-        );
-        let primary_output = SessionHistoryEntry::provider_output(
-            session.id(),
-            "provider-run-1",
-            Some("agent-primary"),
-            TerminalOutputKind::ProviderOutput,
-            Some("output-primary".to_string()),
-            "recovered response",
-        );
+        let late_legacy_prompt =
+            SessionHistoryEntry::user_prompt(session.id(), "attachment-1", "agent-1", "late");
         history_store
-            .append_many(
-                &session,
-                &[
-                    image_prompt.clone(),
-                    primary_prompt.clone(),
-                    primary_output.clone(),
-                ],
-            )
-            .expect("authoritative legacy records should append");
+            .append(&session, &late_legacy_prompt)
+            .expect("late legacy record should append");
 
         ensure_operational_history_for_outline(
             &history_store,
             &operational_history_store,
             &session,
         )
-        .expect("marked legacy import should retry");
+        .expect("marked legacy import should remain complete");
 
-        let image_entries = operational_history_store
-            .load_session_history_entries(session.id(), Some("agent-image"))
-            .expect("image history should import");
-        let primary_entries = operational_history_store
-            .load_session_history_entries(session.id(), Some("agent-primary"))
-            .expect("primary history should import");
-        assert_eq!(image_entries, vec![image_prompt]);
-        assert_eq!(primary_entries, vec![primary_prompt, primary_output]);
+        assert!(
+            operational_history_store
+                .load_session_history_entries(session.id(), Some("agent-1"))
+                .expect("operational history should load")
+                .is_empty(),
+            "legacy JSONL must be migration-only once its marker is present"
+        );
     }
 }

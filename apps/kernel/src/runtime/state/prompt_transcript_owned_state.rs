@@ -6,7 +6,7 @@ use crate::provider_output_policy::output_bounds::{
     terminal_output_delta_bytes,
 };
 use crate::provider_output_policy::tool_history::{
-    is_unread_output_history_entry, should_persist_provider_tool_history,
+    bounded_history_entry, is_unread_output_history_entry,
 };
 
 pub(super) struct TerminalOutputBatchAppend {
@@ -431,33 +431,19 @@ impl KernelRuntimeOwnedState {
         let Some(entry) = bounded_history_entry(entry) else {
             return;
         };
-        let _append_guard = self.transcript_history_append_guard();
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        // Make authoritative history visible before readers can import the legacy copy.
-        self.append_operational_history_entry_unlocked(&entry, None, None, None);
-        if let Err(error) = self.history_store.append(&session, &entry) {
+        if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
-                "failed to append provider-output session history",
+                "skipping provider-output history append because session lookup failed",
                 serde_json::json!({
                     "session_id": session_id,
                     "error": error.to_string(),
                 }),
             );
+            return;
         }
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -472,35 +458,20 @@ impl KernelRuntimeOwnedState {
         if entries.is_empty() {
             return;
         }
-        let _append_guard = self.transcript_history_append_guard();
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "entry_count": entries.len(),
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        // Make authoritative history visible before readers can import the legacy copy.
-        self.append_operational_history_entries(&entries);
-        if let Err(error) = self.history_store.append_many(&session, &entries) {
+        if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
-                "failed to append provider-output session history batch",
+                "skipping provider-output history append because session lookup failed",
                 serde_json::json!({
                     "session_id": session_id,
                     "entry_count": entries.len(),
                     "error": error.to_string(),
                 }),
             );
+            return;
         }
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entries(&entries);
     }
 
     pub(super) fn append_operational_history_entry(
@@ -712,7 +683,7 @@ impl KernelRuntimeOwnedState {
         timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         let _append_guard = self.transcript_history_append_guard();
-        let session = self.session_snapshot_without_projection_update(session_id)?;
+        let _ = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
@@ -726,16 +697,6 @@ impl KernelRuntimeOwnedState {
         }
         if let Some(prompt_id) = prompt_id {
             entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
-        }
-        if let Err(error) = self.history_store.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append prompt session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
         }
         self.append_operational_history_entry_unlocked(
             &entry,
@@ -1099,34 +1060,6 @@ impl KernelRuntimeOwnedState {
                 .record_target_activity(session_id, agent_id);
         }
     }
-}
-
-fn bounded_history_entry(mut entry: SessionHistoryEntry) -> Option<SessionHistoryEntry> {
-    let kind = match entry.kind {
-        crate::history::SessionHistoryEntryKind::ProviderOutput => {
-            Some(crate::terminal::TerminalOutputKind::ProviderOutput)
-        }
-        crate::history::SessionHistoryEntryKind::ProviderReasoning => {
-            Some(crate::terminal::TerminalOutputKind::ProviderReasoning)
-        }
-        crate::history::SessionHistoryEntryKind::ProviderTool => {
-            Some(crate::terminal::TerminalOutputKind::ProviderTool)
-        }
-        crate::history::SessionHistoryEntryKind::ProviderError => {
-            Some(crate::terminal::TerminalOutputKind::ProviderError)
-        }
-        crate::history::SessionHistoryEntryKind::ProviderStatus => {
-            Some(crate::terminal::TerminalOutputKind::ProviderStatus)
-        }
-        crate::history::SessionHistoryEntryKind::UserPrompt
-        | crate::history::SessionHistoryEntryKind::Notice => None,
-    };
-    if let Some(kind) = kind {
-        entry.text =
-            String::from_utf8_lossy(&bounded_terminal_output_bytes(&kind, entry.text.as_bytes()))
-                .into_owned();
-    }
-    should_persist_provider_tool_history(&entry).then_some(entry)
 }
 
 fn user_prompt_history_merge_key(prompt_id: &str) -> String {

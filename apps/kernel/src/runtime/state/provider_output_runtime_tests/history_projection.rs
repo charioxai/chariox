@@ -224,10 +224,9 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
 }
 
 #[tokio::test]
-async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails() {
-    let config = crate::config::DaemonConfig::for_tests();
-    let legacy_history_root = config.session_history_root.clone();
-    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+async fn owned_user_prompt_history_does_not_write_the_legacy_jsonl_store() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-owned-legacy-history-fail",
@@ -241,10 +240,6 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
-
-    let _ = fs::remove_dir_all(&legacy_history_root);
-    fs::write(&legacy_history_root, b"not a directory")
-        .expect("fixture should block legacy history writes");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -271,8 +266,15 @@ async fn owned_user_prompt_history_persists_operational_when_legacy_append_fails
         .expect("canonical operational history should load");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].text.trim_end(), "owned reload me");
-
-    let _ = fs::remove_file(&legacy_history_root);
+    assert!(
+        app.lock()
+            .await
+            .history_store()
+            .load(&session)
+            .expect("legacy migration source should load")
+            .is_empty(),
+        "new prompt history must not be written to the legacy JSONL store"
+    );
 }
 
 #[tokio::test]
@@ -372,10 +374,9 @@ async fn owned_external_observed_history_uses_provider_turn_id_for_operational_t
 }
 
 #[tokio::test]
-async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
-    let config = crate::config::DaemonConfig::for_tests();
-    let legacy_history_root = config.session_history_root.clone();
-    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+async fn owned_runtime_notice_does_not_write_the_legacy_jsonl_store() {
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(crate::session::CreateSessionRequest::new(
             "workspace-owned-notice-legacy-history-fail",
@@ -394,10 +395,6 @@ async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
             .with_agent_id(agent.id()),
         )
         .expect("provider run should launch");
-
-    let _ = fs::remove_dir_all(&legacy_history_root);
-    fs::write(&legacy_history_root, b"not a directory")
-        .expect("fixture should block legacy history writes");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -419,8 +416,15 @@ async fn owned_runtime_notice_persists_operational_when_legacy_append_fails() {
         crate::history::SessionHistoryEntryKind::Notice
     );
     assert_eq!(entries[0].text.trim_end(), "owned notice reload me");
-
-    let _ = fs::remove_file(&legacy_history_root);
+    assert!(
+        app.lock()
+            .await
+            .history_store()
+            .load(&session)
+            .expect("legacy migration source should load")
+            .is_empty(),
+        "new notices must not be written to the legacy JSONL store"
+    );
 }
 
 #[tokio::test]
