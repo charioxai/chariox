@@ -42,8 +42,11 @@
   {
     "id": "wait-in",
     "label": "/wait-in",
-    "description": "Send a prompt to the focused agent after a delay in minutes",
+    "description": "Usage: /wait-in <minutes> <prompt> · send once after the delay",
     "value": "/wait-in ",
+    "examples": [
+      "/wait-in 15 Check the latest build"
+    ],
     "searchAliases": [
       "remind agent",
       "delayed prompt",
@@ -54,8 +57,11 @@
   {
     "id": "wait-every",
     "label": "/wait-every",
-    "description": "Send a recurring prompt to the focused agent every given number of minutes",
+    "description": "Usage: /wait-every <minutes> <prompt> · repeat until cancelled",
     "value": "/wait-every ",
+    "examples": [
+      "/wait-every 30 Report progress"
+    ],
     "searchAliases": [
       "recurring prompt",
       "repeat reminder",

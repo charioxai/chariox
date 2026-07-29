@@ -202,6 +202,26 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_catalog_explains_scheduled_prompt_syntax() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let wait_in = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "wait-in")
+            .expect("wait-in command should be present");
+        let wait_every = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "wait-every")
+            .expect("wait-every command should be present");
+
+        assert!(wait_in.description.contains("/wait-in <minutes> <prompt>"));
+        assert_eq!(wait_in.examples, vec!["/wait-in 15 Check the latest build"]);
+        assert!(wait_every.description.contains("/wait-every <minutes> <prompt>"));
+        assert_eq!(wait_every.examples, vec!["/wait-every 30 Report progress"]);
+    }
+
+    #[test]
     fn terminal_command_catalog_marks_dynamic_roots() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let provider = catalog
