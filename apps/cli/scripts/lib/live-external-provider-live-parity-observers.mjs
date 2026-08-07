@@ -164,7 +164,7 @@ export async function waitForKernelFinalIdle({ client, sessionId, agentId, provi
     }
     await sleep(options.pollMs)
   }
-  throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(lastSample)}`)
+  throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(sampleDiagnostic(lastSample))}`)
 }
 
 export async function waitForSurfaceFinalIdle({ surface, sample, options }) {
@@ -187,7 +187,21 @@ export async function waitForSurfaceFinalIdle({ surface, sample, options }) {
     }
     await sleep(options.pollMs)
   }
-  throw new Error(`${surface} did not observe final idle; last=${JSON.stringify(lastSample)}`)
+  throw new Error(`${surface} did not observe final idle; last=${JSON.stringify(sampleDiagnostic(lastSample))}`)
+}
+
+export function sampleDiagnostic(sample) {
+  if (!sample) return null
+  return {
+    at: sample.at ?? null,
+    surface: sample.surface ?? null,
+    status: sample.status ?? null,
+    error: sample.error ?? null,
+    assistantMarkerCount: sample.assistantMarkers?.length ?? 0,
+    toolMarkerCount: sample.toolMarkers?.length ?? 0,
+    finalSeen: sample.finalSeen === true,
+    promptOccurrences: sample.promptOccurrences ?? 0,
+  }
 }
 
 export function agentStatus(agent, agentActivity = null) {

@@ -196,6 +196,11 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "19. Include a short `sleep 0.5` in each marked tool call so Arroba can observe the live turn before the final summary.",
     "20. Ordered checks: 01 `test -f Cargo.toml`; 02 `test -d apps/kernel`; 03 `test -d apps/cli`; 04 `test -f apps/kernel/Cargo.toml`; 05 `test -f apps/cli/package.json`; 06 `wc -l Cargo.toml`; 07 `wc -l apps/kernel/Cargo.toml`; 08 `wc -l apps/cli/package.json`; 09 `stat Cargo.toml`; 10 `stat apps/kernel/Cargo.toml`; 11 `ls apps`; 12 `ls apps/kernel/src`; 13 `ls apps/cli/src`; 14 `find apps/kernel/src -maxdepth 1 -type f`; 15 `find apps/cli/src -maxdepth 1 -type f`; 16 `test -f docs/PROTOCOL.md`; 17 `wc -l docs/PROTOCOL.md`; 18 `test -f docs/ARCHITECTURE.md`; 19 `wc -l docs/ARCHITECTURE.md`; 20 `find packages -maxdepth 1 -type d`.",
     "21. Required round structure: emit ASSISTANT_STEP_01 text, call TOOL_STEP_01, consume its result, emit ASSISTANT_STEP_02 text, call TOOL_STEP_02, and continue autonomously through ASSISTANT_STEP_20 plus TOOL_STEP_20. Do not stop or discuss message mechanics before all 20 results and the final marker.",
+    "22. An ASSISTANT_STEP_NN marker must be ordinary assistant text, never reasoning and never a provider tool name, title, description, input, command, path, or output.",
+    "23. After the gate opens, each model response before the final summary must contain exactly one assistant step text part and exactly one marked tool call. Wait for that tool result before producing the next numbered response.",
+    "24. Never place two marked tool calls in one model response, invoke marked tools in parallel, or batch later numbered checks before their assistant step text has been emitted.",
+    "25. Never invoke a tool to print or otherwise manufacture an ASSISTANT_STEP_NN marker. This provider supports ordinary assistant text beside one tool call; emit the assistant step as that response's text content block.",
+    "26. The twenty progress parts belong in twenty successive model responses inside this one user turn, separated by the twenty tool results. Do not try to place all twenty progress parts or all twenty tool calls in one model response.",
   ].join("\n")
   return { text, promptMarker }
 }

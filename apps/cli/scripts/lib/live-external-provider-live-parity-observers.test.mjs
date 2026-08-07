@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   historyOutlineTextsWithBlobContent,
+  sampleDiagnostic,
   summarizeSamples,
   transcriptMarkerOutputText,
   webSample,
@@ -169,6 +170,32 @@ test("surface summaries use final-and-later samples for authoritative marker cov
   assert.equal(summary.firstFinalSampleIndex, 1)
   assert.equal(summary.preFinalMaxAssistantMarkers, 1)
   assert.equal(summary.preFinalMaxToolMarkers, 1)
+})
+
+test("wait diagnostics omit full transcript payloads", () => {
+  const diagnostic = sampleDiagnostic({
+    at: "2026-08-07T12:00:00.000Z",
+    surface: "kernel",
+    status: "IDLE",
+    text: "large transcript payload",
+    markerText: "ASSISTANT_STEP_01",
+    assistantMarkers: ["ASSISTANT_STEP_01"],
+    toolMarkers: ["TOOL_STEP_01", "TOOL_STEP_02"],
+    finalSeen: false,
+    promptOccurrences: 1,
+  })
+
+  assert.deepEqual(diagnostic, {
+    at: "2026-08-07T12:00:00.000Z",
+    surface: "kernel",
+    status: "IDLE",
+    error: null,
+    assistantMarkerCount: 1,
+    toolMarkerCount: 2,
+    finalSeen: false,
+    promptOccurrences: 1,
+  })
+  assert.doesNotMatch(JSON.stringify(diagnostic), /large transcript payload/)
 })
 
 function pageEntry(kind, text) {

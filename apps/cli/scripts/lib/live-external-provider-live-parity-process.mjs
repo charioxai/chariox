@@ -56,16 +56,26 @@ export function pipeChildLogs(child, stdoutPath, stderrPath) {
   })
 }
 
-export async function closeWithTimeout(target, label) {
+export async function closeWithTimeout(target, label, timeoutMs = 3_000) {
   if (!target?.close) return
   let timedOut = false
-  await Promise.race([
-    target.close(),
-    sleep(3_000).then(() => {
-      timedOut = true
-      console.warn(`${label} close timed out`)
-    }),
-  ]).catch(() => {})
+  let timeoutId
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => target.close()),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true
+          console.warn(`${label} close timed out`)
+          resolve()
+        }, timeoutMs)
+      }),
+    ])
+  } catch {
+    // Cleanup is best-effort.
+  } finally {
+    clearTimeout(timeoutId)
+  }
   if (timedOut && typeof target.process === "function") {
     target.process()?.kill("SIGKILL")
   }
