@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import {
+  assertCollaborationAgentSelections,
+  collaborationAgentSelectionEvidence,
+  collaborationProviderModel,
+  collaborationSessionAgentDefaults,
+} from './lib/live-relay-freeform-multi-user-options.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -32,6 +38,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
     provider: process.env.ARROBA_COLLAB_PROVIDER ?? DEFAULT_PROVIDER,
     model: process.env.ARROBA_COLLAB_MODEL ?? DEFAULT_MODEL,
+    variant: process.env.ARROBA_COLLAB_VARIANT ?? 'low',
     timeoutMs: Number.parseInt(process.env.ARROBA_COLLAB_TIMEOUT_MS ?? '300000', 10),
     pollMs: Number.parseInt(process.env.ARROBA_COLLAB_POLL_MS ?? '1000', 10),
   }
@@ -49,6 +56,8 @@ function parseArgs(argv = process.argv.slice(2)) {
       options.provider = argv[++index]
     } else if (arg === '--model') {
       options.model = argv[++index]
+    } else if (arg === '--variant') {
+      options.variant = argv[++index]
     } else if (arg === '--timeout-ms') {
       options.timeoutMs = Number.parseInt(argv[++index], 10)
     } else if (arg === '--poll-ms') {
@@ -64,6 +73,7 @@ function parseArgs(argv = process.argv.slice(2)) {
         '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
         `  --provider PROVIDER   Provider for live model prompts (default ${DEFAULT_PROVIDER})`,
         `  --model MODEL         Model for live model prompts (default ${DEFAULT_MODEL})`,
+        '  --variant VARIANT     Provider effort/variant for all drill agents (default low)',
         '  --timeout-ms MS       Prompt completion timeout',
         '  --poll-ms MS          Prompt completion poll interval',
       ].join('\n'))
@@ -84,18 +94,6 @@ function assert(condition, message, details = null) {
   if (!condition) {
     throw new Error(`${message}${details == null ? '' : `\n${JSON.stringify(details, null, 2)}`}`)
   }
-}
-
-function modelForProvider(provider, model) {
-  if (provider === 'opencode' && !model.includes('/')) return `opencode/${model}`
-  if (provider === 'codex' && !model.includes('/')) return opencodeCodexModel(model)
-  return model
-}
-
-function opencodeCodexModel(model) {
-  if (model.endsWith('-codex')) return model
-  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
-  return model
 }
 
 function base64url(input) {
@@ -360,6 +358,7 @@ async function main() {
   let providerModel = null
   let agent1 = null
   let agent2 = null
+  let agentSelections = []
   let user1CompletionCount = 0
   let user2CompletionCount = 0
   let user3CompletionCount = 0
@@ -425,11 +424,18 @@ async function main() {
     const user4 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-4')
     clients.push(user1, user2, user3, user4)
 
+    providerModel = collaborationProviderModel(options.provider, options.model)
     const created = unwrap(
-      await user1.send(requests.createSessionRequest(workspace, workspace)),
+      await user1.send(requests.createSessionRequest(
+        workspace,
+        workspace,
+        undefined,
+        collaborationSessionAgentDefaults(options.provider, options.model, options.variant),
+      )),
       'SessionCreated',
     )
     const session = created.session
+    agent1 = created.agent
     sessionId = session.id
     assert(session.owner_user_id === 'user-1', 'relay-created freeform session should be owned by user-1', session)
     const privateInvite = unwrap(
@@ -465,19 +471,20 @@ async function main() {
       'SessionAttached',
     ).attachment
 
-    providerModel = modelForProvider(options.provider, options.model)
     events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
     events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
     events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
 
-    agent1 = unwrap(
-      await user1.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-one', providerModel, workspace, 'low')),
-      'AgentSpawned',
-    ).agent
     agent2 = unwrap(
-      await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, 'low')),
+      await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, options.variant)),
       'AgentSpawned',
     ).agent
+    agentSelections = assertCollaborationAgentSelections(
+      options.provider,
+      options.model,
+      options.variant,
+      [agent1, agent2],
+    )
     assert(agent1.owner_user_id === 'user-1', 'user-1 freeform agent owner mismatch', agent1)
     assert(agent2.owner_user_id === 'user-2', 'user-2 freeform agent owner mismatch', agent2)
 
@@ -550,14 +557,14 @@ async function main() {
     )
 
     for (const [label, state, ownedCount, otherCount] of [
-      ['user-1', state1, 2, 1],
-      ['user-2', state2, 1, 2],
-      ['user-3', state3, 0, 3],
-      ['user-4', state4, 0, 3],
+      ['user-1', state1, 1, 1],
+      ['user-2', state2, 1, 1],
+      ['user-3', state3, 0, 2],
+      ['user-4', state4, 0, 2],
     ]) {
       assert(state.collaboration_agent_counts?.owned_agent_count === ownedCount, `${label} owned agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.other_user_agent_count === otherCount, `${label} collaborator agent count mismatch`, state.collaboration_agent_counts)
-      assert(state.collaboration_agent_counts?.total_agent_count === 3, `${label} total agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.total_agent_count === 2, `${label} total agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.collaborator_count === 3, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
     }
 
@@ -569,10 +576,8 @@ async function main() {
       sessionId: session.id,
       provider: options.provider,
       model: providerModel,
-      agents: [
-        { id: agent1.id, ownerUserId: agent1.owner_user_id },
-        { id: agent2.id, ownerUserId: agent2.owner_user_id },
-      ],
+      variant: options.variant,
+      agents: agentSelections,
       completionCounts: {
         user1: user1CompletionCount,
         user2: user2CompletionCount,
@@ -614,13 +619,13 @@ async function main() {
         daemonAlias: envs.daemonAlias,
         sessionId,
         provider: options.provider,
-        model: providerModel ?? modelForProvider(options.provider, options.model),
+        model: providerModel ?? collaborationProviderModel(options.provider, options.model),
+        variant: options.variant,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
-        agents: [
-          agent1 ? { id: agent1.id, ownerUserId: agent1.owner_user_id } : null,
-          agent2 ? { id: agent2.id, ownerUserId: agent2.owner_user_id } : null,
-        ].filter(Boolean),
+        agents: agentSelections.length > 0
+          ? agentSelections
+          : collaborationAgentSelectionEvidence([agent1, agent2].filter(Boolean)),
         completionCounts: {
           user1: user1CompletionCount,
           user2: user2CompletionCount,

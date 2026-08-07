@@ -505,6 +505,65 @@ export async function attachSubscribedTerminalClient(client, sessionId, clientId
   return attachment
 }
 
+export function nativeProviderSelectedModel(provider, options = {}) {
+  return options.providerModels?.[provider]
+    ?? (provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default")
+}
+
+export function nativeProviderLaunchArgs(provider, options = {}) {
+  if (provider === "codex") {
+    return [
+      "--model",
+      nativeProviderSelectedModel(provider, options),
+      "--effort",
+      options.codexEffort ?? "high",
+      "--server-in-kernel",
+    ]
+  }
+  if (provider === "opencode") {
+    return [
+      ...(options.providerModels?.opencode ? ["--model", options.providerModels.opencode] : []),
+      "--server-in-kernel",
+    ]
+  }
+  if (provider === "claude" && options.providerModels?.claude) {
+    return ["--model", options.providerModels.claude]
+  }
+  return []
+}
+
+function nativeProviderSelectedEffort(provider, options = {}) {
+  if (provider === "codex") return options.codexEffort ?? "high"
+  if (provider === "claude") return "low"
+  return null
+}
+
+export function assertNativeProviderAgentSelections(provider, options, agents) {
+  const expected = {
+    provider,
+    model: nativeProviderSelectedModel(provider, options),
+    effort: nativeProviderSelectedEffort(provider, options),
+  }
+  const selections = agents.map((agent) => ({
+    id: agent.id,
+    alias: agent.alias,
+    provider: agent.provider,
+    model: agent.model ?? null,
+    effort: agent.effort ?? null,
+  }))
+  const mismatch = selections.find((agent) => (
+    agent.provider !== expected.provider
+      || agent.model !== expected.model
+      || agent.effort !== expected.effort
+  ))
+  if (mismatch) {
+    throw new Error(
+      `native ${provider} agent selection mismatch: expected ${expected.provider}/${expected.model}/${expected.effort ?? "<none>"}; received ${mismatch.provider}/${mismatch.model ?? "<none>"}/${mismatch.effort ?? "<none>"}`,
+    )
+  }
+  return selections
+}
+
 export async function runProviderScenario({
   provider,
   root,
@@ -531,11 +590,7 @@ export async function runProviderScenario({
     : provider === "codex"
       ? ["cdx-remote-a", "cdx-remote-b"]
       : ["cc-remote-a", "cc-remote-b"]
-  const providerArgs = provider === "codex"
-    ? ["--model", "gpt-5.4-mini", "--effort", "high", "--server-in-kernel"]
-    : provider === "opencode"
-      ? ["--server-in-kernel"]
-    : []
+  const providerArgs = nativeProviderLaunchArgs(provider, options)
   if (options.includePermissions) {
     providerArgs.push("--permissions", "required")
   }
@@ -714,6 +769,7 @@ export async function runProviderScenario({
       `remote-native-${provider}-drill-${process.pid}`,
     )
     const agents = await waitForNamedAgents(client, sessionId, aliases)
+    const agentSelections = assertNativeProviderAgentSelections(provider, options, agents)
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
     }
@@ -745,8 +801,8 @@ export async function runProviderScenario({
       "--provider",
       provider,
       "--model",
-      provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
-      ...(provider === "codex" ? ["--effort", "high"] : []),
+      nativeProviderSelectedModel(provider, options),
+      ...(provider === "codex" ? ["--effort", options.codexEffort ?? "high"] : []),
     ], process.env)
     await waitForAutomationReady(automationSocket, logs.cliDir)
     const snapshot = await automationRequest(automationSocket, {
@@ -1102,6 +1158,8 @@ export async function runProviderScenario({
 
     return {
       provider,
+      model: nativeProviderSelectedModel(provider, options),
+      ...(provider === "codex" ? { effort: options.codexEffort ?? "high" } : {}),
       sessionId,
       marker,
       relayUrl,
@@ -1109,6 +1167,7 @@ export async function runProviderScenario({
       machineRef: machineRef ?? null,
       sliceRef: sliceRef ?? null,
       agentAliases: aliases,
+      agentSelections,
       observerSawAgents: snapshot.session.agentCount,
       badgeTransitions,
       providerSessions: provider === "opencode" || provider === "codex" ? {

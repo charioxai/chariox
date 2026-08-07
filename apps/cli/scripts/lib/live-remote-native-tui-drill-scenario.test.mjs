@@ -2,10 +2,69 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  assertNativeProviderAgentSelections,
   attachSubscribedTerminalClient,
   baselinePrompt,
+  nativeProviderLaunchArgs,
+  nativeProviderSelectedModel,
   permissionInteractionForAlias,
 } from "./live-remote-native-tui-drill-scenario.mjs"
+
+test("remote native drills launch the explicitly requested provider models", () => {
+  const options = {
+    providerModels: {
+      codex: "gpt-5.6-luna",
+      claude: "sonnet",
+      opencode: "opencode/kimi-k2.7-code",
+    },
+    codexEffort: "medium",
+  }
+
+  assert.deepEqual(nativeProviderLaunchArgs("codex", options), [
+    "--model", "gpt-5.6-luna", "--effort", "medium", "--server-in-kernel",
+  ])
+  assert.deepEqual(nativeProviderLaunchArgs("opencode", options), [
+    "--model", "opencode/kimi-k2.7-code", "--server-in-kernel",
+  ])
+  assert.deepEqual(nativeProviderLaunchArgs("claude", options), ["--model", "sonnet"])
+  assert.equal(nativeProviderSelectedModel("codex", options), "gpt-5.6-luna")
+  assert.equal(nativeProviderSelectedModel("opencode", options), "opencode/kimi-k2.7-code")
+  assert.equal(nativeProviderSelectedModel("claude", options), "sonnet")
+})
+
+test("remote native drills verify and report actual kernel agent selections", () => {
+  const options = {
+    providerModels: {
+      codex: "gpt-5.6-luna",
+      claude: "sonnet",
+      opencode: "opencode/kimi-k2.7-code",
+    },
+    codexEffort: "medium",
+  }
+  const agents = [
+    { id: "agent-a", alias: "cdx-remote-a", provider: "codex", model: "gpt-5.6-luna", effort: "medium" },
+    { id: "agent-b", alias: "cdx-remote-b", provider: "codex", model: "gpt-5.6-luna", effort: "medium" },
+  ]
+
+  assert.deepEqual(assertNativeProviderAgentSelections("codex", options, agents), agents)
+  assert.deepEqual(assertNativeProviderAgentSelections("claude", options, [
+    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "sonnet", effort: "low" },
+  ]), [
+    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "sonnet", effort: "low" },
+  ])
+  assert.deepEqual(assertNativeProviderAgentSelections("opencode", options, [
+    { id: "agent-d", alias: "oc-remote-a", provider: "opencode", model: "opencode/kimi-k2.7-code", effort: null },
+  ]), [
+    { id: "agent-d", alias: "oc-remote-a", provider: "opencode", model: "opencode/kimi-k2.7-code", effort: null },
+  ])
+  assert.throws(
+    () => assertNativeProviderAgentSelections("codex", options, [
+      { ...agents[0], model: "default" },
+      agents[1],
+    ]),
+    /expected codex\/gpt-5\.6-luna\/medium/,
+  )
+})
 
 test("remote Claude drills use natural factual prompts instead of protocol sentinels", () => {
   const markers = {

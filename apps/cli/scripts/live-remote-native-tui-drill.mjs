@@ -79,6 +79,7 @@ import {
   sendClaudeRenderedPromptViaKernelInput,
 } from "./lib/native-tui-provider-drivers.mjs"
 import { exportClaudeCredentials } from "./lib/live-provider-thread-transfer-runtime.mjs"
+import { applyProviderModelOverride } from "./lib/drill-provider-profiles.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -155,6 +156,8 @@ function parseArgs(argv) {
     includePermissions: false,
     includeAttachments: false,
     includeMcpSkills: false,
+    providerModels: {},
+    codexEffort: "high",
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -185,6 +188,10 @@ function parseArgs(argv) {
       options.includeAttachments = true
     } else if (arg === "--include-mcp-skills") {
       options.includeMcpSkills = true
+    } else if (arg === "--provider-model") {
+      applyProviderModelOverride(options.providerModels, argv[++index])
+    } else if (arg === "--codex-effort") {
+      options.codexEffort = argv[++index]
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -204,6 +211,14 @@ function parseArgs(argv) {
     if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
       throw new Error(`unsupported provider ${provider}; expected opencode, codex, or claude`)
     }
+  }
+  for (const provider of Object.keys(options.providerModels)) {
+    if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
+      throw new Error(`unsupported provider model override ${provider}; expected opencode, codex, or claude`)
+    }
+  }
+  if (!options.codexEffort?.trim()) {
+    throw new Error("--codex-effort requires a value")
   }
   return options
 }
@@ -229,6 +244,8 @@ function printHelp() {
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
     "  --include-mcp-skills          Validate pre-granted MCP/skill propagation for native TUI providers",
+    "  --provider-model P=M          Override the exact model for a provider",
+    "  --codex-effort E              Override Codex reasoning effort (default high)",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
