@@ -1,13 +1,15 @@
 use super::*;
 
 #[test]
-fn promptless_pty_output_is_only_projected_for_terminal_failures() {
-    assert!(!should_project_pty_output(false, None));
-    assert!(should_project_pty_output(true, None));
+fn promptless_pty_output_is_projected_for_failures_and_transient_native_terminals() {
+    assert!(!should_project_pty_output(false, None, false));
+    assert!(should_project_pty_output(true, None, false));
     assert!(should_project_pty_output(
         false,
-        Some("provider credits exhausted")
+        Some("provider credits exhausted"),
+        false,
     ));
+    assert!(should_project_pty_output(false, None, true));
 }
 
 #[test]
@@ -101,6 +103,90 @@ fn exited_pty_is_drained_before_liveness_settlement() {
         .expect("provider terminal diagnostic should be recorded");
     assert!(diagnostic.contains("terminal permission error"));
     assert!(diagnostic.contains("--dangerously-skip-permissions"));
+}
+
+#[test]
+fn idle_claude_native_tui_projects_startup_terminal_output() {
+    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-idle-claude-native",
+            "worktree-idle-claude-native",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-idle-claude-native",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-idle-claude-native",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-idle-claude-native".to_string(),
+            pty_target: Some("test-idle-claude-native".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                "printf '\\033[?2004hClaude Code\\n'; sleep 5".to_string(),
+            ],
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let records = loop {
+        let records = ProviderOutputPump::new(&mut app)
+            .pump_provider_output(ProviderOutputPumpRequest {
+                session_id: session.id(),
+                provider_run_id: run.id(),
+                recipient_attachment_ids: vec![attachment.id().to_string()],
+                initial_liveness_already_checked: false,
+            })
+            .expect("provider output pump should preserve the startup frame");
+        if !records.is_empty() {
+            break records;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the Claude native startup frame"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, TerminalOutputKind::ProviderTerminal);
+    let output = String::from_utf8_lossy(&records[0].bytes);
+    assert!(output.contains("Claude Code"));
+    assert!(output.contains("\u{1b}[?2004h"));
 }
 
 fn structured_provider_test_app() -> (DaemonApp, String, String, String) {

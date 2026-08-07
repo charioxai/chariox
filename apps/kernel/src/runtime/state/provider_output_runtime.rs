@@ -156,6 +156,7 @@ impl KernelRuntimeState {
         if !crate::app::provider_output::should_project_pty_output(
             has_active_prompt,
             terminal_failure.as_deref(),
+            uses_transient_native_terminal,
         ) {
             chunks.clear();
         }

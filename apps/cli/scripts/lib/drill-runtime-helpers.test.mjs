@@ -14,6 +14,7 @@ import {
   resolveBuiltBinary,
   resolveBuiltBinarySync,
   runLogged,
+  screenSessionListContains,
   waitForCondition,
   waitForTcpPort,
   withDevStubProviderInventory,
@@ -281,6 +282,13 @@ test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patter
     ], 999),
     [301],
   )
+})
+
+test("screenSessionListContains identifies an exact detached screen name", () => {
+  const output = `There are screens on:\n\t301.arroba-rnt-claude-a-4242\t(Detached)\n\t302.unrelated\t(Detached)\n`
+
+  assert.equal(screenSessionListContains(output, "arroba-rnt-claude-a-4242"), true)
+  assert.equal(screenSessionListContains(output, "arroba-rnt-claude-b-4242"), false)
 })
 
 async function listenOnEphemeralPort() {

@@ -30,6 +30,7 @@ import {
 import {
   providerAuthFailureFromTerminalText,
   resolveCommandPath,
+  screenIsRunning,
   screenQuit,
   screenStuff,
   startScreen,
@@ -278,6 +279,12 @@ async function waitForHistoryMarkers(
     { promptBytes: history.prompts.length, outputBytes: history.outputs.length },
   ]))
   throw new Error(`timed out waiting for all history markers; missing=${JSON.stringify(lastMissing)}; seen=${JSON.stringify(seen)}`)
+}
+
+async function assertScreenSessionRunning(screenName, logFile) {
+  if (await screenIsRunning(screenName)) return
+  const log = await readFile(logFile, "utf8").catch(() => "")
+  throw new Error(`screen ${screenName} exited while waiting for provider history\n${log.slice(-4_000)}`)
 }
 
 function badgeSnapshotForAlias(snapshot, alias) {
@@ -770,6 +777,23 @@ export async function runProviderScenario({
     )
     const agents = await waitForNamedAgents(client, sessionId, aliases)
     const agentSelections = assertNativeProviderAgentSelections(provider, options, agents)
+    const waitForScenarioHistoryMarkers = async (observedAgents, expectedByAgent, waitOptions = {}) =>
+      await waitForHistoryMarkers(
+        client,
+        sessionId,
+        attachment.id,
+        observedAgents,
+        expectedByAgent,
+        {
+          ...waitOptions,
+          onPending: async (pending) => {
+            await assertScreenSessionRunning(screenA, logs.a)
+            await assertScreenSessionRunning(screenB, logs.b)
+            await assertScreenSessionRunning(screenCli, logs.cli)
+            await waitOptions.onPending?.(pending)
+          },
+        },
+      )
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
     }
@@ -827,19 +851,19 @@ export async function runProviderScenario({
     if (!skipBaselineTurns) {
       if (provider === "opencode") {
         await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
-        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        await waitForScenarioHistoryMarkers(agents, {
           [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         })
         await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
       } else if (provider === "codex") {
         await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
-        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        await waitForScenarioHistoryMarkers(agents, {
           [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         })
         await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
       }
 
-      await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      await waitForScenarioHistoryMarkers(agents, {
         [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
       })
@@ -855,7 +879,7 @@ export async function runProviderScenario({
       })
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
 
-      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      const histories = await waitForScenarioHistoryMarkers(agents, {
         [aliases[0]]: { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
         [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
       })
@@ -887,14 +911,14 @@ export async function runProviderScenario({
         baselinePrompt(provider, "nativeB", markers),
       )
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[1]], {
+      await waitForScenarioHistoryMarkers([agents[1]], {
         [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
       })
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
       })
-      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      const histories = await waitForScenarioHistoryMarkers(agents, {
         [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
       })
       badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
@@ -938,7 +962,7 @@ export async function runProviderScenario({
         } else {
           await runNativeCodexPrompt(proxyA, providerSessionA, nativeSkillPrompt)
         }
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
@@ -950,7 +974,7 @@ export async function runProviderScenario({
           action: "workspace_shell_exec",
           command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
         })
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
@@ -963,7 +987,7 @@ export async function runProviderScenario({
           providerRunA,
           `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`,
         )
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
@@ -975,7 +999,7 @@ export async function runProviderScenario({
           action: "workspace_shell_exec",
           command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
         })
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
@@ -1036,7 +1060,7 @@ export async function runProviderScenario({
       } else {
         await waitForLogOccurrences(logs.proxyA, "remote_rendered_attachments_intercepted", 1)
       }
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+      await waitForScenarioHistoryMarkers([agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
       await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeAttachment), 60_000)
@@ -1061,7 +1085,7 @@ export async function runProviderScenario({
           filename: path.basename(arrobaAttachmentPath),
         }],
       })
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+      await waitForScenarioHistoryMarkers([agents[0]], {
         [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
       })
       await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaAttachment), 60_000)
@@ -1107,7 +1131,7 @@ export async function runProviderScenario({
         extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
@@ -1138,7 +1162,7 @@ export async function runProviderScenario({
         extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>

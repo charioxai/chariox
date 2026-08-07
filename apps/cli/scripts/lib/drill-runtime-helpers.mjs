@@ -229,6 +229,24 @@ export async function screenStuff(name, text) {
   await screen(name, ["-p", "0", "-X", "stuff", text])
 }
 
+export function screenSessionListContains(output, name) {
+  return String(output ?? "").split(/\r?\n/).some((line) => {
+    const session = line.trim().split(/\s+/, 1)[0] ?? ""
+    const separator = session.indexOf(".")
+    return separator > 0 && session.slice(separator + 1) === name
+  })
+}
+
+export async function screenIsRunning(name) {
+  try {
+    const { stdout } = await execFileAsync("screen", ["-ls"])
+    return screenSessionListContains(stdout, name)
+  } catch (error) {
+    const stdout = typeof error === "object" && error && "stdout" in error ? error.stdout : ""
+    return screenSessionListContains(stdout, name)
+  }
+}
+
 export function startScreen(name, logDir, command, args, env) {
   return execFileAsync("screen", [
     "-dmS",

@@ -590,3 +590,98 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     let mut app = app.lock().await;
     let _ = app.pty_mut().remove_process(run.id());
 }
+
+#[tokio::test]
+async fn idle_claude_native_tui_projects_startup_terminal_without_history() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-idle-claude-native-runtime",
+            "worktree-idle-claude-native-runtime",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-idle-claude-native-runtime",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-idle-claude-native-runtime",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude:native-idle-runtime".to_string(),
+            pty_target: Some("claude:native-idle-runtime".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                "printf '\\033[?2004hClaude Code\\n'; sleep 5".to_string(),
+            ],
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    app.pty_mut()
+        .spawn_for_run(&run)
+        .expect("Claude native PTY should spawn");
+    let history_count = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load")
+        .len();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let records = runtime
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
+        .await
+        .expect("idle Claude native startup output should project");
+
+    assert!(
+        !records.is_empty(),
+        "Claude startup frame should reach the client"
+    );
+    assert!(records
+        .iter()
+        .all(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderTerminal));
+    let output = records
+        .iter()
+        .flat_map(|record| record.bytes.clone())
+        .collect::<Vec<_>>();
+    let output = String::from_utf8_lossy(&output);
+    assert!(output.contains("Claude Code"));
+    assert!(output.contains("\u{1b}[?2004h"));
+
+    let mut app = app.lock().await;
+    assert_eq!(
+        app.load_session_history_entries(&session, Some(agent.id()))
+            .expect("history should still load")
+            .len(),
+        history_count,
+        "transient terminal paint must stay out of semantic history"
+    );
+    let _ = app.pty_mut().remove_process(run.id());
+}
