@@ -150,7 +150,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
         DaemonError::AgentAliasConflict {
             alias,
             ..
-        } if alias == " duplicate "
+        } if alias == "duplicate"
     ));
 
     let app_locked = app.lock().await;

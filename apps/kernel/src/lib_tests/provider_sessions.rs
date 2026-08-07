@@ -313,7 +313,7 @@ fn spawning_a_seventh_agent_in_one_session_succeeds() {
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 CreateAgentRequest::new(session.id(), "opencode")
-                    .with_alias(format!("agent-{index}"))
+                    .with_alias(format!("seventh-capacity-{index}"))
                     .with_worktree("worktree-1"),
             )
             .expect("agent spawn should succeed");

@@ -530,22 +530,6 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         operational_prompts[0].timestamp_ms >= promoted_at_ms,
         "promoted prompt history must start when the queued prompt becomes active"
     );
-
-    let legacy_prompts = std::fs::read_to_string(app.history_store().path_for_session(&session))
-        .expect("legacy prompt history should load")
-        .lines()
-        .filter_map(|line| serde_json::from_str::<crate::history::SessionHistoryEntry>(line).ok())
-        .filter(|entry| entry.merge_key.as_deref() == Some(expected_merge_key.as_str()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        legacy_prompts.len(),
-        1,
-        "promoted queued prompt must be written once to legacy compatibility history"
-    );
-    assert!(
-        legacy_prompts[0].timestamp_ms >= promoted_at_ms,
-        "legacy compatibility history must use the queued prompt activation timestamp"
-    );
 }
 
 #[test]

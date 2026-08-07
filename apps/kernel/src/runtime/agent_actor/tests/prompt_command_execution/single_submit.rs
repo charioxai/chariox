@@ -294,10 +294,10 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .into_iter()
         .find(|agent| agent.id() == agent_id)
         .expect("agent should still exist");
-    assert!(!completed_agent.is_metaagent());
+    assert!(completed_agent.is_metaagent());
     assert_eq!(
         completed_agent.operating_mode(),
-        crate::agent::AgentOperatingMode::Regular
+        crate::agent::AgentOperatingMode::Meta
     );
     assert_eq!(
         completed_agent.execution_mode_override(),
@@ -307,29 +307,12 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         completed_agent.permission_level_override(),
         Some(crate::provider::AgentPermissionLevel::Yolo)
     );
-    let stale_specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
+    let retained_specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
     assert!(
-        stale_specs.iter().all(|spec| {
-            spec.name != crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+        retained_specs.iter().any(|spec| {
+            spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
         }),
-        "stale provider auth token must not retain meta tools after mode exit"
-    );
-    let stale_call = runtime_state
-        .dispatch_authenticated_runtime_tool_call(
-            &auth_token,
-            crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL,
-            serde_json::json!({}),
-        )
-        .await
-        .expect_err("stale provider auth token must not dispatch meta tools after mode exit");
-    assert!(
-        stale_call
-            .to_string()
-            .contains("agents currently in Meta mode")
-            || stale_call
-                .to_string()
-                .contains("exactly one active provider run for an agent in Meta mode"),
-        "{stale_call:?}"
+        "Meta tools must remain available while another Meta task is queued"
     );
     let session_after_completion = runtime_state
         .session_snapshot(&session_id)
@@ -340,6 +323,14 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
             .metaagent_task(&agent_id)
             .map(|task| task.status()),
         Some(crate::session::MetaagentTaskStatus::Completed)
+    );
+    assert_eq!(session_after_completion.queued_metaagent_tasks().len(), 1);
+    assert_eq!(
+        session_after_completion
+            .queued_metaagent_tasks()
+            .front()
+            .map(|task| task.task_markdown()),
+        Some("Expand the delegation plan.")
     );
     let completing_prompt = session_after_completion
         .active_prompt_for_agent(&agent_id)

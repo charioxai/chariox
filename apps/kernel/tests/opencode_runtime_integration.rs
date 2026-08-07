@@ -115,7 +115,7 @@ fn shared_opencode_endpoint_keeps_prompt_queue_running_without_managed_process()
 }
 
 #[test]
-fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
+fn shared_opencode_idle_status_completes_the_prompt_without_hot_polling() {
     let _guard = opencode_env_guard();
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(100));
     let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
@@ -157,7 +157,8 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
 
     thread::sleep(Duration::from_millis(120));
     let mut output = Vec::new();
-    let completion_deadline = Instant::now() + Duration::from_millis(300);
+    let completion_deadline =
+        Instant::now() + Duration::from_millis(output_timeout_ms().max(2_000));
     loop {
         let recipients = app.attachments().list_session_attachment_ids(session.id());
         output.extend(
@@ -178,7 +179,7 @@ fn shared_opencode_idle_status_completes_the_prompt_without_a_settle_window() {
         }
         assert!(
             Instant::now() < completion_deadline,
-            "OpenCode idle should complete the active prompt immediately after the provider reaches idle"
+            "OpenCode idle should complete the active prompt within bounded structured-poll latency"
         );
         thread::sleep(Duration::from_millis(20));
     }

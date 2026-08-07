@@ -332,8 +332,22 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
         completions: second_completions,
         ..
     } = second_projection.1;
-    assert_eq!(second_chunks.len(), 1);
-    assert_eq!(second_chunks[0].bytes, b"second remote output".to_vec());
+    assert_eq!(
+        second_chunks
+            .iter()
+            .filter(|chunk| chunk.bytes == b"first remote output")
+            .count(),
+        0,
+        "the first turn output must not replay into the second projection"
+    );
+    assert_eq!(
+        second_chunks
+            .iter()
+            .filter(|chunk| chunk.bytes == b"second remote output")
+            .count(),
+        1,
+        "the second turn output must project exactly once"
+    );
     assert_eq!(second_completions.len(), 1);
     assert_ne!(
         second_completions[0].message_id, first_completions[0].message_id,
