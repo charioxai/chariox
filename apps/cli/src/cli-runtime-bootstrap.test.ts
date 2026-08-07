@@ -63,12 +63,18 @@ test("bootstrapCliRuntime attaches and resizes attached sessions", async () => {
 
 test("bootstrapCliRuntime deletes a requested session without attaching", async () => {
   const calls: string[] = []
+  const client = {
+    close: async () => {
+      calls.push("close")
+    },
+  } as LocalIpcClient
   const options = cliOptions({
     deleteSessionRef: "old-session",
     workspace: "/workspace",
   })
   const deps = createDeps({
     parseArgs: () => options,
+    createClient: () => client,
     deleteSessionByRef: async (_client, sessionRef, workspace) => {
       calls.push(`delete:${sessionRef}:${workspace}`)
     },
@@ -85,7 +91,7 @@ test("bootstrapCliRuntime deletes a requested session without attaching", async 
 
   assert.equal(result.kind, "deleted_session")
   assert.equal(result.workspace, "/workspace")
-  assert.deepEqual(calls, ["delete:old-session:/workspace"])
+  assert.deepEqual(calls, ["delete:old-session:/workspace", "close"])
 })
 
 test("buildDetachedBootstrap creates a waiting-room bootstrap shell", () => {

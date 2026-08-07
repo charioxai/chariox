@@ -186,7 +186,11 @@ export async function bootstrapCliRuntime(
     },
   })
   if (cliOptions.deleteSessionRef) {
-    await deps.deleteSessionByRef(client, cliOptions.deleteSessionRef, workspace)
+    try {
+      await deps.deleteSessionByRef(client, cliOptions.deleteSessionRef, workspace)
+    } finally {
+      await client.close()
+    }
     return {
       kind: "deleted_session",
       client,

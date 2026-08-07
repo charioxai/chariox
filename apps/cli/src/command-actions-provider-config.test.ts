@@ -94,12 +94,14 @@ test("provider command can switch backends and manage codex auth", async () => {
   })
 
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider codex", value: "codex" })
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider claude-p", value: "claude-p" })
+  await handlers.handleProviderCommand({ kind: "provider", raw: "/provider claude-headless", value: "claude-headless" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider status", value: "status" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider login", value: "login" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider logout", value: "logout" })
   await handlers.handleProviderCommand({ kind: "provider", raw: "/provider reauth", value: "reauth" })
 
-  assert.deepEqual(events, ["provider:codex"])
+  assert.deepEqual(events, ["provider:codex", "provider:claude-p", "provider:claude-headless"])
   assert.equal(flashedMessage, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
   assert.equal(notice, "codex reauth started • code ABCD-1234 • https://auth.openai.com/codex/device")
 })

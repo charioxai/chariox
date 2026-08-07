@@ -4,6 +4,7 @@ import type {
   ProviderProcessInfo,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
+import { isBackendProviderId } from "./provider-catalog.js"
 
 type FooterTone = "info" | "error"
 
@@ -25,7 +26,7 @@ export async function handleProviderSlashCommand(
 ): Promise<void> {
   const { value } = command
   if (!value) {
-    deps.flashFooter("usage: /provider <opencode|codex|status|login|logout|reauth|processes>", "error")
+    deps.flashFooter("usage: /provider <opencode|codex|claude-headless|claude-p|status|login|logout|reauth|processes>", "error")
     return
   }
 
@@ -51,7 +52,7 @@ export async function handleProviderSlashCommand(
     await handleProviderProcessesCommand(deps, parts)
     return
   }
-  if (value !== "opencode" && value !== "codex") {
+  if (!isBackendProviderId(value)) {
     deps.flashFooter(`unknown provider: ${value}`, "error")
     return
   }
