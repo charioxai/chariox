@@ -2,6 +2,7 @@ import net from "node:net"
 import path from "node:path"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
+import { deflateSync } from "node:zlib"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
   attachToSessionRequest,
@@ -50,8 +51,55 @@ import { providerModelSelectionMatches } from "./provider-model-selection.mjs"
 const repoRoot = path.resolve(new URL("../../../..", import.meta.url).pathname)
 const cliRoot = path.resolve(repoRoot, "apps/cli")
 const cliPath = path.join(cliRoot, "dist/index.js")
-export const nativeAttachmentImagePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACFUlEQVR4nO3SUQkAIBTAQAu9/mUMYwmHIAcXYB9bewauW88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi8QB8p1AlD4QDd8AAAAASUVORK5CYII=", "base64")
-export const arrobaAttachmentImagePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACFUlEQVR4nO3SQQkAIADAQAtZyOyGsYRDkIMLsMfGXBuuG88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi8QB+jG5aRd2IFgAAAAASUVORK5CYII=", "base64")
+export const nativeAttachmentImagePng = solidColorPng(220, 30, 30)
+export const arrobaAttachmentImagePng = solidColorPng(30, 80, 220)
+
+function solidColorPng(red, green, blue) {
+  const width = 256
+  const height = 256
+  const stride = width * 3 + 1
+  const pixels = Buffer.alloc(stride * height)
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride
+    for (let x = 0; x < width; x += 1) {
+      pixels[row + 1 + x * 3] = red
+      pixels[row + 2 + x * 3] = green
+      pixels[row + 3 + x * 3] = blue
+    }
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 2
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ])
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii")
+  const body = Buffer.concat([typeBytes, data])
+  const chunk = Buffer.alloc(data.length + 12)
+  chunk.writeUInt32BE(data.length, 0)
+  body.copy(chunk, 4)
+  chunk.writeUInt32BE(pngCrc32(body), data.length + 8)
+  return chunk
+}
+
+function pngCrc32(bytes) {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { inflateSync } from "node:zlib"
 
 import {
   assertNativeProviderAgentSelections,
@@ -96,9 +97,15 @@ test("remote Claude drills use natural factual prompts instead of protocol senti
 })
 
 test("remote Claude attachment fixtures are visible images with natural prompts", () => {
-  for (const fixture of [nativeAttachmentImagePng, arrobaAttachmentImagePng]) {
-    assert.equal(fixture.readUInt32BE(16), 200)
-    assert.equal(fixture.readUInt32BE(20), 200)
+  for (const [fixture, expectedRgb] of [
+    [nativeAttachmentImagePng, [220, 30, 30]],
+    [arrobaAttachmentImagePng, [30, 80, 220]],
+  ]) {
+    assert.equal(fixture.readUInt32BE(16), 256)
+    assert.equal(fixture.readUInt32BE(20), 256)
+    const pixels = inflatePngImageData(fixture)
+    assert.equal(pixels.length, (256 * 3 + 1) * 256)
+    assert.deepEqual([...pixels.subarray(1, 4)], expectedRgb)
   }
   assert.equal(nativeAttachmentImagePng.equals(arrobaAttachmentImagePng), false)
 
@@ -107,6 +114,17 @@ test("remote Claude attachment fixtures are visible images with natural prompts"
   assert.match(prompt, /dominant color is red/)
   assert.doesNotMatch(prompt, /reply with exactly|CLAUDE[A-Z]+/i)
 })
+
+function inflatePngImageData(png) {
+  const chunks = []
+  for (let offset = 8; offset < png.length;) {
+    const length = png.readUInt32BE(offset)
+    const type = png.subarray(offset + 4, offset + 8).toString("ascii")
+    if (type === "IDAT") chunks.push(png.subarray(offset + 8, offset + 8 + length))
+    offset += length + 12
+  }
+  return inflateSync(Buffer.concat(chunks))
+}
 
 test("remote native drill subscribes its terminal attachment before using it", async () => {
   const calls = []
