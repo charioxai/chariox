@@ -3,10 +3,13 @@ import test from "node:test"
 
 import {
   assertNativeProviderAgentSelections,
+  arrobaAttachmentImagePng,
+  attachedImagePrompt,
   attachSubscribedTerminalClient,
   baselinePrompt,
   nativeProviderLaunchArgs,
   nativeProviderSelectedModel,
+  nativeAttachmentImagePng,
   permissionInteractionForAlias,
 } from "./live-remote-native-tui-drill-scenario.mjs"
 
@@ -84,6 +87,19 @@ test("remote Claude drills use natural factual prompts instead of protocol senti
     baselinePrompt("codex", "nativeA", { nativeA: "CODEXCHARLIE" }),
     "Reply with exactly CODEXCHARLIE and nothing else.",
   )
+})
+
+test("remote Claude attachment fixtures are visible images with natural prompts", () => {
+  for (const fixture of [nativeAttachmentImagePng, arrobaAttachmentImagePng]) {
+    assert.equal(fixture.readUInt32BE(16), 200)
+    assert.equal(fixture.readUInt32BE(20), 200)
+  }
+  assert.equal(nativeAttachmentImagePng.equals(arrobaAttachmentImagePng), false)
+
+  const prompt = attachedImagePrompt("dominant color is red", "claude")
+  assert.match(prompt, /inspect the attached image/i)
+  assert.match(prompt, /dominant color is red/)
+  assert.doesNotMatch(prompt, /reply with exactly|CLAUDE[A-Z]+/i)
 })
 
 test("remote native drill subscribes its terminal attachment before using it", async () => {

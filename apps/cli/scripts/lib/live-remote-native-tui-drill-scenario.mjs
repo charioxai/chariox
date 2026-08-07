@@ -49,7 +49,8 @@ import {
 const repoRoot = path.resolve(new URL("../../../..", import.meta.url).pathname)
 const cliRoot = path.resolve(repoRoot, "apps/cli")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
+export const nativeAttachmentImagePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACFUlEQVR4nO3SUQkAIBTAQAu9/mUMYwmHIAcXYB9bewauW88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi8QB8p1AlD4QDd8AAAAASUVORK5CYII=", "base64")
+export const arrobaAttachmentImagePng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAMgAAADICAIAAAAiOjnJAAACFUlEQVR4nO3SQQkAIADAQAtZyOyGsYRDkIMLsMfGXBuuG88L+JKxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi4SxSBiLhLFIGIuEsUgYi8QB+jG5aRd2IFgAAAAASUVORK5CYII=", "base64")
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -477,7 +478,10 @@ function attachedFilePrompt(markerText) {
   return `Read the attached file and reply with exactly ${markerText} and nothing else.`
 }
 
-function attachedImagePrompt(markerText) {
+export function attachedImagePrompt(markerText, provider) {
+  if (provider === "claude") {
+    return `Please inspect the attached image and identify its dominant color in one sentence. Include the phrase ${markerText}.`
+  }
   return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
 }
 
@@ -609,8 +613,8 @@ export async function runProviderScenario({
     nativeB: provider === "claude" ? "Jupiter is the largest planet in the Solar System" : `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
     arrobaPermission: `${marker}ARROBAPERMISSION`,
-    nativeAttachment: `${marker}NATIVEATTACHMENT`,
-    arrobaAttachment: `${marker}ARROBAATTACHMENT`,
+    nativeAttachment: provider === "claude" ? "dominant color is red" : `${marker}NATIVEATTACHMENT`,
+    arrobaAttachment: provider === "claude" ? "dominant color is blue" : `${marker}ARROBAATTACHMENT`,
     nativeSkill: `${marker}NATIVESKILL`,
     arrobaSkill: `${marker}ARROBASKILL`,
   }
@@ -1028,15 +1032,15 @@ export async function runProviderScenario({
         provider === "opencode" ? "arroba-attachment.txt" : "arroba-attachment.png",
       )
       if (provider === "codex") {
-        await writeFile(nativeAttachmentPath, tinyPng)
-        await writeFile(arrobaAttachmentPath, tinyPng)
-        await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment), [
+        await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
+        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment, provider), [
           { type: "localImage", path: nativeAttachmentPath },
         ])
       } else if (provider === "claude") {
-        await writeFile(nativeAttachmentPath, tinyPng)
-        await writeFile(arrobaAttachmentPath, tinyPng)
-        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment)}`)
+        await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
+        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment, provider)}`)
         await sleep(250)
         await screenStuff(screenA, "\r")
       } else {
@@ -1076,9 +1080,7 @@ export async function runProviderScenario({
         action: "submit_prompt",
         prompt: provider === "opencode"
           ? attachedFilePrompt(markers.arrobaAttachment)
-          : provider === "claude"
-            ? attachedImagePrompt(markers.arrobaAttachment)
-            : attachedImagePrompt(markers.arrobaAttachment),
+          : attachedImagePrompt(markers.arrobaAttachment, provider),
         attachments: [{
           url: arrobaAttachmentPath,
           mime: provider === "opencode" ? "text/plain" : "image/png",

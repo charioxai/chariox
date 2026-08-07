@@ -97,7 +97,6 @@ const relayBinary = resolveBuiltBinarySync(
 )
 const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
-const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
 const execFileAsync = promisify(execFile)
 
 function unwrap(response, variant) {
