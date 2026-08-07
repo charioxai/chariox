@@ -1,4 +1,4 @@
-import type { BootstrapState } from "./cli-types.js"
+import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
@@ -616,7 +616,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         }),
       )
       const payload = "AgentPromptScheduleCreated" in response
-        ? response.AgentPromptScheduleCreated as { session?: BootstrapState["session"] }
+        ? response.AgentPromptScheduleCreated as { session?: RuntimeSession }
         : null
       if (!payload?.session) {
         throw new Error("kernel did not return the scheduled session")
