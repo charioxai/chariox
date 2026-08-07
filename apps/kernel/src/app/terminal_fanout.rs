@@ -408,6 +408,12 @@ impl DaemonApp {
                 .filter(|prompt| prompt.id() == prompt_id)
                 .map(|prompt| prompt.prompt_origin())
         });
+        let recipient_attachment_ids = ProviderOutputFanout::new(self)
+            .agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            );
         self.terminal.fan_out_prompt_output(
             session_id,
             provider_run_id,

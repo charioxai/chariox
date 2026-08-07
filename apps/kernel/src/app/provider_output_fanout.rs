@@ -137,11 +137,14 @@ impl ProviderOutputFanout {
                 external_observation_metadata: None,
             };
         }
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
         let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
-            recipient_attachment_ids
+            self.agent_owner_recipient_attachment_ids(agent_id, recipient_attachment_ids)
         } else {
+            let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id,
+                recipient_attachment_ids,
+            );
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids)
         };
         let prompt_metadata =
@@ -284,8 +287,11 @@ impl ProviderOutputFanout {
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
         let message = message.into();
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         let record = self.terminal.record_notice(
@@ -335,8 +341,11 @@ impl ProviderOutputFanout {
         message_id: &str,
         completed_at_ms: u64,
     ) {
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         self.terminal.record_assistant_message_completion(
@@ -350,7 +359,29 @@ impl ProviderOutputFanout {
         self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 
-    fn private_recipient_attachment_ids(
+    pub(super) fn agent_trace_recipient_attachment_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return Vec::new();
+        };
+        self.attachment_store.filter_attachment_ids_for_agent_trace(
+            recipient_attachment_ids,
+            &session,
+            agent.owner_user_id(),
+        )
+    }
+
+    fn agent_owner_recipient_attachment_ids(
         &self,
         agent_id: Option<&str>,
         recipient_attachment_ids: Vec<String>,

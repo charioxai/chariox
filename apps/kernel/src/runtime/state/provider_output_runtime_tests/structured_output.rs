@@ -288,6 +288,235 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 }
 
 #[tokio::test]
+async fn structured_output_and_completion_fanout_respect_collaborator_trace_visibility() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-collaborator-trace-output",
+            "worktree-collaborator-trace-output",
+        ))
+        .expect("session should be created");
+    {
+        let mut sessions = app.sessions_mut();
+        for (invite_id, user_id, level, now_ms) in [
+            (
+                "invite-transparent-trace-output",
+                "user-transparent",
+                crate::session::CollaborationLevel::Transparent,
+                1,
+            ),
+            (
+                "invite-full-trace-output",
+                "user-full",
+                crate::session::CollaborationLevel::Full,
+                2,
+            ),
+            (
+                "invite-private-trace-output",
+                "user-private",
+                crate::session::CollaborationLevel::Private,
+                3,
+            ),
+        ] {
+            let (_, invite) = sessions
+                .create_session_invite(
+                    session.id(),
+                    invite_id.to_string(),
+                    "local".to_string(),
+                    None,
+                    Some(1),
+                    level,
+                )
+                .expect("collaborator invite should be created");
+            sessions
+                .join_session_invite(
+                    session.id(),
+                    invite.invite_id(),
+                    user_id.to_string(),
+                    now_ms,
+                )
+                .expect("collaborator should join");
+        }
+    }
+    let owner_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "client-trace-owner",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            "local",
+        ))
+        .expect("owner attachment should attach");
+    let transparent_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "client-trace-transparent",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            "user-transparent",
+        ))
+        .expect("transparent collaborator attachment should attach");
+    let full_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "client-trace-full",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            "user-full",
+        ))
+        .expect("full collaborator attachment should attach");
+    let private_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "client-trace-private",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            "user-private",
+        ))
+        .expect("private collaborator attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        owner_attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let recipient_attachment_ids = vec![
+        owner_attachment.id().to_string(),
+        transparent_attachment.id().to_string(),
+        full_attachment.id().to_string(),
+        private_attachment.id().to_string(),
+    ];
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let terminal = runtime.owned.terminal_stream.clone();
+    for attachment_id in &recipient_attachment_ids {
+        terminal.drain_output_records(session.id(), attachment_id);
+    }
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            recipient_attachment_ids.clone(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("collaborator-semantic-output".to_string()),
+                    bytes: b"semantic output".to_vec(),
+                }],
+                completions: vec![crate::provider::ProviderAssistantCompletion {
+                    message_id: "collaborator-assistant-completion".to_string(),
+                    completed_at_ms: 1_000,
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("structured output batch should be accepted");
+    runtime.owned.fan_out_terminal_outputs_to_recipients(
+        session.id(),
+        recipient_attachment_ids,
+        vec![
+            super::super::prompt_transcript_owned_state::TerminalOutputBatchAppend {
+                provider_run_id: run.id().to_string(),
+                agent_id: Some(agent.id().to_string()),
+                kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
+                merge_key: Some("collaborator-raw-terminal".to_string()),
+                bytes: b"raw terminal paint".to_vec(),
+            },
+        ],
+    );
+    runtime.owned.echo_promoted_queued_prompt_to_attachments(
+        session.id(),
+        run.id(),
+        "prompt-collaborator-trace-output",
+        owner_attachment.id(),
+        "shared owner prompt",
+        &[],
+    );
+
+    let owner_records = terminal.drain_output_records(session.id(), owner_attachment.id());
+    let transparent_records =
+        terminal.drain_output_records(session.id(), transparent_attachment.id());
+    let full_records = terminal.drain_output_records(session.id(), full_attachment.id());
+    let private_records = terminal.drain_output_records(session.id(), private_attachment.id());
+
+    assert_eq!(
+        owner_records
+            .iter()
+            .map(|record| (record.kind.clone(), record.bytes.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                b"semantic output".to_vec(),
+            ),
+            (
+                crate::terminal::TerminalOutputKind::ProviderTerminal,
+                b"raw terminal paint".to_vec(),
+            ),
+            (
+                crate::terminal::TerminalOutputKind::PromptEcho,
+                b"shared owner prompt\n".to_vec(),
+            ),
+        ]
+    );
+    for (label, records) in [("transparent", transparent_records), ("full", full_records)] {
+        assert_eq!(records.len(), 2, "{label} collaborator output");
+        assert_eq!(
+            records[0].kind,
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            "{label} collaborator must receive semantic output"
+        );
+        assert_eq!(records[0].bytes, b"semantic output", "{label} output");
+        assert_eq!(
+            records[1].kind,
+            crate::terminal::TerminalOutputKind::PromptEcho,
+            "{label} collaborator must receive prompt echoes"
+        );
+        assert_eq!(records[1].bytes, b"shared owner prompt\n", "{label} echo");
+    }
+    assert!(
+        private_records.is_empty(),
+        "private collaborator must not receive another user's agent trace"
+    );
+
+    for (label, attachment_id, should_receive) in [
+        ("owner", owner_attachment.id(), true),
+        ("transparent", transparent_attachment.id(), true),
+        ("full", full_attachment.id(), true),
+        ("private", private_attachment.id(), false),
+    ] {
+        let completion_ids = terminal
+            .drain_completion_records(session.id(), attachment_id)
+            .into_iter()
+            .map(|completion| completion.message_id)
+            .collect::<Vec<_>>();
+        let expected = if should_receive {
+            vec!["collaborator-assistant-completion".to_string()]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            completion_ids, expected,
+            "{label} collaborator completion visibility"
+        );
+    }
+}
+
+#[tokio::test]
 async fn structured_output_batch_persists_one_turn_id_for_all_chunks() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

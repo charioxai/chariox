@@ -83,8 +83,11 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
             session_id,
             agent_id.as_deref(),
@@ -161,7 +164,7 @@ impl KernelRuntimeOwnedState {
             let provider_terminal =
                 output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
             let scoped_recipient_attachment_ids = if provider_terminal {
-                std::sync::Arc::from(self.private_recipient_attachment_ids(
+                std::sync::Arc::from(self.agent_owner_recipient_attachment_ids(
                     agent_id.as_deref(),
                     recipient_attachment_ids.clone(),
                 ))
@@ -170,7 +173,8 @@ impl KernelRuntimeOwnedState {
                     .entry(agent_id.clone())
                     .or_insert_with(|| {
                         let mut scoped_recipient_attachment_ids = self
-                            .private_recipient_attachment_ids(
+                            .agent_trace_recipient_attachment_ids(
+                                session_id,
                                 agent_id.as_deref(),
                                 recipient_attachment_ids.clone(),
                             );
@@ -269,18 +273,22 @@ impl KernelRuntimeOwnedState {
                 external_observation_metadata: None,
             };
         }
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids =
-            if kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
-                recipient_attachment_ids
-            } else {
-                self.with_metaagent_trace_recipient_ids(
-                    session_id,
-                    agent_id.as_deref(),
-                    recipient_attachment_ids,
-                )
-            };
+        let recipient_attachment_ids = if kind
+            == crate::terminal::TerminalOutputKind::ProviderTerminal
+        {
+            self.agent_owner_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids)
+        } else {
+            let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            );
+            self.with_metaagent_trace_recipient_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            )
+        };
         let record = self.terminal_stream.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
@@ -995,8 +1003,11 @@ impl KernelRuntimeOwnedState {
                     .map(|prompt| prompt.prompt_origin())
             })
         });
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
             session_id,
             agent_id.as_deref(),
@@ -1016,7 +1027,29 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
-    pub(super) fn private_recipient_attachment_ids(
+    pub(super) fn agent_trace_recipient_attachment_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return Vec::new();
+        };
+        self.attachment_store.filter_attachment_ids_for_agent_trace(
+            recipient_attachment_ids,
+            &session,
+            agent.owner_user_id(),
+        )
+    }
+
+    pub(super) fn agent_owner_recipient_attachment_ids(
         &self,
         agent_id: Option<&str>,
         recipient_attachment_ids: Vec<String>,

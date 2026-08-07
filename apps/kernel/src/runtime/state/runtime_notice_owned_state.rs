@@ -34,8 +34,11 @@ impl KernelRuntimeOwnedState {
         message: impl Into<String>,
     ) {
         let message = message.into();
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         self.terminal_stream.record_notice(

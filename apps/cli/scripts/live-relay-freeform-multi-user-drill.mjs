@@ -409,6 +409,8 @@ async function main() {
   let user1CompletionCount = 0
   let user2CompletionCount = 0
   let user3CompletionCount = 0
+  let user4CompletionCount = 0
+  let fullPromptCompletionEvidence = null
   let state1 = null
   let state2 = null
   let state3 = null
@@ -416,6 +418,7 @@ async function main() {
   let events1 = []
   let events2 = []
   let events3 = []
+  let events4 = []
   let stopAttachmentHeartbeats = null
   let openCodeCredentialPath = null
   try {
@@ -549,6 +552,7 @@ async function main() {
     events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
     events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
     events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
+    events4 = await subscribeForCompletions(user4, session.id, attachment4.id)
 
     agent2 = unwrap(
       await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, options.variant)),
@@ -583,6 +587,8 @@ async function main() {
     )
 
     const user1CompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
+    const user3OwnerPromptCompletionBaseline = events3.filter((event) => event.event === 'assistant_message_completed').length
+    const user4OwnerPromptCompletionBaseline = events4.filter((event) => event.event === 'assistant_message_completed').length
     const user1Prompt = unwrap(
       await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Reply with exactly USER1_FREEFORM_OK and nothing else.', [])),
       'PromptSubmitted',
@@ -590,6 +596,8 @@ async function main() {
     assert(user1Prompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'user-1 prompt should start for own agent', user1Prompt)
     user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1CompletionBaseline, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
     await waitForHistoryMarker(user1, requests, session.id, attachment1.id, agent1.id, user1Prompt.outcome.Started.prompt.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    await waitForCompletion(user3, session.id, attachment3.id, events3, user3OwnerPromptCompletionBaseline, options.timeoutMs, options.pollMs, 'full collaborator observing owner prompt')
+    await waitForCompletion(user4, session.id, attachment4.id, events4, user4OwnerPromptCompletionBaseline, options.timeoutMs, options.pollMs, 'transparent collaborator observing owner prompt')
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
       'private user-2 submitting to user-1 freeform agent',
@@ -602,6 +610,8 @@ async function main() {
     )
 
     const user1FullCompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
+    const user3FullCompletionBaseline = events3.filter((event) => event.event === 'assistant_message_completed').length
+    const user4FullCompletionBaseline = events4.filter((event) => event.event === 'assistant_message_completed').length
     const fullPrompt = unwrap(
       await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent1.id, 'Reply with exactly FULL_USER3_CAN_PROMPT_OWNER_AGENT and nothing else.', [])),
       'PromptSubmitted',
@@ -609,7 +619,27 @@ async function main() {
     assert(fullPrompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'full collaborator should start prompt for owner agent', fullPrompt)
     await waitForHistoryMarker(user3, requests, session.id, attachment3.id, agent1.id, fullPrompt.outcome.Started.prompt.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
     user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1FullCompletionBaseline, 30_000, options.pollMs, 'owner observing full collaborator prompt')
+    await waitForCompletion(user3, session.id, attachment3.id, events3, user3FullCompletionBaseline, 30_000, options.pollMs, 'full collaborator observing own cross-owner prompt')
+    await waitForCompletion(user4, session.id, attachment4.id, events4, user4FullCompletionBaseline, 30_000, options.pollMs, 'transparent collaborator observing full cross-owner prompt')
     user3CompletionCount = events3.filter((event) => event.event === 'assistant_message_completed').length
+    user4CompletionCount = events4.filter((event) => event.event === 'assistant_message_completed').length
+    fullPromptCompletionEvidence = {
+      promptId: fullPrompt.outcome.Started.prompt.id,
+      user3: {
+        access: 'full',
+        baseline: user3FullCompletionBaseline,
+        observed: user3CompletionCount,
+        delta: user3CompletionCount - user3FullCompletionBaseline,
+      },
+      user4: {
+        access: 'transparent',
+        baseline: user4FullCompletionBaseline,
+        observed: user4CompletionCount,
+        delta: user4CompletionCount - user4FullCompletionBaseline,
+      },
+    }
+    assert(fullPromptCompletionEvidence.user3.delta === 1, 'full collaborator should receive exactly one new completion for its cross-owner prompt', fullPromptCompletionEvidence)
+    assert(fullPromptCompletionEvidence.user4.delta === 1, 'transparent collaborator should receive exactly one new completion for the full cross-owner prompt', fullPromptCompletionEvidence)
 
     const user2CompletionBaseline = events2.filter((event) => event.event === 'assistant_message_completed').length
     const user2Prompt = unwrap(
@@ -661,7 +691,9 @@ async function main() {
         user1: user1CompletionCount,
         user2: user2CompletionCount,
         user3: user3CompletionCount,
+        user4: user4CompletionCount,
       },
+      fullPromptCompletionEvidence,
       assertions: [
         'four users share one scoped-relay freeform session',
         'private invite sees redacted collaborator agent handles',
@@ -673,6 +705,7 @@ async function main() {
         'private freeform prompt submit rejects another user agent',
         'transparent freeform prompt submit rejects another user agent',
         'full freeform prompt submit can prompt another user agent',
+        'full and transparent collaborators each observe exactly one completion for the full cross-owner prompt',
         'session state projection redacts other-user agent details for private invitees',
       ],
     }, null, 2))
@@ -712,11 +745,14 @@ async function main() {
           user1: user1CompletionCount,
           user2: user2CompletionCount,
           user3: user3CompletionCount,
+          user4: user4CompletionCount,
         },
+        fullPromptCompletionEvidence,
         eventCounts: {
           user1: eventCounts(events1),
           user2: eventCounts(events2),
           user3: eventCounts(events3),
+          user4: eventCounts(events4),
         },
         collaborationAgentCounts: {
           user1: state1?.collaboration_agent_counts ?? null,
