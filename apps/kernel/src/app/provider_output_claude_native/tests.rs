@@ -323,6 +323,8 @@ fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() 
 }
 
 fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
+    use std::io::Write as _;
+
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -349,7 +351,19 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
     let events_file = root.join("events.jsonl");
     let transcript_file = root.join("session.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
-    fs::write(&transcript_file, "").expect("transcript file should be created");
+    let transcript_record = serde_json::json!({
+        "type": "assistant",
+        "uuid": "assistant-late",
+        "message": {
+            "id": "message-late",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "late final response" }]
+        }
+    })
+    .to_string();
+    let transcript_split_at = transcript_record.len() / 2;
+    fs::write(&transcript_file, &transcript_record[..transcript_split_at])
+        .expect("partial transcript output should be written");
     fs::write(
         &events_file,
         serde_json::json!({
@@ -428,20 +442,12 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .as_deref()
         .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
-    fs::write(
-        &transcript_file,
-        serde_json::json!({
-            "type": "assistant",
-            "uuid": "assistant-late",
-            "message": {
-                "id": "message-late",
-                "role": "assistant",
-                "content": [{ "type": "text", "text": "late final response" }]
-            }
-        })
-        .to_string(),
-    )
-    .expect("late transcript output should be written");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript_file)
+        .expect("partial transcript should reopen")
+        .write_all(transcript_record[transcript_split_at..].as_bytes())
+        .expect("late transcript output should finish writing");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .finish_deferred_stop(session.id(), run.id(), &run)

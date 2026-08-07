@@ -103,10 +103,16 @@ pub(super) fn drain_claude_transcript_file_since(
         .unwrap_or_default()
         .min(lines.len());
     let mut drain = ClaudeTranscriptDrain::default();
+    let mut consumed_line_count = start;
     for (index, line) in lines.iter().enumerate().skip(start) {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
+            if index + 1 == lines.len() && !raw.ends_with('\n') {
+                break;
+            }
+            consumed_line_count = index + 1;
             continue;
         };
+        consumed_line_count = index + 1;
         let key = claude_transcript_entry_key(transcript_path, index, &value);
         if !cursor.seen_keys.insert(key) {
             continue;
@@ -139,7 +145,7 @@ pub(super) fn drain_claude_transcript_file_since(
     cursor.files.insert(
         file_key,
         ClaudeTranscriptFileCursor {
-            line_count: lines.len(),
+            line_count: consumed_line_count,
         },
     );
     drain
