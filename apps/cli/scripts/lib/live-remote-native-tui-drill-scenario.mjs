@@ -45,6 +45,7 @@ import {
   runNativeOpenCodePromptDetached,
   sendClaudeRenderedPromptViaKernelInput,
 } from "./native-tui-provider-drivers.mjs"
+import { providerModelSelectionMatches } from "./provider-model-selection.mjs"
 
 const repoRoot = path.resolve(new URL("../../../..", import.meta.url).pathname)
 const cliRoot = path.resolve(repoRoot, "apps/cli")
@@ -564,7 +565,7 @@ export function assertNativeProviderAgentSelections(provider, options, agents) {
   }))
   const mismatch = selections.find((agent) => (
     agent.provider !== expected.provider
-      || agent.model !== expected.model
+      || !providerModelSelectionMatches(provider, expected.model, agent.model)
       || agent.effort !== expected.effort
   ))
   if (mismatch) {

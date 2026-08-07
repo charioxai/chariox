@@ -58,4 +58,20 @@ test("collaboration drills verify and report actual agent selections", () => {
     ]),
     /expected codex\/gpt-5\.6-luna\/medium/,
   )
+  assert.deepEqual(
+    assertCollaborationAgentSelections("claude-headless", "sonnet", "default", [{
+      id: "agent-claude",
+      owner_user_id: "user-claude",
+      provider: "claude-headless",
+      model: "claude/claude-sonnet-5",
+      effort: "default",
+    }]),
+    [{
+      id: "agent-claude",
+      ownerUserId: "user-claude",
+      provider: "claude-headless",
+      model: "claude/claude-sonnet-5",
+      effort: "default",
+    }],
+  )
 })

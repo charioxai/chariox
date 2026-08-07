@@ -1,3 +1,5 @@
+import { providerModelSelectionMatches } from "./provider-model-selection.mjs"
+
 export function collaborationProviderModel(provider, model) {
   if (provider === "opencode" && !model.includes("/")) return `opencode/${model}`
   if (provider === "codex" && !model.includes("/")) return codexCliModel(model)
@@ -27,7 +29,7 @@ export function assertCollaborationAgentSelections(provider, model, effort, agen
   const selections = collaborationAgentSelectionEvidence(agents)
   const mismatch = selections.find((agent) => (
     agent.provider !== provider
-      || agent.model !== expectedModel
+      || !providerModelSelectionMatches(provider, expectedModel, agent.model)
       || agent.effort !== effort
   ))
   if (mismatch) {

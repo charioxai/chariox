@@ -51,9 +51,9 @@ test("remote native drills verify and report actual kernel agent selections", ()
 
   assert.deepEqual(assertNativeProviderAgentSelections("codex", options, agents), agents)
   assert.deepEqual(assertNativeProviderAgentSelections("claude", options, [
-    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "sonnet", effort: "low" },
+    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "claude/claude-sonnet-5", effort: "low" },
   ]), [
-    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "sonnet", effort: "low" },
+    { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "claude/claude-sonnet-5", effort: "low" },
   ])
   assert.deepEqual(assertNativeProviderAgentSelections("opencode", options, [
     { id: "agent-d", alias: "oc-remote-a", provider: "opencode", model: "opencode/kimi-k2.7-code", effort: null },
@@ -66,6 +66,12 @@ test("remote native drills verify and report actual kernel agent selections", ()
       agents[1],
     ]),
     /expected codex\/gpt-5\.6-luna\/medium/,
+  )
+  assert.throws(
+    () => assertNativeProviderAgentSelections("claude", options, [
+      { id: "agent-c", alias: "cc-remote-a", provider: "claude", model: "claude/claude-opus-4-6", effort: "low" },
+    ]),
+    /expected claude\/sonnet\/low/,
   )
 })
 
