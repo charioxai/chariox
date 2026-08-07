@@ -59,6 +59,33 @@ test("provider selection controller updates attached agent variants", async () =
   })
 })
 
+test("provider selection controller applies detached mode and permissions to launch defaults", async () => {
+  const harness = createHarness({ attached: false })
+
+  await harness.controller.applyModeSelection("plan")
+  await harness.controller.applyPermissionSelection("required")
+
+  assert.equal(harness.reconciledStates().at(-1)?.executionMode, "plan")
+  assert.equal(harness.reconciledStates().at(-1)?.permissionLevel, "required")
+  assert.deepEqual(harness.configUpdates(), [])
+  assert.deepEqual(harness.footerMessages().slice(-2), [
+    { message: "mode default set to plan", tone: "info" },
+    { message: "permissions default set to required", tone: "info" },
+  ])
+})
+
+test("provider selection controller routes attached mode and permissions through agent config", async () => {
+  const harness = createHarness({ attached: true })
+
+  await harness.controller.applyModeSelection("plan")
+  await harness.controller.applyPermissionSelection("required")
+
+  assert.deepEqual(harness.configUpdates(), [
+    { sessionId: "session-1", agentId: "agent-1", config: { executionMode: "plan" } },
+    { sessionId: "session-1", agentId: "agent-1", config: { permissionLevel: "required" } },
+  ])
+})
+
 test("provider selection controller updates attached agent models through profile API", async () => {
   const harness = createHarness({
     attached: true,
@@ -195,6 +222,11 @@ function createHarness(options: {
   }> = []
   const notices: string[] = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const configUpdates: Array<{
+    sessionId: string
+    agentId: string
+    config: { executionMode?: "build" | "plan"; permissionLevel?: "required" | "yolo" }
+  }> = []
   let providerRunCleared = false
 
   const controller = createProviderSelectionController({
@@ -221,6 +253,10 @@ function createHarness(options: {
       if (options.updateAgentProfile) {
         return options.updateAgentProfile(sessionId, agentId, profile)
       }
+      return { session: { id: "updated-session" } as RuntimeSession }
+    },
+    updateAgentConfig: async (sessionId, agentId, config) => {
+      configUpdates.push({ sessionId, agentId, config })
       return { session: { id: "updated-session" } as RuntimeSession }
     },
     applySessionState: () => {},
@@ -252,6 +288,7 @@ function createHarness(options: {
     footerMessages: () => footerMessages,
     reconciledStates: () => reconciledStates,
     profileUpdates: () => profileUpdates,
+    configUpdates: () => configUpdates,
     providerRunCleared: () => providerRunCleared,
     notices: () => notices,
     warnings: () => warnings,

@@ -18,6 +18,7 @@ import {
   submitPromptWithRecovery,
 } from "./prompt-runtime-api.js"
 import { getSessionState } from "./session-api.js"
+import { sharedShellCommandForSlashCommand } from "./commands.js"
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
@@ -45,6 +46,7 @@ export type CliInputRoutingCompositionDeps = {
   setPromptHistoryDraft: AnyFn
   clearCommandCenter: AnyFn
   flashFooter: AnyFn
+  appendNotice: AnyFn
   requestExit: AnyFn
   requestWaitingRoom: AnyFn
   promptStopController: {
@@ -55,6 +57,8 @@ export type CliInputRoutingCompositionDeps = {
   handleProviderCommand: AnyFn
   handleModelCommand: AnyFn
   handleVariantCommand: AnyFn
+  handleModeCommand: AnyFn
+  handlePermissionsCommand: AnyFn
   handleViewCommand: AnyFn
   handleUndoCommand: AnyFn
   handleForkCommand: AnyFn
@@ -187,6 +191,7 @@ export type CliInputRoutingCompositionDeps = {
 }
 
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
+  let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   const slashCommandSubmitController = createSlashCommandSubmitController({
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
@@ -206,6 +211,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleProviderCommand: deps.handleProviderCommand,
     handleModelCommand: deps.handleModelCommand,
     handleVariantCommand: deps.handleVariantCommand,
+    handleModeCommand: deps.handleModeCommand,
+    handlePermissionsCommand: deps.handlePermissionsCommand,
     handleViewCommand: deps.handleViewCommand,
     handleUndoCommand: deps.handleUndoCommand,
     handleForkCommand: deps.handleForkCommand,
@@ -230,6 +237,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleCredentialCommand: deps.handleCredentialCommand,
     handleConnectorCommand: deps.handleConnectorCommand,
     handleExtensionCommand: deps.handleExtensionCommand,
+    handleSharedShellCommand: (rawCommand) => handleSharedShellCommand(rawCommand),
   })
 
   const workspaceShellSubmitController = createWorkspaceShellSubmitController({
@@ -263,6 +271,21 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     },
   })
   const submitWorkspaceShellCommand = workspaceShellSubmitController.submit
+  handleSharedShellCommand = async (rawCommand) => {
+    const shellCommand = sharedShellCommandForSlashCommand(rawCommand)
+    if (!shellCommand) {
+      return false
+    }
+    if (!deps.isAttached()) {
+      deps.flashFooter("start or join a session first", "error")
+      return true
+    }
+    const result = await submitWorkspaceShellCommand(shellCommand)
+    if (result.output && !deps.workflowScreenShowing()) {
+      deps.appendNotice(result.output)
+    }
+    return true
+  }
 
   const workflowPromptSubmitController = createWorkflowPromptSubmitController({
     getWorkflowPromptState: deps.workflowPromptState,
@@ -599,6 +622,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     requestPromptStop,
     submitFocusedInteractionChoice,
     submitPrompt,
+    handleSharedShellCommand,
     submitWorkspaceShellCommand,
   }
 }

@@ -43,6 +43,28 @@ test("command center command executor dispatches wait commands", async () => {
   assert.deepEqual(harness.calls, ["wait:once:3:Check later"])
 })
 
+test("command center command executor dispatches launch config commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/mode plan")
+  await harness.executor.execute("/permissions required")
+
+  assert.deepEqual(harness.calls, ["mode:plan", "permissions:required"])
+})
+
+test("command center command executor delegates catalog-only kernel commands to shared shell", async () => {
+  const harness = createHarness({
+    handleSharedShellCommand: async (command) => {
+      harness.calls.push(`shared:${command}`)
+      return command === "/workflow registry list"
+    },
+  })
+
+  await harness.executor.execute("/workflow registry list")
+
+  assert.deepEqual(harness.calls, ["shared:/workflow registry list"])
+})
+
 function createHarness(overrides: Partial<Parameters<typeof createCommandCenterCommandExecutor>[0]> = {}) {
   const calls: string[] = []
   const flashes: string[] = []
@@ -55,6 +77,8 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onProvider: (command) => calls.push(`provider:${command.value}`),
     onModel: (command) => calls.push(`model:${command.value}`),
     onVariant: (command) => calls.push(`variant:${command.value}`),
+    onMode: (command) => calls.push(`mode:${command.value}`),
+    onPermissions: (command) => calls.push(`permissions:${command.value}`),
     onView: (command) => calls.push(`view:${command.value}`),
     onUndo: (command) => calls.push(`undo:${command.args.join(" ")}`),
     onFork: (command) => calls.push(`fork:${command.args.join(" ")}`),

@@ -18,6 +18,8 @@ test("waiting-room slash policy lets detached-safe commands use normal slash han
 
   assert.equal(await harness.handle("/provider codex"), false)
   assert.equal(await harness.handle("/session list"), false)
+  assert.equal(await harness.handle("/mode plan"), false)
+  assert.equal(await harness.handle("/permissions required"), false)
   assert.equal(await harness.handle("/view split"), false)
 
   assert.deepEqual(harness.flashes, [])
@@ -28,11 +30,11 @@ test("waiting-room slash policy handles waiting room and unknown commands", asyn
   const harness = createHarness()
 
   assert.equal(await harness.handle("/waiting"), true)
-  assert.equal(await harness.handle("/mode plan"), true)
+  assert.equal(await harness.handle("/not-real"), true)
 
   assert.deepEqual(harness.flashes, [
     { message: "already in waiting room", tone: "info" },
-    { message: "/mode plan is not wired in the TUI yet", tone: "error" },
+    { message: "/not-real is not wired in the TUI yet", tone: "error" },
   ])
   assert.equal(harness.clearedPrompts, 1)
 })

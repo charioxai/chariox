@@ -1,3 +1,8 @@
+import type {
+  TerminalCommandCatalogExecutionTarget,
+  TerminalCommandCatalogNodeKind,
+  TerminalCommandCatalogSurface,
+} from "@arroba/kernel-client/kernel-types"
 import type { CommandCenterItem } from "./command-center-types.js"
 
 export type CommandNode = {
@@ -5,6 +10,12 @@ export type CommandNode = {
   label: string
   description: string
   value: string
+  kind?: TerminalCommandCatalogNodeKind
+  executionTarget?: TerminalCommandCatalogExecutionTarget
+  surfaces?: readonly TerminalCommandCatalogSurface[]
+  intents?: readonly string[]
+  examples?: readonly string[]
+  dynamicSource?: string | null
   searchAliases?: string[]
   children?: readonly CommandNode[]
 }

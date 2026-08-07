@@ -375,7 +375,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
   const {
-    activateWaitingRoom, applyModelSelection, applyProviderCatalogChanged, applyProviderSelection,
+    activateWaitingRoom, applyModelSelection, applyModeSelection, applyPermissionSelection,
+    applyProviderCatalogChanged, applyProviderSelection,
     applyRelayStatusChanged, applyRemoteMachinesChanged, applySlicesChanged, applyVariantSelection,
     applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
@@ -425,7 +426,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     client, sessionState, formatError,
   })
   const commandCenterController = createCommandCenterController<BoxRenderable>({
-    getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState()),
+    getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState(), {
+      surface: isAttached() ? "session" : "waiting_room",
+      executionTargets: isAttached()
+        ? ["kernel", "terminal_local", "prompt_prefix"]
+        : ["kernel", "terminal_local"],
+    }),
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
@@ -822,7 +828,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     attachBinding, transitionToNoSession, applyProviderSelection, applyModelSelection,
-    applyVariantSelection, refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
+    applyVariantSelection, applyModeSelection, applyPermissionSelection,
+    currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
+    currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",
+    refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
     applyResponseLayout, applySessionState, refreshAgentPanes, setWorkspaceLiveSyncStatus,
     ...workflowActions,
     rebuildTranscript,

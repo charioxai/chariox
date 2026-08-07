@@ -217,7 +217,9 @@ mod tests {
 
         assert!(wait_in.description.contains("/wait-in <minutes> <prompt>"));
         assert_eq!(wait_in.examples, vec!["/wait-in 15 Check the latest build"]);
-        assert!(wait_every.description.contains("/wait-every <minutes> <prompt>"));
+        assert!(wait_every
+            .description
+            .contains("/wait-every <minutes> <prompt>"));
         assert_eq!(wait_every.examples, vec!["/wait-every 30 Report progress"]);
     }
 
@@ -235,6 +237,25 @@ mod tests {
             provider.dynamic_source.as_deref(),
             Some("provider_catalog.providers")
         );
+        for (id, source) in [
+            ("mode", "session_config.modes"),
+            ("permissions", "session_config.permissions"),
+        ] {
+            let node = catalog
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .unwrap_or_else(|| panic!("{id} command should be present"));
+            assert_eq!(node.kind, TerminalCommandCatalogNodeKind::Dynamic);
+            assert_eq!(node.dynamic_source.as_deref(), Some(source));
+            assert_eq!(
+                node.surfaces,
+                vec![
+                    TerminalCommandCatalogSurface::Session,
+                    TerminalCommandCatalogSurface::WaitingRoom,
+                ]
+            );
+        }
     }
 
     #[test]
@@ -255,6 +276,155 @@ mod tests {
                 .map(|node| node.value.as_str())
                 .collect::<Vec<_>>(),
             vec!["/attach ", "/stop", "/waiting", "/exit"]
+        );
+    }
+
+    #[test]
+    fn terminal_command_catalog_marks_every_detached_safe_command_for_the_waiting_room() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+        let waiting_room_nodes = nodes
+            .into_iter()
+            .filter(|node| {
+                node.surfaces
+                    .contains(&TerminalCommandCatalogSurface::WaitingRoom)
+            })
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            waiting_room_nodes,
+            vec![
+                "session",
+                "session-new",
+                "session-attach",
+                "session-list",
+                "session-delete",
+                "cloud",
+                "cloud-open",
+                "cloud-link",
+                "cloud-status",
+                "cloud-invite-accept",
+                "cloud-collaborators",
+                "relay",
+                "relay-status",
+                "relay-use",
+                "relay-disable",
+                "relay-invite-accept",
+                "collab",
+                "collab-invite-accept",
+                "kernel",
+                "kernel-health",
+                "kernel-remote-runtime",
+                "kernel-delete",
+                "kernel-runtime",
+                "kernel-status",
+                "machine",
+                "machine-list",
+                "machine-kernels",
+                "machine-approve",
+                "machine-forget",
+                "machine-rename",
+                "mcp",
+                "mcp-list",
+                "mcp-install",
+                "mcp-import",
+                "mcp-show",
+                "skill",
+                "skill-list",
+                "skill-install",
+                "skill-import",
+                "skill-show",
+                "env",
+                "env-list",
+                "env-register",
+                "env-remove",
+                "env-show",
+                "script",
+                "script-list",
+                "script-validate",
+                "script-register",
+                "script-show",
+                "credential",
+                "credential-list",
+                "credential-set",
+                "credential-register",
+                "credential-remove",
+                "credential-show",
+                "connector",
+                "connector-list",
+                "connector-register",
+                "connector-doctor",
+                "connector-test",
+                "connector-show",
+                "slice",
+                "slice-list",
+                "slice-create",
+                "slice-status",
+                "slice-doctor",
+                "slice-logs",
+                "slice-audit",
+                "slice-audit-limit",
+                "slice-state",
+                "slice-save-state",
+                "slice-save-state-restart-agents",
+                "slice-save-state-shutdown",
+                "slice-save-state-this-slice",
+                "slice-save-state-future-slices",
+                "slice-backup",
+                "slice-backup-name",
+                "slice-reset-state",
+                "slice-start",
+                "slice-stop",
+                "slice-delete",
+                "slice-screen",
+                "slice-ls",
+                "slice-show",
+                "slice-auth",
+                "slice-auth-login",
+                "slice-auth-import",
+                "slice-auth-remove",
+                "slice-auth-alias",
+                "workspace",
+                "workspace-set",
+                "workspace-sync-default",
+                "workspace-sync-default-off",
+                "workspace-sync-default-managed",
+                "workspace-sync-default-tracked",
+                "worktree",
+                "worktree-set",
+                "worktree-create",
+                "worktree-name",
+                "provider",
+                "provider-select",
+                "provider-status",
+                "provider-login",
+                "provider-logout",
+                "provider-reauth",
+                "provider-processes",
+                "provider-processes-teardown",
+                "config",
+                "config-show",
+                "config-path",
+                "config-keys",
+                "config-schema",
+                "config-set",
+                "config-unset",
+                "config-workspace-live-sync",
+                "config-workspace-live-sync-off",
+                "config-workspace-live-sync-managed",
+                "config-workspace-live-sync-tracked",
+                "model",
+                "variant",
+                "mode",
+                "permissions",
+                "view",
+                "view-individual",
+                "view-split",
+                "exit",
+                "waiting",
+            ]
         );
     }
 

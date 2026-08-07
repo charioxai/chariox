@@ -196,6 +196,10 @@ export type CliCommandActionCompositionDeps = {
   applyProviderSelection: AnyFn
   applyModelSelection: AnyFn
   applyVariantSelection: AnyFn
+  applyModeSelection: AnyFn
+  applyPermissionSelection: AnyFn
+  currentExecutionMode: AnyFn
+  currentPermissionLevel: AnyFn
   refreshWaitingRoomData: AnyFn
   remoteMachinesState: AnyFn
   setRemoteMachinesState: AnyFn
@@ -292,6 +296,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     applyProviderSelection,
     applyModelSelection,
     applyVariantSelection,
+    applyModeSelection,
+    applyPermissionSelection,
+    currentExecutionMode,
+    currentPermissionLevel,
     refreshWaitingRoomData,
     remoteMachinesState,
     setRemoteMachinesState,
@@ -377,6 +385,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentModelId,
     currentVariantId,
     currentProviderId: () => options.provider ?? "opencode",
+    currentExecutionMode,
+    currentPermissionLevel,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -405,6 +415,8 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     applyProviderSelection,
     applyModelSelection,
     applyVariantSelection,
+    applyModeSelection,
+    applyPermissionSelection,
     getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
     startProviderLogin: (provider) => startProviderLogin(client, provider),
     logoutProvider: (provider) => logoutProvider(client, provider),

@@ -333,6 +333,27 @@ test("buildCommandCenterItems suggests registered workflow names and run endpoin
   assert.equal(queueValues.has('/workflow run dev-team-small --endpoint entry --queue urgent --prompt "" '), true)
 })
 
+test("buildCommandCenterItems does not revive filtered workflow commands from cached registry entries", () => {
+  const filteredContext: CommandCenterContext = {
+    commandTree: [],
+    providerCatalog: fallbackProviderCatalog(),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs(),
+    currentProvider: "opencode",
+    focusedProvider: null,
+    currentModel: "opencode/gpt-5.4",
+    currentVariant: "high",
+    workflowRegistryEntries: [{
+      name: "dev-team-small",
+      sourceScope: "workspace",
+      sourceKind: "source_directory",
+      endpoints: ["entry"],
+    }],
+  }
+
+  assert.deepEqual(buildCommandCenterItemsFromCatalog("/workflow load ", filteredContext), [])
+  assert.deepEqual(buildCommandCenterItemsFromCatalog("/workflow run ", filteredContext), [])
+})
+
 test("workflow registry command center entries read endpoint and queue summary metadata", () => {
   const entries = workflowRegistrySuggestionEntriesFromResponse({
     WorkflowRegistryListed: {

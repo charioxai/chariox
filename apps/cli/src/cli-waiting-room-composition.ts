@@ -1,5 +1,5 @@
 import { mergeExternalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
-import { updateAgentProfile } from "./agent-api.js"
+import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
@@ -426,6 +426,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     providerRunState: deps.providerRunState,
     sessionState: deps.sessionState,
     updateAgentProfile: (sessionId, agentId, profile) => updateAgentProfile(deps.client, sessionId, agentId, profile),
+    updateAgentConfig: (sessionId, agentId, config) => updateAgentConfig(deps.client, sessionId, agentId, config),
     applySessionState: deps.applySessionState,
     clearProviderRunState: () => deps.setProviderRunState(null),
     getProviderAuthStatus: (provider) => getProviderAuthStatus(deps.client, provider),
@@ -443,6 +444,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   return {
     activateWaitingRoom,
     applyModelSelection: providerSelectionController.applyModelSelection,
+    applyModeSelection: providerSelectionController.applyModeSelection,
+    applyPermissionSelection: providerSelectionController.applyPermissionSelection,
     applyProviderSelection: providerSelectionController.applyProviderSelection,
     applyVariantSelection: providerSelectionController.applyVariantSelection,
     applyProviderCatalogChanged,

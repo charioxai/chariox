@@ -52,6 +52,8 @@ export type WaitingRoomState = {
   providerId: BackendProviderId
   modelId: string
   effort: string
+  executionMode?: "build" | "plan"
+  permissionLevel?: "required" | "yolo"
   themeId: ThemeName
   introStep: number
   keyState: WaitingRoomKeyState

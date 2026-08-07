@@ -83,6 +83,10 @@ test("waiting room activation creates and attaches sessions with launch defaults
     controlDecision: { action: "none" },
     activationDecision: { action: "create", launch },
     accountProfile: "work",
+    waitingRoomState: {
+      executionMode: "plan",
+      permissionLevel: "required",
+    },
   })
 
   await harness.controller.activate()
@@ -95,8 +99,8 @@ test("waiting room activation creates and attaches sessions with launch defaults
       model: "gpt-5.4",
       effort: "high",
       account_profile: "work",
-      execution_mode: "build",
-      permission_level: "yolo",
+      execution_mode: "plan",
+      permission_level: "required",
       workspaceLiveSyncMode: "off",
       sliceRef: "slice-1",
     },
@@ -341,6 +345,7 @@ function createHarness(options: {
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  waitingRoomState?: Partial<WaitingRoomState>
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -367,7 +372,7 @@ function createHarness(options: {
     connectKernel: async () => {
       calls.push("connectKernel")
     },
-    getWaitingRoomState: () => ({} as WaitingRoomState),
+    getWaitingRoomState: () => (options.waitingRoomState ?? {}) as WaitingRoomState,
     getRemoteState: () => ({} as WaitingRoomRemoteState),
     getWorkspaceTarget: () => "/workspace",
     getWorktreeTarget: () => "/worktree",

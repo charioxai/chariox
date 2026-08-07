@@ -64,6 +64,26 @@ test("slash command submit dispatches agent wait commands", async () => {
   assert.equal(harness.clearPromptCount(), 1)
 })
 
+test("slash command submit delegates catalog-only kernel commands to shared shell", async () => {
+  const harness = createHarness({
+    attached: true,
+    handleSharedShellCommand: async (command) => {
+      harness.sharedCommands().push(command)
+      return true
+    },
+  })
+  const controller = createSlashCommandSubmitController(harness.deps)
+
+  const command = await controller.submit("/workflow publication list", {
+    allowSlashCommandSubmission: true,
+  })
+
+  assert.equal(command?.kind, "workflow")
+  assert.deepEqual(harness.sharedCommands(), ["/workflow publication list"])
+  assert.deepEqual(harness.calls(), [])
+  assert.equal(harness.clearPromptCount(), 1)
+})
+
 test("slash command submit clears the exit command before requesting exit", async () => {
   const events: string[] = []
   const harness = createHarness({
@@ -120,6 +140,7 @@ function createHarness(options: {
   onExit?: SlashCommandSubmitControllerDeps["onExit"]
   handleAttachmentCommand?: SlashCommandSubmitControllerDeps["handleAttachmentCommand"]
   handleSessionCommand?: SlashCommandSubmitControllerDeps["handleSessionCommand"]
+  handleSharedShellCommand?: SlashCommandSubmitControllerDeps["handleSharedShellCommand"]
 } = {}) {
   const calls: string[] = []
   const recordedHistory: Array<{ sessionId: string; rawPrompt: string }> = []
@@ -127,6 +148,7 @@ function createHarness(options: {
   const promptHistoryDrafts: Array<string | null> = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   const logErrors: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const sharedCommands: string[] = []
   let clearPromptCount = 0
   let commandCenterClearCount = 0
 
@@ -167,6 +189,8 @@ function createHarness(options: {
     handleProviderCommand: (command) => calls.push(`provider:${command.value}`),
     handleModelCommand: (command) => calls.push(`model:${command.value}`),
     handleVariantCommand: (command) => calls.push(`variant:${command.value}`),
+    handleModeCommand: (command) => calls.push(`mode:${command.value}`),
+    handlePermissionsCommand: (command) => calls.push(`permissions:${command.value}`),
     handleViewCommand: (command) => calls.push(`view:${command.value}`),
     handleUndoCommand: (command) => calls.push(`undo:${command.args.join(" ")}`),
     handleForkCommand: (command) => calls.push(`fork:${command.args.join(" ")}`),
@@ -191,6 +215,7 @@ function createHarness(options: {
     handleCredentialCommand: (command) => calls.push(`credential:${command.args.join(" ")}`),
     handleConnectorCommand: (command) => calls.push(`connector:${command.args.join(" ")}`),
     handleExtensionCommand: (command) => calls.push(`extension:${command.args.join(" ")}`),
+    ...(options.handleSharedShellCommand ? { handleSharedShellCommand: options.handleSharedShellCommand } : {}),
   }
 
   return {
@@ -201,6 +226,7 @@ function createHarness(options: {
     promptHistoryDrafts: () => promptHistoryDrafts,
     footerMessages: () => footerMessages,
     logErrors: () => logErrors,
+    sharedCommands: () => sharedCommands,
     clearPromptCount: () => clearPromptCount,
     commandCenterClearCount: () => commandCenterClearCount,
   }

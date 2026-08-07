@@ -63,6 +63,8 @@ export function createWaitingRoomState(
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
+      executionMode: "build",
+      permissionLevel: "yolo",
       themeId: normalizeThemeName(themeId, themeRegistry),
       introStep: 0,
       keyState: { up: false, down: false, left: false, right: false },
@@ -140,8 +142,22 @@ export function normalizeWaitingRoomState(
     ...(sliceSelection.sliceDisplayMode !== undefined ? { sliceDisplayMode: sliceSelection.sliceDisplayMode } : {}),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
+    executionMode: waitingRoomExecutionMode(state),
+    permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),
   }
+}
+
+export function waitingRoomExecutionMode(
+  state: Pick<WaitingRoomState, "executionMode">,
+): "build" | "plan" {
+  return state.executionMode === "plan" ? "plan" : "build"
+}
+
+export function waitingRoomPermissionLevel(
+  state: Pick<WaitingRoomState, "permissionLevel">,
+): "required" | "yolo" {
+  return state.permissionLevel === "required" ? "required" : "yolo"
 }
 
 function normalizeWorkspaceLiveSyncMode(value: WaitingRoomState["workspaceLiveSyncMode"]): WaitingRoomState["workspaceLiveSyncMode"] {

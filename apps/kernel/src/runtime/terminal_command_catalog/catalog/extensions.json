@@ -4,24 +4,28 @@
     "label": "/mcp",
     "description": "Manage Arroba MCP registry and agent grants",
     "value": "/mcp ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "mcp-list",
         "label": "list",
         "description": "List Arroba-managed MCPs",
-        "value": "/mcp list"
+        "value": "/mcp list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "mcp-install",
         "label": "install",
         "description": "Install an MCP into Arroba",
-        "value": "/mcp install "
+        "value": "/mcp install ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "mcp-import",
         "label": "import",
         "description": "Import provider MCPs into Arroba",
-        "value": "/mcp import "
+        "value": "/mcp import ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "mcp-grant",
@@ -45,7 +49,8 @@
         "id": "mcp-show",
         "label": "show",
         "description": "Show MCP config",
-        "value": "/mcp show "
+        "value": "/mcp show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -54,24 +59,28 @@
     "label": "/skill",
     "description": "Manage Arroba skills and agent grants",
     "value": "/skill ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "skill-list",
         "label": "list",
         "description": "List Arroba-managed skills",
-        "value": "/skill list"
+        "value": "/skill list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "skill-install",
         "label": "install",
         "description": "Install a skill into Arroba",
-        "value": "/skill install "
+        "value": "/skill install ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "skill-import",
         "label": "import",
         "description": "Import provider skills into Arroba",
-        "value": "/skill import "
+        "value": "/skill import ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "skill-grant",
@@ -95,7 +104,8 @@
         "id": "skill-show",
         "label": "show",
         "description": "Show skill metadata",
-        "value": "/skill show "
+        "value": "/skill show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -104,30 +114,35 @@
     "label": "/env",
     "description": "Manage external script environments",
     "value": "/env ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "env-list",
         "label": "list",
         "description": "List script environments",
-        "value": "/env list"
+        "value": "/env list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "env-register",
         "label": "register",
         "description": "Register Python or Node environment",
-        "value": "/env register "
+        "value": "/env register ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "env-remove",
         "label": "remove",
         "description": "Remove an environment",
-        "value": "/env remove "
+        "value": "/env remove ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "env-show",
         "label": "show",
         "description": "Show environment config",
-        "value": "/env show "
+        "value": "/env show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -136,24 +151,28 @@
     "label": "/script",
     "description": "Manage script extensions",
     "value": "/script ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "script-list",
         "label": "list",
         "description": "List script extensions",
-        "value": "/script list"
+        "value": "/script list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "script-validate",
         "label": "validate",
         "description": "Validate a script with test_run",
-        "value": "/script validate "
+        "value": "/script validate ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "script-register",
         "label": "register",
         "description": "Register a script extension",
-        "value": "/script register "
+        "value": "/script register ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "script-grant",
@@ -177,7 +196,8 @@
         "id": "script-show",
         "label": "show",
         "description": "Show script metadata",
-        "value": "/script show "
+        "value": "/script show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -186,36 +206,42 @@
     "label": "/credential",
     "description": "Manage connector credentials",
     "value": "/credential ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "credential-list",
         "label": "list",
         "description": "List credentials",
-        "value": "/credential list"
+        "value": "/credential list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "credential-set",
         "label": "set",
         "description": "Store a vault secret",
-        "value": "/credential set "
+        "value": "/credential set ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "credential-register",
         "label": "register",
         "description": "Register credential YAML",
-        "value": "/credential register "
+        "value": "/credential register ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "credential-remove",
         "label": "remove",
         "description": "Remove a credential",
-        "value": "/credential remove "
+        "value": "/credential remove ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "credential-show",
         "label": "show",
         "description": "Show credential metadata",
-        "value": "/credential show "
+        "value": "/credential show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -224,30 +250,35 @@
     "label": "/connector",
     "description": "Manage API connector extensions",
     "value": "/connector ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "connector-list",
         "label": "list",
         "description": "List connectors",
-        "value": "/connector list"
+        "value": "/connector list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "connector-register",
         "label": "register",
         "description": "Register connector YAML",
-        "value": "/connector register "
+        "value": "/connector register ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "connector-doctor",
         "label": "doctor",
         "description": "Check connector metadata and credential policy",
-        "value": "/connector doctor "
+        "value": "/connector doctor ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "connector-test",
         "label": "test",
         "description": "Test a connector operation",
-        "value": "/connector test "
+        "value": "/connector test ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "connector-grant",
@@ -271,7 +302,8 @@
         "id": "connector-show",
         "label": "show",
         "description": "Show connector metadata",
-        "value": "/connector show "
+        "value": "/connector show ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },

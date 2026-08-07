@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   executeSlashCommand,
   parseSlashCommand,
+  sharedShellCommandForSlashCommand,
   shouldClearCommandCenterForSlashCommand,
 } from "./commands.js"
 
@@ -103,12 +104,44 @@ test("parseSlashCommand parses cloud commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses focused-agent mode and permission selections", () => {
+  assert.deepEqual(parseSlashCommand("/mode plan"), {
+    kind: "mode",
+    raw: "/mode plan",
+    value: "plan",
+  })
+  assert.deepEqual(parseSlashCommand("/permissions required"), {
+    kind: "permissions",
+    raw: "/permissions required",
+    value: "required",
+  })
+})
+
 test("parseSlashCommand parses collab commands and args", () => {
   assert.deepEqual(parseSlashCommand("/collab invite create"), {
     kind: "collab",
     raw: "/collab invite create",
     args: ["invite", "create"],
   })
+})
+
+test("sharedShellCommandForSlashCommand routes catalog-only kernel commands through the shared executor", () => {
+  assert.equal(sharedShellCommandForSlashCommand("/collab invites"), "session invites")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow schedule preview --every 5m"), "workflow schedule preview --every 5m")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow code package export demo --out demo.json"), "workflow code package export demo --out demo.json")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow publication show publication-1"), "workflow publication show publication-1")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow registry list"), "workflow registry list")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow load demo"), "workflow load demo")
+  assert.equal(
+    sharedShellCommandForSlashCommand('/workflow run demo --endpoint entry --prompt "Run it"'),
+    'workflow run demo --endpoint entry --prompt "Run it"',
+  )
+  assert.equal(
+    sharedShellCommandForSlashCommand('/workflow run demo --prompt "Run it"'),
+    'workflow run demo --prompt "Run it"',
+  )
+  assert.equal(sharedShellCommandForSlashCommand("/workflow run workflow-1 entry Run it"), null)
+  assert.equal(sharedShellCommandForSlashCommand("/workflow schedule list"), null)
 })
 
 test("parseSlashCommand parses undo and fork commands with optional refs", () => {
@@ -156,6 +189,8 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
     onProvider: () => undefined,
     onModel: () => undefined,
     onVariant: () => undefined,
+    onMode: () => undefined,
+    onPermissions: () => undefined,
     onView: () => undefined,
     onUndo: () => undefined,
     onFork: () => undefined,
@@ -197,6 +232,8 @@ test("executeSlashCommand dispatches to the matching handler", async () => {
     onProvider: () => calls.push("provider"),
     onModel: () => calls.push("model"),
     onVariant: () => calls.push("variant"),
+    onMode: () => calls.push("mode"),
+    onPermissions: () => calls.push("permissions"),
     onView: () => calls.push("view"),
     onUndo: () => calls.push("undo"),
     onFork: () => calls.push("fork"),
@@ -240,6 +277,8 @@ test("executeSlashCommand returns null for non-command input", async () => {
     onProvider: () => undefined,
     onModel: () => undefined,
     onVariant: () => undefined,
+    onMode: () => undefined,
+    onPermissions: () => undefined,
     onView: () => undefined,
     onUndo: () => undefined,
     onFork: () => undefined,
