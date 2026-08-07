@@ -81,17 +81,18 @@ export function formatSplitPaneFooterParts(
   }
 
   const aliasLabel = agent.alias?.trim() || "agent"
+  const idleOverride = activeRun ? undefined : override
   const provider = nonBlank(activeRun?.provider)
-    ?? nonBlank(override?.provider)
+    ?? nonBlank(idleOverride?.provider)
     ?? nonBlank(agent.provider)
     ?? "opencode"
   const model = nonBlank(activeRun?.model)
-    ?? nonBlank(override?.model)
+    ?? nonBlank(idleOverride?.model)
     ?? nonBlank(agent.model)
     ?? nonBlank(fallbackModel)
     ?? "default"
   const variant = nonBlank(activeRun?.variant)
-    ?? nonBlank(override?.variant)
+    ?? nonBlank(idleOverride?.variant)
     ?? nonBlank(agent.effort)
     ?? ""
   const runtimeLocationPart = footerLocationPart(agent.location_label)

@@ -64,6 +64,23 @@ test("slash command submit dispatches agent wait commands", async () => {
   assert.equal(harness.clearPromptCount(), 1)
 })
 
+test("slash command submit clears the exit command before requesting exit", async () => {
+  const events: string[] = []
+  const harness = createHarness({
+    clearPromptText: () => events.push("clear"),
+    onExit: () => events.push("exit"),
+  })
+  const controller = createSlashCommandSubmitController(harness.deps)
+
+  const command = await controller.submit("/exit", {
+    allowSlashCommandSubmission: true,
+  })
+
+  assert.equal(command?.kind, "exit")
+  assert.deepEqual(events, ["clear", "exit"])
+  assert.equal(harness.clearPromptCount(), 1)
+})
+
 test("slash command submit reports unknown session commands", async () => {
   const harness = createHarness({
     handleSessionCommand: () => false,
@@ -99,6 +116,8 @@ test("slash command submit logs attachment command failures", async () => {
 
 function createHarness(options: {
   attached?: boolean
+  clearPromptText?: () => void
+  onExit?: SlashCommandSubmitControllerDeps["onExit"]
   handleAttachmentCommand?: SlashCommandSubmitControllerDeps["handleAttachmentCommand"]
   handleSessionCommand?: SlashCommandSubmitControllerDeps["handleSessionCommand"]
 } = {}) {
@@ -119,6 +138,7 @@ function createHarness(options: {
     },
     clearPromptText: () => {
       clearPromptCount += 1
+      options.clearPromptText?.()
     },
     setPromptHistoryIndex: (index) => {
       promptHistoryIndexes.push(index)
@@ -136,7 +156,7 @@ function createHarness(options: {
       logErrors.push({ message, fields })
     },
     formatError: (error) => error instanceof Error ? error.message : String(error),
-    onExit: () => calls.push("exit"),
+    onExit: options.onExit ?? (() => calls.push("exit")),
     onWaiting: () => calls.push("waiting"),
     onStop: () => calls.push("stop"),
     handleAttachmentCommand: options.handleAttachmentCommand ?? ((raw) => calls.push(`attachment:${raw}`)),

@@ -99,6 +99,10 @@ export function createSlashCommandSubmitController(
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
+      const clearBeforeHandler = slashCommand?.kind === "exit"
+      if (clearBeforeHandler) {
+        clearHandledCommandUi(slashCommand)
+      }
 
       const trimmed = options.trimmedPrompt ?? rawPrompt.trim()
       const handledCommand = await executeSlashCommand(rawPrompt, {
@@ -153,7 +157,9 @@ export function createSlashCommandSubmitController(
       if (!handledCommand) {
         return null
       }
-      clearHandledCommandUi(handledCommand)
+      if (!clearBeforeHandler) {
+        clearHandledCommandUi(handledCommand)
+      }
       return handledCommand
     },
   }
