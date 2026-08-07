@@ -241,3 +241,118 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         .drain_completion_records(session.id(), attachment.id())
         .is_empty());
 }
+
+#[test]
+fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "durable remote prompt",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_durable_operation("operation-1", "fingerprint-1");
+    let outcome = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    let PromptSubmissionOutcome::Started { prompt } = outcome else {
+        panic!("prompt should be active");
+    };
+    assert_eq!(prompt.durable_operation_id(), Some("operation-1"));
+
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![RelayProjectedCompletion {
+                message_id: "prior-native-completion".to_string(),
+                completed_at_ms: 1234,
+                home_prompt_id: None,
+            }],
+        )
+        .expect("unscoped native completion should be ignored");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("durable prompt must remain active");
+    assert_eq!(active.id(), prompt.id());
+    assert!(app
+        .terminal_mut()
+        .drain_completion_records(session.id(), attachment.id())
+        .is_empty());
+
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![RelayProjectedCompletion {
+                message_id: "current-home-completion".to_string(),
+                completed_at_ms: 5678,
+                home_prompt_id: Some(prompt.id().to_string()),
+            }],
+        )
+        .expect("scoped home completion should settle the prompt");
+
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("prompt state should load")
+        .is_none());
+    let completions = app
+        .terminal_mut()
+        .drain_completion_records(session.id(), attachment.id());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "current-home-completion");
+
+    RemoteLeaseRuntime::new(&mut app)
+        .project_remote_runtime_projection(
+            session.id(),
+            agent.id(),
+            "remote:worker:provider-run-1",
+            None,
+            vec![crate::transport::relay_peer::RelayProjectedPrompt {
+                prompt_id: "native-prompt".to_string(),
+                text: "native-origin prompt".to_string(),
+            }],
+            Vec::new(),
+            Vec::new(),
+            vec![RelayProjectedCompletion {
+                message_id: "native-completion".to_string(),
+                completed_at_ms: 6789,
+                home_prompt_id: None,
+            }],
+        )
+        .expect("unscoped completion should settle a native-origin prompt");
+
+    assert!(app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .expect("native prompt state should load")
+        .is_none());
+    let completions = app
+        .terminal_mut()
+        .drain_completion_records(session.id(), attachment.id());
+    assert_eq!(completions.len(), 1);
+    assert_eq!(completions[0].message_id, "native-completion");
+}
