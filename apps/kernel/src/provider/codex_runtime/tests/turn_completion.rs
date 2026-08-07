@@ -1,6 +1,7 @@
 use super::super::drain::codex_turn_should_backfill;
 use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
+use super::super::turn::CodexTerminalSignal;
 use super::*;
 
 #[test]
@@ -121,6 +122,70 @@ fn delayed_previous_turn_start_cannot_arm_the_next_prompt_before_submission() {
     assert_eq!(active_turn_id, None);
     assert!(!prompt_completed);
     assert!(completions.is_empty());
+}
+
+#[test]
+fn terminal_signal_is_discarded_after_backfill_clears_the_active_turn() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+    let settled_turn_id = active_turn_id.take();
+    assert_eq!(settled_turn_id.as_deref(), Some("turn-1"));
+
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert_eq!(active_turn_id, None);
+    assert!(!turn_tracker.has_pending_terminal());
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+    assert!(notices.is_empty());
+    assert_eq!(terminal_failure, None);
+}
+
+#[test]
+fn stale_terminal_signal_cannot_complete_a_newer_active_turn() {
+    let mut active_turn_id = Some("turn-2".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_terminal(CodexTerminalSignal {
+        turn_id: "turn-1".to_string(),
+        status: "completed".to_string(),
+        error_message: None,
+    });
+
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    flush_quiet_terminal_for_test(
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+    );
+
+    assert_eq!(active_turn_id.as_deref(), Some("turn-2"));
+    assert!(!turn_tracker.has_pending_terminal());
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+    assert!(notices.is_empty());
+    assert_eq!(terminal_failure, None);
 }
 
 #[test]

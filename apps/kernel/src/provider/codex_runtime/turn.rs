@@ -156,10 +156,18 @@ pub(super) fn maybe_finalize_terminal_signal(
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
 ) {
-    if turn_tracker.active_tool_count() > 0 && !turn_tracker.has_terminal_assistant_evidence() {
+    let Some(pending_turn_id) = turn_tracker
+        .pending_terminal
+        .as_ref()
+        .map(|pending| pending.signal.turn_id.as_str())
+    else {
+        return;
+    };
+    if active_turn_id.as_deref() != Some(pending_turn_id) {
+        turn_tracker.pending_terminal = None;
         return;
     }
-    if !turn_tracker.has_pending_terminal() {
+    if turn_tracker.active_tool_count() > 0 && !turn_tracker.has_terminal_assistant_evidence() {
         return;
     }
     let Some(pending) = turn_tracker.pending_terminal.take() else {
