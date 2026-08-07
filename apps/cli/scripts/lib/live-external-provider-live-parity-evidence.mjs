@@ -35,6 +35,7 @@ export async function snapshotProviderTranscript({ provider, providerSessionId, 
   const text = await readFile(path, "utf8")
   const artifactPath = pathJoin(providerRoot, `provider-transcript${pathExt(path)}`)
   await writeFile(artifactPath, text, "utf8")
+  const semanticEvidence = semanticJsonlTranscriptEvidence(provider, text, { finalMarker, promptMarker })
   return {
     surface: "provider",
     found: true,
@@ -42,10 +43,14 @@ export async function snapshotProviderTranscript({ provider, providerSessionId, 
     path,
     artifactPath,
     byteLength: Buffer.byteLength(text),
-    assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
-    toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
-    finalSeen: text.includes(finalMarker),
-    promptOccurrences: countOccurrences(text, promptMarker),
+    ...(semanticEvidence
+      ? { semanticEvidence: true, ...semanticEvidence }
+      : {
+          assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
+          toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
+          finalSeen: text.includes(finalMarker),
+          promptOccurrences: countOccurrences(text, promptMarker),
+        }),
   }
 }
 
@@ -72,6 +77,7 @@ export async function snapshotOpenCodeSqliteTranscript({ providerSessionId, prov
     const rows = parseJson(capture.stdout)
     if (!Array.isArray(rows) || rows.length === 0) continue
     const text = JSON.stringify(rows, null, 2)
+    const transcriptEvidence = classifyOpenCodeSqliteTranscriptRows(rows, { finalMarker, promptMarker })
     const artifactPath = pathJoin(providerRoot, "provider-transcript.sqlite.json")
     await writeFile(artifactPath, text, "utf8")
     return {
@@ -82,10 +88,8 @@ export async function snapshotOpenCodeSqliteTranscript({ providerSessionId, prov
       artifactPath,
       byteLength: Buffer.byteLength(text),
       rowCount: rows.length,
-      assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
-      toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
-      finalSeen: text.includes(finalMarker),
-      promptOccurrences: countOccurrences(text, promptMarker),
+      semanticEvidence: true,
+      ...transcriptEvidence,
     }
   }
   return {
@@ -94,6 +98,216 @@ export async function snapshotOpenCodeSqliteTranscript({ providerSessionId, prov
     providerSessionId,
     reason: `no OpenCode SQLite transcript rows matched provider session ${providerSessionId}`,
   }
+}
+
+export function classifyCodexJsonlTranscriptValues(values, { finalMarker, promptMarker } = {}) {
+  const assistantText = []
+  const userText = []
+  const toolEvents = []
+  const reasoningText = []
+  for (const value of values ?? []) {
+    const payload = value?.payload ?? value
+    if (value?.type === "response_item") {
+      const itemType = payload?.type
+      if (itemType === "message") {
+        const texts = codexContentTexts(payload.content)
+        if (payload.role === "assistant") assistantText.push(...texts)
+        if (payload.role === "user") userText.push(...texts)
+      } else if (itemType === "agentMessage") {
+        assistantText.push(...codexContentTexts(payload.text ?? payload.content))
+      } else if (itemType === "reasoning") {
+        reasoningText.push(...codexContentTexts(payload.summary ?? payload.content ?? payload.text))
+      } else if (codexToolItemType(itemType)) {
+        toolEvents.push(JSON.stringify(payload))
+      }
+      continue
+    }
+    if (value?.type !== "event_msg") continue
+    if (payload?.type === "agent_message" && typeof payload.message === "string") {
+      assistantText.push(payload.message)
+    } else if (payload?.type === "user_message" && typeof payload.message === "string") {
+      userText.push(payload.message)
+    } else if (payload?.type === "agent_reasoning" && typeof payload.text === "string") {
+      reasoningText.push(payload.text)
+    } else if (payload?.type === "mcp_tool_call_end") {
+      toolEvents.push(JSON.stringify(payload))
+    }
+  }
+  return classifiedTranscriptEvidence({
+    assistantText: dedupe(assistantText),
+    userText: dedupe(userText),
+    toolEvents,
+    reasoningText: dedupe(reasoningText),
+    finalMarker,
+    promptMarker,
+  })
+}
+
+export function classifyClaudeJsonlTranscriptValues(values, { finalMarker, promptMarker } = {}) {
+  const assistantText = []
+  const userText = []
+  const toolEvents = []
+  const reasoningText = []
+  for (const value of values ?? []) {
+    const recordType = value?.type
+    const message = value?.message ?? value
+    if (claudeInternalResumeEntry(value, message)) continue
+    const content = message?.content ?? value?.content
+    if (recordType === "assistant") {
+      for (const block of claudeContentBlocks(content)) {
+        const blockType = block?.type ?? "text"
+        if (blockType === "text") {
+          assistantText.push(...claudeBlockTexts(block, ["text", "content"]))
+        } else if (blockType === "thinking") {
+          reasoningText.push(...claudeBlockTexts(block, ["thinking", "text", "content"]))
+        } else if (blockType === "tool_use" || blockType === "tool_result") {
+          toolEvents.push(JSON.stringify(block))
+        }
+      }
+    } else if (recordType === "user") {
+      for (const block of claudeContentBlocks(content)) {
+        const blockType = block?.type ?? "text"
+        if (blockType === "tool_result") {
+          toolEvents.push(JSON.stringify(block))
+        } else if (blockType === "text") {
+          userText.push(...claudeBlockTexts(block, ["text", "content"]))
+        }
+      }
+    }
+  }
+  return classifiedTranscriptEvidence({
+    assistantText,
+    userText,
+    toolEvents,
+    reasoningText,
+    finalMarker,
+    promptMarker,
+  })
+}
+
+function semanticJsonlTranscriptEvidence(provider, text, markers) {
+  const values = jsonlValues(text)
+  if (provider === "codex") return classifyCodexJsonlTranscriptValues(values, markers)
+  if (provider === "claude") return classifyClaudeJsonlTranscriptValues(values, markers)
+  return null
+}
+
+function codexContentTexts(content) {
+  if (typeof content === "string") return [content]
+  if (!Array.isArray(content)) return []
+  return content.flatMap((block) => {
+    if (typeof block === "string") return [block]
+    if (typeof block?.text === "string") return [block.text]
+    if (typeof block?.content === "string") return [block.content]
+    return []
+  })
+}
+
+function codexToolItemType(itemType) {
+  return [
+    "function_call",
+    "function_call_output",
+    "custom_tool_call",
+    "custom_tool_call_output",
+    "commandExecution",
+    "fileChange",
+    "mcpToolCall",
+    "dynamicToolCall",
+    "collabAgentToolCall",
+    "local_shell_call",
+  ].includes(itemType)
+}
+
+function claudeContentBlocks(content) {
+  if (Array.isArray(content)) return content
+  if (typeof content === "string") return [{ type: "text", text: content }]
+  return content && typeof content === "object" ? [content] : []
+}
+
+function claudeBlockTexts(block, keys) {
+  for (const key of keys) {
+    if (typeof block?.[key] === "string") return [block[key]]
+  }
+  return []
+}
+
+function claudeInternalResumeEntry(value, message) {
+  return (value?.type === "user" && value?.isMeta === true)
+    || (value?.type === "assistant"
+      && message?.model === "<synthetic>"
+      && value?.isApiErrorMessage !== true)
+}
+
+function classifiedTranscriptEvidence({ assistantText, userText, toolEvents, reasoningText, finalMarker, promptMarker }) {
+  return {
+    assistantMarkersSeen: markersInTexts(requiredAssistantMarkers, assistantText),
+    toolMarkersSeen: markersInTexts(requiredToolMarkers, toolEvents),
+    reasoningMarkersSeen: markersInTexts(requiredAssistantMarkers, reasoningText),
+    finalSeen: Boolean(finalMarker) && assistantText.some((text) => text.includes(finalMarker)),
+    promptOccurrences: promptMarker
+      ? userText.reduce((count, text) => count + countOccurrences(text, promptMarker), 0)
+      : 0,
+  }
+}
+
+export function classifyOpenCodeSqliteTranscriptRows(rows, { finalMarker, promptMarker } = {}) {
+  const messageRoles = new Map()
+  for (const row of rows ?? []) {
+    if (row?.kind !== "message" || typeof row.id !== "string") continue
+    const message = sqliteRowData(row)
+    const role = normalizedOpenCodeRole(message?.role)
+    if (role) messageRoles.set(row.id, role)
+  }
+
+  const assistantText = []
+  const assistantTools = []
+  const assistantReasoning = []
+  const userText = []
+  for (const row of rows ?? []) {
+    if (row?.kind !== "part") continue
+    const part = sqliteRowData(row)
+    const role = messageRoles.get(row.message_id)
+    const partType = typeof part?.type === "string" ? part.type.trim().toLowerCase() : null
+    if (role === "assistant" && partType === "text") {
+      assistantText.push(openCodePartText(part))
+    } else if (role === "assistant" && partType === "tool") {
+      assistantTools.push(JSON.stringify(part))
+    } else if (role === "assistant" && partType === "reasoning") {
+      assistantReasoning.push(openCodePartText(part))
+    } else if (role === "user" && partType === "text") {
+      userText.push(openCodePartText(part))
+    }
+  }
+
+  return classifiedTranscriptEvidence({
+    assistantText,
+    userText,
+    toolEvents: assistantTools,
+    reasoningText: assistantReasoning,
+    finalMarker,
+    promptMarker,
+  })
+}
+
+function sqliteRowData(row) {
+  if (row?.data && typeof row.data === "object") return row.data
+  return typeof row?.data === "string" ? parseJson(row.data) : null
+}
+
+function normalizedOpenCodeRole(role) {
+  if (typeof role !== "string") return null
+  const normalized = role.trim().toLowerCase()
+  return normalized === "assistant" || normalized === "user" ? normalized : null
+}
+
+function openCodePartText(part) {
+  if (typeof part?.text === "string") return part.text
+  if (typeof part?.content === "string") return part.content
+  return ""
+}
+
+function markersInTexts(markers, texts) {
+  return markers.filter((marker) => texts.some((text) => text.includes(marker)))
 }
 
 export function sqliteString(value) {
@@ -347,6 +561,16 @@ export function assertWebTurnCollapse(result, webResult) {
 }
 
 export function providerLimitations(provider, monitorResults, context = {}) {
+  const providerAssistantOutputMissing = semanticProviderTranscriptMisses(
+    monitorResults.providerTranscript,
+    "assistantMarkersSeen",
+    requiredAssistantMarkers.length,
+  )
+  const providerToolOutputMissing = semanticProviderTranscriptMisses(
+    monitorResults.providerTranscript,
+    "toolMarkersSeen",
+    requiredToolMarkers.length,
+  )
   const surfaceTexts = new Map([
     ["provider_transcript", monitorResults.providerTranscript?.found ? readArtifactTextSync(monitorResults.providerTranscript) : ""],
     ["kernel", monitorResults.kernel?.samples?.map((sample) => sample.text ?? "").join("\n") ?? ""],
@@ -373,20 +597,34 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       context,
       metadata: "assistant_text",
       observed: (monitorResults.kernel?.assistantMarkersSeen?.length ?? 0) === 20,
-      surfaces: surfacesWithText((text) => requiredAssistantMarkers.every((marker) => text.includes(marker.toLowerCase()))),
+      surfaces: [
+        (monitorResults.providerTranscript?.assistantMarkersSeen?.length ?? 0) === 20 ? "provider_transcript" : null,
+        (monitorResults.kernel?.assistantMarkersSeen?.length ?? 0) === 20 ? "kernel" : null,
+        (monitorResults.web?.assistantMarkersSeen?.length ?? 0) === 20 ? "web" : null,
+        (monitorResults.tui?.assistantMarkersSeen?.length ?? 0) === 20 ? "tui" : null,
+      ].filter(Boolean),
       observedNote: "All assistant progress markers were visible in imported external history.",
-      missingNote: "Assistant text did not fully appear in imported external history.",
-      missingClassification: "arroba_bug",
+      missingNote: providerAssistantOutputMissing
+        ? "The provider transcript did not contain all required assistant text markers, so Arroba had no provider output to import."
+        : "Assistant text did not fully appear in imported external history.",
+      missingClassification: providerAssistantOutputMissing ? "provider_output_limitation" : "arroba_bug",
     }),
     metadataAvailability({
       provider,
       context,
       metadata: "tool_calls",
       observed: (monitorResults.kernel?.toolMarkersSeen?.length ?? 0) === 20,
-      surfaces: surfacesWithText((text) => requiredToolMarkers.every((marker) => text.includes(marker.toLowerCase()))),
+      surfaces: [
+        (monitorResults.providerTranscript?.toolMarkersSeen?.length ?? 0) === 20 ? "provider_transcript" : null,
+        (monitorResults.kernel?.toolMarkersSeen?.length ?? 0) === 20 ? "kernel" : null,
+        (monitorResults.web?.toolMarkersSeen?.length ?? 0) === 20 ? "web" : null,
+        (monitorResults.tui?.toolMarkersSeen?.length ?? 0) === 20 ? "tui" : null,
+      ].filter(Boolean),
       observedNote: "All marked provider tool calls were visible in imported external history.",
-      missingNote: "Tool-call markers did not fully appear in imported external history.",
-      missingClassification: "arroba_bug",
+      missingNote: providerToolOutputMissing
+        ? "The provider transcript did not contain all required tool markers, so Arroba had no provider tool events to import."
+        : "Tool-call markers did not fully appear in imported external history.",
+      missingClassification: providerToolOutputMissing ? "provider_output_limitation" : "arroba_bug",
     }),
     metadataAvailability({
       provider,
@@ -452,6 +690,12 @@ export function providerLimitations(provider, monitorResults, context = {}) {
   if (!monitorResults.web) metadataReport.push({ provider, surface: "web", status: "skipped", classification: "drill_observation_limitation" })
   if (!monitorResults.tui) metadataReport.push({ provider, surface: "tui", status: "skipped", classification: "drill_observation_limitation" })
   return metadataReport
+}
+
+function semanticProviderTranscriptMisses(transcript, field, expectedCount) {
+  return transcript?.found === true
+    && transcript.semanticEvidence === true
+    && (transcript[field]?.length ?? 0) < expectedCount
 }
 
 export function metadataAvailability({ provider, context, metadata, observed, surfaces, observedNote, missingNote, missingClassification }) {

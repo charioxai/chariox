@@ -288,7 +288,18 @@ export async function tuiSample(socketPath, provider, marker, finalMarker, promp
 export function transcriptMarkerOutputText(entries) {
   return entries
     .filter((entry) => entry?.role === "assistant" || entry?.role === "tool")
-    .map((entry) => entry.text ?? entry.entry?.text ?? "")
+    .flatMap((entry) => {
+      const chunks = [entry.text ?? entry.entry?.text ?? ""]
+      const blobCollapsible = entry.blobCollapsible ?? entry.entry?.blobCollapsible
+      const blobCollapsed = entry.blobCollapsed ?? entry.entry?.blobCollapsed
+      if (blobCollapsible === true && blobCollapsed !== false) {
+        chunks.push(
+          entry.blobTitle ?? entry.entry?.blobTitle ?? "",
+          entry.blobSummary ?? entry.entry?.blobSummary ?? "",
+        )
+      }
+      return chunks
+    })
     .filter(Boolean)
     .join("\n")
 }
@@ -544,10 +555,11 @@ export async function webSample(page, provider, marker, finalMarker, promptMarke
 
 export function summarizeSamples(surface, samples, finalMarker) {
   const valid = samples.filter((sample) => !sample.error)
-  const markerText = valid.map((sample) => sample.markerText ?? sample.text ?? "").join("\n")
   const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
   const preFinalSamples = firstFinalSampleIndex >= 0 ? valid.slice(0, firstFinalSampleIndex) : valid
   const finalAndLaterSamples = firstFinalSampleIndex >= 0 ? valid.slice(firstFinalSampleIndex) : []
+  const authoritativeSamples = firstFinalSampleIndex >= 0 ? finalAndLaterSamples : valid
+  const markerText = authoritativeSamples.map((sample) => sample.markerText ?? sample.text ?? "").join("\n")
   const countMax = (entries, key) => Math.max(0, ...entries.map((sample) => Number(sample[key] ?? 0)).filter(Number.isFinite))
   return {
     surface,

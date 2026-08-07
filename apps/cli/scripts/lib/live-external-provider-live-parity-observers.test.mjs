@@ -105,6 +105,27 @@ test("TUI marker evidence includes assistant and tool entries only", () => {
   ]), "ASSISTANT_STEP_01\nTOOL_STEP_01")
 })
 
+test("TUI marker evidence includes visible collapsed output summaries without relabeling reasoning", () => {
+  assert.equal(transcriptMarkerOutputText([
+    {
+      role: "tool",
+      text: "",
+      blobCollapsible: true,
+      blobCollapsed: true,
+      blobTitle: "1 tool called",
+      blobSummary: "$ printf TOOL_STEP_02",
+    },
+    {
+      role: "reasoning",
+      text: "",
+      blobCollapsible: true,
+      blobCollapsed: true,
+      blobTitle: "thinking",
+      blobSummary: "ASSISTANT_STEP_19",
+    },
+  ]), "1 tool called\n$ printf TOOL_STEP_02")
+})
+
 test("surface summaries do not recover markers from diagnostic prompt text", () => {
   const summary = summarizeSamples("web", [{
     text: "TOOL_STEP_20 FINAL_MARKER",
@@ -119,6 +140,35 @@ test("surface summaries do not recover markers from diagnostic prompt text", () 
   assert.deepEqual(summary.assistantMarkersSeen, ["ASSISTANT_STEP_01"])
   assert.deepEqual(summary.toolMarkersSeen, [])
   assert.equal(summary.finalSeen, false)
+})
+
+test("surface summaries use final-and-later samples for authoritative marker coverage", () => {
+  const summary = summarizeSamples("web", [{
+    markerText: "ASSISTANT_STEP_01 TOOL_STEP_01",
+    assistantMarkers: ["ASSISTANT_STEP_01"],
+    toolMarkers: ["TOOL_STEP_01"],
+    finalSeen: false,
+    status: "WORKING",
+  }, {
+    markerText: "ASSISTANT_STEP_20 TOOL_STEP_20 FINAL_MARKER",
+    assistantMarkers: ["ASSISTANT_STEP_20"],
+    toolMarkers: ["TOOL_STEP_20"],
+    finalSeen: true,
+    status: "IDLE",
+  }, {
+    markerText: "ASSISTANT_STEP_19 TOOL_STEP_19 FINAL_MARKER",
+    assistantMarkers: ["ASSISTANT_STEP_19"],
+    toolMarkers: ["TOOL_STEP_19"],
+    finalSeen: true,
+    status: "IDLE",
+  }], "FINAL_MARKER")
+
+  assert.deepEqual(summary.assistantMarkersSeen, ["ASSISTANT_STEP_19", "ASSISTANT_STEP_20"])
+  assert.deepEqual(summary.toolMarkersSeen, ["TOOL_STEP_19", "TOOL_STEP_20"])
+  assert.equal(summary.finalSeen, true)
+  assert.equal(summary.firstFinalSampleIndex, 1)
+  assert.equal(summary.preFinalMaxAssistantMarkers, 1)
+  assert.equal(summary.preFinalMaxToolMarkers, 1)
 })
 
 function pageEntry(kind, text) {
