@@ -413,7 +413,7 @@ async fn dispatched_native_provider_interaction_updates_subscription_projection(
     );
     let dispatch_router = router.clone();
     let dispatch_task =
-        tokio::spawn(async move { dispatch_router.dispatch(command, request).await });
+        tokio::spawn(async move { Box::pin(dispatch_router.dispatch(command, request)).await });
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -518,7 +518,8 @@ async fn native_provider_interaction_wakes_subscription_projection_across_router
         None,
         &request,
     );
-    let dispatch_task = tokio::spawn(async move { local_router.dispatch(command, request).await });
+    let dispatch_task =
+        tokio::spawn(async move { Box::pin(local_router.dispatch(command, request)).await });
 
     timeout(
         Duration::from_secs(1),

@@ -94,12 +94,14 @@ impl EnrollmentTestEnv {
         );
         let router = Arc::clone(&self.local_router);
         let armed = tokio::spawn(async move {
-            router.dispatch(command, request).await.map(|response| {
-                matches!(
-                    response,
-                    LocalDaemonResponse::DeploymentCredentialEnrollmentArmed { .. }
-                )
-            })
+            dispatch_boxed(&router, command, request)
+                .await
+                .map(|response| {
+                    matches!(
+                        response,
+                        LocalDaemonResponse::DeploymentCredentialEnrollmentArmed { .. }
+                    )
+                })
         })
         .await
         .expect("credential enrollment arm task should join")
@@ -285,8 +287,7 @@ async fn run_two_client_credential_enrollment_scenario() {
     let helper_command = service_command("helper-two-clients", enrollment_id, &helper_request);
     let helper_router = env.relay_router.clone();
     let helper_task = tokio::spawn(async move {
-        let response = helper_router
-            .dispatch(helper_command, helper_request)
+        let response = dispatch_boxed(&helper_router, helper_command, helper_request)
             .await
             .expect("helper request should resolve");
         assert!(!format!("{response:?}").contains("secret-callback"));
@@ -321,15 +322,21 @@ async fn run_two_client_credential_enrollment_scenario() {
     let router_b = env.relay_router.clone();
     let command_a = client_command("reply-client-a", "credential-client-a", &response_a);
     let command_b = client_command("reply-client-b", "credential-client-b", &response_b);
-    let first_reply =
-        tokio::spawn(async move { router_a.dispatch(command_a, response_a).await.map(|_| ()) })
+    let first_reply = tokio::spawn(async move {
+        dispatch_boxed(&router_a, command_a, response_a)
             .await
-            .expect("first reply task should join");
+            .map(|_| ())
+    })
+    .await
+    .expect("first reply task should join");
     assert!(first_reply.is_ok(), "the first attached client should win");
-    let second_reply =
-        tokio::spawn(async move { router_b.dispatch(command_b, response_b).await.map(|_| ()) })
+    let second_reply = tokio::spawn(async move {
+        dispatch_boxed(&router_b, command_b, response_b)
             .await
-            .expect("second reply task should join");
+            .map(|_| ())
+    })
+    .await
+    .expect("second reply task should join");
     assert!(
         second_reply.is_err(),
         "the second attached client must observe the resolved interaction"
@@ -368,8 +375,7 @@ async fn run_two_client_credential_enrollment_scenario() {
         service_command("helper-two-clients-replay", enrollment_id, &replay_request);
     let replay_router = Arc::clone(&env.relay_router);
     let replay_rejected = tokio::spawn(async move {
-        replay_router
-            .dispatch(replay_command, replay_request)
+        dispatch_boxed(&replay_router, replay_command, replay_request)
             .await
             .is_err()
     })
@@ -394,8 +400,9 @@ async fn credential_enrollment_cancel_and_timeout_return_no_callback() {
         &cancel_request,
     );
     let cancel_router = env.relay_router.clone();
-    let cancel_task =
-        tokio::spawn(async move { cancel_router.dispatch(cancel_command, cancel_request).await });
+    let cancel_task = tokio::spawn(async move {
+        dispatch_boxed(&cancel_router, cancel_command, cancel_request).await
+    });
     let cancel_interaction = env.wait_for_interaction().await;
     resolve_cancel(&env, cancel_interaction.id(), "cancel-enrollment").await;
     assert!(matches!(
@@ -448,8 +455,9 @@ async fn matching_credential_service_can_cancel_only_its_own_interaction() {
     let helper_request = env.interaction_request(enrollment_id, 30);
     let helper_command = service_command("helper-worker-cancel", enrollment_id, &helper_request);
     let helper_router = Arc::clone(&env.relay_router);
-    let helper_task =
-        tokio::spawn(async move { helper_router.dispatch(helper_command, helper_request).await });
+    let helper_task = tokio::spawn(async move {
+        dispatch_boxed(&helper_router, helper_command, helper_request).await
+    });
     let interaction = env.wait_for_interaction().await;
     assert_eq!(
         interaction.id(),
@@ -580,7 +588,9 @@ async fn credential_enrollment_rejects_unverified_and_wrong_service_subject() {
     let correct_command = service_command("helper-correct-subject", enrollment_id, &request);
     let correct_router = env.relay_router.clone();
     let correct_task =
-        tokio::spawn(async move { correct_router.dispatch(correct_command, request).await });
+        tokio::spawn(
+            async move { dispatch_boxed(&correct_router, correct_command, request).await },
+        );
     let interaction = env.wait_for_interaction().await;
     resolve_cancel(&env, interaction.id(), "cancel-correct-subject").await;
     assert!(correct_task
@@ -724,8 +734,9 @@ async fn credential_enrollment_rearm_retries_only_the_exact_pending_route() {
     let helper_request = env.interaction_request(enrollment_id, 30);
     let helper_command = service_command("arm-retry-helper", enrollment_id, &helper_request);
     let helper_router = Arc::clone(&env.relay_router);
-    let helper_task =
-        tokio::spawn(async move { helper_router.dispatch(helper_command, helper_request).await });
+    let helper_task = tokio::spawn(async move {
+        dispatch_boxed(&helper_router, helper_command, helper_request).await
+    });
     let interaction = env.wait_for_interaction().await;
     resolve_cancel(&env, interaction.id(), "arm-retry-cancel").await;
     assert!(matches!(
