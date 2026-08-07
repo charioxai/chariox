@@ -1,19 +1,31 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
-import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
+import {
+  makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
+  resolveBuiltBinary,
+} from './lib/drill-runtime-helpers.mjs'
+import {
+  assertHetznerTcpPortAvailable,
+  remoteEnvCommand,
+  seedLocalOpenCodeRuntimeProfile,
+  shellQuote,
+  sshArgs,
+} from './lib/native-tui-remote-execution.mjs'
 import {
   assertCollaborationAgentSelections,
   collaborationAgentSelectionEvidence,
   collaborationProviderModel,
   collaborationSessionAgentDefaults,
 } from './lib/live-relay-freeform-multi-user-options.mjs'
+import { providerHistoryTextForPrompt } from './lib/live-relay-freeform-multi-user-history.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -137,18 +149,7 @@ function clientToken(userId) {
   }))
 }
 
-function makePorts() {
-  const base = 50000 + Math.floor(Math.random() * 1000)
-  return {
-    relayPort: base,
-    kernelPort: base + 1000,
-    mcpPort: base + 2000,
-    opencodePort: base + 3000,
-    codexPort: base + 3001,
-  }
-}
-
-function makeEnv(ports, rootDir) {
+function makeEnv(ports, rootDir, daemonRuntimeEnv) {
   const daemonId = `relay-freeform-multi-user-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-freeform-multi-user-${process.pid}`
   const daemonRelayToken = signRelayToken(relayClaims({
@@ -169,10 +170,10 @@ function makeEnv(ports, rootDir) {
       ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     },
     daemonEnv: {
-      ...process.env,
+      ...daemonRuntimeEnv,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+      ARROBA_OPENCODE_PORT: String(ports.openCodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_RELAY_URL: relayUrl,
       ARROBA_RELAY_TOKEN: daemonRelayToken,
@@ -181,6 +182,16 @@ function makeEnv(ports, rootDir) {
       ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
       ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
     },
+  }
+}
+
+async function hetznerRelayPortIsAvailable(options, ports) {
+  try {
+    await assertHetznerTcpPortAvailable(options, ports.relayPort, 'Hetzner collaboration relay port')
+    return true
+  } catch (error) {
+    if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) return false
+    throw error
   }
 }
 
@@ -320,19 +331,34 @@ async function waitForCompletion(client, sessionId, attachmentId, events, previo
   throw new Error(`${label} did not complete after ${timeoutMs}ms`)
 }
 
-async function waitForHistoryMarker(rootDir, sessionId, marker, timeoutMs, pollMs, label) {
-  const historyDir = path.join(rootDir, 'session-history')
+async function waitForHistoryMarker(client, requests, sessionId, attachmentId, agentId, promptId, marker, timeoutMs, pollMs, label) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
-    const entries = await readdir(historyDir).catch(() => [])
-    const sessionHistory = entries.filter((entry) => entry.startsWith(`${sessionId}-`) && entry.endsWith('.jsonl'))
-    for (const entry of sessionHistory) {
-      const text = await readFile(path.join(historyDir, entry), 'utf8').catch(() => '')
-      if (text.includes(marker)) return true
-    }
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const text = await providerHistoryTextForPrompt(client, requests, sessionId, agentId, promptId)
+    if (text.includes(marker)) return text
     await sleep(pollMs)
   }
-  throw new Error(`${label} did not write expected marker ${marker} after ${timeoutMs}ms`)
+  throw new Error(`${label} did not project expected provider-output marker ${marker} after ${timeoutMs}ms`)
+}
+
+function startAttachmentHeartbeats(bindings, intervalMs = 5_000) {
+  let pumping = false
+  const pump = async () => {
+    if (pumping) return
+    pumping = true
+    try {
+      await Promise.all(bindings.map(({ client, sessionId, attachmentId }) => (
+        client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+      )))
+    } finally {
+      pumping = false
+    }
+  }
+  void pump()
+  const timer = setInterval(() => { void pump() }, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 async function main() {
@@ -342,8 +368,29 @@ async function main() {
   await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
 
-  const ports = makePorts()
-  const envs = makeEnv(ports, rootDir)
+  const ports = await makeAvailablePorts({
+    candidateFactory: options.hetznerRelay ? makeNonEphemeralDrillPorts : undefined,
+    additionalAvailability: options.hetznerRelay
+      ? (candidate) => hetznerRelayPortIsAvailable(options, candidate)
+      : undefined,
+  })
+  const realHomeDir = os.homedir()
+  const xdgConfigHome = path.join(rootDir, 'xdg-config')
+  const xdgStateHome = path.join(rootDir, 'xdg-state')
+  const xdgDataHome = path.join(rootDir, 'xdg-data')
+  const xdgCacheHome = path.join(rootDir, 'xdg-cache')
+  const envs = makeEnv(ports, rootDir, {
+    ...process.env,
+    HOME: realHomeDir,
+    XDG_CONFIG_HOME: xdgConfigHome,
+    XDG_STATE_HOME: xdgStateHome,
+    XDG_DATA_HOME: xdgDataHome,
+    XDG_CACHE_HOME: xdgCacheHome,
+    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
+    ARROBA_CAPABILITY_ISOLATION_ROOT: path.join(rootDir, 'capabilities'),
+  })
   let requests = null
   let relay = null
   let relayTunnel = null
@@ -369,7 +416,29 @@ async function main() {
   let events1 = []
   let events2 = []
   let events3 = []
+  let stopAttachmentHeartbeats = null
+  let openCodeCredentialPath = null
   try {
+    await Promise.all([
+      mkdir(xdgStateHome, { recursive: true }),
+      mkdir(xdgDataHome, { recursive: true }),
+      mkdir(xdgCacheHome, { recursive: true }),
+    ])
+    await writeIsolatedKernelConfig({
+      xdgConfigHome,
+      storageRoot: path.join(rootDir, 'kernel-storage'),
+    })
+    if (options.provider === 'opencode') {
+      const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim() || path.join(realHomeDir, '.local', 'share')
+      const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim() || path.join(sourceXdgDataHome, 'opencode')
+      const sourceXdgCacheHome = process.env.XDG_CACHE_HOME?.trim() || path.join(realHomeDir, '.cache')
+      openCodeCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+        sourceDataHome: sourceOpenCodeDataHome,
+        sourceCacheHome: path.join(sourceXdgCacheHome, 'opencode'),
+        destinationXdgDataHome: xdgDataHome,
+        destinationXdgCacheHome: xdgCacheHome,
+      })
+    }
     const [{ LocalIpcClient }, ipcRequests] = await Promise.all([
       import('../../../packages/kernel-client/dist/ipc.js'),
       import('../../../packages/kernel-client/dist/ipc-requests.js'),
@@ -470,6 +539,12 @@ async function main() {
       await user4.send(requests.attachToSessionRequest(session.id, `freeform-user-4-${process.pid}`)),
       'SessionAttached',
     ).attachment
+    stopAttachmentHeartbeats = startAttachmentHeartbeats([
+      { client: user1, sessionId: session.id, attachmentId: attachment1.id },
+      { client: user2, sessionId: session.id, attachmentId: attachment2.id },
+      { client: user3, sessionId: session.id, attachmentId: attachment3.id },
+      { client: user4, sessionId: session.id, attachmentId: attachment4.id },
+    ])
 
     events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
     events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
@@ -507,13 +582,14 @@ async function main() {
       user4Agents,
     )
 
+    const user1CompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
     const user1Prompt = unwrap(
       await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Reply with exactly USER1_FREEFORM_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user1Prompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'user-1 prompt should start for own agent', user1Prompt)
-    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, 0, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
-    await waitForHistoryMarker(rootDir, session.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1CompletionBaseline, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    await waitForHistoryMarker(user1, requests, session.id, attachment1.id, agent1.id, user1Prompt.outcome.Started.prompt.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
       'private user-2 submitting to user-1 freeform agent',
@@ -525,23 +601,26 @@ async function main() {
       'owned by `user-1`',
     )
 
+    const user1FullCompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
     const fullPrompt = unwrap(
       await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent1.id, 'Reply with exactly FULL_USER3_CAN_PROMPT_OWNER_AGENT and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(fullPrompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'full collaborator should start prompt for owner agent', fullPrompt)
-    user3CompletionCount = await waitForCompletion(user3, session.id, attachment3.id, events3, 0, 30_000, options.pollMs, 'full collaborator cross-owner prompt')
-      .catch(() => events3.filter((event) => event.event === 'assistant_message_completed').length)
-    await waitForHistoryMarker(rootDir, session.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
-    user1CompletionCount = Math.max(user1CompletionCount, events1.filter((event) => event.event === 'assistant_message_completed').length)
+    await waitForHistoryMarker(user3, requests, session.id, attachment3.id, agent1.id, fullPrompt.outcome.Started.prompt.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
+    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1FullCompletionBaseline, 30_000, options.pollMs, 'owner observing full collaborator prompt')
+    user3CompletionCount = events3.filter((event) => event.event === 'assistant_message_completed').length
 
+    const user2CompletionBaseline = events2.filter((event) => event.event === 'assistant_message_completed').length
     const user2Prompt = unwrap(
       await user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent2.id, 'Reply with exactly USER2_PRIVATE_OWN_AGENT_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user2Prompt.outcome?.Started?.prompt?.target_agent_id === agent2.id, 'user-2 prompt should start for own agent', user2Prompt)
-    user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, 0, options.timeoutMs, options.pollMs, 'private user own prompt')
-    await waitForHistoryMarker(rootDir, session.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
+    user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, user2CompletionBaseline, options.timeoutMs, options.pollMs, 'private user own prompt')
+    await waitForHistoryMarker(user2, requests, session.id, attachment2.id, agent2.id, user2Prompt.outcome.Started.prompt.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
+    assert(user1CompletionCount === 2, 'owner should receive exactly one completion for each prompt on its agent', { user1CompletionCount, events: eventCounts(events1) })
+    assert(user2CompletionCount === 1, 'private user should receive exactly one completion for its owned prompt', { user2CompletionCount, events: eventCounts(events2) })
 
     state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
@@ -590,6 +669,7 @@ async function main() {
         'full invite sees collaborator agent details',
         'collaboration agent counts report aggregate other-user agents without identities',
         'actual-model freeform prompt submit succeeds for owned agent',
+        'each owned prompt emits exactly one assistant completion',
         'private freeform prompt submit rejects another user agent',
         'transparent freeform prompt submit rejects another user agent',
         'full freeform prompt submit can prompt another user agent',
@@ -601,12 +681,14 @@ async function main() {
     failure = error
     throw error
   } finally {
+    stopAttachmentHeartbeats?.()
     if (sessionId && clients[0] && requests) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
     await stopHetznerRelay(options, remoteRelayRoot)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
+    if (openCodeCredentialPath) await rm(openCodeCredentialPath, { force: true })
     await finalizeDrillArtifacts({
       rootDir,
       passed,
