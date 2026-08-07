@@ -9,6 +9,7 @@ import {
   findMatchingProcessIdsFromPsOutput,
   formatDrillCommandLine,
   makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
   makePorts,
   providerAuthFailureFromTerminalText,
   resolveBuiltBinary,
@@ -109,6 +110,17 @@ test("available port selection retries when another host rejects the first candi
 
   assert.deepEqual(checked, candidates)
   assert.equal(selected, candidates[1])
+})
+
+test("non-ephemeral drill ports stay below the default Linux ephemeral range", () => {
+  const ports = makeNonEphemeralDrillPorts(24000)
+  assert.equal(ports.relayPort, 24000)
+  assert.equal(ports.codexPort, 26001)
+  assert.ok(Object.values(ports).every((port) => port < 32768))
+  assert.throws(
+    () => makeNonEphemeralDrillPorts(31000),
+    /must stay below 32768/,
+  )
 })
 
 test("built binary resolution chooses the newest Cargo target candidate", async () => {

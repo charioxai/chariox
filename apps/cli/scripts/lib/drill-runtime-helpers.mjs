@@ -20,6 +20,14 @@ export function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   }
 }
 
+export function makeNonEphemeralDrillPorts(base = 20000 + Math.floor(Math.random() * 4000)) {
+  const ports = makePorts(base)
+  if (Math.max(...Object.values(ports)) >= 32768) {
+    throw new Error("non-ephemeral drill ports must stay below 32768")
+  }
+  return ports
+}
+
 export function withDevStubProviderInventory(env) {
   return {
     ...env,

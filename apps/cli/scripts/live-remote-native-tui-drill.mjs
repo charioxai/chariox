@@ -52,6 +52,8 @@ import {
   removeHetznerNativeRuntimePaths,
   removeHetznerWorktree,
   restoreHetznerClaudeWorkspaceTrust,
+  seedHetznerOpenCodeRuntimeProfile,
+  seedLocalOpenCodeRuntimeProfile,
   shellQuote,
   sshArgs,
   stopHetznerProcessByEnv,
@@ -61,6 +63,7 @@ import {
 import {
   assertBinary,
   makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
   resolveBuiltBinarySync,
   resolveCommandPath,
   runLogged,
@@ -397,6 +400,7 @@ async function main() {
   const runId = `${process.pid}-${Date.now()}`
   const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
   const ports = await makeAvailablePorts({
+    candidateFactory: options.hetznerWorker ? makeNonEphemeralDrillPorts : undefined,
     additionalAvailability: options.hetznerWorker
       ? (candidate) => hetznerNativePortsAreAvailable(options, candidate)
       : undefined,
@@ -440,6 +444,7 @@ async function main() {
   let hetznerWorktreePrepared = false
   let hetznerClaudeTrustPrepared = false
   let hetznerClaudeTrustRestoreFailure = null
+  const localOpenCodeCredentialPaths = []
   const managedSlices = []
   let succeeded = false
   let failure = null
@@ -452,6 +457,30 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
+    if (options.providers.includes("opencode")) {
+      const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim()
+        || path.join(realHomeDir, ".local", "share")
+      const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim()
+        || path.join(sourceXdgDataHome, "opencode")
+      const sourceXdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
+        || path.join(realHomeDir, ".cache")
+      const homeCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+        sourceDataHome: sourceOpenCodeDataHome,
+        sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
+        destinationXdgDataHome: xdgDataHome,
+        destinationXdgCacheHome: xdgCacheHome,
+      })
+      if (homeCredentialPath) localOpenCodeCredentialPaths.push(homeCredentialPath)
+      if (options.standardHomeWorker && !options.hetznerWorker) {
+        const workerCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+          sourceDataHome: sourceOpenCodeDataHome,
+          sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
+          destinationXdgDataHome: path.join(root, "worker-xdg-data"),
+          destinationXdgCacheHome: path.join(root, "worker-xdg-cache"),
+        })
+        if (workerCredentialPath) localOpenCodeCredentialPaths.push(workerCredentialPath)
+      }
+    }
     await writeIsolatedKernelConfig({
       xdgConfigHome,
       storageRoot: path.join(root, "home-kernel-storage"),
@@ -483,6 +512,9 @@ async function main() {
       }
       await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
       await ensureExecutionDirectory(options, true, remoteTempDir)
+      if (options.providers.includes("opencode")) {
+        await seedHetznerOpenCodeRuntimeProfile(options, remoteRuntimeRoot)
+      }
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
@@ -703,6 +735,9 @@ async function main() {
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
+    for (const credentialPath of localOpenCodeCredentialPaths) {
+      await rm(credentialPath, { force: true })
+    }
     if (options.hetznerWorker) {
       await stopHetznerRuntimeBeforeClaudeTrustRestore({
         stopWorker: () => stopHetznerProcessByEnv(options, {
@@ -722,6 +757,13 @@ async function main() {
         hetznerClaudeTrustRestoreFailure = error
         console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
       })
+      if (remoteRuntimeRoot && options.providers.includes("opencode")) {
+        await removeExecutionFile(
+          options,
+          true,
+          path.posix.join(remoteRuntimeRoot, "xdg-data", "opencode", "auth.json"),
+        ).catch(() => {})
+      }
       if (preserveFailedRun && remoteRuntimeRoot) {
         await copyHetznerDirectoryToLocal(
           options,

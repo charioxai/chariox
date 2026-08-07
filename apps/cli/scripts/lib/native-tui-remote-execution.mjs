@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { access, chmod, copyFile, mkdir, readFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -135,6 +135,88 @@ export function assertMatchingHetznerCheckoutCommit({ localCommit, remoteCommit,
 export async function runHetznerCommand(options, command) {
   const { stdout } = await execFileAsync("ssh", sshArgs(options, command), { maxBuffer: 4 * 1024 * 1024 })
   return stdout
+}
+
+async function copyFileIfPresent(source, destination, mode) {
+  try {
+    await copyFile(source, destination)
+  } catch (error) {
+    if (error?.code === "ENOENT") return false
+    throw error
+  }
+  await chmod(destination, mode)
+  return true
+}
+
+async function filesArePresent(paths) {
+  const present = await Promise.all(paths.map(async (candidate) => {
+    try {
+      await access(candidate)
+      return true
+    } catch (error) {
+      if (error?.code === "ENOENT") return false
+      throw error
+    }
+  }))
+  return present.every(Boolean)
+}
+
+export async function seedLocalOpenCodeRuntimeProfile({
+  sourceDataHome,
+  sourceCacheHome,
+  destinationXdgDataHome,
+  destinationXdgCacheHome,
+}) {
+  const destinationDataHome = path.join(destinationXdgDataHome, "opencode")
+  const destinationCacheHome = path.join(destinationXdgCacheHome, "opencode")
+  await mkdir(destinationDataHome, { recursive: true, mode: 0o700 })
+  await mkdir(destinationCacheHome, { recursive: true, mode: 0o700 })
+
+  const credentialPath = path.join(destinationDataHome, "auth.json")
+  const destinationCatalogPaths = ["models.json", "version"]
+    .map((filename) => path.join(destinationCacheHome, filename))
+  try {
+    const credentialCopied = await copyFileIfPresent(
+      path.join(sourceDataHome, "auth.json"),
+      credentialPath,
+      0o600,
+    )
+    const sourceCatalogPaths = ["models.json", "version"]
+      .map((filename) => path.join(sourceCacheHome, filename))
+    if (await filesArePresent(sourceCatalogPaths)) {
+      for (let index = 0; index < sourceCatalogPaths.length; index += 1) {
+        await copyFile(sourceCatalogPaths[index], destinationCatalogPaths[index])
+        await chmod(destinationCatalogPaths[index], 0o600)
+      }
+    }
+    return credentialCopied ? credentialPath : null
+  } catch (error) {
+    await Promise.all([
+      rm(credentialPath, { force: true }),
+      ...destinationCatalogPaths.map((candidate) => rm(candidate, { force: true })),
+    ])
+    throw error
+  }
+}
+
+export function hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot) {
+  if (!/^\/tmp\/arb-remote-native-tui-\d+-\d+$/.test(runtimeRoot)) {
+    throw new Error(`refusing unexpected Hetzner native TUI runtime root: ${runtimeRoot}`)
+  }
+  const destinationDataHome = path.posix.join(runtimeRoot, "xdg-data", "opencode")
+  const destinationCacheHome = path.posix.join(runtimeRoot, "xdg-cache", "opencode")
+  const sourceDataHome = "/root/.local/share/opencode"
+  const sourceCacheHome = "/root/.cache/opencode"
+  return [
+    "set -e",
+    `install -d -m 700 ${shellQuote(destinationDataHome)} ${shellQuote(destinationCacheHome)}`,
+    `if test -s ${shellQuote(path.posix.join(sourceDataHome, "auth.json"))}; then install -m 600 ${shellQuote(path.posix.join(sourceDataHome, "auth.json"))} ${shellQuote(path.posix.join(destinationDataHome, "auth.json"))}; fi`,
+    `if test -s ${shellQuote(path.posix.join(sourceCacheHome, "models.json"))} && test -s ${shellQuote(path.posix.join(sourceCacheHome, "version"))}; then install -m 600 ${shellQuote(path.posix.join(sourceCacheHome, "models.json"))} ${shellQuote(path.posix.join(destinationCacheHome, "models.json"))}; install -m 600 ${shellQuote(path.posix.join(sourceCacheHome, "version"))} ${shellQuote(path.posix.join(destinationCacheHome, "version"))}; fi`,
+  ].join("; ")
+}
+
+export async function seedHetznerOpenCodeRuntimeProfile(options, runtimeRoot) {
+  await runHetznerCommand(options, hetznerOpenCodeRuntimeProfileSeedCommand(runtimeRoot))
 }
 
 export async function assertHetznerTcpPortAvailable(options, port, label = "Hetzner TCP port") {
