@@ -138,6 +138,36 @@ fn reads_codex_observed_metadata_bounds_large_tool_payloads() {
 }
 
 #[test]
+fn reads_codex_custom_tool_calls_and_outputs_as_tools() {
+    let call = serde_json::json!({
+        "type": "custom_tool_call",
+        "id": "ctc-1",
+        "call_id": "call-1",
+        "name": "exec",
+        "input": "printf 'TOOL_STEP_01'",
+        "status": "completed",
+    });
+    let output = serde_json::json!({
+        "type": "custom_tool_call_output",
+        "call_id": "call-1",
+        "output": [{"type": "input_text", "text": "TOOL_STEP_01\n"}],
+    });
+
+    let turns = [call, output]
+        .iter()
+        .filter_map(|payload| codex_response_item_observed_turn(payload, None))
+        .collect::<Vec<_>>();
+
+    assert_eq!(turns.len(), 2);
+    assert!(turns
+        .iter()
+        .all(|turn| turn.role == ObservedExternalProviderTurnRole::Tool));
+    assert!(turns[0].text.contains("exec"));
+    assert!(turns[0].text.contains("TOOL_STEP_01"));
+    assert!(turns[1].text.contains("TOOL_STEP_01"));
+}
+
+#[test]
 fn reads_codex_observed_turns_from_recent_jsonl_tail() {
     let temp = temp_dir("codex-observed-tail");
     let root = temp.path();

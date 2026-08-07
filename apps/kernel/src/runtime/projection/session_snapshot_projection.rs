@@ -118,7 +118,7 @@ impl SessionSnapshotProjection {
         let prompt_activity = prompt_activity.read();
         let active_turns = app.active_turn_store().snapshot();
         let completed_git_turn_snapshots = app.completed_git_turn_snapshot_store();
-        let agent_activity = agent_activity_for_session_projection(
+        let mut agent_activity = agent_activity_for_session_projection(
             &session,
             |agent_id| {
                 app.providers()
@@ -135,6 +135,8 @@ impl SessionSnapshotProjection {
                 completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id)
             },
         );
+        app.session_state_projection_store()
+            .project_external_observed_activity(session.id(), &mut agent_activity);
         Ok(Self {
             metadata: ProjectionMetadata::new(SESSION_SNAPSHOT_PROJECTION_VERSION, last_event_id),
             session,

@@ -232,6 +232,8 @@ pub(super) fn codex_response_item_observed_turn(
         Some(
             "function_call"
                 | "function_call_output"
+                | "custom_tool_call"
+                | "custom_tool_call_output"
                 | "commandExecution"
                 | "fileChange"
                 | "mcpToolCall"

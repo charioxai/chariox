@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use arroba_relay::protocol::RelayKernelPresence;
@@ -86,6 +86,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         runtime_sessions: &[Arc<RuntimeSession>],
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
+        external_working_agents: &BTreeMap<String, BTreeSet<String>>,
         caller_user_id: &str,
     ) -> ProjectedSessionSummaries {
         let metaagent_event_revision = metaagent_events.revision();
@@ -128,6 +129,12 @@ impl WaitingRoomSessionSummaryProjectionStore {
                         .expect("visible waiting-room session should project")
                     },
                     |cached| cached.summary.clone(),
+                );
+                refresh_waiting_room_projected_activity(
+                    &mut summary,
+                    session,
+                    external_working_agents.get(&session_id),
+                    caller_user_id,
                 );
                 if cached.is_none() && can_reuse_entries {
                     if let Some(previous_entry) = previous_entry {
@@ -190,6 +197,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         runtime_sessions: &[Arc<RuntimeSession>],
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
+        external_working_agents: &BTreeMap<String, BTreeSet<String>>,
         external_provider_sessions: Vec<ExternalProviderSessionRecord>,
         external_provider_sessions_has_more: bool,
         external_provider_sessions_next_cursor: Option<String>,
@@ -204,6 +212,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             runtime_sessions,
             session_revision,
             metaagent_events,
+            external_working_agents,
             caller_user_id,
         );
         let auxiliary_fingerprint = waiting_room_snapshot_auxiliary_fingerprint(
@@ -328,6 +337,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     session_revision: u64,
     summary_projection: &WaitingRoomSessionSummaryProjectionStore,
     metaagent_events: &MetaagentEventStore,
+    external_working_agents: &BTreeMap<String, BTreeSet<String>>,
     external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<String>,
@@ -342,6 +352,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions,
         session_revision,
         metaagent_events,
+        external_working_agents,
         external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
@@ -658,6 +669,55 @@ fn waiting_room_session_summaries(
     waiting_room_session_summaries_from_refs(sessions.iter(), metaagent_events, caller_user_id)
 }
 
+fn refresh_waiting_room_projected_activity(
+    summary: &mut WaitingRoomPublicSessionSummary,
+    session: &RuntimeSession,
+    external_working_agent_ids: Option<&BTreeSet<String>>,
+    caller_user_id: &str,
+) {
+    summary.activity = waiting_room_session_activity_summary(session, caller_user_id);
+    for agent_summary in &mut summary.agents {
+        let Some(agent) = session
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == agent_summary.id)
+        else {
+            continue;
+        };
+        agent_summary.activity =
+            waiting_room_agent_activity_summary(session, agent, caller_user_id);
+    }
+    let Some(external_working_agent_ids) = external_working_agent_ids else {
+        return;
+    };
+    for agent_id in external_working_agent_ids {
+        let Some(agent_summary) = summary
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == *agent_id)
+        else {
+            continue;
+        };
+        if agent_summary.activity.error {
+            continue;
+        }
+        let was_working = agent_summary.activity.working;
+        let had_active_prompt = agent_summary.activity.active_prompt_count > 0;
+        agent_summary.activity.working = true;
+        agent_summary.activity.active_prompt_count =
+            agent_summary.activity.active_prompt_count.max(1);
+        agent_summary.activity.unread_idle_output = false;
+        if !was_working {
+            summary.activity.working_agent_count =
+                summary.activity.working_agent_count.saturating_add(1);
+        }
+        if !had_active_prompt {
+            summary.activity.active_prompt_count =
+                summary.activity.active_prompt_count.saturating_add(1);
+        }
+    }
+}
+
 fn waiting_room_session_summaries_from_refs<'a>(
     sessions: impl IntoIterator<Item = &'a RuntimeSession>,
     metaagent_events: &MetaagentEventStore,
@@ -888,6 +948,7 @@ fn waiting_room_public_workflow_summaries(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use arroba_relay::protocol::RelayKernelPresence;
@@ -1083,12 +1144,14 @@ mod tests {
             &sessions,
             7,
             &metaagent_events,
+            &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         let same_revision = projection.project(
             &sessions,
             7,
             &metaagent_events,
+            &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert!(Arc::ptr_eq(&first.summaries, &same_revision.summaries));
@@ -1098,6 +1161,7 @@ mod tests {
             &sessions,
             8,
             &metaagent_events,
+            &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert!(Arc::ptr_eq(
@@ -1115,6 +1179,7 @@ mod tests {
             &touched_sessions,
             9,
             &metaagent_events,
+            &BTreeMap::new(),
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert!(Arc::ptr_eq(
@@ -1122,6 +1187,63 @@ mod tests {
             &touched_session_revision.summaries
         ));
         assert_eq!(first.revision, touched_session_revision.revision);
+    }
+
+    #[test]
+    fn session_summary_projection_tracks_external_observed_work() {
+        let mut session = RuntimeSession::new(
+            "session-external",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        session.set_agents(vec![AgentInstance::new(
+            "agent-external",
+            "A1",
+            "session-external",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        )]);
+        let sessions = vec![Arc::new(session)];
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+        let external_working_agents = BTreeMap::from([(
+            "session-external".to_string(),
+            BTreeSet::from(["agent-external".to_string()]),
+        )]);
+
+        let working = projection.project(
+            &sessions,
+            7,
+            &metaagent_events,
+            &external_working_agents,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_eq!(working.summaries[0].activity.working_agent_count, 1);
+        assert_eq!(working.summaries[0].activity.active_prompt_count, 1);
+        assert!(working.summaries[0].agents[0].activity.working);
+        assert_eq!(
+            working.summaries[0].agents[0].activity.active_prompt_count,
+            1
+        );
+
+        let settled = projection.project(
+            &sessions,
+            8,
+            &metaagent_events,
+            &BTreeMap::new(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+        assert_eq!(settled.summaries[0].activity.working_agent_count, 0);
+        assert_eq!(settled.summaries[0].activity.active_prompt_count, 0);
+        assert!(!settled.summaries[0].agents[0].activity.working);
+        assert!(settled.revision > working.revision);
     }
 
     #[test]
@@ -1152,6 +1274,7 @@ mod tests {
                 revision,
                 &projection,
                 &metaagent_events,
+                &BTreeMap::new(),
                 Vec::new(),
                 false,
                 None,
@@ -1188,6 +1311,7 @@ mod tests {
             9,
             &projection,
             &metaagent_events,
+            &BTreeMap::new(),
             Vec::new(),
             false,
             None,
@@ -1219,6 +1343,7 @@ mod tests {
             10,
             &projection,
             &metaagent_events,
+            &BTreeMap::new(),
             Vec::new(),
             false,
             None,

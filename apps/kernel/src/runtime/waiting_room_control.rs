@@ -129,11 +129,13 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
             cursor: None,
             limit: Some(25),
         });
+    let external_working_agents = session_projection.external_observed_working_agents();
     build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
         session_projection.change_sequence(),
         waiting_room_session_summaries,
         &metaagent_events,
+        &external_working_agents,
         external_provider_session_page.sessions,
         external_provider_session_page.has_more,
         external_provider_session_page.next_cursor,
