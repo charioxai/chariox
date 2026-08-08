@@ -882,6 +882,20 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
             .state(),
         crate::provider::ProviderRunState::Ended
     );
+    {
+        let app = app.lock().await;
+        assert!(
+            !app.pty().has_process(run.id()),
+            "retiring a workflow provider run must remove its managed PTY before the agent can be launched again"
+        );
+        assert!(
+            !app.provider_process_tracking
+                .read()
+                .run_processes
+                .contains_key(run.id()),
+            "retiring a workflow provider run must remove its managed process tracking"
+        );
+    }
     assert!(runtime.owned.active_turns.get(run.id()).is_none());
 
     let settlement_events = runtime

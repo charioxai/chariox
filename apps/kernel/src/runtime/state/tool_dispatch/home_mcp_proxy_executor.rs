@@ -128,8 +128,18 @@ impl KernelRuntimeState {
                 message: format!("MCP `{name}` is granted but is not installed on home"),
             });
         };
+        let provider_run_id = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        let session_id = context.home_session_id.clone();
         tokio::task::spawn_blocking(move || {
-            crate::provider::dispatch_provider_mcp_proxy_request(&config, payload)
+            crate::provider::dispatch_provider_mcp_proxy_request(
+                &provider_run_id,
+                &session_id,
+                &config,
+                payload,
+            )
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {

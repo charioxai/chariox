@@ -7,6 +7,7 @@ import type {
 } from "./cli-types.js"
 import {
   handleWorkflowAliasCommand,
+  handleWorkflowDeleteCommand,
   handleWorkflowListCommand,
   handleWorkflowNewCommand,
   handleWorkflowRootCommand,
@@ -105,6 +106,26 @@ test("workflow alias validates missing and unknown workflows", async () => {
   ])
 })
 
+test("workflow delete removes the selected workflow and selects the next canvas", async () => {
+  const nextSession = session({ workflows: [workflow({ id: "workflow-2" })] })
+  const harness = createHarness({
+    selectedWorkflowRef: "workflow-1",
+    deleteWorkflow: async (workflowRef) => {
+      harness.calls.push(`delete:${workflowRef}`)
+      return { workflow: workflow({ id: workflowRef, alias: "main" }), session: nextSession }
+    },
+  })
+
+  await handleWorkflowDeleteCommand(harness.deps, harness.context, ["delete"])
+
+  assert.deepEqual(harness.calls, [
+    "delete:workflow-1",
+    "apply:session-1",
+    "select:workflow-2",
+    "footer:info:deleted workflow workflow-1 (main)",
+  ])
+})
+
 type HarnessOptions = Partial<WorkflowLifecycleCommandDeps> & {
   aliasResult?: WorkflowDefinition | null
   context?: Partial<WorkflowLifecycleCommandContext>
@@ -130,6 +151,7 @@ function createHarness(options: HarnessOptions = {}) {
   const deps: WorkflowLifecycleCommandDeps = {
     sessionState: () => session({ workflows: sessionWorkflows }),
     workflowScreenActive: () => screenActive,
+    selectedWorkflowId: () => selectedWorkflowRef,
     showWorkflowScreen: () => {
       calls.push("show")
     },

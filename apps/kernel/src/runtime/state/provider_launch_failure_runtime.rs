@@ -21,6 +21,7 @@ impl KernelRuntimeState {
         error: &DaemonError,
     ) {
         let mut durable_agent_update = None;
+        let mut advance_workflow_queue = false;
         {
             let owned = &self.owned;
             crate::logging::error_with_fields(
@@ -125,18 +126,46 @@ impl KernelRuntimeState {
                             &diagnostic,
                         );
                         if active_prompt.workflow_run_id().is_some() {
-                            let _ = owned.workflow_fail_provider_prompt(
-                                started.run.session_id(),
-                                &active_prompt,
-                                Some(started.run.id()),
-                                &diagnostic,
-                            );
+                            if owned
+                                .workflow_fail_provider_prompt_without_queue_advance(
+                                    started.run.session_id(),
+                                    &active_prompt,
+                                    Some(started.run.id()),
+                                    &diagnostic,
+                                )
+                                .is_ok()
+                            {
+                                advance_workflow_queue = true;
+                            }
                         }
                         let _ = owned.complete_local_prompt_without_advance(
                             started.run.session_id(),
                             agent_id,
                             Some(started.run.id()),
                         );
+                    } else if let Ok(queued_workflow_prompts) = owned
+                        .take_queued_workflow_prompts_for_agent(started.run.session_id(), agent_id)
+                    {
+                        for prompt in queued_workflow_prompts {
+                            let _ = self.inject_metaagent_turn_failure_event(
+                                started.run.session_id(),
+                                agent_id,
+                                &prompt,
+                                Some(started.run.id()),
+                                &diagnostic,
+                            );
+                            if owned
+                                .workflow_fail_provider_prompt_without_queue_advance(
+                                    started.run.session_id(),
+                                    &prompt,
+                                    Some(started.run.id()),
+                                    &diagnostic,
+                                )
+                                .is_ok()
+                            {
+                                advance_workflow_queue = true;
+                            }
+                        }
                     }
                 }
             }
@@ -162,6 +191,11 @@ impl KernelRuntimeState {
                 let _ = owned.resume_provider_run_for_session(
                     started.run.session_id(),
                     previous_active_run_id,
+                );
+            }
+            if advance_workflow_queue {
+                self.spawn_workflow_prompt_dispatches(
+                    owned.workflow_maybe_start_next_queued_prompt(started.run.session_id()),
                 );
             }
             let _ = owned.session_snapshot(started.run.session_id());

@@ -5,7 +5,7 @@ const { createDefaultShellContext, parseShellCommand } = await import('../../../
 const { executeShellCommand } = await import('../../../../packages/kernel-client/dist/shell-executor.js')
 const { createSessionRequest, attachToSessionRequest, spawnAgentRequest, launchProviderRunRequest, createWorkflowRequest, addWorkflowNodeRequest, updateWorkflowNodeInstructionsRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, getSessionStateRequest, endSessionRequest, createWorkflowScheduleRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './drill-artifacts.mjs'
-import { REAL_DASHBOARD_PROMPT, buildRustBinary, cliRoot, createContainerPortablePackage, createSelfSignedCertificate, envFlag, freePort, hasAcceptedRunMetadata, logStep, nowStamp, readSseUntilEvent, realDashboardOptionsFromEnv, removeDockerContainer, removeDockerImage, repoRoot, run, sseEventNames, startProcess, startServeWithProviderPrompt, stopProcess, tail, variant, websocketUrlFromHttp, withPublicationDrillProviderInventory } from './live-workflow-publication-drill-runtime.mjs'
+import { REAL_DASHBOARD_PROMPT, buildRustBinary, cliRoot, createContainerPortablePackage, createSelfSignedCertificate, envFlag, freePort, hasAcceptedRunMetadata, logStep, nowStamp, readSseUntilEvent, realDashboardOptionsFromEnv, removeDockerContainer, removeDockerImage, repoRoot, run, secureGatewayPublicationEnvs, sseEventNames, startProcess, startServeWithProviderPrompt, stopProcess, tail, variant, websocketUrlFromHttp, withPublicationDrillProviderInventory } from './live-workflow-publication-drill-runtime.mjs'
 import { invokePublicationWebSocket } from './live-workflow-publication-drill-runtime.mjs'
 import { runHumanHttpBrowserDrill, runHumanHttpHtmlFinalBrowserDrill, runHumanHttpRootFormBrowserDrill, runSharedViewerBrowserDrill } from './live-workflow-publication-drill-browser.mjs'
 import { assertGatewayDoesNotListen, assertPackageDoesNotContain, assertPublicationRuntimeSessionHidden, collectPublicationInvocationDiagnostic, createUnavailableProviderPackage, waitForGateway, waitForKernel, waitForPublicationStatusLatestOutput, waitForRegisteredPublicationEndpoint, waitForRelayTarget, waitForScheduledWorkflowRun, waitForTcpPort } from './live-workflow-publication-drill-waiters.mjs'
@@ -231,6 +231,7 @@ export async function runLiveWorkflowPublicationDrill() {
       scheduleWorkflow,
       scheduleNode,
       scheduleEndpoint,
+      schedule,
       schedulePublication
     } = await createPublicationDrillSessionSuite(client, sessionIds, {
       workspace,
@@ -335,7 +336,7 @@ export async function runLiveWorkflowPublicationDrill() {
     logStep('invoke_browser_html')
     const rootHtmlResponse = await fetch(`${gatewayUrl}/`, { headers: { accept: 'text/html' } })
     const rootHtml = await rootHtmlResponse.text()
-    if (rootHtmlResponse.status !== 200 || !rootHtml.includes('invoke-form')) {
+    if (rootHtmlResponse.status !== 200 || !rootHtml.includes('id="invoke-form"')) {
       throw new Error(`expected browser root form HTML, got ${rootHtmlResponse.status}: ${rootHtml.slice(0, 200)}`)
     }
     if (!rootHtml.includes('type="file" name="artifact" multiple')) {
@@ -395,13 +396,6 @@ export async function runLiveWorkflowPublicationDrill() {
     if (badParserResponse.status !== 400) {
       throw new Error(`expected parser failure HTTP 400, got ${badParserResponse.status}: ${await badParserResponse.text()}`)
     }
-
-    logStep('invoke_websocket')
-    const webSocketAccepted = await invokePublicationWebSocket(
-      `ws://127.0.0.1:${gatewayPort}/.well-known/arroba/publication/ws`,
-      { task: 'websocket-publication' },
-    )
-    logStep('websocket_ok', { workflowRunId: webSocketAccepted.accepted.workflow_run?.id ?? null, queued: webSocketAccepted.accepted.queued === true })
 
     await stopProcess(gateway)
     gateway = null
@@ -821,19 +815,18 @@ export async function runLiveWorkflowPublicationDrill() {
     logStep('invoke_https')
     const previousTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+    const secureGatewayEnvs = secureGatewayPublicationEnvs(env, {
+      host: '127.0.0.1',
+      port: gatewayHttpsPort,
+      kernelUrl,
+      tls,
+      humanHttp: { sessionId: session.id, publicationId: publication.id },
+      websocket: { sessionId: websocketSession.id, publicationId: websocketFinalPublication.id },
+    })
     gateway = startProcess(
       process.execPath,
       [path.join(repoRoot, 'apps/server/dist/index.js')],
-      {
-        ...env,
-        HOST: '127.0.0.1',
-        PORT: String(gatewayHttpsPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: session.id,
-        ARROBA_PUBLICATION_ID: publication.id,
-        ARROBA_PUBLICATION_TLS_KEY_FILE: tls.keyFile,
-        ARROBA_PUBLICATION_TLS_CERT_FILE: tls.certFile,
-      },
+      secureGatewayEnvs.https,
       'gateway-https',
     )
     let httpsBody = null
@@ -845,6 +838,14 @@ export async function runLiveWorkflowPublicationDrill() {
       if (httpsResponse.status !== 202 || !hasAcceptedRunMetadata(httpsBody)) {
         throw new Error(`expected HTTPS 202 from async publication, got ${httpsResponse.status}: ${JSON.stringify(httpsBody)}`)
       }
+      await stopProcess(gateway)
+      gateway = startProcess(
+        process.execPath,
+        [path.join(repoRoot, 'apps/server/dist/index.js')],
+        secureGatewayEnvs.wss,
+        'gateway-wss',
+      )
+      await waitForGateway(gatewayHttpsUrl)
       logStep('invoke_wss')
       const wssAccepted = await invokePublicationWebSocket(
         `wss://127.0.0.1:${gatewayHttpsPort}/.well-known/arroba/publication/ws`,
@@ -895,7 +896,7 @@ export async function runLiveWorkflowPublicationDrill() {
       scheduleWorkspace,
       scheduleSession,
       scheduleWorkflow,
-      scheduleEndpoint,
+      schedule,
     })
 
     logStep('ok', {

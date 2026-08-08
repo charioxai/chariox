@@ -120,6 +120,27 @@ fn workflow_design_endpoints_enforce_canonical_aliases() {
     let workflow = service
         .create_workflow(session.id(), Some("endpoint-aliases".to_string()))
         .expect("workflow should be created");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeAdd {
+                workflow_id: workflow.id().to_string(),
+                node: crate::local::WorkflowDesignNode {
+                    id: "node-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("endpoint entry node should be created");
 
     let invalid = service
         .apply_workflow_design_op(
@@ -1002,4 +1023,183 @@ fn manages_workflow_nodes_edges_and_endpoints() {
         .remove_workflow_node(session.id(), workflow.id(), planner.id())
         .expect("node should be removed");
     assert_eq!(removed_node.id(), planner.id());
+}
+
+#[test]
+fn workflow_design_ops_reject_invalid_or_ambiguous_graph_mutations() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new(
+            "workspace-design-graph",
+            "worktree-design-graph",
+        ))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("design-graph".to_string()))
+        .expect("workflow should be created");
+    let design_node = |id: &str, agent_id: &str| crate::local::WorkflowDesignNode {
+        id: id.to_string(),
+        agent_id: agent_id.to_string(),
+        label: None,
+        instructions: None,
+        can_complete_workflow_run: None,
+        can_emit_intermediate_run_output: None,
+        wait_for_all_inputs: None,
+        intermediate_output_schema_ref: None,
+        max_turns: None,
+    };
+    for (id, agent_id) in [("node-a", "agent-a"), ("node-b", "agent-b")] {
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node(id, agent_id),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect("valid design node should be added");
+    }
+
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node("node-a", "agent-c"),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate design node id should be rejected"),
+        DaemonError::LocalTransport {
+            operation: "apply_workflow_design_op",
+            ..
+        }
+    ));
+
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node("node-c", "agent-a"),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate workflow agent should be rejected"),
+        DaemonError::WorkflowNodeConflict { .. }
+    ));
+
+    for (edge_id, from_node_id, to_node_id) in [
+        ("edge-missing", "node-a", "node-missing"),
+        ("edge-self", "node-a", "node-a"),
+    ] {
+        assert!(matches!(
+            service
+                .apply_workflow_design_op(
+                    session.id(),
+                    crate::local::WorkflowDesignOp::EdgeAdd {
+                        workflow_id: workflow.id().to_string(),
+                        edge: crate::local::WorkflowDesignEdge {
+                            id: edge_id.to_string(),
+                            from_node_id: from_node_id.to_string(),
+                            to_node_id: to_node_id.to_string(),
+                            source_side: None,
+                            target_side: None,
+                            handoff_schema_ref: None,
+                            validation_policy: None,
+                        },
+                    },
+                    DEFAULT_LOCAL_USER_ID.to_string(),
+                )
+                .expect_err("invalid design edge should be rejected"),
+            DaemonError::InvalidWorkflowGraphReference { .. }
+        ));
+    }
+
+    let add_edge = |id: &str| crate::local::WorkflowDesignOp::EdgeAdd {
+        workflow_id: workflow.id().to_string(),
+        edge: crate::local::WorkflowDesignEdge {
+            id: id.to_string(),
+            from_node_id: "node-a".to_string(),
+            to_node_id: "node-b".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema_ref: None,
+            validation_policy: None,
+        },
+    };
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            add_edge("edge-a-b"),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid design edge should be added");
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                add_edge("edge-a-b-duplicate"),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate edge endpoints should be rejected"),
+        DaemonError::WorkflowEdgeConflict { .. }
+    ));
+
+    let missing_endpoint = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-missing".to_string(),
+                    entry_node_id: "node-missing".to_string(),
+                    alias: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("endpoint entry node must exist");
+    assert!(matches!(
+        missing_endpoint,
+        DaemonError::InvalidWorkflowGraphReference { .. }
+    ));
+
+    let revision_before_rejected_ops = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve")
+        .revision();
+    for op in [
+        crate::local::WorkflowDesignOp::NodeMove {
+            workflow_id: workflow.id().to_string(),
+            node_id: "node-missing".to_string(),
+            position: crate::local::WorkflowDesignPoint { x: 1, y: 2 },
+        },
+        crate::local::WorkflowDesignOp::NodeRemove {
+            workflow_id: workflow.id().to_string(),
+            node_id: "node-missing".to_string(),
+        },
+    ] {
+        assert!(matches!(
+            service
+                .apply_workflow_design_op(session.id(), op, DEFAULT_LOCAL_USER_ID.to_string(),)
+                .expect_err("missing design node should be rejected"),
+            DaemonError::WorkflowNodeNotFound { .. }
+        ));
+    }
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), workflow.id())
+            .expect("workflow should resolve after rejected ops")
+            .revision(),
+        revision_before_rejected_ops,
+        "rejected design ops must not advance the workflow revision"
+    );
 }

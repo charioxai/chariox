@@ -31,6 +31,7 @@ import {
 } from "./workflow-invoke-command-handler.js"
 import {
   handleWorkflowAliasCommand,
+  handleWorkflowDeleteCommand,
   handleWorkflowListCommand,
   handleWorkflowNewCommand,
   handleWorkflowRootCommand,
@@ -52,10 +53,12 @@ import {
 import {
   handleWorkflowRunCancelCommand,
   handleWorkflowRunPauseCommand,
+  handleWorkflowRunShowCommand,
   handleWorkflowRunResumeCommand,
   handleWorkflowRunsCommand,
   type WorkflowRunCancelPayload,
   type WorkflowRunPausePayload,
+  type WorkflowRunGetPayload,
   type WorkflowRunResumePayload,
 } from "./workflow-run-command-handlers.js"
 import {
@@ -95,6 +98,7 @@ export type WorkflowCommandHandlerDeps = {
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
   assignWorkflowAlias: (workflowId: string, alias: string) => Promise<WorkflowDefinition | null>
+  deleteWorkflow?: (workflowRef: string) => Promise<{ workflow: WorkflowDefinition; session: RuntimeSession }>
   createWorkflowEndpoint: (
     workflowRef: string,
     entryNodeId: string,
@@ -109,6 +113,10 @@ export type WorkflowCommandHandlerDeps = {
     workflowRef: string,
     endpointRef: string,
     entryNodeId: string,
+  ) => Promise<WorkflowEndpointPayload>
+  removeWorkflowEndpoint?: (
+    workflowRef: string,
+    endpointRef: string,
   ) => Promise<WorkflowEndpointPayload>
   addWorkflowNode: (workflowRef: string, agentId: string) => Promise<WorkflowNodePayload>
   removeWorkflowNode: (workflowRef: string, nodeId: string) => Promise<WorkflowNodePayload>
@@ -167,6 +175,7 @@ export type WorkflowCommandHandlerDeps = {
   removeQueuedWorkflowPrompt?: (queueItemRef: string) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>
   listWorkflowRuns?: (workflowRef?: string | null) => Promise<WorkflowRun[]>
+  getWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunGetPayload>
   cancelWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunCancelPayload>
   pauseWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunPausePayload>
   resumeWorkflowRun?: (workflowRunRef: string) => Promise<WorkflowRunResumePayload>
@@ -254,6 +263,11 @@ export async function handleWorkflowSlashCommand(
     return
   }
 
+  if (subcommand === "delete") {
+    await handleWorkflowDeleteCommand(deps, context, args)
+    return
+  }
+
   if (subcommand === "run" || subcommand === "start") {
     await handleWorkflowInvokeCommand(deps, context, args)
     return
@@ -271,6 +285,11 @@ export async function handleWorkflowSlashCommand(
 
   if (subcommand === "runs") {
     await handleWorkflowRunsCommand(deps, args)
+    return
+  }
+
+  if (subcommand === "run-show" || subcommand === "run-get") {
+    await handleWorkflowRunShowCommand(deps, args)
     return
   }
 

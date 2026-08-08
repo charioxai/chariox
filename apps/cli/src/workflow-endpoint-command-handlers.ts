@@ -33,6 +33,10 @@ export type WorkflowEndpointCommandDeps = {
     endpointRef: string,
     entryNodeId: string,
   ) => Promise<WorkflowEndpointPayload>
+  removeWorkflowEndpoint?: (
+    workflowRef: string,
+    endpointRef: string,
+  ) => Promise<WorkflowEndpointPayload>
   applySessionState: (session: RuntimeSession) => void
   selectWorkflowCanvas: (workflowId: string | null) => void
   flashFooter: (message: string, tone: FooterTone) => void
@@ -83,14 +87,14 @@ export async function handleWorkflowEndpointCommand(
     )
     return
   }
-  if (action === "bind") {
+  if (action === "bind" || action === "rebind") {
     const explicitWorkflowRef = args.length >= 5 ? args[2] : null
     const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
     const endpointRef = explicitWorkflowRef ? args[3] : args[2]
     const entryNodeId = explicitWorkflowRef ? args[4] : args[3]
     if (!workflowRef || !endpointRef || !entryNodeId) {
       deps.flashFooter(
-        "usage: /workflow endpoint bind [workflow-ref] <endpoint-ref> <entry-node-id>",
+        `usage: /workflow endpoint ${action} [workflow-ref] <endpoint-ref> <entry-node-id>`,
         "error",
       )
       return
@@ -99,13 +103,34 @@ export async function handleWorkflowEndpointCommand(
     deps.applySessionState(payload.session)
     deps.selectWorkflowCanvas(payload.workflow.id)
     deps.flashFooter(
-      `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`,
+      `workflow endpoint ${payload.endpoint.id} ${action === "rebind" ? "rebound" : "bound"} to node ${payload.endpoint.entry_node_id}`,
       "info",
     )
     return
   }
+  if (action === "remove" || action === "delete") {
+    const explicitWorkflowRef = context.firstWorkflowArgIsExplicit(args[2]) ? args[2] : null
+    const workflowRef = context.workflowRefOrSelected(explicitWorkflowRef)
+    const endpointRef = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !endpointRef) {
+      deps.flashFooter(
+        `usage: /workflow endpoint ${action} [workflow-ref] <endpoint-ref>`,
+        "error",
+      )
+      return
+    }
+    if (!deps.removeWorkflowEndpoint) {
+      deps.flashFooter("workflow endpoint removal unavailable", "error")
+      return
+    }
+    const payload = await deps.removeWorkflowEndpoint(workflowRef, endpointRef)
+    deps.applySessionState(payload.session)
+    deps.selectWorkflowCanvas(payload.workflow.id)
+    deps.flashFooter(`removed workflow endpoint ${payload.endpoint.id}`, "info")
+    return
+  }
   deps.flashFooter(
-    "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>",
+    "usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | remove [workflow-ref] <endpoint-ref>",
     "error",
   )
 }

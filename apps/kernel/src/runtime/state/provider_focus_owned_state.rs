@@ -26,9 +26,13 @@ impl KernelRuntimeOwnedState {
                         provider_run_id: active_provider_run_id.clone(),
                     })
             })?;
-        if active_run.agent_instance_id() == Some(target_agent_id)
-            || active_run.state() != crate::provider::ProviderRunState::Running
-        {
+        if active_run.agent_instance_id() == Some(target_agent_id) {
+            return Ok(false);
+        }
+        if active_run.state() == crate::provider::ProviderRunState::Starting {
+            return Ok(true);
+        }
+        if active_run.state() != crate::provider::ProviderRunState::Running {
             return Ok(false);
         }
 
@@ -126,6 +130,21 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> Result<(), DaemonError> {
         let session = self.session_snapshot(session_id)?;
+        if let Some(active_provider_run_id) = session.active_provider_run_id() {
+            let active_run = self
+                .provider_store
+                .get_run(active_provider_run_id)
+                .or_else(|_| {
+                    self.provider_run_projection
+                        .get(active_provider_run_id)
+                        .ok_or_else(|| DaemonError::ProviderRunNotFound {
+                            provider_run_id: active_provider_run_id.to_string(),
+                        })
+                })?;
+            if active_run.state() == crate::provider::ProviderRunState::Starting {
+                return Ok(());
+            }
+        }
         if session.agents().len() > 1 {
             let focused_agent_id = session.focused_agent_id().map(str::to_string);
             if let Some(focused_agent_id) = focused_agent_id {

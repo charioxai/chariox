@@ -156,10 +156,59 @@ function currentTurnIndex() {
   return Number(matches[matches.length - 1][1]) || 1;
 }
 
+function currentNodeInstructions() {
+  const prompts = [...text(promptBuffer).matchAll(/<node-level-prompt>\s*([\s\S]*?)\s*<\/node-level-prompt>/g)];
+  return prompts.length ? prompts[prompts.length - 1][1] : text(promptBuffer);
+}
+
+function currentNodeMaxTurns() {
+  const matches = [...text(promptBuffer).matchAll(/node max turns:\s*(\d+)/g)];
+  return matches.length ? Number(matches[matches.length - 1][1]) || undefined : undefined;
+}
+
+function specialistNumber(label, index = 0) {
+  const target = text(label);
+  if (target.includes("code specialist")) return 1;
+  if (target.includes("research specialist")) return 2;
+  const match = target.match(/specialist\s+(\d+)/);
+  return Number(match && match[1]) || index + 1;
+}
+
+function routedSpecialistTask(prompt, label, index, task, reason) {
+  const payload = { task, reason };
+  if (prompt.includes('"specialist"')) payload.specialist = specialistNumber(label, index);
+  return payload;
+}
+
+function contestSlot(prompt, label, index) {
+  if (/"slot"\s*:\s*\{\s*"type"\s*:\s*"integer"/.test(prompt)) {
+    const match = text(label).match(/contestant\s+(\d+)/);
+    return Number(match && match[1]) || index + 1;
+  }
+  if (text(label).endsWith(" b")) return "b";
+  return "a";
+}
+
 function selectFinalOutput() {
-  const prompt = text(promptBuffer);
+  const prompt = currentNodeInstructions();
+  if (prompt.includes("only node allowed to finish the workflow")) {
+    return {
+      completed: true,
+      summary: "planner completed the reviewed implementation goal",
+      implemented_steps: ["step-1"],
+      verification: ["worker result reviewed before planner completion"],
+      remaining_risks: [],
+    };
+  }
   if (prompt.includes("refine the draft")) {
     return { answer: "refined draft accepted", changes: ["tightened structure", "preserved requirements"] };
+  }
+  if (prompt.includes("specialist branch")) {
+    const match = prompt.match(/specialist branch\s+(\d+)/);
+    return {
+      answer: "specialist handled the routed implementation task",
+      specialist: Number(match && match[1]) || 1,
+    };
   }
   if (prompt.includes("answer code")) {
     return { answer: "code specialist handled the routed implementation task", specialist: "code" };
@@ -168,115 +217,178 @@ function selectFinalOutput() {
     return { answer: "research specialist handled the routed analysis task", specialist: "research" };
   }
   if (prompt.includes("synthesize them")) {
-    return { answer: "synthesized findings from both workers", source_count: 2 };
+    const match = prompt.match(/wait for all\s+(\d+)\s+worker inputs/);
+    return { answer: "synthesized findings from all workers", source_count: Number(match && match[1]) || 2 };
   }
-  if (prompt.includes("aggregate their votes")) {
-    return { decision: "pass", rationale: "both reviewers returned passing structured outputs", reviewer_count: 2 };
+  if (prompt.includes("aggregate their votes") || prompt.includes("aggregate their reviews")) {
+    const match = prompt.match(/wait for all\s+(\d+)\s+reviewer results/);
+    const reviewerCount = Number(match && match[1]) || 2;
+    return { decision: "pass", rationale: "all reviewers returned passing structured outputs", reviewer_count: reviewerCount };
   }
   if (prompt.includes("survives critique")) {
-    return { decision: "accept", rationale: "proposal survived one critique loop" };
+    return { decision: "accept", rationale: "proposal survived the critique pass" };
   }
   if (prompt.includes("filtered candidates into the final result")) {
     return { result: "selected candidate alpha", selected_count: 1 };
   }
-  if (prompt.includes("accepted, submit final output")) {
-    return { answer: "accepted after one revision", iterations: 2 };
+  if (prompt.includes("accepted result")) {
+    return { answer: "accepted after deterministic review", iterations: currentTurnIndex() };
   }
-  if (prompt.includes("accepted final output") || prompt.includes("evaluate the candidate")) {
+  if (prompt.includes("accepted final output") || prompt.includes("evaluate the candidate") || prompt.includes("candidate stream") || prompt.includes("submit final output when accepted")) {
     return { answer: "optimized answer accepted", accepted: true };
   }
   if (prompt.includes("compare them") || prompt.includes("tournament")) {
     return { winner: "a", reason: "contestant a gave the clearer structured answer" };
   }
-  if (prompt.includes("combine the orchestration context")) {
+  if (prompt.includes("combine orchestration context")) {
     return { answer: "delegated worker result consolidated", delegated: true };
   }
   return { answer: "workflow-code topology completed" };
 }
 
 function payloadForEdge(edge, index, context) {
-  const target = text(edge.target_instructions);
+  const prompt = currentNodeInstructions();
+  const runtimePrompt = text(promptBuffer);
+  const target = text(edge.to_node_public_label);
+  const targetLabel = text(edge.to_node_public_label);
   const messages = inboundCount(context);
-  if (target.includes("refine the draft")) {
+  if (prompt.includes("only node allowed to finish the workflow") && targetLabel === "worker") {
+    return {
+      step_id: "step-1",
+      task: "implement the requested workflow-code change",
+      context: "complete the single deterministic validation step",
+      acceptance_criteria: ["structured implementation result", "reviewer acceptance"],
+      constraints: ["keep the change focused"],
+    };
+  }
+  if (prompt.includes("implement exactly the current planner assignment") && targetLabel === "reviewer") {
+    return {
+      step_id: "step-1",
+      summary: messages > 1 ? "implemented the requested reviewer revision" : "implemented the initial planner assignment",
+      changed_files: ["workflow-code-fixture.txt"],
+      verification: ["deterministic dev-stub verification passed"],
+      open_questions: [],
+    };
+  }
+  if (prompt.includes("review only the worker") && targetLabel === "worker") {
+    return {
+      step_id: "step-1",
+      review_iteration: currentTurnIndex(),
+      issues: ["tighten the implementation evidence"],
+      required_changes: ["record deterministic verification"],
+      reasoning: "one revision exercises the worker-reviewer loop",
+    };
+  }
+  if (prompt.includes("review only the worker") && targetLabel === "planner") {
+    return {
+      step_id: "step-1",
+      review_iterations: currentTurnIndex(),
+      accepted: true,
+      summary: "implementation accepted after one revision",
+      verification: ["deterministic dev-stub verification passed"],
+      remaining_risks: [],
+    };
+  }
+  if (target.includes("refiner")) {
     return { draft: "first complete draft", notes: ["ready for refinement"] };
   }
-  if (target.includes("answer code")) {
-    return { task: "implement the requested code path", reason: "prompt asks for repository implementation" };
+  if (target.includes("code specialist")) {
+    return routedSpecialistTask(runtimePrompt, target, index, "implement the requested code path", "prompt asks for repository implementation");
   }
-  if (target.includes("answer analysis") || target.includes("research")) {
-    return { task: "analyze the requested topic", reason: "prompt asks for research" };
+  if (target.includes("research")) {
+    return routedSpecialistTask(runtimePrompt, target, index, "analyze the requested topic", "prompt asks for research");
   }
-  if (target.includes("work your assigned angle")) {
+  if (target.includes("specialist")) {
+    return routedSpecialistTask(runtimePrompt, target, index, "implement the requested code path", "routed to the selected specialist");
+  }
+  if (prompt.includes("split the request") && target.includes("worker")) {
     return { question: "validate the workflow-code fan-out behavior", angle: index === 0 ? "evidence" : "risk" };
   }
-  if (target.includes("wait for all worker inputs")) {
-    return { finding: "worker finding for synthesis", evidence: [`worker-${index + 1}`] };
+  if (prompt.includes("work your assigned angle") && target.includes("synthesizer")) {
+    return { finding: "worker finding for synthesis", evidence: ["assigned worker evidence"] };
   }
-  if (target.includes("review the task from the policy") || target.includes("review the task from the quality")) {
+  if (prompt.includes("send the same review task") && target.includes("reviewer")) {
     return { subject: "parallel workflow-code review", criteria: ["correctness", "coverage"] };
   }
-  if (target.includes("wait for both reviewer results")) {
-    return { verdict: "pass", notes: [`reviewer-${index + 1} passed`] };
+  if ((prompt.includes("review the task independently") || prompt.includes("review the task from the")) && target.includes("aggregator")) {
+    return { verdict: "pass", notes: ["independent reviewer passed"] };
   }
-  if (target.includes("find flaws")) {
+  if (prompt.includes("produce a proposal") && target.includes("critic")) {
     return { claim: "workflow-code proposal is testable", evidence: ["deterministic stub", "schema validation"] };
   }
-  if (target.includes("produce a proposal")) {
+  if (prompt.includes("find flaws") && target.includes("proposer")) {
     return { issues: ["tighten evidence"], recommendation: "revise" };
   }
-  if (target.includes("decide whether the proposal")) {
+  if (prompt.includes("find flaws") && target.includes("judge")) {
     return { issues: ["resolved after revision"], recommendation: "judge" };
   }
-  if (target.includes("filter the candidate list")) {
+  if (prompt.includes("generate diverse candidate") && target.includes("filter")) {
     return { items: [{ value: "alpha", score: 0.92 }, { value: "beta", score: 0.37 }] };
   }
-  if (target.includes("turn the filtered candidates")) {
+  if (prompt.includes("filter candidate list") && target.includes("finisher")) {
     return { selected: ["alpha"], rationale: "highest score and complete rationale" };
   }
-  if (target.includes("produce a tournament entry")) {
-    return { task: "solve the toy tournament prompt", slot: index === 0 ? "a" : "b" };
+  if (prompt.includes("send the same task to") && target.includes("contestant")) {
+    return { task: "solve the toy tournament prompt", slot: contestSlot(runtimePrompt, target, index) };
   }
-  if (target.includes("wait for both entries")) {
-    return { answer: `contestant ${index === 0 ? "a" : "b"} answer`, strategy: "direct structured response" };
+  if ((prompt.includes("produce a tournament entry") || prompt.includes("wait for both entries")) && target.includes("judge")) {
+    const match = prompt.match(/slot\s+([a-z0-9]+)/);
+    return { answer: `contestant ${match ? match[1] : "winner"} answer`, strategy: "direct structured response" };
   }
-  if (target.includes("complete the assigned subtask")) {
+  if (prompt.includes("decompose the task") && target.includes("worker")) {
     return { subtask: "inspect workflow-code portability", acceptance_criteria: ["structured result", "no open blocker"] };
   }
-  if (target.includes("combine the orchestration context")) {
+  if (prompt.includes("complete the assigned subtask") && target.includes("synthesizer")) {
     return { result: "worker completed delegated subtask", open_questions: [] };
   }
-  if (target.includes("evaluate the candidate")) {
-    return { candidate: messages > 0 ? "revised candidate" : "initial candidate", version: messages > 0 ? 2 : 1 };
+  if (prompt.includes("produce an improved candidate") && target.includes("evaluator")) {
+    return { candidate: messages > 1 ? "revised candidate" : "initial candidate", version: messages > 1 ? 2 : 1 };
   }
-  if (target.includes("produce an improved candidate")) {
+  if ((prompt.includes("evaluate the candidate") || (prompt.includes("evaluate ") && prompt.includes("candidate stream"))) && target.includes("optimizer")) {
     return { decision: "revise", feedback: "improve specificity before acceptance" };
   }
-  if (target.includes("if work is insufficient")) {
-    return { artifact: messages > 0 ? "revised artifact" : "initial artifact", iteration: messages > 0 ? 2 : 1 };
+  if (prompt.includes("create or revise the artifact") && target.includes("checker")) {
+    return { artifact: messages > 1 ? "revised artifact" : "initial artifact", iteration: messages > 1 ? 2 : 1 };
   }
-  if (target.includes("create or revise the artifact")) {
+  if (prompt.includes("if work is insufficient") && target.includes("worker")) {
     return { status: "revise", notes: "one revision required before completion" };
   }
   return { value: index + 1, note: "generic workflow-code topology handoff" };
 }
 
 function shouldSendEdge(edge, index, context) {
-  const target = text(edge.target_instructions);
+  const prompt = currentNodeInstructions();
+  const target = text(edge.to_node_public_label);
+  const targetLabel = text(edge.to_node_public_label);
   const turn = currentTurnIndex();
-  if (promptBuffer.includes("Classify the request") || promptBuffer.includes("Classify")) {
-    return target.includes("answer code") || (!target.includes("research") && index === 0);
-  }
-  if (target.includes("produce a proposal")) {
+  if (prompt.includes("only node allowed to finish the workflow") && targetLabel === "worker") {
     return turn <= 1;
   }
-  if (target.includes("decide whether the proposal")) {
-    return turn > 1;
+  if (prompt.includes("review only the worker")) {
+    const match = prompt.match(/has not reached\s+(\d+)\s+review cycle/);
+    const reviewLimit = Number(match && match[1]) || 2;
+    const shouldRevise = turn <= 1 && turn < reviewLimit;
+    if (targetLabel === "worker") return shouldRevise;
+    if (targetLabel === "planner") return !shouldRevise;
   }
-  if (target.includes("produce an improved candidate")) {
+  if (prompt.includes("classify the request")) {
+    return target.includes("code specialist") || (target.includes("specialist") && index === 0);
+  }
+  if (prompt.includes("find flaws") && target.includes("proposer")) {
     return turn <= 1;
   }
-  if (target.includes("create or revise the artifact")) {
-    return turn <= 1;
+  if (prompt.includes("find flaws") && target.includes("judge")) {
+    const hasProposerEdge = Array.isArray(context && context.outgoing_edges)
+      && context.outgoing_edges.some((candidate) => text(candidate.to_node_public_label).includes("proposer"));
+    return !hasProposerEdge || turn > 1;
+  }
+  if ((prompt.includes("evaluate the candidate") || (prompt.includes("evaluate ") && prompt.includes("candidate stream"))) && target.includes("optimizer")) {
+    const maxTurns = currentNodeMaxTurns();
+    return turn <= 1 && (maxTurns == null || turn < maxTurns);
+  }
+  if (prompt.includes("if work is insufficient") && target.includes("worker")) {
+    const maxTurns = currentNodeMaxTurns();
+    return turn <= 1 && (maxTurns == null || turn < maxTurns);
   }
   return true;
 }
@@ -1027,6 +1139,51 @@ mod tests {
         assert!(script.contains("arroba-source-proof:"));
         assert!(script.contains("emittedSourceProofs"));
         assert!(script.contains("process.stdout.write(sourceProof + \"\\n\")"));
+    }
+
+    #[test]
+    fn topology_fixture_emits_schema_compatible_evaluator_output() {
+        let script = dev_stub_workflow_code_topology_script();
+
+        assert!(script.contains(
+            r#"prompt.includes("candidate stream") || prompt.includes("submit final output when accepted")) {
+    return { answer: "optimized answer accepted", accepted: true };"#,
+        ));
+        assert!(!script.contains(
+            r#"prompt.includes("accepted result") || prompt.includes("submit final output when accepted")"#,
+        ));
+        assert!(script.contains(
+            r#"prompt.includes("combine orchestration context")) {
+    return { answer: "delegated worker result consolidated", delegated: true };"#,
+        ));
+        assert!(script.contains(
+            r#"prompt.includes("complete the assigned subtask") && target.includes("synthesizer")) {
+    return { result: "worker completed delegated subtask", open_questions: [] };"#,
+        ));
+        assert!(script.contains("const target = text(edge.to_node_public_label);"));
+        assert!(!script.contains("edge.target_instructions"));
+    }
+
+    #[test]
+    fn topology_fixture_drives_planner_worker_reviewer_through_one_revision() {
+        let script = dev_stub_workflow_code_topology_script();
+
+        assert!(script.contains(
+            r#"prompt.includes("only node allowed to finish the workflow") && targetLabel === "worker") {
+    return turn <= 1;"#,
+        ));
+        assert!(script.contains(
+            r#"const reviewLimit = Number(match && match[1]) || 2;
+    const shouldRevise = turn <= 1 && turn < reviewLimit;
+    if (targetLabel === "worker") return shouldRevise;
+    if (targetLabel === "planner") return !shouldRevise;"#,
+        ));
+        assert!(script.contains("review_iteration: currentTurnIndex()"));
+        assert!(script.contains("review_iterations: currentTurnIndex()"));
+        assert!(script.contains(
+            r#"completed: true,
+      summary: "planner completed the reviewed implementation goal","#,
+        ));
     }
 
     #[test]

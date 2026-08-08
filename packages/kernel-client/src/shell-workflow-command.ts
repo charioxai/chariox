@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto"
-
 import type {
   RuntimeSession,
   SessionConfigState,
@@ -10,7 +8,6 @@ import type {
 } from "./kernel-types.js"
 import {
   aliasWorkflowRequest,
-  applyWorkflowDesignOpRequest,
   cancelWorkflowRunRequest,
   createWorkflowRequest,
   getWorkflowRunRequest,
@@ -50,6 +47,10 @@ import {
   formatWorkflowList,
   formatWorkflowRunList,
 } from "./shell-workflow-format.js"
+import {
+  applyShellWorkflowDesignOp,
+  createShellWorkflowDesignId,
+} from "./shell-workflow-design-op.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -80,6 +81,25 @@ export async function executeWorkflowCommand(
     }
     case "new":
     case "create": {
+      if (deps.clientId) {
+        const workflowId = createShellWorkflowDesignId("workflow")
+        const payload = await applyShellWorkflowDesignOp(
+          { client: deps.client, clientId: deps.clientId },
+          sessionId,
+          {
+            kind: "workflow_create",
+            workflow: { id: workflowId, alias: args[0] ?? null },
+          },
+        )
+        const workflow = workflowFromSession(payload.session, workflowId)
+        return resourceResult(
+          `created workflow ${formatWorkflowLabel(workflow)}`,
+          parsed.assignment,
+          workflow.id,
+          { workflowId: workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+          { ...payload, workflow },
+        )
+      }
       const response = await deps.client.send(createWorkflowRequest(sessionId, args[0] ?? null))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowCreated")
       return resourceResult(
@@ -104,6 +124,22 @@ export async function executeWorkflowCommand(
       if (!workflowRef || !alias) {
         return { ok: false, message: "usage: workflow alias <workflow-ref> <alias>" }
       }
+      if (deps.clientId) {
+        const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+        const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
+        const payload = await applyShellWorkflowDesignOp(
+          { client: deps.client, clientId: deps.clientId },
+          sessionId,
+          { kind: "workflow_update", workflow_id: workflow.id, patch: { alias } },
+        )
+        const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+        return {
+          ok: true,
+          message: `workflow ${updatedWorkflow.id} aliased as ${updatedWorkflow.alias}`,
+          data: { ...payload, workflow: updatedWorkflow },
+          contextUpdates: { workflowId: updatedWorkflow.id },
+        }
+      }
       const response = await deps.client.send(aliasWorkflowRequest(sessionId, workflowRef, alias))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowAliased")
       return { ok: true, message: `workflow ${payload.workflow.id} aliased as ${payload.workflow.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id } }
@@ -120,13 +156,11 @@ export async function executeWorkflowCommand(
       }
       const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
       const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
-      const response = await deps.client.send(applyWorkflowDesignOpRequest(
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
         sessionId,
-        deps.clientId,
-        `shell-${randomUUID()}`,
         { kind: "workflow_remove", workflow_id: workflow.id },
-      ))
-      const payload = expectVariant<{ event: { op?: unknown }; session: RuntimeSession }>(response, "WorkflowDesignOpAccepted")
+      )
       return {
         ok: true,
         message: `deleted workflow ${formatWorkflowLabel(workflow)}`,
@@ -185,6 +219,26 @@ export async function executeWorkflowCommand(
       if (!workflowRef || (value !== "true" && value !== "false")) {
         return { ok: false, message: "usage: workflow flush-context [workflow-ref] <true|false>" }
       }
+      if (deps.clientId) {
+        const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+        const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
+        const payload = await applyShellWorkflowDesignOp(
+          { client: deps.client, clientId: deps.clientId },
+          sessionId,
+          {
+            kind: "workflow_update",
+            workflow_id: workflow.id,
+            patch: { flush_agent_context_before_run: value === "true" },
+          },
+        )
+        const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+        return {
+          ok: true,
+          message: `workflow ${updatedWorkflow.id} flush-context set to ${String(updatedWorkflow.flush_agent_context_before_run ?? true)}`,
+          data: { ...payload, workflow: updatedWorkflow },
+          contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+        }
+      }
       const response = await deps.client.send(setWorkflowFlushContextRequest(sessionId, workflowRef, value === "true"))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowFlushContextUpdated")
       return { ok: true, message: `workflow ${payload.workflow.id} flush-context set to ${String(payload.workflow.flush_agent_context_before_run ?? true)}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
@@ -197,6 +251,26 @@ export async function executeWorkflowCommand(
         return { ok: false, message: "usage: workflow run-output-schema [workflow-ref] <schema-ref|none>" }
       }
       const schemaRef = rawValue.trim().toLowerCase() === "none" ? null : rawValue
+      if (deps.clientId) {
+        const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+        const workflow = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved").workflow
+        const payload = await applyShellWorkflowDesignOp(
+          { client: deps.client, clientId: deps.clientId },
+          sessionId,
+          {
+            kind: "workflow_update",
+            workflow_id: workflow.id,
+            patch: { run_output_schema_ref: schemaRef },
+          },
+        )
+        const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+        return {
+          ok: true,
+          message: `workflow ${updatedWorkflow.id} run-output-schema set to ${updatedWorkflow.run_output_schema_ref ?? "none"}`,
+          data: { ...payload, workflow: updatedWorkflow },
+          contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+        }
+      }
       const response = await deps.client.send(setWorkflowRunOutputSchemaRequest(sessionId, workflowRef, schemaRef))
       const payload = expectVariant<{ workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowRunOutputSchemaUpdated")
       return { ok: true, message: `workflow ${payload.workflow.id} run-output-schema set to ${payload.workflow.run_output_schema_ref ?? "none"}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
@@ -301,4 +375,12 @@ function expectVariant<T>(response: Record<string, unknown>, variant: string): T
     throw new Error(`unexpected response variant: expected ${variant}`)
   }
   return response[variant] as T
+}
+
+function workflowFromSession(session: RuntimeSession, workflowId: string): WorkflowDefinition {
+  const workflow = session.workflows?.find((candidate) => candidate.id === workflowId)
+  if (!workflow) {
+    throw new Error(`workflow design response did not include workflow ${workflowId}`)
+  }
+  return workflow
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { publicationStatusWatchdogCount, publicationStatusWatchdogs, readSseUntilEvent, withPublicationDrillProviderInventory } from './live-workflow-publication-drill-runtime.mjs'
+import { publicationStatusWatchdogCount, publicationStatusWatchdogs, readSseUntilEvent, secureGatewayPublicationEnvs, withPublicationDrillProviderInventory } from './live-workflow-publication-drill-runtime.mjs'
 
 test('publication drill reads canonical watchdog status with schedule fallback', () => {
   const canonical = { watchdog_count: 1, watchdogs: [{ id: 'watchdog-1' }] }
@@ -18,6 +18,27 @@ test('publication drill exposes its internal provider during package replay', ()
     EXISTING: 'value',
     ARROBA_PROVIDER_DEV_STUB: '1',
   })
+})
+
+test('secure publication gateways bind HTTPS and WSS to their matching transports', () => {
+  const secureEnvs = secureGatewayPublicationEnvs(
+    { EXISTING: 'value' },
+    {
+      host: '127.0.0.1',
+      port: 43119,
+      kernelUrl: 'ws://127.0.0.1:43118',
+      tls: { keyFile: '/tmp/gateway.key', certFile: '/tmp/gateway.crt' },
+      humanHttp: { sessionId: 'human-session', publicationId: 'human-publication' },
+      websocket: { sessionId: 'websocket-session', publicationId: 'websocket-publication' },
+    },
+  )
+
+  assert.equal(secureEnvs.https.ARROBA_PUBLICATION_SESSION_ID, 'human-session')
+  assert.equal(secureEnvs.https.ARROBA_PUBLICATION_ID, 'human-publication')
+  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_SESSION_ID, 'websocket-session')
+  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_ID, 'websocket-publication')
+  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_TLS_CERT_FILE, '/tmp/gateway.crt')
+  assert.equal(secureEnvs.wss.EXISTING, 'value')
 })
 
 test('queued-only SSE checks cancel the stream after the expected frame', async () => {

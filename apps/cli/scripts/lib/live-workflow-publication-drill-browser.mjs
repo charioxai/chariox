@@ -241,7 +241,7 @@ export async function waitForBrowserHtmlPartialOutput(cdp, timeoutMs = 30_000) {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const output = document.querySelector('#output')?.textContent?.trim() || '';
         const iframe = document.querySelector('#html-output iframe');
-        const traceCount = document.querySelectorAll('#trace-feed .trace-item').length;
+        const traceCount = document.querySelectorAll('.trace-feed .trace-item').length;
         return {
           status,
           output,
@@ -277,7 +277,7 @@ export async function waitForBrowserHtmlFinalOutput(
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const iframe = document.querySelector('#html-output iframe');
         const iframeSrcdoc = iframe?.getAttribute('srcdoc') || '';
-        const traces = Array.from(document.querySelectorAll('#trace-feed .trace-item')).map((item) => ({
+        const traces = Array.from(document.querySelectorAll('.trace-feed .trace-item')).map((item) => ({
           text: item.textContent || '',
           meta: Array.from(item.querySelectorAll('.trace-meta span')).map((span) => span.textContent || ''),
         }));
@@ -718,6 +718,7 @@ export function browserStatusRecorderScript() {
       let last = null;
       let lastOutput = null;
       const NativeEventSource = window.EventSource;
+      const NativeWebSocket = window.WebSocket;
       Object.defineProperty(window, '__arrobaPublicationDrillStatuses', {
         value: statuses,
         configurable: true,
@@ -726,26 +727,40 @@ export function browserStatusRecorderScript() {
         value: outputs,
         configurable: true,
       });
+      const recordTransportOutput = (type, data) => {
+        try {
+          const payload = typeof data === 'string' ? JSON.parse(data) : data;
+          const message = type === 'partial'
+            ? payload?.message
+            : payload?.workflow_run?.final_output?.message ?? payload?.message;
+          if (typeof message === 'string' && message) outputs.push(message);
+        } catch {
+        }
+      };
       if (typeof NativeEventSource === 'function') {
         window.EventSource = function(...args) {
           const source = new NativeEventSource(...args);
-          source.addEventListener('partial', (event) => {
-            try {
-              const message = JSON.parse(event.data).message;
-              if (typeof message === 'string' && message) outputs.push(message);
-            } catch {
-            }
-          });
-          source.addEventListener('final', (event) => {
-            try {
-              const message = JSON.parse(event.data).workflow_run?.final_output?.message;
-              if (typeof message === 'string' && message) outputs.push(message);
-            } catch {
-            }
-          });
+          source.addEventListener('partial', (event) => recordTransportOutput('partial', event.data));
+          source.addEventListener('final', (event) => recordTransportOutput('final', event.data));
           return source;
         };
         window.EventSource.prototype = NativeEventSource.prototype;
+      }
+      if (typeof NativeWebSocket === 'function') {
+        window.WebSocket = function(...args) {
+          const socket = new NativeWebSocket(...args);
+          socket.addEventListener('message', (event) => {
+            try {
+              const payload = JSON.parse(String(event.data || '{}'));
+              if (payload.type === 'partial' || payload.type === 'final') {
+                recordTransportOutput(payload.type, payload);
+              }
+            } catch {
+            }
+          });
+          return socket;
+        };
+        window.WebSocket.prototype = NativeWebSocket.prototype;
       }
       const record = () => {
         const status = document.querySelector('#status')?.textContent?.trim();

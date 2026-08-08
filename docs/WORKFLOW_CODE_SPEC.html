@@ -688,7 +688,7 @@ workflow.watchdog(start, {
         <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, workflow/endpoint/queue aliases using the same lowercase alias rules as slash commands, reserved default queue handle usage, no duplicate normalized queue aliases, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
         <li>Validate policy: caller authority, metaagent ownership, provider/model availability or replacement bindings, extension availability, configured limits, and max generated prompt bytes.</li>
         <li>Allocate fresh kernel ids for workflow graph objects and generated agents.</li>
-        <li>Expose outgoing edge contracts at run time with allocated <code>edge_id</code>, <code>to_node_id</code>, target label, bounded <code>target_instructions</code>, handoff schema ref, and validation policy.</li>
+        <li>Expose outgoing edge contracts at run time with allocated <code>edge_id</code>, <code>to_node_id</code>, public target label, handoff schema ref, and validation policy. Keep downstream node instructions private to that node.</li>
         <li>Validate schemas and prompt templates after id allocation.</li>
         <li>Apply state changes through the normal session and workflow services, not through a parallel mutation path.</li>
         <li>Return a compile report with created ids, warnings, binding requirements, and a graph summary.</li>

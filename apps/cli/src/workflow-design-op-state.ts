@@ -5,6 +5,7 @@ import type {
   WorkflowEdgeDefinition,
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
+  WorkflowSchemaDefinition,
 } from "./cli-types.js"
 
 export function workflowsWithDesignOp(
@@ -25,13 +26,23 @@ export function workflowsWithDesignOp(
   switch (op.kind) {
     case "workflow_create": {
       if (!workflows.some((workflow) => workflow.id === op.workflow.id)) {
-        workflows.push({
+        const workflow: WorkflowDefinition = {
           id: op.workflow.id,
           alias: op.workflow.alias ?? null,
+          schemas: (op.workflow.schemas ?? []).map(copyWorkflowSchema),
           nodes: [],
           edges: [],
           endpoints: [],
-        })
+        }
+        if (Object.prototype.hasOwnProperty.call(op.workflow, "prompt")) workflow.prompt = op.workflow.prompt ?? null
+        if (typeof op.workflow.flush_agent_context_before_run === "boolean") {
+          workflow.flush_agent_context_before_run = op.workflow.flush_agent_context_before_run
+        }
+        if (typeof op.workflow.max_concurrent === "number") workflow.max_concurrent = op.workflow.max_concurrent
+        if (Object.prototype.hasOwnProperty.call(op.workflow, "run_output_schema_ref")) {
+          workflow.run_output_schema_ref = op.workflow.run_output_schema_ref ?? null
+        }
+        workflows.push(workflow)
       }
       break
     }
@@ -40,12 +51,41 @@ export function workflowsWithDesignOp(
       break
     case "workflow_remove":
       return workflows.filter((workflow) => workflow.id !== op.workflow_id)
+    case "schema_add":
+      replaceWorkflow(op.workflow_id, (workflow) => {
+        const schemas = workflow.schemas ?? []
+        return {
+          ...workflow,
+          schemas: schemas.some((schema) => schema.id === op.schema.id)
+            ? schemas
+            : [...schemas, copyWorkflowSchema(op.schema)],
+        }
+      })
+      break
+    case "schema_update":
+      replaceWorkflow(op.workflow_id, (workflow) => ({
+        ...workflow,
+        schemas: (workflow.schemas ?? []).map((schema) => schema.id === op.schema_id
+          ? workflowSchemaWithPatch(schema, op.patch)
+          : schema),
+      }))
+      break
+    case "schema_remove":
+      replaceWorkflow(op.workflow_id, (workflow) => ({
+        ...workflow,
+        schemas: (workflow.schemas ?? []).filter((schema) => schema.id !== op.schema_id),
+      }))
+      break
     case "node_add":
       replaceWorkflow(op.workflow_id, (workflow) => {
         const nodes = workflow.nodes?.some((node) => node.id === op.node.id)
           ? workflow.nodes
           : [...(workflow.nodes ?? []), workflowNodeFromDesign(op.node)]
-        return { ...workflow, nodes }
+        return {
+          ...workflow,
+          nodes,
+          ...(op.position ? { canvas_layout: canvasLayoutWithPosition(workflow.canvas_layout, "nodes", op.node.id, op.position) } : {}),
+        }
       })
       break
     case "node_update":
@@ -54,15 +94,19 @@ export function workflowsWithDesignOp(
         nodes: (workflow.nodes ?? []).map((node) => node.id === op.node_id
           ? workflowNodeWithPatch(node, op.patch)
           : node),
+        ...(op.patch.can_complete_workflow_run === false
+          ? { canvas_layout: canvasLayoutWithoutKey(workflow.canvas_layout, "exits", op.node_id) }
+          : {}),
+      }))
+      break
+    case "node_move":
+      replaceWorkflow(op.workflow_id, (workflow) => ({
+        ...workflow,
+        canvas_layout: canvasLayoutWithPosition(workflow.canvas_layout, "nodes", op.node_id, op.position),
       }))
       break
     case "node_remove":
-      replaceWorkflow(op.workflow_id, (workflow) => ({
-        ...workflow,
-        nodes: (workflow.nodes ?? []).filter((node) => node.id !== op.node_id),
-        edges: (workflow.edges ?? []).filter((edge) => edge.from_node_id !== op.node_id && edge.to_node_id !== op.node_id),
-        endpoints: (workflow.endpoints ?? []).filter((endpoint) => endpoint.entry_node_id !== op.node_id),
-      }))
+      replaceWorkflow(op.workflow_id, workflowWithoutNode(op.node_id))
       break
     case "edge_add":
       replaceWorkflow(op.workflow_id, (workflow) => {
@@ -84,6 +128,7 @@ export function workflowsWithDesignOp(
       replaceWorkflow(op.workflow_id, (workflow) => ({
         ...workflow,
         edges: (workflow.edges ?? []).filter((edge) => edge.id !== op.edge_id),
+        canvas_layout: canvasLayoutWithoutKey(workflow.canvas_layout, "edges", op.edge_id),
       }))
       break
     case "endpoint_add":
@@ -91,7 +136,11 @@ export function workflowsWithDesignOp(
         const endpoints = workflow.endpoints?.some((endpoint) => endpoint.id === op.endpoint.id)
           ? workflow.endpoints
           : [...(workflow.endpoints ?? []), workflowEndpointFromDesign(op.endpoint)]
-        return { ...workflow, endpoints }
+        return {
+          ...workflow,
+          endpoints,
+          ...(op.position ? { canvas_layout: canvasLayoutWithPosition(workflow.canvas_layout, "endpoints", op.endpoint.id, op.position) } : {}),
+        }
       })
       break
     case "endpoint_update":
@@ -102,15 +151,24 @@ export function workflowsWithDesignOp(
           : endpoint),
       }))
       break
+    case "endpoint_move":
+      replaceWorkflow(op.workflow_id, (workflow) => ({
+        ...workflow,
+        canvas_layout: canvasLayoutWithPosition(workflow.canvas_layout, "endpoints", op.endpoint_id, op.position),
+      }))
+      break
     case "endpoint_remove":
       replaceWorkflow(op.workflow_id, (workflow) => ({
         ...workflow,
         endpoints: (workflow.endpoints ?? []).filter((endpoint) => endpoint.id !== op.endpoint_id),
+        canvas_layout: canvasLayoutWithoutKey(workflow.canvas_layout, "endpoints", op.endpoint_id),
       }))
       break
-    case "node_move":
-    case "endpoint_move":
+    default: {
+      const exhaustive: never = op
+      void exhaustive
       break
+    }
   }
 
   return workflows
@@ -124,12 +182,31 @@ function workflowWithPatch(
   if (Object.prototype.hasOwnProperty.call(patch, "alias")) {
     next.alias = patch.alias ?? null
   }
-  if (Object.prototype.hasOwnProperty.call(patch, "flush_agent_context_before_run")) {
-    next.flush_agent_context_before_run = patch.flush_agent_context_before_run ?? false
+  if (Object.prototype.hasOwnProperty.call(patch, "prompt")) {
+    next.prompt = patch.prompt ?? null
   }
+  if (typeof patch.flush_agent_context_before_run === "boolean") {
+    next.flush_agent_context_before_run = patch.flush_agent_context_before_run
+  }
+  if (typeof patch.max_concurrent === "number") next.max_concurrent = patch.max_concurrent
   if (Object.prototype.hasOwnProperty.call(patch, "run_output_schema_ref")) {
     next.run_output_schema_ref = patch.run_output_schema_ref ?? null
   }
+  return next
+}
+
+function copyWorkflowSchema(schema: WorkflowSchemaDefinition): WorkflowSchemaDefinition {
+  return { ...schema }
+}
+
+function workflowSchemaWithPatch(
+  schema: WorkflowSchemaDefinition,
+  patch: Extract<WorkflowDesignOp, { kind: "schema_update" }>["patch"],
+): WorkflowSchemaDefinition {
+  const next = copyWorkflowSchema(schema)
+  if (Object.prototype.hasOwnProperty.call(patch, "alias")) next.alias = patch.alias ?? null
+  if (Object.prototype.hasOwnProperty.call(patch, "description")) next.description = patch.description ?? null
+  if (Object.prototype.hasOwnProperty.call(patch, "schema")) next.schema = patch.schema
   return next
 }
 
@@ -137,6 +214,7 @@ function workflowNodeFromDesign(node: Extract<WorkflowDesignOp, { kind: "node_ad
   const next: WorkflowNodeDefinition = {
     id: node.id,
     agent_id: node.agent_id,
+    public_label: node.label ?? node.agent_id,
   }
   if (Object.prototype.hasOwnProperty.call(node, "instructions")) next.instructions = node.instructions ?? null
   if (Object.prototype.hasOwnProperty.call(node, "can_complete_workflow_run")) next.can_complete_workflow_run = node.can_complete_workflow_run ?? false
@@ -152,6 +230,7 @@ function workflowNodeWithPatch(
   patch: Extract<WorkflowDesignOp, { kind: "node_update" }>["patch"],
 ): WorkflowNodeDefinition {
   const next: WorkflowNodeDefinition = { ...node }
+  if (typeof patch.label === "string") next.public_label = patch.label
   if (Object.prototype.hasOwnProperty.call(patch, "instructions")) next.instructions = patch.instructions ?? null
   if (Object.prototype.hasOwnProperty.call(patch, "can_complete_workflow_run")) next.can_complete_workflow_run = patch.can_complete_workflow_run ?? false
   if (Object.prototype.hasOwnProperty.call(patch, "can_emit_intermediate_run_output")) next.can_emit_intermediate_run_output = patch.can_emit_intermediate_run_output ?? false
@@ -159,6 +238,83 @@ function workflowNodeWithPatch(
   if (Object.prototype.hasOwnProperty.call(patch, "intermediate_output_schema_ref")) next.intermediate_output_schema_ref = patch.intermediate_output_schema_ref ?? null
   if (Object.prototype.hasOwnProperty.call(patch, "max_turns")) next.max_turns = patch.max_turns ?? null
   return next
+}
+
+function workflowWithoutNode(nodeId: string) {
+  return (workflow: WorkflowDefinition): WorkflowDefinition => {
+    const removedEdgeIds = (workflow.edges ?? [])
+      .filter((edge) => edge.from_node_id === nodeId || edge.to_node_id === nodeId)
+      .map((edge) => edge.id)
+    const removedEndpointIds = (workflow.endpoints ?? [])
+      .filter((endpoint) => endpoint.entry_node_id === nodeId)
+      .map((endpoint) => endpoint.id)
+    let canvasLayout = canvasLayoutWithoutKey(workflow.canvas_layout, "nodes", nodeId)
+    canvasLayout = canvasLayoutWithoutKey(canvasLayout, "exits", nodeId)
+    for (const edgeId of removedEdgeIds) canvasLayout = canvasLayoutWithoutKey(canvasLayout, "edges", edgeId)
+    for (const endpointId of removedEndpointIds) canvasLayout = canvasLayoutWithoutKey(canvasLayout, "endpoints", endpointId)
+    return {
+      ...workflow,
+      nodes: (workflow.nodes ?? []).filter((node) => node.id !== nodeId),
+      edges: (workflow.edges ?? []).filter((edge) => edge.from_node_id !== nodeId && edge.to_node_id !== nodeId),
+      endpoints: (workflow.endpoints ?? []).filter((endpoint) => endpoint.entry_node_id !== nodeId),
+      canvas_layout: canvasLayout,
+    }
+  }
+}
+
+type WorkflowCanvasMap = "nodes" | "endpoints" | "exits"
+type WorkflowCanvasCollection = WorkflowCanvasMap | "edges"
+
+function canvasLayoutWithPosition(
+  current: WorkflowDefinition["canvas_layout"],
+  collection: WorkflowCanvasMap,
+  id: string,
+  position: { x: number; y: number },
+) {
+  const layout = copyCanvasLayout(current)
+  layout[collection] = { ...(layout[collection] ?? {}), [id]: { ...position } }
+  layout.revision += 1
+  return layout
+}
+
+function canvasLayoutWithoutKey(
+  current: WorkflowDefinition["canvas_layout"],
+  collection: WorkflowCanvasCollection,
+  id: string,
+) {
+  if (!current || !current[collection] || !Object.prototype.hasOwnProperty.call(current[collection], id)) return current ?? null
+  const layout = copyCanvasLayout(current)
+  if (collection === "edges") {
+    const entries = { ...layout.edges }
+    delete entries[id]
+    layout.edges = entries
+  } else if (collection === "nodes") {
+    const entries = { ...layout.nodes }
+    delete entries[id]
+    layout.nodes = entries
+  } else if (collection === "endpoints") {
+    const entries = { ...layout.endpoints }
+    delete entries[id]
+    layout.endpoints = entries
+  } else {
+    const entries = { ...layout.exits }
+    delete entries[id]
+    layout.exits = entries
+  }
+  layout.revision += 1
+  return layout
+}
+
+function copyCanvasLayout(current: NonNullable<WorkflowDefinition["canvas_layout"]> | null | undefined) {
+  return {
+    version: current?.version ?? 1,
+    revision: current?.revision ?? 0,
+    coordinate_space: current?.coordinate_space ?? "workflow-canvas-v1",
+    nodes: { ...(current?.nodes ?? {}) },
+    endpoints: { ...(current?.endpoints ?? {}) },
+    exits: { ...(current?.exits ?? {}) },
+    edges: { ...(current?.edges ?? {}) },
+  }
 }
 
 function workflowEdgeFromDesign(edge: Extract<WorkflowDesignOp, { kind: "edge_add" }>["edge"]): WorkflowEdgeDefinition {

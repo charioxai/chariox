@@ -30,6 +30,12 @@
         "value": "/workflow new "
       },
       {
+        "id": "workflow-delete",
+        "label": "delete",
+        "description": "Delete a workflow by id or alias",
+        "value": "/workflow delete "
+      },
+      {
         "id": "workflow-run",
         "label": "run",
         "description": "Invoke a workflow endpoint",
@@ -66,6 +72,18 @@
         "value": "/workflow runs "
       },
       {
+        "id": "workflow-run-show",
+        "label": "run-show",
+        "description": "Show a workflow run by id",
+        "value": "/workflow run-show "
+      },
+      {
+        "id": "workflow-run-get",
+        "label": "run-get",
+        "description": "Alias for showing a workflow run by id",
+        "value": "/workflow run-get "
+      },
+      {
         "id": "workflow-add-node-all",
         "label": "add node all",
         "description": "Add every session agent that is not already a workflow node",
@@ -90,6 +108,36 @@
             "value": "/workflow queue create "
           },
           {
+            "id": "workflow-queue-rename",
+            "label": "rename",
+            "description": "Rename a workflow prompt queue",
+            "value": "/workflow queue rename "
+          },
+          {
+            "id": "workflow-queue-priority",
+            "label": "priority",
+            "description": "Set a workflow prompt queue priority",
+            "value": "/workflow queue priority "
+          },
+          {
+            "id": "workflow-queue-enable",
+            "label": "enable",
+            "description": "Enable a workflow prompt queue",
+            "value": "/workflow queue enable "
+          },
+          {
+            "id": "workflow-queue-disable",
+            "label": "disable",
+            "description": "Disable a workflow prompt queue",
+            "value": "/workflow queue disable "
+          },
+          {
+            "id": "workflow-queue-delete",
+            "label": "delete",
+            "description": "Delete a workflow prompt queue",
+            "value": "/workflow queue delete "
+          },
+          {
             "id": "workflow-queue-edit",
             "label": "edit",
             "description": "Edit a queued workflow prompt",
@@ -108,6 +156,12 @@
             "value": "/workflow queue clear "
           },
           {
+            "id": "workflow-queue-flush",
+            "label": "flush",
+            "description": "Alias for clearing a workflow prompt queue",
+            "value": "/workflow queue flush "
+          },
+          {
             "id": "workflow-queue-remove",
             "label": "remove",
             "description": "Remove one queued workflow prompt",
@@ -122,10 +176,22 @@
         "value": "/workflow cancel "
       },
       {
+        "id": "workflow-pause",
+        "label": "pause",
+        "description": "Pause a workflow run after its active turn settles",
+        "value": "/workflow pause "
+      },
+      {
         "id": "workflow-resume",
         "label": "resume",
         "description": "Resume a stopped workflow run",
         "value": "/workflow resume "
+      },
+      {
+        "id": "workflow-terminal",
+        "label": "terminal",
+        "description": "Open the shared workflow console",
+        "value": "/workflow terminal "
       },
       {
         "id": "workflow-pane",
@@ -198,6 +264,44 @@
         ]
       },
       {
+        "id": "workflow-watchdog",
+        "label": "watchdog",
+        "description": "Manage interval workflow watchdogs",
+        "value": "/workflow watchdog ",
+        "children": [
+          {
+            "id": "workflow-watchdog-add",
+            "label": "add",
+            "description": "Create an interval workflow watchdog",
+            "value": "/workflow watchdog add "
+          },
+          {
+            "id": "workflow-watchdog-list",
+            "label": "list",
+            "description": "List workflow watchdogs",
+            "value": "/workflow watchdog list "
+          },
+          {
+            "id": "workflow-watchdog-enable",
+            "label": "enable",
+            "description": "Enable a workflow watchdog",
+            "value": "/workflow watchdog enable "
+          },
+          {
+            "id": "workflow-watchdog-disable",
+            "label": "disable",
+            "description": "Disable a workflow watchdog",
+            "value": "/workflow watchdog disable "
+          },
+          {
+            "id": "workflow-watchdog-remove",
+            "label": "remove",
+            "description": "Remove a workflow watchdog",
+            "value": "/workflow watchdog remove "
+          }
+        ]
+      },
+      {
         "id": "workflow-alias",
         "label": "alias",
         "description": "Assign an alias to an existing workflow",
@@ -234,6 +338,12 @@
             "value": "/workflow node can-complete-run "
           },
           {
+            "id": "workflow-node-can-emit-intermediate-output",
+            "label": "can-emit-intermediate-output",
+            "description": "Allow a node to emit intermediate workflow output",
+            "value": "/workflow node can-emit-intermediate-output "
+          },
+          {
             "id": "workflow-node-wait-for-all-inputs",
             "label": "wait-for-all-inputs",
             "description": "Wait until every incoming edge has a same-iteration input",
@@ -244,6 +354,38 @@
             "label": "max-turns",
             "description": "Set the node turn budget for one workflow run",
             "value": "/workflow node max-turns "
+          },
+          {
+            "id": "workflow-node-intermediate-output-schema",
+            "label": "intermediate-output-schema",
+            "description": "Set the node intermediate output schema",
+            "value": "/workflow node intermediate-output-schema "
+          },
+          {
+            "id": "workflow-node-extensions",
+            "label": "extensions",
+            "description": "List extensions available to a workflow node",
+            "value": "/workflow node extensions "
+          },
+          {
+            "id": "workflow-node-extension",
+            "label": "extension",
+            "description": "Grant or revoke a workflow node extension",
+            "value": "/workflow node extension ",
+            "children": [
+              {
+                "id": "workflow-node-extension-grant",
+                "label": "grant",
+                "description": "Grant an extension to a workflow node",
+                "value": "/workflow node extension grant "
+              },
+              {
+                "id": "workflow-node-extension-revoke",
+                "label": "revoke",
+                "description": "Revoke an extension from a workflow node",
+                "value": "/workflow node extension revoke "
+              }
+            ]
           },
           {
             "id": "workflow-node-instructions",
@@ -328,6 +470,18 @@
             "label": "bind",
             "description": "Bind an endpoint to a workflow node",
             "value": "/workflow endpoint bind "
+          },
+          {
+            "id": "workflow-endpoint-rebind",
+            "label": "rebind",
+            "description": "Rebind an endpoint to another workflow node",
+            "value": "/workflow endpoint rebind "
+          },
+          {
+            "id": "workflow-endpoint-remove",
+            "label": "remove",
+            "description": "Remove a workflow endpoint",
+            "value": "/workflow endpoint remove "
           }
         ]
       },
@@ -344,10 +498,78 @@
         ],
         "children": [
           {
+            "id": "workflow-code-validate",
+            "label": "validate",
+            "description": "Validate workflow-code without applying it",
+            "value": "/workflow code validate "
+          },
+          {
+            "id": "workflow-code-apply",
+            "label": "apply",
+            "description": "Compile and apply workflow-code",
+            "value": "/workflow code apply "
+          },
+          {
+            "id": "workflow-code-run",
+            "label": "run",
+            "description": "Compile, apply, and invoke workflow-code",
+            "value": "/workflow code run "
+          },
+          {
+            "id": "workflow-code-save",
+            "label": "save",
+            "description": "Save workflow-code as a reusable artifact",
+            "value": "/workflow code save "
+          },
+          {
+            "id": "workflow-code-artifact",
+            "label": "artifact",
+            "description": "Inspect and run saved workflow-code artifacts",
+            "value": "/workflow code artifact ",
+            "children": [
+              {
+                "id": "workflow-code-artifact-list",
+                "label": "list",
+                "description": "List saved workflow-code artifacts",
+                "value": "/workflow code artifact list"
+              },
+              {
+                "id": "workflow-code-artifact-get",
+                "label": "get",
+                "description": "Inspect a saved workflow-code artifact",
+                "value": "/workflow code artifact get "
+              },
+              {
+                "id": "workflow-code-artifact-delete",
+                "label": "delete",
+                "description": "Delete a saved workflow-code artifact",
+                "value": "/workflow code artifact delete "
+              },
+              {
+                "id": "workflow-code-artifact-apply",
+                "label": "apply",
+                "description": "Apply a saved workflow-code artifact",
+                "value": "/workflow code artifact apply "
+              },
+              {
+                "id": "workflow-code-artifact-run",
+                "label": "run",
+                "description": "Apply and invoke a saved workflow-code artifact",
+                "value": "/workflow code artifact run "
+              }
+            ]
+          },
+          {
             "id": "workflow-code-package-export",
             "label": "package export",
             "description": "Download a saved workflow-code artifact as a portable package JSON; append artifact name and --out file",
             "value": "/workflow code package export "
+          },
+          {
+            "id": "workflow-code-package-import",
+            "label": "package import",
+            "description": "Import a portable workflow-code package JSON",
+            "value": "/workflow code package import "
           },
           {
             "id": "workflow-code-source-export",
@@ -403,7 +625,27 @@
             "id": "workflow-publication-config",
             "label": "config",
             "description": "Show, set, or clear provider bindings in an exported publication package",
-            "value": "/workflow publication config "
+            "value": "/workflow publication config ",
+            "children": [
+              {
+                "id": "workflow-publication-config-show",
+                "label": "show",
+                "description": "Show provider bindings in an exported publication package",
+                "value": "/workflow publication config show "
+              },
+              {
+                "id": "workflow-publication-config-set",
+                "label": "set",
+                "description": "Set a provider binding in an exported publication package",
+                "value": "/workflow publication config set "
+              },
+              {
+                "id": "workflow-publication-config-clear",
+                "label": "clear",
+                "description": "Clear a provider binding in an exported publication package",
+                "value": "/workflow publication config clear "
+              }
+            ]
           },
           {
             "id": "workflow-publication-disable",
@@ -442,6 +684,12 @@
             "label": "add from workflow",
             "description": "Register a canvas workflow by name; append name and workflow ref",
             "value": "/workflow registry add-from-workflow "
+          },
+          {
+            "id": "workflow-registry-add",
+            "label": "add",
+            "description": "Register workflow-code from a file or source directory",
+            "value": "/workflow registry add "
           },
           {
             "id": "workflow-registry-load",

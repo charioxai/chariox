@@ -83,12 +83,12 @@ mod tests {
     use crate::attachment::ClientCapabilityLevel;
     use crate::local::{
         AckMetaagentEventsRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,
-        AddWorkflowNodeRequest, AliasSessionRequest, AttachToSessionRequest,
-        AttachWorkspaceLinkRequest, CancelActivePromptRequest, CancelQueuedPromptRequest,
-        CompletePromptRequest, CreateWorkflowEndpointRequest, CreateWorkflowRequest,
-        CreateWorkspaceLinkRequest, CycleAgentFocusRequest, DeleteKernelRequest,
-        DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest, EndSessionRequest,
-        FocusAgentRequest, GetDaemonHealthRequest, GetMetaagentTurnBlobRequest,
+        AddWorkflowNodeRequest, AliasSessionRequest, ApplyWorkflowDesignOpRequest,
+        AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
+        CancelQueuedPromptRequest, CompletePromptRequest, CreateWorkflowEndpointRequest,
+        CreateWorkflowRequest, CreateWorkspaceLinkRequest, CycleAgentFocusRequest,
+        DeleteKernelRequest, DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest,
+        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetMetaagentTurnBlobRequest,
         GetMetaagentTurnOverviewRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
         GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionStateRequest,
         GetWorkspaceLiveSyncStatusRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
@@ -99,7 +99,8 @@ mod tests {
         RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
         ResolveWorkflowRequest, RunShellCapabilityRequest, SearchMetaagentCommandsRequest,
         SpawnAgentRequest, SteerQueuedPromptRequest, SubmitPromptRequest,
-        TeardownProviderProcessesRequest, UpdateSessionConfigRequest,
+        TeardownProviderProcessesRequest, UpdateSessionConfigRequest, WorkflowDesignEdge,
+        WorkflowDesignEndpoint, WorkflowDesignNode, WorkflowDesignNodePatch, WorkflowDesignOp,
     };
     use crate::provider::{
         LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,

@@ -66,6 +66,39 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         message: &str,
     ) -> Result<(), DaemonError> {
+        self.workflow_fail_provider_prompt_with_queue_advance(
+            session_id,
+            prompt,
+            provider_run_id,
+            message,
+            true,
+        )
+    }
+
+    pub(super) fn workflow_fail_provider_prompt_without_queue_advance(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        self.workflow_fail_provider_prompt_with_queue_advance(
+            session_id,
+            prompt,
+            provider_run_id,
+            message,
+            false,
+        )
+    }
+
+    fn workflow_fail_provider_prompt_with_queue_advance(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        message: &str,
+        advance_queue: bool,
+    ) -> Result<(), DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
         else {
@@ -102,7 +135,9 @@ impl KernelRuntimeOwnedState {
                 message
             ),
         );
-        self.workflow_maybe_start_next_queued_prompt(session_id);
+        if advance_queue {
+            self.workflow_maybe_start_next_queued_prompt(session_id);
+        }
         self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
         Ok(())
     }

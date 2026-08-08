@@ -61,6 +61,7 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::CreateAgentRequest;
     use crate::app::KernelSessionService;
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::DaemonConfig;
@@ -214,6 +215,371 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    #[tokio::test]
+    async fn failed_launch_settles_all_queued_workflow_nodes_and_advances_once() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-workflow-launch-failure",
+                "worktree-workflow-launch-failure",
+            ))
+            .expect("session should create");
+        let source = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-workflow-launch-failure",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("source attachment should attach");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("workflow-launch-failure"),
+            )
+            .expect("workflow agent should create");
+        let followup_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("workflow-launch-followup"),
+            )
+            .expect("followup agent should create");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("launch-failure".to_string()))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), workflow_agent.id())
+            .expect("workflow node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should create");
+        let first_workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("run first queued workflow node".to_string()),
+            )
+            .expect("first workflow run should create");
+        let first_workflow_node_run_id = first_workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                first_workflow_run.id(),
+                &first_workflow_node_run_id,
+                format!("workflow-ack:{first_workflow_node_run_id}"),
+                "run first queued workflow node".to_string(),
+                None,
+                None,
+            )
+            .expect("first workflow turn should prepare");
+        let second_workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("run second queued workflow node".to_string()),
+            )
+            .expect("second workflow run should create");
+        let second_workflow_node_run_id = second_workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                second_workflow_run.id(),
+                &second_workflow_node_run_id,
+                format!("workflow-ack:{second_workflow_node_run_id}"),
+                "run second queued workflow node".to_string(),
+                None,
+                None,
+            )
+            .expect("second workflow turn should prepare");
+
+        let followup_workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("launch-followup".to_string()))
+            .expect("followup workflow should create");
+        let followup_node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), followup_workflow.id(), followup_agent.id())
+            .expect("followup node should create");
+        let followup_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                followup_workflow.id(),
+                followup_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("followup endpoint should create");
+        let first_queued_followup = app
+            .sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                followup_workflow.id(),
+                followup_endpoint.id(),
+                Some("queued followup one".to_string()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("first followup should queue");
+        let second_queued_followup = app
+            .sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                followup_workflow.id(),
+                followup_endpoint.id(),
+                Some("queued followup two".to_string()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("second followup should queue");
+
+        let followup_provider_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(followup_agent.id()),
+            )
+            .expect("followup provider should be available without a background launch");
+        app.update_provider_run_projection(followup_provider_run);
+        let followup_active_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let PromptSubmissionOutcome::Started {
+            prompt: followup_active_prompt,
+        } = app
+            .prompt_owner_submit_prepared_prompt(
+                session.id(),
+                PromptQueueItem::new(
+                    followup_active_prompt_id,
+                    source.id(),
+                    followup_agent.id(),
+                    "keep followup agent busy",
+                    PromptStatus::Queued,
+                ),
+                false,
+            )
+            .expect("followup active prompt should submit")
+        else {
+            panic!("followup prompt should start");
+        };
+
+        let session_id = session.id().to_string();
+        let first_workflow_run_id = first_workflow_run.id().to_string();
+        let second_workflow_run_id = second_workflow_run.id().to_string();
+        let workflow_agent_id = workflow_agent.id().to_string();
+        let followup_agent_id = followup_agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let first_workflow_prompt = PromptQueueItem::new(
+            "pending-workflow-launch-failure-first",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(&first_workflow_run_id),
+            &workflow_agent_id,
+            "run first queued workflow node",
+            PromptStatus::Queued,
+        )
+        .with_workflow_context(&first_workflow_run_id, &first_workflow_node_run_id);
+        let dispatches = runtime
+            .owned
+            .workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: first_workflow_prompt,
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                &first_workflow_run_id,
+                &first_workflow_node_run_id,
+            )
+            .expect("first workflow prompt should queue while its provider starts");
+        assert_eq!(dispatches.starting_provider_runs.len(), 1);
+        let provider_run = runtime
+            .owned
+            .provider_store
+            .get_run(&dispatches.starting_provider_runs[0])
+            .expect("starting provider run should resolve");
+        assert_eq!(
+            provider_run.state(),
+            crate::provider::ProviderRunState::Starting
+        );
+
+        let normal_submission = runtime
+            .owned
+            .submit_local_prepared_prompt(&crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending-normal-launch-failure",
+                    source.id(),
+                    &workflow_agent_id,
+                    "preserve normal queued prompt",
+                    PromptStatus::Queued,
+                ),
+                force_queue: true,
+                refresh_projection: true,
+            })
+            .expect("normal prompt should submit locally")
+            .expect("normal prompt should use the local provider");
+        let PromptSubmissionOutcome::Queued {
+            prompt: normal_prompt,
+        } = normal_submission.outcome
+        else {
+            panic!("normal prompt should remain queued while the provider starts");
+        };
+        let second_workflow_prompt = PromptQueueItem::new(
+            "pending-workflow-launch-failure-second",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+                &second_workflow_run_id,
+            ),
+            &workflow_agent_id,
+            "run second queued workflow node",
+            PromptStatus::Queued,
+        )
+        .with_workflow_context(&second_workflow_run_id, &second_workflow_node_run_id);
+        let second_dispatches = runtime
+            .owned
+            .workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: second_workflow_prompt,
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                &second_workflow_run_id,
+                &second_workflow_node_run_id,
+            )
+            .expect("second workflow prompt should queue while its provider starts");
+        assert_eq!(
+            second_dispatches.starting_provider_runs,
+            vec![provider_run.id().to_string()]
+        );
+
+        let queued_before_failure = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should resolve before launch failure"),
+                &workflow_agent_id,
+            )
+            .1;
+        assert_eq!(queued_before_failure.len(), 3);
+        let mut queued_workflow_run_ids = queued_before_failure
+            .iter()
+            .filter_map(|prompt| prompt.workflow_run_id())
+            .collect::<Vec<_>>();
+        queued_workflow_run_ids.sort_unstable();
+        let mut expected_workflow_run_ids = vec![
+            first_workflow_run_id.as_str(),
+            second_workflow_run_id.as_str(),
+        ];
+        expected_workflow_run_ids.sort_unstable();
+        assert_eq!(queued_workflow_run_ids, expected_workflow_run_ids);
+        assert_eq!(
+            queued_before_failure
+                .iter()
+                .filter(|prompt| prompt.id() == normal_prompt.id())
+                .count(),
+            1
+        );
+
+        runtime
+            .fail_provider_launch(
+                &crate::app::StartedProviderLaunch {
+                    run: provider_run,
+                    previous_active_run_id: None,
+                },
+                &DaemonError::LocalTransport {
+                    operation: "initialize workflow provider runtime",
+                    message: "provider health check failed".to_string(),
+                },
+            )
+            .await;
+
+        let failed_session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("failed workflow session should resolve");
+        for workflow_run_id in [&first_workflow_run_id, &second_workflow_run_id] {
+            let failed_run = failed_session
+                .workflow_run(workflow_run_id)
+                .expect("failed workflow run should resolve");
+            assert_eq!(
+                failed_run.status(),
+                crate::session::WorkflowRunStatus::Failed
+            );
+            assert_eq!(
+                failed_run.node_runs()[0].status(),
+                crate::session::WorkflowNodeRunStatus::Failed
+            );
+            assert!(failed_run.failure_events().iter().any(|event| {
+                event.kind() == crate::session::WorkflowFailureKind::ProviderFailure
+            }));
+        }
+
+        let (active_prompt, queued_after_failure) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&failed_session, &workflow_agent_id);
+        assert!(active_prompt.is_none());
+        assert_eq!(queued_after_failure.len(), 1);
+        assert_eq!(queued_after_failure[0].id(), normal_prompt.id());
+        assert!(queued_after_failure[0].workflow_run_id().is_none());
+
+        let advanced_runs = failed_session
+            .workflow_runs()
+            .iter()
+            .filter(|run| run.invocation_prompt() == Some("queued followup one"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            advanced_runs.len(),
+            1,
+            "launch failure should advance exactly one queued workflow invocation"
+        );
+        assert_eq!(failed_session.workflow_queued_prompts().len(), 1);
+        assert_eq!(
+            failed_session.workflow_queued_prompts()[0].id(),
+            second_queued_followup.id()
+        );
+        assert_ne!(
+            failed_session.workflow_queued_prompts()[0].id(),
+            first_queued_followup.id()
+        );
+        let (followup_active, followup_queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&failed_session, &followup_agent_id);
+        assert_eq!(
+            followup_active.as_ref().map(|prompt| prompt.id()),
+            Some(followup_active_prompt.id())
+        );
+        assert_eq!(
+            followup_queued
+                .iter()
+                .filter_map(|prompt| prompt.workflow_run_id())
+                .collect::<Vec<_>>(),
+            vec![advanced_runs[0].id()]
+        );
     }
 
     async fn runtime_with_active_prompt(

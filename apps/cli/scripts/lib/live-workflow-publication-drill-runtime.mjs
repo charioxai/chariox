@@ -37,6 +37,36 @@ export function withPublicationDrillProviderInventory(env) {
   return { ...env, ARROBA_PROVIDER_DEV_STUB: '1' }
 }
 
+export function secureGatewayPublicationEnvs(env, {
+  host,
+  port,
+  kernelUrl,
+  tls,
+  humanHttp,
+  websocket,
+}) {
+  const common = {
+    ...env,
+    HOST: host,
+    PORT: String(port),
+    ARROBA_KERNEL_URL: kernelUrl,
+    ARROBA_PUBLICATION_TLS_KEY_FILE: tls.keyFile,
+    ARROBA_PUBLICATION_TLS_CERT_FILE: tls.certFile,
+  }
+  return {
+    https: {
+      ...common,
+      ARROBA_PUBLICATION_SESSION_ID: humanHttp.sessionId,
+      ARROBA_PUBLICATION_ID: humanHttp.publicationId,
+    },
+    wss: {
+      ...common,
+      ARROBA_PUBLICATION_SESSION_ID: websocket.sessionId,
+      ARROBA_PUBLICATION_ID: websocket.publicationId,
+    },
+  }
+}
+
 export function realDashboardOptionsFromEnv() {
   if (!envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD')) return null
   const provider = process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_PROVIDER || 'codex'

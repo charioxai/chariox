@@ -1,42 +1,16 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { LocalIpcClient, applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createSessionRequest, endSessionRequest, importWorkflowCodePackageRequest, installSkillRequest, runWorkflowCodeArtifactRequest, runWorkflowCodeRequest, uninstallSkillRequest, validateWorkflowCodeRequest } from '@arroba/kernel-client'
 import { assertHetznerArrobaBinaries, runHetznerCommand, shellQuote } from './native-tui-remote-execution.mjs'
-import { assert, buildKernel, expectationFromDefinition, rebindingsForDefinition, repoRoot, sleep, spawnedKernel, topologyRuntimeExpectation, unwrap, waitForKernel } from './workflow-code-artifact-drill-runtime.mjs'
+import { assert, buildKernel, expectationFromDefinition, rebindingsForDefinition, repoRoot, sha256Hex, sleep, spawnedKernel, topologyRuntimeExpectation, unwrap, waitForKernel, writeSourceDirectoryExport } from './workflow-code-artifact-drill-runtime.mjs'
 import { completeAppliedTopologyWorkflow, validateApplyResult, validateLiveExportedTopologyDefinition, validateSessionProjection } from './workflow-code-artifact-drill-topology.mjs'
 import { remoteWorkflowCodeRunnerSource } from './workflow-code-artifact-drill-remote-runner.mjs'
 
 const execFileAsync = promisify(execFile)
 
-export async function writeSourceDirectoryExport(workspace, exportResult, label) {
-  const files = exportResult.files ?? []
-  assert(files.some((file) => file.path === 'workflow.js'), `${label} source directory should include workflow.js`, exportResult)
-  const manifestFile = files.find((file) => file.path === 'manifest.json')
-  assert(manifestFile, `${label} source directory should include manifest.json`, exportResult)
-  for (const file of files) {
-    assert(sha256Hex(file.contents) === file.sha256, `${label} source directory file hash mismatch for ${file.path}`, file)
-    const target = path.join(workspace, file.path)
-    await mkdir(path.dirname(target), { recursive: true })
-    await writeFile(target, file.contents, 'utf8')
-  }
-  const manifest = JSON.parse(manifestFile.contents)
-  assert(manifest.source_path === 'workflow.js', `${label} manifest source_path should be workflow.js`, manifest)
-  assert(manifest.source_sha256 === exportResult.source_sha256, `${label} manifest source hash should match export`, {
-    manifest,
-    exportResult,
-  })
-  assert(manifest.definition_sha256 === exportResult.definition_sha256, `${label} manifest definition hash should match export`, {
-    manifest,
-    exportResult,
-  })
-  return manifest
-}
-
-export function sha256Hex(value) {
-  return createHash('sha256').update(value).digest('hex')
-}
+export { sha256Hex, writeSourceDirectoryExport }
 
 export function validateArtifactHistory(artifact, expectedActions) {
   const actions = (artifact?.metadata?.history ?? []).map((entry) => entry.action)

@@ -393,6 +393,94 @@ test("executeShellCommand manages workflow graph and endpoints", async () => {
   ])
 })
 
+test("executeShellCommand forwards workflow node additions as design ops for TUI clients", async () => {
+  const workflow = makeWorkflow({
+    nodes: [{ id: "node-1", agent_id: "agent-1" }],
+  })
+  const requests: Record<string, unknown>[] = []
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        requests.push(request)
+        if ("ListAgents" in request) {
+          return {
+            AgentsListed: {
+              agents: [
+                makeAgent(),
+                makeAgent({ id: "agent-2", agent_ref: "agent-2", alias: "reviewer" }),
+              ],
+            },
+          }
+        }
+        if ("ResolveWorkflow" in request) {
+          return { WorkflowResolved: { workflow } }
+        }
+        if ("ApplyWorkflowDesignOp" in request) {
+          const designRequest = request.ApplyWorkflowDesignOp as {
+            op: { kind: "node_add"; workflow_id: string; node: { id: string; agent_id: string } }
+          }
+          const node = designRequest.op.node
+          const updatedWorkflow = { ...workflow, nodes: [...(workflow.nodes ?? []), node] }
+          const session = makeSession({ workflows: [updatedWorkflow] })
+          return {
+            WorkflowDesignOpAccepted: {
+              event: {
+                session_id: "session-1",
+                origin_client_id: "cli-1",
+                op_id: "shell-test",
+                kernel_sequence: 1,
+                op: designRequest.op,
+              },
+              session,
+            },
+          }
+        }
+        throw new Error("TUI workflow node additions must not use the legacy request")
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/repo",
+    worktree: "/repo",
+    sessionId: "session-1",
+    workflowId: "workflow-1",
+  })
+
+  const result = await executeShellCommand(
+    parseShellCommand("workflow node add reviewer as node"),
+    context,
+    { client: fake.client, clientId: "cli-1" },
+  )
+
+  assert.equal(result.ok, true)
+  const nodeId = result.bindings?.node
+  assert.match(result.message ?? "", /added workflow node node-/)
+  assert.match(nodeId ?? "", /^node-[0-9a-f]{16}$/)
+  assert.deepEqual(result.bindings, { node: nodeId })
+  assert.deepEqual(result.contextUpdates, { workflowId: "workflow-1", sessionId: "session-1", agentId: "agent-1" })
+  assert.deepEqual(requests[0], { ListAgents: { session_id: "session-1" } })
+  assert.deepEqual(requests[1], { ResolveWorkflow: { session_id: "session-1", workflow_ref: "workflow-1" } })
+  const designRequest = requests[2] as {
+    ApplyWorkflowDesignOp?: {
+      session_id?: string
+      origin_client_id?: string
+      op_id?: string
+      op?: { kind: string; workflow_id: string; node: { id: string; agent_id: string } }
+    }
+  }
+  assert.equal(designRequest.ApplyWorkflowDesignOp?.session_id, "session-1")
+  assert.equal(designRequest.ApplyWorkflowDesignOp?.origin_client_id, "cli-1")
+  assert.match(designRequest.ApplyWorkflowDesignOp?.op_id ?? "", /^shell-/)
+  assert.deepEqual(designRequest.ApplyWorkflowDesignOp?.op, {
+    kind: "node_add",
+    workflow_id: "workflow-1",
+    node: {
+      id: nodeId,
+      agent_id: "agent-2",
+    },
+  })
+})
+
 test("executeShellCommand manages workflow node instructions from shell", async () => {
   const root = await mkdtemp(join(tmpdir(), "arroba-workflow-instructions-"))
   try {

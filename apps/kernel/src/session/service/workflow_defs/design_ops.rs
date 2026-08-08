@@ -8,11 +8,33 @@ impl SessionService {
         op: crate::local::WorkflowDesignOp,
         owner_user_id: String,
     ) -> Result<WorkflowDefinition, DaemonError> {
+        self.apply_workflow_design_op_with_authority(session_id, op, owner_user_id, None, None)
+    }
+
+    pub(crate) fn apply_workflow_design_op_with_authority(
+        &mut self,
+        session_id: &str,
+        op: crate::local::WorkflowDesignOp,
+        caller_user_id: String,
+        node_owner_user_id: Option<String>,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowDefinition, DaemonError> {
         match op {
             crate::local::WorkflowDesignOp::WorkflowCreate { workflow } => {
                 let alias =
                     self.workflow_alias_for_create(session_id, workflow.alias, "workflow")?;
+                if self
+                    .store
+                    .get(session_id)
+                    .is_some_and(|session| session.workflow(&workflow.id).is_some())
+                {
+                    return Err(workflow_design_conflict(format!(
+                        "workflow id `{}` already exists",
+                        workflow.id
+                    )));
+                }
                 let mut definition = WorkflowDefinition::new(workflow.id, alias);
+                definition.set_controlled_by_metaagent_id(controlled_by_metaagent_id);
                 definition.set_prompt(workflow.prompt);
                 if let Some(value) = workflow.flush_agent_context_before_run {
                     definition.set_flush_agent_context_before_run(value);
@@ -232,9 +254,29 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                let mut definition = WorkflowNodeDefinition::new(node.id.clone(), node.agent_id);
-                definition.set_owner_user_id(owner_user_id.clone());
-                definition.set_created_by_user_id(owner_user_id);
+                if workflow.node(&node.id).is_some() {
+                    return Err(workflow_design_conflict(format!(
+                        "node id `{}` already exists",
+                        node.id
+                    )));
+                }
+                if workflow
+                    .nodes()
+                    .iter()
+                    .any(|candidate| candidate.agent_id() == node.agent_id)
+                {
+                    return Err(DaemonError::WorkflowNodeConflict {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        agent_id: node.agent_id,
+                    });
+                }
+                let mut definition =
+                    WorkflowNodeDefinition::new(node.id.clone(), node.agent_id.clone());
+                definition.set_owner_user_id(
+                    node_owner_user_id.unwrap_or_else(|| caller_user_id.clone()),
+                );
+                definition.set_created_by_user_id(caller_user_id);
                 if let Some(label) = node.label {
                     definition.set_public_label(label);
                 }
@@ -349,6 +391,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
+                if workflow.node(&node_id).is_none() {
+                    return Err(DaemonError::WorkflowNodeNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        node_id,
+                    });
+                }
                 workflow.set_node_position(
                     node_id,
                     WorkflowCanvasPoint {
@@ -378,7 +427,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                workflow.remove_node(&node_id);
+                workflow.remove_node(&node_id).ok_or_else(|| {
+                    DaemonError::WorkflowNodeNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        node_id,
+                    }
+                })?;
                 Ok(workflow.clone())
             }
             crate::local::WorkflowDesignOp::EdgeAdd { workflow_id, edge } => {
@@ -398,6 +453,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
+                if workflow.edge(&edge.id).is_some() {
+                    return Err(workflow_design_conflict(format!(
+                        "edge id `{}` already exists",
+                        edge.id
+                    )));
+                }
+                validate_workflow_design_edge(session_id, &workflow_id, workflow, &edge)?;
                 let mut definition = WorkflowEdgeDefinition::new_with_sides(
                     edge.id,
                     edge.from_node_id,
@@ -407,7 +469,7 @@ impl SessionService {
                     edge.handoff_schema_ref,
                     edge.validation_policy,
                 );
-                definition.set_created_by_user_id(owner_user_id);
+                definition.set_created_by_user_id(caller_user_id);
                 workflow.add_edge(definition);
                 Ok(workflow.clone())
             }
@@ -468,7 +530,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                workflow.remove_edge(&edge_id);
+                workflow.remove_edge(&edge_id).ok_or_else(|| {
+                    DaemonError::WorkflowEdgeNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        edge_id,
+                    }
+                })?;
                 Ok(workflow.clone())
             }
             crate::local::WorkflowDesignOp::EndpointAdd {
@@ -496,12 +564,25 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
+                if workflow.endpoint(&endpoint.id).is_some() {
+                    return Err(workflow_design_conflict(format!(
+                        "endpoint id `{}` already exists",
+                        endpoint.id
+                    )));
+                }
+                ensure_workflow_design_node_exists(
+                    session_id,
+                    &workflow_id,
+                    workflow,
+                    &endpoint.entry_node_id,
+                    "entry node does not exist",
+                )?;
                 let mut definition = WorkflowEndpointDefinition::new(
                     endpoint.id.clone(),
                     alias,
                     endpoint.entry_node_id,
                 );
-                definition.set_owner_user_id(owner_user_id);
+                definition.set_owner_user_id(caller_user_id);
                 workflow.add_endpoint(definition);
                 if let Some(point) = position {
                     workflow.set_endpoint_position(
@@ -550,6 +631,15 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
+                if let Some(entry_node_id) = patch.entry_node_id.as_deref() {
+                    ensure_workflow_design_node_exists(
+                        session_id,
+                        &workflow_id,
+                        workflow,
+                        entry_node_id,
+                        "entry node does not exist",
+                    )?;
+                }
                 let endpoint = workflow.endpoint_mut(&endpoint_id).ok_or_else(|| {
                     DaemonError::WorkflowEndpointNotFound {
                         session_id: session_id.to_string(),
@@ -587,6 +677,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
+                if workflow.endpoint(&endpoint_id).is_none() {
+                    return Err(DaemonError::WorkflowEndpointNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        endpoint_id,
+                    });
+                }
                 workflow.set_endpoint_position(
                     endpoint_id,
                     WorkflowCanvasPoint {
@@ -616,7 +713,13 @@ impl SessionService {
                         workflow_id: workflow_id.clone(),
                     }
                 })?;
-                workflow.remove_endpoint(&endpoint_id);
+                workflow.remove_endpoint(&endpoint_id).ok_or_else(|| {
+                    DaemonError::WorkflowEndpointNotFound {
+                        session_id: session_id.to_string(),
+                        workflow_id: workflow_id.clone(),
+                        endpoint_id,
+                    }
+                })?;
                 Ok(workflow.clone())
             }
         }
@@ -646,4 +749,69 @@ fn workflow_design_schema_error(message: String) -> DaemonError {
         operation: "apply_workflow_design_op",
         message,
     }
+}
+
+fn workflow_design_conflict(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "apply_workflow_design_op",
+        message,
+    }
+}
+
+fn ensure_workflow_design_node_exists(
+    session_id: &str,
+    workflow_id: &str,
+    workflow: &WorkflowDefinition,
+    node_id: &str,
+    message: &'static str,
+) -> Result<(), DaemonError> {
+    if workflow.node(node_id).is_some() {
+        Ok(())
+    } else {
+        Err(DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.to_string(),
+            reference: node_id.to_string(),
+            message,
+        })
+    }
+}
+
+fn validate_workflow_design_edge(
+    session_id: &str,
+    workflow_id: &str,
+    workflow: &WorkflowDefinition,
+    edge: &crate::local::WorkflowDesignEdge,
+) -> Result<(), DaemonError> {
+    ensure_workflow_design_node_exists(
+        session_id,
+        workflow_id,
+        workflow,
+        &edge.from_node_id,
+        "source node does not exist",
+    )?;
+    ensure_workflow_design_node_exists(
+        session_id,
+        workflow_id,
+        workflow,
+        &edge.to_node_id,
+        "target node does not exist",
+    )?;
+    if edge.from_node_id == edge.to_node_id {
+        return Err(DaemonError::InvalidWorkflowGraphReference {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.to_string(),
+            reference: edge.from_node_id.clone(),
+            message: "source and target nodes must be different",
+        });
+    }
+    if workflow.has_edge(&edge.from_node_id, &edge.to_node_id) {
+        return Err(DaemonError::WorkflowEdgeConflict {
+            session_id: session_id.to_string(),
+            workflow_id: workflow_id.to_string(),
+            from_node_id: edge.from_node_id.clone(),
+            to_node_id: edge.to_node_id.clone(),
+        });
+    }
+    Ok(())
 }

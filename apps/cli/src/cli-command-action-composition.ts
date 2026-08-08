@@ -235,9 +235,11 @@ export type CliCommandActionCompositionDeps = {
   listWorkflows: AnyFn
   resolveWorkflow: AnyFn
   assignWorkflowAlias: AnyFn
+  deleteWorkflow: AnyFn
   createWorkflowEndpoint: AnyFn
   assignWorkflowEndpointAlias: AnyFn
   bindWorkflowEndpoint: AnyFn
+  removeWorkflowEndpoint: AnyFn
   addWorkflowNode: AnyFn
   removeWorkflowNode: AnyFn
   addWorkflowEdge: AnyFn
@@ -250,6 +252,14 @@ export type CliCommandActionCompositionDeps = {
   setWorkflowNodeMaxTurns: AnyFn
   invokeWorkflowEndpoint: AnyFn
   runWorkflowRegistryEntry: AnyFn
+  listWorkflowPromptQueues: AnyFn
+  createWorkflowPromptQueue: AnyFn
+  updateWorkflowPromptQueue: AnyFn
+  removeWorkflowPromptQueue: AnyFn
+  listQueuedWorkflowPrompts: AnyFn
+  updateQueuedWorkflowPrompt: AnyFn
+  removeQueuedWorkflowPrompt: AnyFn
+  clearWorkflowPromptQueue: AnyFn
   createWorkflowWatchdog: AnyFn
   listWorkflowWatchdogs: AnyFn
   setWorkflowWatchdogEnabled: AnyFn
@@ -261,7 +271,9 @@ export type CliCommandActionCompositionDeps = {
   setWorkflowFlushContext: AnyFn
   setWorkflowRunOutputSchema: AnyFn
   listWorkflowRuns: AnyFn
+  getWorkflowRun: AnyFn
   cancelWorkflowRun: AnyFn
+  pauseWorkflowRun: AnyFn
   resumeWorkflowRun: AnyFn
   refreshSplitPaneFocusRepaint: AnyFn
 }
@@ -335,9 +347,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
+    deleteWorkflow,
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,
     addWorkflowEdge,
@@ -350,6 +364,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
     runWorkflowRegistryEntry,
+    listWorkflowPromptQueues,
+    createWorkflowPromptQueue,
+    updateWorkflowPromptQueue,
+    removeWorkflowPromptQueue,
+    listQueuedWorkflowPrompts,
+    updateQueuedWorkflowPrompt,
+    removeQueuedWorkflowPrompt,
+    clearWorkflowPromptQueue,
     createWorkflowWatchdog,
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
@@ -361,7 +383,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     listWorkflowRuns,
+    getWorkflowRun,
     cancelWorkflowRun,
+    pauseWorkflowRun,
     resumeWorkflowRun,
     refreshSplitPaneFocusRepaint,
   } = deps
@@ -799,9 +823,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     listWorkflows,
     resolveWorkflow,
     assignWorkflowAlias,
+    deleteWorkflow,
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,
     addWorkflowEdge,
@@ -814,6 +840,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowNodeMaxTurns,
     invokeWorkflowEndpoint,
     runWorkflowRegistryEntry,
+    listWorkflowPromptQueues,
+    createWorkflowPromptQueue,
+    updateWorkflowPromptQueue,
+    removeWorkflowPromptQueue,
+    listQueuedWorkflowPrompts,
+    updateQueuedWorkflowPrompt,
+    removeQueuedWorkflowPrompt,
+    clearWorkflowPromptQueue,
     createWorkflowWatchdog,
     listWorkflowWatchdogs,
     setWorkflowWatchdogEnabled,
@@ -825,7 +859,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     setWorkflowFlushContext,
     setWorkflowRunOutputSchema,
     listWorkflowRuns,
+    getWorkflowRun,
     cancelWorkflowRun,
+    pauseWorkflowRun,
     resumeWorkflowRun,
     formatAgentLabel,
     refreshSplitPaneFocusRepaint,

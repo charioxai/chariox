@@ -103,7 +103,7 @@ Use `workflow.schemaFromFile({ handle, path, alias, description })` only when th
 
 Agents complete routed fan-out by emitting final fenced JSON containing `workflow_handoffs`. Each item selects an edge by real `edge_id` or a target by real `to_node_id`. The kernel resolves real ids during apply/run and exposes them in runtime context and apply reports.
 
-For multi-edge nodes, the runtime prompt lists outgoing edge contracts with real `edge_id`, `to_node_id`, target public label, any target node instruction excerpt as `target_instructions`, handoff schema ref, and validation policy. Use that contract instead of guessing ids or reading workflow metadata from the workspace.
+For multi-edge nodes, the runtime prompt lists outgoing edge contracts with real `edge_id`, `to_node_id`, target public label, handoff schema ref, and validation policy. Downstream node instructions remain private to that node. Use the public routing contract instead of guessing ids or reading workflow metadata from the workspace.
 
 ## Extensions
 

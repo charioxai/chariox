@@ -6,52 +6,40 @@ import { createWorkflowSettingsController } from "./workflow-settings-controller
 
 test("workflow settings controller updates workflow flush context", async () => {
   const refreshedSessions: RuntimeSession[] = []
-  const nextSession = session("session-updated")
+  const nextSession = { ...session("session-updated"), workflows: [{ ...workflow(), flush_agent_context_before_run: true }] }
   const harness = createHarness({
-    SetWorkflowFlushContext: {
-      WorkflowFlushContextUpdated: {
-        workflow: workflow(),
-        session: nextSession,
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: workflow() } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   }, refreshedSessions)
 
   const payload = await harness.controller.setWorkflowFlushContext("workflow-1", true)
 
   assert.equal(payload.workflow.id, "workflow-1")
   assert.deepEqual(refreshedSessions, [nextSession])
-  assert.deepEqual(harness.requests.at(-1), {
-    SetWorkflowFlushContext: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      flush_agent_context_before_run: true,
-    },
-  })
+  assert.deepEqual(harness.designOps, [{
+    kind: "workflow_update",
+    workflow_id: "workflow-1",
+    patch: { flush_agent_context_before_run: true },
+  }])
 })
 
 test("workflow settings controller updates run output schema refs", async () => {
   const refreshedSessions: RuntimeSession[] = []
-  const nextSession = session("session-updated")
+  const nextSession = { ...session("session-updated"), workflows: [{ ...workflow(), run_output_schema_ref: "schema-1" }] }
   const harness = createHarness({
-    SetWorkflowRunOutputSchema: {
-      WorkflowRunOutputSchemaUpdated: {
-        workflow: workflow(),
-        session: nextSession,
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: workflow() } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   }, refreshedSessions)
 
   const payload = await harness.controller.setWorkflowRunOutputSchema("workflow-1", "schema-1")
 
   assert.equal(payload.workflow.id, "workflow-1")
   assert.deepEqual(refreshedSessions, [nextSession])
-  assert.deepEqual(harness.requests.at(-1), {
-    SetWorkflowRunOutputSchema: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      run_output_schema_ref: "schema-1",
-    },
-  })
+  assert.deepEqual(harness.designOps, [{
+    kind: "workflow_update",
+    workflow_id: "workflow-1",
+    patch: { run_output_schema_ref: "schema-1" },
+  }])
 })
 
 function createHarness(
@@ -59,8 +47,15 @@ function createHarness(
   refreshedSessions: RuntimeSession[],
 ) {
   const requests: Record<string, unknown>[] = []
+  const designOps: unknown[] = []
   const controller = createWorkflowSettingsController({
     sessionId: () => "session-1",
+    applyWorkflowDesignOp: async (op) => {
+      designOps.push(op)
+      const payload = responses.ApplyWorkflowDesignOp?.WorkflowDesignOpAccepted as { session: RuntimeSession } | undefined
+      if (!payload) throw new Error("missing ApplyWorkflowDesignOp response")
+      return payload
+    },
     applyWorkflowSessionRefresh: (nextSession) => {
       refreshedSessions.push(nextSession)
     },
@@ -70,7 +65,7 @@ function createHarness(
       return responses[variant] ?? {}
     },
   })
-  return { controller, requests }
+  return { controller, requests, designOps }
 }
 
 function session(id: string): RuntimeSession {

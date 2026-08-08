@@ -33,7 +33,7 @@ export async function handleWorkflowQueueCommand(
 ): Promise<void> {
   const parsed = parseWorkflowQueueArgs(args)
   if (parsed.error) {
-    deps.flashFooter("usage: /workflow queue [--workflow <workflow-ref>] [list|create|rename|priority|edit|move|remove|clear]", "error")
+    deps.flashFooter("usage: /workflow queue [--workflow <workflow-ref>] [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]", "error")
     return
   }
   const workflowRef = parsed.workflowRef ?? currentWorkflowRef(deps)
@@ -88,6 +88,36 @@ export async function handleWorkflowQueueCommand(
     const payload = await deps.updateWorkflowPromptQueue(workflowRef, queueRef, { alias })
     deps.applySessionState(payload.session)
     deps.flashFooter(`renamed workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
+    return
+  }
+  if (action === "enable" || action === "disable") {
+    const queueRef = parsed.args[2]
+    if (!queueRef) {
+      deps.flashFooter(`usage: /workflow queue ${action} [--workflow <workflow-ref>] <queue-ref>`, "error")
+      return
+    }
+    if (!deps.updateWorkflowPromptQueue) {
+      deps.flashFooter("workflow queue commands unavailable", "error")
+      return
+    }
+    const payload = await deps.updateWorkflowPromptQueue(workflowRef, queueRef, { enabled: action === "enable" })
+    deps.applySessionState(payload.session)
+    deps.flashFooter(`${action === "enable" ? "enabled" : "disabled"} workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
+    return
+  }
+  if (action === "delete") {
+    const queueRef = parsed.args[2]
+    if (!queueRef) {
+      deps.flashFooter("usage: /workflow queue delete [--workflow <workflow-ref>] <queue-ref>", "error")
+      return
+    }
+    if (!deps.removeWorkflowPromptQueue) {
+      deps.flashFooter("workflow queue commands unavailable", "error")
+      return
+    }
+    const payload = await deps.removeWorkflowPromptQueue(workflowRef, queueRef)
+    deps.applySessionState(payload.session)
+    deps.flashFooter(`deleted workflow queue ${formatWorkflowPromptQueue(payload.queue)}`, "info")
     return
   }
   if (action === "remove") {
@@ -153,7 +183,7 @@ export async function handleWorkflowQueueCommand(
     )
     return
   }
-  deps.flashFooter("usage: /workflow queue [list|create|rename|priority|edit|move|remove|clear]", "error")
+  deps.flashFooter("usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]", "error")
 }
 
 async function listQueuesAndPrompts(deps: WorkflowQueueCommandDeps, workflowRef: string | null): Promise<void> {

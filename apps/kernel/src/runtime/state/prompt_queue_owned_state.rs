@@ -205,6 +205,31 @@ impl KernelRuntimeOwnedState {
         Ok(removed)
     }
 
+    pub(super) fn take_queued_workflow_prompts_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (_, queued_prompts) = self.prompt_state_owner.state_parts(&session, agent_id);
+        let workflow_prompts = queued_prompts
+            .into_iter()
+            .filter(|prompt| prompt.workflow_run_id().is_some())
+            .collect::<Vec<_>>();
+        if workflow_prompts.is_empty() {
+            return Ok(workflow_prompts);
+        }
+        for prompt in &workflow_prompts {
+            let _ = self
+                .prompt_state_owner
+                .remove_queued_prompt(&session, agent_id, prompt.id());
+        }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(workflow_prompts)
+    }
+
     pub(super) fn remove_queued_metaagent_event_prompts_for_agent(
         &self,
         session_id: &str,

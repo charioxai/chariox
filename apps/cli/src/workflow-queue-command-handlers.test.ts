@@ -89,6 +89,39 @@ test("workflow queue command removes a queued prompt and reports missing runtime
   ])
 })
 
+test("workflow queue command enables, disables, and deletes queue definitions", async () => {
+  const harness = createHarness({
+    selectedWorkflowId: () => "workflow-1",
+    updateWorkflowPromptQueue: async (workflowRef, queueRef, patch) => {
+      harness.calls.push(`update:${workflowRef}:${queueRef}:${JSON.stringify(patch)}`)
+      return {
+        queue: queue({ id: queueRef, enabled: patch.enabled ?? true }),
+        session: runtimeSession({ id: `session-${patch.enabled ? "enabled" : "disabled"}` }),
+      }
+    },
+    removeWorkflowPromptQueue: async (workflowRef, queueRef) => {
+      harness.calls.push(`delete:${workflowRef}:${queueRef}`)
+      return { queue: queue({ id: queueRef }), session: runtimeSession({ id: "session-deleted" }) }
+    },
+  })
+
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "enable", "review"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "disable", "review"])
+  await handleWorkflowQueueCommand(harness.deps, ["queue", "delete", "review"])
+
+  assert.deepEqual(harness.calls, [
+    "update:workflow-1:review:{\"enabled\":true}",
+    "session:session-enabled",
+    "footer:info:enabled workflow queue review(default) priority=0",
+    "update:workflow-1:review:{\"enabled\":false}",
+    "session:session-disabled",
+    "footer:info:disabled workflow queue review(default) priority=0 disabled",
+    "delete:workflow-1:review",
+    "session:session-deleted",
+    "footer:info:deleted workflow queue review(default) priority=0",
+  ])
+})
+
 test("workflow queue command validates action usage", async () => {
   const harness = createHarness({})
 
@@ -97,7 +130,7 @@ test("workflow queue command validates action usage", async () => {
 
   assert.deepEqual(harness.calls, [
     "footer:error:usage: /workflow queue remove [--workflow <workflow-ref>] <queue-item-ref>",
-    "footer:error:usage: /workflow queue [list|create|rename|priority|edit|move|remove|clear]",
+    "footer:error:usage: /workflow queue [list|create|rename|priority|enable|disable|delete|edit|move|remove|clear|flush]",
   ])
 })
 

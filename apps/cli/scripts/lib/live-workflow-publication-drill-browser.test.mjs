@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import vm from 'node:vm'
 
-import { browserStatusRecorderScript, captureBrowserScreenshot, waitForBrowserHtmlFinalOutput } from './live-workflow-publication-drill-browser.mjs'
+import { browserStatusRecorderScript, captureBrowserScreenshot, waitForBrowserHtmlFinalOutput, waitForBrowserHtmlPartialOutput } from './live-workflow-publication-drill-browser.mjs'
 
 test('browser publication recorder observes output changes without a status change', () => {
   const observers = new Map()
@@ -34,6 +34,45 @@ test('browser publication recorder observes output changes without a status chan
   for (const callback of observers.get(output) ?? []) callback()
 
   assert.deepEqual([...window.__arrobaPublicationDrillOutputs], ['{"value":1841}'])
+})
+
+test('browser publication recorder captures transient WebSocket partial and final output', () => {
+  class WebSocket {
+    listeners = new Map()
+
+    addEventListener(type, callback) {
+      const callbacks = this.listeners.get(type) ?? []
+      callbacks.push(callback)
+      this.listeners.set(type, callbacks)
+    }
+
+    emit(type, data) {
+      for (const callback of this.listeners.get(type) ?? []) callback({ data })
+    }
+  }
+  class MutationObserver {
+    observe() {}
+  }
+  const window = { EventSource: undefined, WebSocket }
+  const document = {
+    readyState: 'complete',
+    querySelector() {
+      return null
+    },
+  }
+
+  vm.runInNewContext(browserStatusRecorderScript(), { document, MutationObserver, window })
+  const socket = new window.WebSocket('ws://example.test')
+  socket.emit('message', JSON.stringify({ type: 'partial', message: '{"value":1841}' }))
+  socket.emit('message', JSON.stringify({
+    type: 'final',
+    workflow_run: { final_output: { message: '{"value":1842}' } },
+  }))
+
+  assert.deepEqual(
+    [...window.__arrobaPublicationDrillOutputs],
+    ['{"value":1841}', '{"value":1842}'],
+  )
 })
 
 test('HTML final waiter verifies the sandboxed frame has rendered before capture', async () => {
@@ -101,6 +140,38 @@ test('HTML final waiter verifies the sandboxed frame has rendered before capture
   assert.ok(calls.some(({ method }) => method === 'connectChildTarget'))
   assert.ok(calls.some(({ target, method, params }) => target === 'frame' && method === 'Runtime.evaluate' && params.awaitPromise))
   assert.ok(calls.some(({ target, method }) => target === 'frame' && method === 'close'))
+  const finalExpression = calls.find(({ target, method, params }) => (
+    target === 'page' && method === 'Runtime.evaluate' && typeof params.expression === 'string'
+  ))?.params.expression
+  assert.match(finalExpression, /querySelectorAll\('\.trace-feed \.trace-item'\)/)
+  assert.doesNotMatch(finalExpression, /querySelectorAll\('#trace-feed/)
+})
+
+test('HTML partial waiter reads trace items from every rendered trace feed', async () => {
+  let expression = ''
+  const cdp = {
+    async send(method, params = {}) {
+      assert.equal(method, 'Runtime.evaluate')
+      expression = params.expression
+      return {
+        result: {
+          value: {
+            status: 'Running',
+            output: '{"value":1841}',
+            hasHtmlFinal: false,
+            traceCount: 1,
+            ok: true,
+          },
+        },
+      }
+    },
+  }
+
+  const result = await waitForBrowserHtmlPartialOutput(cdp, 100)
+
+  assert.equal(result.traceCount, 1)
+  assert.match(expression, /querySelectorAll\('\.trace-feed \.trace-item'\)/)
+  assert.doesNotMatch(expression, /querySelectorAll\('#trace-feed/)
 })
 
 test('browser screenshot waits for the document to paint before capture', async () => {

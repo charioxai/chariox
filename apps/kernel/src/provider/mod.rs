@@ -55,7 +55,9 @@ pub use launch_contract::{
     ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
     ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
-pub(crate) use mcp_proxy::dispatch_provider_mcp_proxy_request;
+pub(crate) use mcp_proxy::{
+    dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
+};
 pub(crate) use opencode::lease_opencode_catalog_endpoint;
 pub use opencode::{
     ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,

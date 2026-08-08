@@ -752,7 +752,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   handleQueuedPromptStripKey = queuedPromptController.handleQueuedPromptStripKey
 
   const workflowActions = createCliAppWorkflowActionComposition({
-    client, bindWorkflowNodeInstructionsEditor, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
+    client, originClientId: options.clientId,
+    bindWorkflowNodeInstructionsEditor, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
     workflowScreenShowing, setWorkspaceScreenMode, rebuildTranscript,
     scheduleTimer: startTimeout,
     focusPromptInput: () => {

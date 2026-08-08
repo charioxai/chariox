@@ -118,6 +118,8 @@ pub(crate) fn provider_facing_mcp_proxy_url(
 }
 
 pub(crate) fn dispatch_provider_mcp_proxy_request(
+    owner_provider_run_id: &str,
+    owner_session_id: &str,
     backing: &ArrobaMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
@@ -142,14 +144,22 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
             backing.tool_timeout_sec,
         ),
         ArrobaMcpTransportConfig::Stdio { .. } => {
+            let key = backing.definition_hash()?;
             let process = stdio_mcp_supervisor()
                 .lock()
                 .expect("stdio MCP supervisor mutex poisoned")
-                .process(backing)?;
+                .process(&key, owner_provider_run_id, owner_session_id, backing)?;
             let response = process
                 .lock()
                 .expect("stdio MCP process mutex poisoned")
                 .dispatch(payload);
+            if response.is_err() {
+                let discarded = stdio_mcp_supervisor()
+                    .lock()
+                    .expect("stdio MCP supervisor mutex poisoned")
+                    .discard_process(&key, &process);
+                drop(discarded);
+            }
             response
         }
     }?;
@@ -157,6 +167,44 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
         mark_provider_proxy_tools_preapproved(&mut response);
     }
     Ok(response)
+}
+
+pub(crate) fn shutdown_provider_mcp_proxy_session(session_id: &str) {
+    let released_processes = stdio_mcp_supervisor()
+        .lock()
+        .expect("stdio MCP supervisor mutex poisoned")
+        .release_session(session_id);
+    let released_process_count = released_processes.len();
+    drop(released_processes);
+    if released_process_count > 0 {
+        crate::logging::info_with_fields(
+            "daemon.provider.mcp_proxy",
+            "released final session stdio MCP proxy process ownership",
+            serde_json::json!({
+                "session_id": session_id,
+                "released_process_count": released_process_count,
+            }),
+        );
+    }
+}
+
+pub(crate) fn shutdown_provider_mcp_proxy_run(provider_run_id: &str) {
+    let released_processes = stdio_mcp_supervisor()
+        .lock()
+        .expect("stdio MCP supervisor mutex poisoned")
+        .release_run(provider_run_id);
+    let released_process_count = released_processes.len();
+    drop(released_processes);
+    if released_process_count > 0 {
+        crate::logging::info_with_fields(
+            "daemon.provider.mcp_proxy",
+            "released final stdio MCP proxy process ownership",
+            serde_json::json!({
+                "provider_run_id": provider_run_id,
+                "released_process_count": released_process_count,
+            }),
+        );
+    }
 }
 
 fn mark_provider_proxy_tools_preapproved(response: &mut serde_json::Value) {
@@ -300,6 +348,8 @@ mod tests {
         };
 
         let response = dispatch_provider_mcp_proxy_request(
+            "provider-run-http-test",
+            "session-http-test",
             &config,
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
         )
@@ -335,6 +385,8 @@ mod tests {
         let config =
             ArrobaMcpServerConfig::streamable_http("chunked", format!("http://{address}/mcp"));
         let response = dispatch_provider_mcp_proxy_request(
+            "provider-run-chunked-test",
+            "session-chunked-test",
             &config,
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
         )
@@ -364,11 +416,14 @@ mod tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        let pid_file = start_file.with_extension("pid");
         let script = r#"
 import fs from 'node:fs'
 const startFile = process.env.ARROBA_TEST_START_FILE
+const pidFile = process.env.ARROBA_TEST_PID_FILE
 const current = Number(fs.existsSync(startFile) ? fs.readFileSync(startFile, 'utf8') : '0')
 fs.writeFileSync(startFile, String(current + 1))
+fs.writeFileSync(pidFile, String(process.pid))
 let buffer = Buffer.alloc(0)
 function write(message) {
   const body = JSON.stringify(message)
@@ -425,9 +480,15 @@ function handle(message) {
                 "ARROBA_TEST_START_FILE".to_string(),
                 start_file.to_string_lossy().to_string(),
             );
+            env.insert(
+                "ARROBA_TEST_PID_FILE".to_string(),
+                pid_file.to_string_lossy().to_string(),
+            );
         }
 
         let initialize = dispatch_provider_mcp_proxy_request(
+            "provider-run-a",
+            "session-a",
             &config,
             json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
         )
@@ -439,16 +500,22 @@ function handle(message) {
             Some("stdio-test")
         );
         dispatch_provider_mcp_proxy_request(
+            "provider-run-a",
+            "session-a",
             &config,
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         )
         .expect("initialized notification should be accepted");
         dispatch_provider_mcp_proxy_request(
+            "provider-run-a",
+            "session-a",
             &config,
             json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
         )
         .expect("tools/list should forward");
         let cached_initialize = dispatch_provider_mcp_proxy_request(
+            "provider-run-b",
+            "session-b",
             &config,
             json!({"jsonrpc": "2.0", "id": 3, "method": "initialize"}),
         )
@@ -456,11 +523,37 @@ function handle(message) {
         assert_eq!(cached_initialize.get("id"), Some(&json!(3)));
         let starts = std::fs::read_to_string(&start_file).expect("start file should exist");
         assert_eq!(starts, "1");
-        stdio_mcp_supervisor()
-            .lock()
-            .expect("test supervisor lock")
-            .stop_all();
+        let _child_pid = std::fs::read_to_string(&pid_file)
+            .expect("PID file should exist")
+            .parse::<u32>()
+            .expect("PID should parse");
+        shutdown_provider_mcp_proxy_run("provider-run-a");
+        assert_eq!(
+            stdio_mcp_supervisor()
+                .lock()
+                .expect("test supervisor lock")
+                .process_count(),
+            1,
+            "a shared MCP process must survive until its last provider run ends"
+        );
+        #[cfg(unix)]
+        assert!(crate::runtime::process_health::process_running(_child_pid));
+        shutdown_provider_mcp_proxy_session("session-b");
+        assert_eq!(
+            stdio_mcp_supervisor()
+                .lock()
+                .expect("test supervisor lock")
+                .process_count(),
+            0,
+            "the MCP process must be released after its last provider run ends"
+        );
+        #[cfg(unix)]
+        assert!(
+            !crate::runtime::process_health::process_running(_child_pid),
+            "the released MCP child must be killed and reaped"
+        );
         let _ = std::fs::remove_file(start_file);
+        let _ = std::fs::remove_file(pid_file);
     }
 
     #[test]

@@ -349,16 +349,11 @@ impl KernelRuntimeOwnedState {
             .filter(|edge| edge.from_node_id() == node_id)
             .map(|edge| {
                 let target_node = workflow.node(edge.to_node_id());
-                let target_instructions = target_node
-                    .and_then(|node| node.instructions())
-                    .map(compact_workflow_edge_contract_instructions)
-                    .filter(|instructions| !instructions.is_empty());
                 serde_json::json!({
                     "edge_id": edge.id(),
                     "from_node_id": edge.from_node_id(),
                     "to_node_id": edge.to_node_id(),
                     "to_node_public_label": target_node.map(|node| node.public_label()),
-                    "target_instructions": target_instructions,
                     "to_agent_id": target_node.map(|node| node.agent_id()),
                     "handoff_schema_ref": edge.handoff_schema_ref(),
                     "validation_policy": edge.validation_policy(),
@@ -747,19 +742,6 @@ fn send_agent_app_action_audit(
         .set("content-type", "application/json")
         .set("accept", "application/json")
         .send_string(&payload_json);
-}
-
-fn compact_workflow_edge_contract_instructions(instructions: &str) -> String {
-    const MAX_CHARS: usize = 240;
-    let compact = instructions
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    if compact.chars().count() <= MAX_CHARS {
-        return compact;
-    }
-    let truncated = compact.chars().take(MAX_CHARS).collect::<String>();
-    format!("{truncated}...")
 }
 
 #[cfg(test)]

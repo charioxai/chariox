@@ -129,6 +129,7 @@ export const SHARED_DRILL_TEST_PATHS = Object.freeze([
   "apps/cli/scripts/lib/remote-machine-runtime-output.test.mjs",
   "apps/cli/scripts/lib/runtime-mcp-rejection-assertions.test.mjs",
   "apps/cli/scripts/lib/slice-provider-port-bridge.test.mjs",
+  "apps/cli/scripts/lib/workflow-code-artifact-drill-topology.test.mjs",
   "apps/cli/scripts/lib/workspace-live-sync-drill-environment.test.mjs",
   "apps/cli/scripts/lib/workspace-live-sync-fixtures.test.mjs",
   "apps/cli/scripts/live-distributed-scale-drill.test.mjs",
@@ -178,6 +179,7 @@ export const DRILL_VALIDATION_COVERAGE_AREAS = Object.freeze([
       "apps/cli/scripts/lib/drill-validation-gate-artifact-check.test.mjs",
       "apps/cli/scripts/lib/drill-validation-gate-failure-check.test.mjs",
       "apps/cli/scripts/lib/drill-validation-gate-platform-check.test.mjs",
+      "apps/cli/scripts/lib/workflow-code-artifact-drill-topology.test.mjs",
     ]),
   },
   {
