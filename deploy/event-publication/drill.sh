@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+core_only=false
+case "${1:-}" in
+  "") ;;
+  --core-only) core_only=true ;;
+  *)
+    printf 'usage: %s [--core-only]\n' "$0" >&2
+    exit 2
+    ;;
+esac
+if (( $# > 1 )); then
+  printf 'usage: %s [--core-only]\n' "$0" >&2
+  exit 2
+fi
+
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 deployment_dir="${repository_dir}/deploy/event-publication"
 services_root="$(cd "${repository_dir}/.." && pwd)"
@@ -28,6 +42,17 @@ start_aegs() {
 stop_aegs() {
   "${compose[@]}" stop "$1"
   "${compose[@]}" rm --force "$1"
+}
+
+wait_for_aeds_ready() {
+  for attempt in {1..30}; do
+    if curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/readyz"; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf 'AEDS did not become reachable through its host port\n' >&2
+  return 1
 }
 
 kernel_token="$(tr -d '\r\n' < "${deployment_dir}/secrets/local-kernel-token")"
@@ -71,36 +96,27 @@ provider_specs=(
   "sentry-aegs|sentry|SENTRY|ARROBA_SENTRY_AEGS_PORT|sentry"
   "slack-aegs|slack|SLACK|ARROBA_SLACK_AEGS_PORT|slack"
 )
-for provider_spec in "${provider_specs[@]}"; do
-  IFS="|" read -r service fixture prefix port_variable secret_stem <<< "${provider_spec}"
-  port="${!port_variable}"
-  start_aegs "${service}"
-  env \
-    ARROBA_DRILL_PROVIDERS="${fixture}" \
-    ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
-    ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
-    "ARROBA_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
-    "ARROBA_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
-    "ARROBA_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
-    cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
-      --example first_wave_provider_drill
-  stop_aegs "${service}"
-done
+if [[ "${core_only}" != "true" ]]; then
+  for provider_spec in "${provider_specs[@]}"; do
+    IFS="|" read -r service fixture prefix port_variable secret_stem <<< "${provider_spec}"
+    port="${!port_variable}"
+    start_aegs "${service}"
+    env \
+      ARROBA_DRILL_PROVIDERS="${fixture}" \
+      ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
+      ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
+      "ARROBA_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
+      "ARROBA_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
+      "ARROBA_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
+      cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
+        --example first_wave_provider_drill
+    stop_aegs "${service}"
+  done
+fi
 
 curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics"
 "${compose[@]}" restart aeds
-ready=false
-for attempt in {1..30}; do
-  if curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/readyz"; then
-    ready=true
-    break
-  fi
-  sleep 1
-done
-if [[ "${ready}" != "true" ]]; then
-  printf 'AEDS did not become ready after restart\n' >&2
-  exit 1
-fi
+wait_for_aeds_ready
 metrics="$(curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics")"
 if ! grep -q '^arroba_aeds_active_routes 1$' <<< "${metrics}"; then
   printf 'AEDS route state did not survive restart\n%s\n' "${metrics}" >&2
@@ -120,6 +136,7 @@ ARROBA_AEDS_COMPOSE_PROJECT_DIRECTORY="${deployment_dir}" \
 ARROBA_AEDS_COMPOSE_PROJECT="arroba-event-publication" \
 ARROBA_AEDS_BACKUP_DIR="${aeds_repository}/backups" \
   "${aeds_repository}/deploy/restore.sh" --yes "$(basename "${backup_path}")"
+wait_for_aeds_ready
 restored_metrics="$(curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics")"
 if ! grep -q '^arroba_aeds_active_routes 1$' <<< "${restored_metrics}"; then
   printf 'AEDS route state did not survive backup/restore\n%s\n' "${restored_metrics}" >&2

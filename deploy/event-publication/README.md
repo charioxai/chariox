@@ -16,6 +16,10 @@ Run:
 ./drill.sh
 ```
 
+For a resource-safe rerun of only the AEDS + dummy AEGS vertical slice, including
+durable delivery, restart, and backup/restore, run `./drill.sh --core-only`.
+This mode does not replace the default first-wave provider matrix.
+
 The drill limits Compose to one build at a time. It keeps AEDS running and
 builds, starts, exercises, stops, and removes exactly one AEGS at a time:
 dummy, GitHub, Jira Cloud, Linear, GitLab, Sentry, then Slack. Peak runtime is

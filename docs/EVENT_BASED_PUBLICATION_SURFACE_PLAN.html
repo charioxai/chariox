@@ -1302,6 +1302,20 @@ arroba-cloud
               pruning unrelated Docker state. Hosted GitHub Actions verification subsequently ran
               successfully for <code>arroba-aeds</code> and all six first-wave production AEGS
               repositories: formatting, Clippy, tests, ShellCheck, and OCI image builds are green.
+              The current private-repository revisions also publish exact-commit GHCR images
+              sequentially with BuildKit <code>mode=max</code> provenance and SPDX SBOM
+              attestations, scan the pushed digest for fixed high or critical vulnerabilities,
+              and read both attestations back from the registry before succeeding. GitHub's
+              <code>actions/attest</code> storage API is intentionally not used because GitHub does
+              not offer artifact attestations for personal-account private repositories outside
+              Enterprise Cloud; the OCI attestations remain attached to the private image digest
+              and are independently inspected by each release workflow.
+              The local core drill also found and closed a strict-shell restore defect shared by
+              the deployment repositories: an absent optional production environment file could
+              terminate restore before an explicit local port override was honored. A guarded
+              environment reader and regression test now cover both missing files and duplicate
+              key resolution in AEDS and every first-wave AEGS repository; the AEDS plus dummy
+              AEGS durable delivery, restart, backup, and restore slice passes locally.
               Remote acceptance still requires separately assigned AEDS and AEGS
               hosts, their TLS and secret configuration, and the full
               cross-host failure matrix. A read-only 2026-07-28 snapshot of the existing relay
