@@ -1316,12 +1316,19 @@ arroba-cloud
               environment reader and regression test now cover both missing files and duplicate
               key resolution in AEDS and every first-wave AEGS repository; the AEDS plus dummy
               AEGS durable delivery, restart, backup, and restore slice passes locally.
+              On 2026-08-10 the final revisions of AEDS
+              (<code>59eaa7bc</code>), GitHub (<code>894ba86f</code>), Jira
+              (<code>1386d5e9</code>), Linear (<code>74affd8f</code>), GitLab
+              (<code>d4fa01c4</code>), Sentry (<code>f1784594</code>), and Slack
+              (<code>b21a0802</code>) each passed both hosted CI and the sequential release-image
+              workflow. The local drill was then removed completely: no event container, volume,
+              generated secret, backup, local image, or Rust build output remains.
               Remote acceptance still requires separately assigned AEDS and AEGS
               hosts, their TLS and secret configuration, and the full
               cross-host failure matrix. A read-only 2026-07-28 snapshot of the existing relay
-              host showed negligible load and 3.1 GiB available memory, but only 14 GiB free disk
-              at 82% utilization; no event service was installed there and the host remains
-              protected relay-only capacity.
+              host showed negligible load. A fresh read-only 2026-08-10 check reported 3.2 GiB
+              available memory and 13 GiB free disk at 83% utilization; no event service was
+              installed there and the host remains protected relay-only capacity.
             </p>
             <p>
               The OSS deployment orchestrator now includes a guarded remote-host acceptance
