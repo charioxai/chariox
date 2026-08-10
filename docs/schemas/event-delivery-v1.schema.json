@@ -11,7 +11,12 @@
     "event_type": { "type": "string", "minLength": 1, "maxLength": 300 },
     "event_type_version": { "type": "integer", "minimum": 1 },
     "occurrence_id": { "type": "string", "minLength": 1, "maxLength": 512 },
-    "occurred_at": { "type": "string", "format": "date-time" },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$",
+      "description": "The absolute event instant in RFC 3339 UTC form. Producers must convert provider offsets to a Z-suffixed value before publication."
+    },
     "prompt": { "type": "string", "minLength": 1, "maxLength": 1048576 },
     "artifacts": {
       "type": "array",

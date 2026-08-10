@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use arroba_event_protocol::{EventArtifact, PublishEventRequest};
+use arroba_event_protocol::{canonical_utc_timestamp, EventArtifact, PublishEventRequest};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -54,7 +54,8 @@ impl PublishEventBuilder {
         self
     }
 
-    pub fn build(self) -> Result<PublishEventRequest, String> {
+    pub fn build(mut self) -> Result<PublishEventRequest, String> {
+        self.request.occurred_at = canonical_utc_timestamp(&self.request.occurred_at)?;
         self.request.validate()?;
         Ok(self.request)
     }
@@ -220,6 +221,22 @@ mod tests {
         .unwrap();
         assert_eq!(request.event_type_version, 1);
         assert_eq!(request.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn event_builder_normalizes_provider_offsets_to_utc() {
+        let request = PublishEventBuilder::new(
+            "producer-1",
+            "interest-1",
+            "occurrence-1",
+            "example.opened",
+            "2026-01-15T14:00:00+02:00",
+            "Handle the event",
+        )
+        .build()
+        .unwrap();
+
+        assert_eq!(request.occurred_at, "2026-01-15T12:00:00.000Z");
     }
 
     #[test]

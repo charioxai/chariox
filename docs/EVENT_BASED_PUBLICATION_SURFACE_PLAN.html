@@ -664,6 +664,14 @@
               </p>
             </article>
             <article class="card">
+              <h3>Timezone-correct by boundary</h3>
+              <p>
+                Persisted and transported instants use UTC. Recurring wall-clock schedules retain
+                an IANA timezone, never a fixed offset. Web and TUI convert instants only at the
+                presentation boundary using the viewer's IANA timezone and its DST rules.
+              </p>
+            </article>
+            <article class="card">
               <h3>Separate failure domains</h3>
               <p>
                 Hosted AEDS and hosted AEGSs do not share a machine. Delivery remains available
@@ -1519,6 +1527,11 @@ arroba-cloud
                     security/threat model updates.
                   </li>
                   <li>Create signed dummy registry and AEGS fixtures.</li>
+                  <li>
+                    Establish the global time contract: reject timezone-free transport instants,
+                    canonicalize event times to UTC, store Cloud instants as timezone-aware values,
+                    retain IANA zones for cron semantics, and localize only for presentation.
+                  </li>
                 </ul>
               </div>
             </article>
@@ -1674,6 +1687,10 @@ arroba-cloud
                     Add lifecycle, retry, schema compatibility, security, and registry publication
                     conformance tests.
                   </li>
+                  <li>
+                    Require UTC event timestamps in producer conformance and test the same instant
+                    across UTC, Helsinki, New York, and Tokyo plus spring/autumn DST boundaries.
+                  </li>
                   <li>Document first-party, official-provider, community, and self-hosted paths.</li>
                 </ul>
               </div>
@@ -1734,7 +1751,18 @@ arroba-cloud
               </tr>
               <tr>
                 <td>Protocol tests</td>
-                <td>Version bump, serialized shape snapshots, compatibility gates, bounded pagination</td>
+                <td>
+                  Version bump, serialized shape snapshots, compatibility gates, bounded
+                  pagination, explicit-zone parsing, and UTC event wire timestamps
+                </td>
+              </tr>
+              <tr>
+                <td>Time and timezone contract</td>
+                <td>
+                  UTC-aware database columns and migration, no timezone-free transport strings,
+                  IANA-zone cron behavior, local Web/TUI rendering, and multi-zone/DST regression
+                  tests independent of the test machine's timezone
+                </td>
               </tr>
               <tr>
                 <td>AEDS/AEGS conformance</td>
@@ -1804,6 +1832,18 @@ arroba-cloud
             <li>Rapid search replacement cancels stale requests and does not reorder results.</li>
             <li>Category and event cursors remain stable within a catalog revision.</li>
             <li>Registry unavailable while an existing publication continues receiving events.</li>
+            <li>
+              The same UTC event renders correctly in UTC, Europe/Helsinki, America/New_York, and
+              Asia/Tokyo without changing the stored or transported value.
+            </li>
+            <li>
+              Cron schedules keep their configured local wall-clock time across spring and autumn
+              DST transitions while each computed occurrence remains an absolute UTC instant.
+            </li>
+            <li>
+              Timezone-free event/API timestamps are rejected, while provider timestamps carrying
+              a non-zero RFC 3339 offset are normalized to UTC before publication.
+            </li>
             <li>Kernel offline when an event occurs; prompt appears after reboot and reconnect.</li>
             <li>Connection drops between durable enqueue and ACK; only one prompt is visible.</li>
             <li>Two workflows request the same event interest in one environment; second activation fails visibly.</li>

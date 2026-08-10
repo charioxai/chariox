@@ -73,6 +73,11 @@ Current implementation mapping:
 - Directory provides identity/discovery/reachability metadata; it does not own workspace state.
 - Managed identity/discovery service, if introduced later, should remain outside this repository and consume the same relay/directory boundaries rather than becoming a dependency of core runtime code.
 - New features should land in kernel/protocol layers first, not UI-specific code.
+- Runtime and control-plane persistence store instants in UTC, and transport serializes them as
+  UTC RFC 3339 or Unix epoch values. Presentation converts only at the client boundary.
+- Recurring wall-clock schedules are the deliberate exception: they retain an IANA timezone so
+  daylight-saving transitions are resolved by timezone rules rather than a hard-coded offset;
+  each computed occurrence is still stored and transported as a UTC instant.
 
 ## 2.2 Connectivity Model
 

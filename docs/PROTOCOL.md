@@ -40,6 +40,10 @@ Target direction:
   - self-hosted relay deployments
   - any later managed relay deployment
 - relay must only ever see opaque encrypted payloads plus the minimum metadata required for routing and liveness
+- serialized instants must be absolute UTC values: RFC 3339 strings use a `Z` suffix and numeric
+  timestamps are Unix epoch values; timezone-free wall-clock strings are not protocol instants
+- an IANA timezone is carried only when the timezone is part of the operation's semantics, such as
+  a recurring cron schedule; fixed UTC offsets are not timezone identities
 
 Current sequencing note:
 

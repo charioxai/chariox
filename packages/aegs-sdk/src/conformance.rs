@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{AegsProvider, NormalizedEvent, WebhookInput};
+use arroba_event_protocol::validate_utc_timestamp;
 
 #[derive(Debug, Clone)]
 pub struct WebhookConformanceCase {
@@ -82,9 +83,7 @@ pub fn verify_webhook_conformance(
     if !first.metadata.is_object() {
         return Err("normalized metadata must be an object".into());
     }
-    if first.occurred_at.len() < 20 || !first.occurred_at.contains('T') {
-        return Err("occurred_at must be an RFC 3339-shaped timestamp".into());
-    }
+    validate_utc_timestamp("occurred_at", &first.occurred_at)?;
     Ok(first)
 }
 

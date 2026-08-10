@@ -744,6 +744,56 @@ mod tests {
     }
 
     #[test]
+    fn cron_keeps_new_york_wall_clock_time_across_spring_dst() {
+        let trigger = WorkflowScheduleTrigger::cron("0 0 9 * * *", "America/New_York");
+        let start = Utc
+            .with_ymd_and_hms(2026, 3, 7, 8, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        let runs = trigger.preview_run_times_after_ms(start, 2).unwrap();
+        let timezone = "America/New_York".parse::<Tz>().unwrap();
+        let local = runs
+            .iter()
+            .map(|run| {
+                Utc.timestamp_millis_opt(*run as i64)
+                    .unwrap()
+                    .with_timezone(&timezone)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(local[0].hour(), 9);
+        assert_eq!(local[1].hour(), 9);
+        assert_eq!(runs[1] - runs[0], 23 * 60 * 60 * 1_000);
+    }
+
+    #[test]
+    fn cron_keeps_helsinki_wall_clock_time_across_autumn_dst() {
+        let trigger = WorkflowScheduleTrigger::cron("0 0 9 * * *", "Europe/Helsinki");
+        let start = Utc
+            .with_ymd_and_hms(2026, 10, 23, 12, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis() as u64;
+
+        let runs = trigger.preview_run_times_after_ms(start, 2).unwrap();
+        let timezone = "Europe/Helsinki".parse::<Tz>().unwrap();
+        let local = runs
+            .iter()
+            .map(|run| {
+                Utc.timestamp_millis_opt(*run as i64)
+                    .unwrap()
+                    .with_timezone(&timezone)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(local[0].hour(), 9);
+        assert_eq!(local[1].hour(), 9);
+        assert_eq!(runs[1] - runs[0], 25 * 60 * 60 * 1_000);
+    }
+
+    #[test]
     fn schedule_definition_deserializes_legacy_watchdog_fields() {
         let schedule: WorkflowScheduleDefinition = serde_json::from_value(serde_json::json!({
             "id": "watchdog-1",

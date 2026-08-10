@@ -1,3 +1,4 @@
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -6,6 +7,27 @@ pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 1;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
+
+/// Converts any RFC 3339 instant with an explicit offset into the UTC wire form.
+pub fn canonical_utc_timestamp(value: &str) -> Result<String, String> {
+    let instant = DateTime::parse_from_rfc3339(value.trim()).map_err(|_| {
+        "timestamp must be an RFC 3339 instant with an explicit timezone".to_string()
+    })?;
+    Ok(instant
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Millis, true))
+}
+
+/// Validates the event protocol's UTC-on-the-wire timestamp rule.
+pub fn validate_utc_timestamp(name: &str, value: &str) -> Result<(), String> {
+    let normalized = value.trim();
+    let instant = DateTime::parse_from_rfc3339(normalized)
+        .map_err(|_| format!("{name} must be an RFC 3339 instant with an explicit timezone"))?;
+    if !normalized.ends_with('Z') || instant.offset().local_minus_utc() != 0 {
+        return Err(format!("{name} must use UTC with a Z suffix"));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventArtifact {
@@ -70,9 +92,7 @@ impl EventDeliveryEnvelope {
         if self.event_type_version == 0 {
             return Err("event_type_version must be greater than zero".to_string());
         }
-        if self.occurred_at.trim().is_empty() {
-            return Err("occurred_at is required".to_string());
-        }
+        validate_utc_timestamp("occurred_at", &self.occurred_at)?;
         if self.prompt.trim().is_empty() {
             return Err("prompt is required".to_string());
         }
@@ -352,9 +372,7 @@ impl PublishEventRequest {
         if self.event_type_version == 0 {
             return Err("event_type_version must be greater than zero".to_string());
         }
-        if self.occurred_at.trim().is_empty() {
-            return Err("occurred_at is required".to_string());
-        }
+        validate_utc_timestamp("occurred_at", &self.occurred_at)?;
         if self.prompt.trim().is_empty() || self.prompt.len() > MAX_EVENT_PROMPT_BYTES {
             return Err("prompt is empty or exceeds the workflow endpoint limit".to_string());
         }
@@ -478,6 +496,17 @@ mod tests {
             expires_at_ms: 9,
         };
         assert!(delivery.validate(10).unwrap_err().contains("expired"));
+    }
+
+    #[test]
+    fn event_timestamps_are_absolute_and_utc_on_the_wire() {
+        assert_eq!(
+            canonical_utc_timestamp("2026-01-15T14:00:00+02:00").unwrap(),
+            "2026-01-15T12:00:00.000Z"
+        );
+        assert!(validate_utc_timestamp("occurred_at", "2026-01-15T12:00:00Z").is_ok());
+        assert!(validate_utc_timestamp("occurred_at", "2026-01-15T14:00:00+02:00").is_err());
+        assert!(canonical_utc_timestamp("2026-01-15T12:00:00").is_err());
     }
 
     #[test]
