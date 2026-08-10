@@ -1,0 +1,39 @@
+name: arroba-aegs-dummy-staging
+
+services:
+  dummy-aegs:
+    image: ${ARROBA_AEGS_DUMMY_IMAGE:?pin the exact local image ID}
+    environment:
+      ARROBA_AEGS_ADDR: 0.0.0.0:43132
+      ARROBA_AEGS_PRODUCER_ID: dev.arroba.dummy
+      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/producer_token
+      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/management_token
+      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
+      ARROBA_AEDS_EVENTS_URL: ${ARROBA_AEDS_EVENTS_URL:?set the HTTPS AEDS events URL}
+    secrets: [producer_token, management_token]
+    volumes: [aegs-data:/var/lib/arroba/aegs]
+    ports: ["127.0.0.1:${ARROBA_AEGS_LOOPBACK_PORT:-43132}:43132"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:43132/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: ${ARROBA_AEGS_CPU_LIMIT:-0.50}
+          memory: ${ARROBA_AEGS_MEMORY_LIMIT:-128M}
+
+secrets:
+  producer_token:
+    file: ${ARROBA_AEGS_PRODUCER_TOKEN_FILE:?set the producer token file}
+  management_token:
+    file: ${ARROBA_AEGS_MANAGEMENT_TOKEN_FILE:?set the management token file}
+
+volumes:
+  aegs-data:

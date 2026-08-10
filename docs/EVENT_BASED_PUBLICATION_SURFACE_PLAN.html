@@ -544,15 +544,15 @@
           <a href="#runtime">Runtime model</a>
           <a href="#lifecycle">Lifecycle</a>
           <a href="#ownership">Repository ownership</a>
-          <a href="#deployment">Hetzner deployment</a>
+          <a href="#deployment">Remote VPS deployment</a>
           <a href="#milestones">Milestones</a>
           <a href="#validation">Validation</a>
           <a href="#acceptance">Acceptance</a>
         </nav>
         <p class="aside-meta">
-          Status: local first-wave slice and deployment packages validated; Hetzner gate pending<br />
+          Status: OVH AEGS staging active; separate AEDS host gate pending<br />
           Scope: first-wave integrations<br />
-          Updated: 2026-07-28
+          Updated: 2026-08-10
         </p>
       </aside>
 
@@ -1241,15 +1241,16 @@ arroba-cloud
         </section>
 
         <section id="deployment">
-          <span class="section-no">10 · Hetzner deployment</span>
+          <span class="section-no">10 · Remote VPS deployment</span>
           <h2>Promote locally proven services into separate failure domains.</h2>
           <p>
             After the complete local product slice passes, deploy AEDS and the dummy AEGS to
-            Hetzner and repeat the acceptance matrix over public TLS. During implementation, a new
-            Hetzner machine will be reserved. The deployment design must keep AEDS and AEGSs on
-            different machines and must not assume that the existing relay machine has spare
-            capacity. If the new machine is not yet available, isolated containers on the local
-            development machine provide a nonblocking deployment rehearsal.
+            dedicated remote VPS hosts and repeat the acceptance matrix over public TLS. OVH is
+            the current staging provider, but the deployment contract remains host-independent.
+            The deployment design must keep AEDS and AEGSs on different machines and must not
+            assume that the existing relay machine has spare capacity. If a second event host is
+            not yet assigned, isolated containers on the local development machine provide a
+            nonblocking deployment rehearsal.
           </p>
           <div class="callout">
             <strong>Host-separation rule.</strong>
@@ -1270,9 +1271,9 @@ arroba-cloud
               remove each AEGS before advancing to the next; do not run or build the complete
               provider matrix concurrently on a constrained development machine. Exercise the same
               images, configuration, persistence, restart, rollback, and product drills intended
-              for Hetzner. This proves deployability but not physical failure-domain separation,
-              public TLS, host reboot, or cross-machine recovery; those gates remain required on
-              Hetzner.
+              for remote staging. This proves deployability but not physical failure-domain
+              separation, public TLS, host reboot, or cross-machine recovery; those gates remain
+              required on separate remote hosts.
             </p>
           </div>
           <div class="callout good">
@@ -1292,22 +1293,49 @@ arroba-cloud
               containers, images, build layers, scanner caches, and build-step containers without
               pruning unrelated Docker state. Hosted GitHub Actions verification is currently
               unable to start because of the account billing/spending-limit gate, not a workflow
-              or test failure. Remote acceptance still requires the separately provisioned
-              Hetzner AEDS and AEGS hosts, their TLS and secret configuration, and the full
+              or test failure. Remote acceptance still requires separately assigned AEDS and AEGS
+              hosts, their TLS and secret configuration, and the full
               cross-host failure matrix. A read-only 2026-07-28 snapshot of the existing relay
               host showed negligible load and 3.1 GiB available memory, but only 14 GiB free disk
               at 82% utilization; no event service was installed there and the host remains
               protected relay-only capacity.
             </p>
             <p>
-              The OSS deployment orchestrator now includes a guarded Hetzner acceptance runner.
-              It consumes the exact clean host-separation evidence, rechecks machine identities
+              The OSS deployment orchestrator now includes a guarded remote-host acceptance
+              runner. Its current filenames retain the original <code>hetzner</code> label, but
+              the implementation accepts exact SSH targets from any provider. It consumes the
+              exact clean host-separation evidence, rechecks machine identities
               and role markers, requires public HTTPS health, rejects concurrent first-wave AEGSs,
               and handles AEDS then one selected AEGS sequentially. Its default mode is read-only;
               service restarts require an explicit flag and can affect only the two exact systemd
               units. It never performs host reboot, firewall mutation, container removal, or
               Docker pruning. The preflight and acceptance harnesses pass ten focused tests,
               including stale-revision and dirty-worktree refusal.
+            </p>
+          </div>
+
+          <div class="callout good">
+            <strong>OVH AEGS staging is active.</strong>
+            <p>
+              On 2026-08-10 the smaller OVH VPS
+              <code>vps-95adeb93.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
+              was rebuilt as Debian 12 and fenced with the exact <code>aegs</code> host role. It
+              runs Docker, Compose, Caddy, a deny-by-default firewall, SSH key-only access, bounded
+              container logging, and 2 GiB of swap. The public dummy AEGS is the only active event
+              container and is available over TLS at
+              <code>https://dummy.51.38.80.192.sslip.io</code>. It is pinned to OSS revision
+              <code>fe5b8595016eda7dcf943fd728e90ac0dabe239f</code>, limited to 0.5 CPU and
+              128 MiB, and restored successfully after a full host reboot with its durable test
+              subscription intact. The GitHub AEGS was built and label-verified for <code>amd64</code>
+              at revision <code>47ad1d9933c2002a3b6f94f9b968a69594394296</code>, but remains
+              inactive until its release digest, GitHub App credentials, and AEDS endpoint exist.
+              The Linux rehearsal also exposed that file-backed Compose secrets preserve host
+              ownership. The AEDS and all first-wave AEGS deployment validators and runbooks now
+              require each root-only secret directory to contain UID/GID
+              <code>10001:10001</code>, mode-<code>0400</code> files so their non-root containers
+              can read secrets without making them accessible to host users.
+              The larger OVH VPS remains untouched. Final remote acceptance still needs a distinct
+              AEDS host; co-location on this AEGS host is forbidden.
             </p>
           </div>
 
@@ -1359,7 +1387,7 @@ arroba-cloud
                 <td>
                   Development-only deployment rehearsal. Separate networks, volumes, secrets,
                   resource limits, and ports emulate host roles without exceeding the local
-                  machine budget, but do not satisfy Hetzner acceptance.
+                  machine budget, but do not satisfy separate-host remote acceptance.
                 </td>
               </tr>
             </tbody>
@@ -1422,15 +1450,15 @@ arroba-cloud
               <strong>Local deployment rehearsal:</strong> run the immutable AEDS and AEGS images
               in isolated local containers with persistent volumes, restart policies, resource
               limits, upgrade/rollback, backup/restore, and product validation. Use this whenever
-              the new Hetzner machine is not yet available.
+              the second remote event host is not yet available.
             </li>
             <li>
-              <strong>Ephemeral Hetzner:</strong> use the existing SSH preflight, artifact
+              <strong>Ephemeral remote VPS:</strong> use the existing SSH preflight, artifact
               provenance, run ownership, resource safety lease, and cleanup machinery to stage
               temporary AEDS and AEGS services on their designated hosts.
             </li>
             <li>
-              <strong>Persistent Hetzner staging:</strong> install systemd-managed pinned images,
+              <strong>Persistent remote staging:</strong> install systemd-managed pinned images,
               Caddy routes, durable volumes, secret files, backup, monitoring, and rollback.
             </li>
             <li>
@@ -1455,7 +1483,7 @@ arroba-cloud
             <li>Caddy host routing and TLS readiness checks without embedding credentials.</li>
             <li>Install, upgrade, health-check, rollback, backup, restore, and removal commands.</li>
             <li>
-              Guarded Hetzner drill that targets exact configured hosts, refuses broad cleanup,
+              Guarded remote-host drill that targets exact configured hosts, refuses broad cleanup,
               labels every owned resource, and removes only run-owned temporary artifacts.
             </li>
             <li>
@@ -1558,7 +1586,7 @@ arroba-cloud
             <article class="milestone">
               <div class="milestone-id">M4 · Deployment</div>
               <div>
-                <h3>Local-container fallback and Hetzner gate</h3>
+                <h3>Local-container fallback and remote-host gate</h3>
                 <ul>
                   <li>
                     Build deployment images from the extracted private AEDS and per-provider AEGS
@@ -1572,14 +1600,14 @@ arroba-cloud
                   <li>
                     Keep local builds and runtime resource-bounded: AEDS remains available while
                     each AEGS is built, exercised, stopped, and removed one at a time. The full
-                    provider matrix is a CI/Hetzner gate, not a concurrent laptop workload.
+                    provider matrix is a CI/remote-host gate, not a concurrent laptop workload.
                   </li>
                   <li>
                     Treat the local-container path as sufficient to continue implementation while
-                    machine procurement is pending, but not as Hetzner or production evidence.
+                    machine procurement is pending, but not as separate-host or production evidence.
                   </li>
                   <li>
-                    Reserve and preflight the new Hetzner machine, assign distinct AEDS and AEGS
+                    Reserve and preflight the remote machines, assign distinct AEDS and AEGS
                     host roles, and refuse unsafe co-location or relay-host overload.
                   </li>
                   <li>
@@ -1624,7 +1652,7 @@ arroba-cloud
                     and publication deletion end to end locally.
                   </li>
                   <li>
-                    Deploy the GitHub AEGS to its Hetzner AEGS host, receive a real GitHub webhook,
+                    Deploy the GitHub AEGS to its remote AEGS host, receive a real GitHub webhook,
                     publish across machines to AEDS, and repeat product and failure validation
                     before registry promotion.
                   </li>
@@ -1667,7 +1695,7 @@ arroba-cloud
                   <li><strong>Slack:</strong> Events API, workspace auth, event filtering, and scopes.</li>
                   <li>
                     Run the complete web-terminal, PTY/TUI, reconnect, deletion, and environment
-                    exclusivity matrix locally and against the separate Hetzner AEDS/AEGS hosts
+                    exclusivity matrix locally and against the separate remote AEDS/AEGS hosts
                     for every first-wave AEGS.
                   </li>
                 </ul>
@@ -1716,7 +1744,7 @@ arroba-cloud
                 <td>Offline backlog, reboot, ACK loss, stale kernel fencing, environment transfer, durable queue insertion</td>
               </tr>
               <tr>
-                <td>Hetzner deployment</td>
+                <td>Remote VPS deployment</td>
                 <td>
                   Separate AEDS/AEGS hosts, pinned artifacts, TLS, durable state, backup/restore,
                   service restart, host reboot, cross-host partition, rollback, and clean removal
@@ -1727,7 +1755,7 @@ arroba-cloud
                 <td>
                   The same pinned AEDS/AEGS images validated sequentially as AEDS plus one AEGS,
                   with separate volumes, secrets, limits, restart, backup/restore, rollback, and
-                  both product surfaces; explicitly recorded as non-Hetzner evidence
+                  both product surfaces; explicitly recorded as non-separate-host evidence
                 </td>
               </tr>
               <tr>
@@ -1782,7 +1810,7 @@ arroba-cloud
             <li>Same workflow deploys to a distinct environment; independent routing is explicit.</li>
             <li>Publication deletion revokes delivery and upstream subscription state reconciles.</li>
             <li>
-              AEDS and AEGS run on different Hetzner machines; stopping or saturating an AEGS does
+              AEDS and AEGS run on different remote machines; stopping or saturating an AEGS does
               not make AEDS unavailable.
             </li>
             <li>
@@ -1851,7 +1879,7 @@ arroba-cloud
             <article class="card">
               <h3>Deployment</h3>
               <ul>
-                <li>AEDS and AEGSs run on separate Hetzner machines.</li>
+                <li>AEDS and AEGSs run on separate remote machines.</li>
                 <li>The existing relay host remains within measured resource headroom.</li>
                 <li>Images are immutable and support a proven rollback.</li>
                 <li>Local containers keep implementation unblocked before host procurement.</li>
