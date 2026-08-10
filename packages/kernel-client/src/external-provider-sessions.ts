@@ -1,3 +1,5 @@
+import { waitingRoomTimestampLabel } from "./waiting-room-activity.js"
+
 export type ExternalProviderSessionCapabilities = {
   readonly can_read_history?: boolean
 }
@@ -145,19 +147,15 @@ export function externalProviderSessionModeLabel(_session: ExternalProviderSessi
 export function externalProviderSessionModifiedLabel(
   session: ExternalProviderSessionRecord,
   options: {
-    readonly utcSuffix?: boolean
+    readonly timeZone?: string
+    readonly includeTimeZone?: boolean
   } = {},
 ): string {
   const value = externalProviderSessionModifiedMs(session)
   if (!value) {
     return "-"
   }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return "-"
-  }
-  const label = date.toISOString().replace("T", " ").slice(0, 16)
-  return options.utcSuffix ? `${label} UTC` : label
+  return waitingRoomTimestampLabel(value, options)
 }
 
 export function externalProviderSessionModifiedMs(session: ExternalProviderSessionRecord): number {

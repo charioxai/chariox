@@ -1,6 +1,9 @@
 import type {
   DeploymentCredentialEnrollmentArmedResponse,
 } from "@arroba/kernel-client"
+import {
+  parseAbsoluteInstantMsOrNull,
+} from "@arroba/kernel-client/time"
 
 import { armDeploymentCredentialEnrollmentRequest } from "./ipc-requests.js"
 import type {
@@ -160,12 +163,13 @@ function requireExactCloudArm(
       throw new Error(`Cloud returned a mismatched credential callback channel (${field})`)
     }
   }
-  const armedAt = Date.parse(String(channel.armedAt ?? ""))
-  const expiresAt = Date.parse(String(channel.expiresAt ?? ""))
-  const enrollmentExpiresAt = Date.parse(binding.enrollmentExpiresAt)
+  const armedAt = parseAbsoluteInstantMsOrNull(String(channel.armedAt ?? ""))
+  const expiresAt = parseAbsoluteInstantMsOrNull(String(channel.expiresAt ?? ""))
+  const enrollmentExpiresAt = parseAbsoluteInstantMsOrNull(binding.enrollmentExpiresAt)
   if (
-    !Number.isFinite(armedAt)
-    || !Number.isFinite(expiresAt)
+    armedAt === null
+    || expiresAt === null
+    || enrollmentExpiresAt === null
     || expiresAt !== enrollmentExpiresAt
     || armedAt >= expiresAt
     || expiresAt <= now
@@ -185,8 +189,7 @@ function validateBinding(binding: ClaudeCredentialEnrollmentBinding, now: number
     throw new Error("credential enrollment target version is invalid")
   }
   if (
-    !Number.isFinite(Date.parse(binding.enrollmentExpiresAt))
-    || Date.parse(binding.enrollmentExpiresAt) <= now
+    (parseAbsoluteInstantMsOrNull(binding.enrollmentExpiresAt) ?? 0) <= now
   ) {
     throw new Error("credential enrollment expiry is invalid")
   }

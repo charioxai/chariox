@@ -100,8 +100,8 @@ test("external provider session title falls back through prompt, provider id, an
 test("external provider session labels normalize mode and modification time", () => {
   const session = externalSession("codex:time", Date.UTC(2026, 0, 2, 10, 30))
   assert.equal(externalProviderSessionModeLabel(session), "observed")
-  assert.equal(externalProviderSessionModifiedLabel(session), "2026-01-02 10:30")
-  assert.equal(externalProviderSessionModifiedLabel(session, { utcSuffix: true }), "2026-01-02 10:30 UTC")
+  assert.equal(externalProviderSessionModifiedLabel(session, { timeZone: "UTC" }), "2026-01-02 10:30 UTC")
+  assert.equal(externalProviderSessionModifiedLabel(session, { timeZone: "Europe/Helsinki" }), "2026-01-02 12:30 GMT+2")
   assert.equal(externalProviderSessionModifiedLabel(externalSession("codex:missing", 0)), "-")
   assert.equal(externalProviderSessionModifiedLabel({
     ...externalSession("codex:invalid", 100),

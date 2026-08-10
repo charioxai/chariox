@@ -1,4 +1,5 @@
 import type { RelayCloudProfile } from "./preferences.js"
+import { parseAbsoluteInstantMs } from "@arroba/kernel-client/time"
 
 export type BootstrapCloudRelayInput = {
   apiUrl: string
@@ -108,7 +109,7 @@ export async function startCloudDeviceLogin(
     deviceCode: payload.deviceCode,
     userCode: payload.userCode,
     verificationUrl: payload.verificationUrl,
-    expiresAtMs: Date.parse(payload.expiresAt),
+    expiresAtMs: parseAbsoluteInstantMs(payload.expiresAt),
     intervalSeconds: payload.intervalSeconds,
   }
 }
@@ -130,7 +131,7 @@ export async function pollCloudDeviceLogin(
     return {
       status: "authorization_pending",
       intervalSeconds: payload.intervalSeconds ?? 2,
-      expiresAtMs: payload.expiresAt ? Date.parse(payload.expiresAt) : 0,
+      expiresAtMs: payload.expiresAt ? parseAbsoluteInstantMs(payload.expiresAt) : 0,
     }
   }
   if (payload.status === "expired_token") {
@@ -146,7 +147,7 @@ export async function pollCloudDeviceLogin(
       apiUrl: normalizeApiUrl(apiUrl),
       ...(payload.machineCredential ? { machineCredential: payload.machineCredential } : {}),
       cloudSessionToken: payload.cloudSessionToken,
-      cloudSessionExpiresAtMs: Date.parse(payload.cloudSessionExpiresAt),
+      cloudSessionExpiresAtMs: parseAbsoluteInstantMs(payload.cloudSessionExpiresAt),
     },
   }
 }
@@ -238,7 +239,7 @@ export async function issueCloudRelayToken(
   return {
     relayUrl: input.profile.relayUrl,
     relayToken: payload.token,
-    tokenExpiresAtMs: Date.parse(payload.expiresAt),
+    tokenExpiresAtMs: parseAbsoluteInstantMs(payload.expiresAt),
   }
 }
 

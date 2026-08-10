@@ -61,7 +61,8 @@ export function waitingRoomTimestampLabel(
   value: number | null | undefined,
   options: {
     readonly missingLabel?: string
-    readonly utcSuffix?: boolean
+    readonly timeZone?: string
+    readonly includeTimeZone?: boolean
   } = {},
 ): string {
   if (!isFiniteNumber(value)) {
@@ -71,8 +72,20 @@ export function waitingRoomTimestampLabel(
   if (Number.isNaN(date.getTime())) {
     return options.missingLabel ?? "-"
   }
-  const label = date.toISOString().replace("T", " ").slice(0, 16)
-  return options.utcSuffix === false ? label : `${label} UTC`
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: options.timeZone,
+    timeZoneName: options.includeTimeZone === false ? undefined : "short",
+  }).formatToParts(date)
+  const values = new Map(parts.map((part) => [part.type, part.value]))
+  const label = `${values.get("year")}-${values.get("month")}-${values.get("day")} ${values.get("hour")}:${values.get("minute")}`
+  const zone = values.get("timeZoneName")
+  return zone ? `${label} ${zone}` : label
 }
 
 export function waitingRoomSessionRecencyMs(

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { waitingRoomTimestampLabel } from "@arroba/kernel-client/waiting-room-activity"
 
 import type { SessionListEntry } from "./sessions.js"
 import {
@@ -49,7 +50,7 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.columns?.[2]?.trim(), "managed")
   assert.equal(rows[1]?.columns?.[3]?.trim(), "1 working")
   assert.equal(rows[1]?.columns?.[4]?.trim(), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
-  assert.equal(rows[1]?.columns?.[5]?.trim(), "2026-01-02 10:00 UTC")
+  assert.equal(rows[1]?.columns?.[5]?.trim(), waitingRoomTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
   assert.equal(rows[1]?.focused, true)
 })
 

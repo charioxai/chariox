@@ -4,6 +4,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RelayCloudProfile } from "./preferences.js"
+import { parseAbsoluteInstantMs } from "@arroba/kernel-client/time"
 import {
   configureRelayRequest,
   connectCloudRelayRequest,
@@ -123,7 +124,7 @@ export async function startCloudRelayLogin(
     deviceCode: payload.device_code,
     userCode: payload.user_code,
     verificationUrl: payload.verification_url,
-    expiresAtMs: Date.parse(payload.expires_at),
+    expiresAtMs: parseAbsoluteInstantMs(payload.expires_at),
     intervalSeconds: payload.interval_seconds,
   }
 }
@@ -139,7 +140,7 @@ export async function pollCloudRelayLogin(
     return {
       status: "authorization_pending" as const,
       intervalSeconds: payload.interval_seconds ?? 2,
-      expiresAtMs: payload.expires_at ? Date.parse(payload.expires_at) : 0,
+      expiresAtMs: payload.expires_at ? parseAbsoluteInstantMs(payload.expires_at) : 0,
     }
   }
   if (payload.status === "expired_token") {
@@ -152,7 +153,7 @@ export async function pollCloudRelayLogin(
     status: "approved" as const,
     profile: {
       ...relayCloudProfileFromKernel(payload.profile),
-      ...(payload.expires_at ? { cloudSessionExpiresAtMs: Date.parse(payload.expires_at) } : {}),
+      ...(payload.expires_at ? { cloudSessionExpiresAtMs: parseAbsoluteInstantMs(payload.expires_at) } : {}),
     },
   }
 }
@@ -194,7 +195,7 @@ export async function connectKernelCloudRelay(client: LocalIpcClient) {
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
-    tokenExpiresAtMs: Date.parse(payload.token.token_expires_at),
+    tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
 }
@@ -215,7 +216,7 @@ export async function issueKernelCloudRelayClientToken(
   return {
     relayUrl: payload.token.relay_url,
     relayToken: payload.token.relay_token,
-    tokenExpiresAtMs: Date.parse(payload.token.token_expires_at),
+    tokenExpiresAtMs: parseAbsoluteInstantMs(payload.token.token_expires_at),
     profile: relayCloudProfileFromKernel(payload.profile),
   }
 }
@@ -240,7 +241,7 @@ export async function resolveKernelClientConnection(
     relayToken: payload.relay_token,
     targetDaemonId: payload.target_daemon_id ?? null,
     targetDaemonAlias: payload.target_daemon_alias ?? null,
-    tokenExpiresAtMs: payload.token_expires_at ? Date.parse(payload.token_expires_at) : null,
+    tokenExpiresAtMs: payload.token_expires_at ? parseAbsoluteInstantMs(payload.token_expires_at) : null,
     machineId: payload.machine_id ?? null,
     kernelId: payload.kernel_id ?? null,
   }

@@ -47,7 +47,7 @@ export function waitingRoomExternalProviderSessionRows(
   const modifiedWidth = Math.max(
     "Modified".length,
     MODIFIED_MIN_WIDTH,
-    ...sessions.map((session) => externalProviderSessionModifiedLabel(session, { utcSuffix: true }).length),
+    ...sessions.map((session) => externalProviderSessionModifiedLabel(session).length),
   )
   const rows: WaitingRoomRow[] = [{
     id: "external-provider-session-header",
@@ -73,7 +73,7 @@ export function waitingRoomExternalProviderSessionRows(
       columns: [
         column(session.provider, providerWidth),
         column(externalProviderSessionModeLabel(session), modeWidth),
-        column(externalProviderSessionModifiedLabel(session, { utcSuffix: true }), modifiedWidth),
+        column(externalProviderSessionModifiedLabel(session), modifiedWidth),
       ],
       indent: 1,
       focused: state.focus === "external-session" && selectedIndex === index,

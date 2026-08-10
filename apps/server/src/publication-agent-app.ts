@@ -10,6 +10,7 @@ import {
 } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
+import { canonicalUtcInstant } from "@arroba/kernel-client/time"
 
 import {
   appendCloudPublicationDeploymentLogs,
@@ -324,11 +325,19 @@ function normalizeAuditEntry(value: unknown): PublicationDeploymentLogEntry | nu
   if (!value || typeof value !== "object" || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   if (typeof record.message !== "string" || record.message.trim() === "") return null
+  let occurredAt = new Date().toISOString()
+  if (typeof record.occurredAt === "string") {
+    try {
+      occurredAt = canonicalUtcInstant(record.occurredAt)
+    } catch {
+      return null
+    }
+  }
   return {
     level: typeof record.level === "string" ? record.level : "info",
     message: record.message,
     metadata: record.metadata,
-    occurredAt: typeof record.occurredAt === "string" ? record.occurredAt : new Date().toISOString(),
+    occurredAt,
   }
 }
 

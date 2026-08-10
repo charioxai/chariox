@@ -19,12 +19,24 @@ import {
   waitingRoomTimestampLabel,
 } from "./waiting-room-activity.js"
 
-test("waiting room timestamp label formats UTC labels with stable missing fallback", () => {
+test("waiting room timestamp label formats explicit IANA zones with stable missing fallback", () => {
   const timestamp = Date.UTC(2026, 0, 2, 10, 30)
-  assert.equal(waitingRoomTimestampLabel(timestamp), "2026-01-02 10:30 UTC")
-  assert.equal(waitingRoomTimestampLabel(timestamp, { utcSuffix: false }), "2026-01-02 10:30")
+  assert.equal(waitingRoomTimestampLabel(timestamp, { timeZone: "UTC" }), "2026-01-02 10:30 UTC")
+  assert.equal(waitingRoomTimestampLabel(timestamp, { timeZone: "Europe/Helsinki" }), "2026-01-02 12:30 GMT+2")
+  assert.equal(waitingRoomTimestampLabel(timestamp, { timeZone: "UTC", includeTimeZone: false }), "2026-01-02 10:30")
   assert.equal(waitingRoomTimestampLabel(null), "-")
   assert.equal(waitingRoomTimestampLabel(Number.NaN, { missingLabel: "missing" }), "missing")
+})
+
+test("waiting room timestamp label follows IANA daylight-saving transitions", () => {
+  assert.equal(
+    waitingRoomTimestampLabel(Date.UTC(2026, 2, 8, 6, 30), { timeZone: "America/New_York" }),
+    "2026-03-08 01:30 EST",
+  )
+  assert.equal(
+    waitingRoomTimestampLabel(Date.UTC(2026, 2, 8, 7, 30), { timeZone: "America/New_York" }),
+    "2026-03-08 03:30 EDT",
+  )
 })
 
 test("waiting room session recency prioritizes prompt, activity, last-used, then created timestamps", () => {
