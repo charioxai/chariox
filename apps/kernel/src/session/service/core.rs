@@ -8,6 +8,7 @@ impl SessionService {
     pub fn new(config: &DaemonConfig) -> Self {
         Self {
             store: SessionStore::new(),
+            projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
@@ -52,6 +53,7 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
+        let project_id = self.resolve_project_selection(&request)?;
         let mut session = RuntimeSession::new(
             self.store.next_session_id(),
             alias,
@@ -60,6 +62,7 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
+        debug_assert!(session.assign_project_id(project_id));
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
@@ -98,6 +101,10 @@ impl SessionService {
             .collect()
     }
 
+    pub(crate) fn durable_projects(&self) -> Vec<RuntimeProject> {
+        self.projects.values().cloned().collect()
+    }
+
     fn default_session_alias(&self, workspace_id: &str) -> String {
         let base = default_session_alias_base(workspace_id);
         let mut number = self
@@ -118,8 +125,248 @@ impl SessionService {
         }
     }
 
-    pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
+    pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
+        if session.project_id().is_empty() {
+            let project_id = self.ensure_default_project(
+                session.owner_user_id(),
+                session.workspace_id(),
+                None,
+            );
+            debug_assert!(session.assign_project_id(project_id));
+        } else if !self.projects.contains_key(session.project_id()) {
+            let project = RuntimeProject::new(
+                session.project_id().to_string(),
+                session.owner_user_id().to_string(),
+                session.workspace_id().to_string(),
+                default_project_name(session.workspace_id()),
+                RuntimeProjectKind::Default,
+            );
+            self.projects.insert(project.id().to_string(), project);
+        }
         self.store.insert(session)
+    }
+
+    pub(crate) fn restore_projects(&mut self, projects: Vec<RuntimeProject>) {
+        for project in projects {
+            self.projects.insert(project.id().to_string(), project);
+        }
+    }
+
+    pub fn list_projects(&self, owner_user_id: &str, include_archived: bool) -> Vec<RuntimeProject> {
+        self.projects
+            .values()
+            .filter(|project| project.owner_user_id() == owner_user_id)
+            .filter(|project| {
+                include_archived || project.status() == RuntimeProjectStatus::Active
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
+        self.projects.get(project_id).cloned().ok_or_else(|| {
+            project_error("project.get", format!("project `{project_id}` was not found"))
+        })
+    }
+
+    pub fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
+        self.store
+            .list()
+            .into_iter()
+            .filter(|session| session.project_id() == project_id)
+            .collect()
+    }
+
+    pub fn rename_project(
+        &mut self,
+        project_id: &str,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let name = normalize_project_name(&name)?;
+        let project = self.project_mut_for_owner(project_id, caller_user_id, "project.rename")?;
+        project.rename(name);
+        Ok(project.clone())
+    }
+
+    pub fn archive_project(
+        &mut self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let project = self.project_mut_for_owner(project_id, caller_user_id, "project.archive")?;
+        project.archive();
+        Ok(project.clone())
+    }
+
+    pub fn restore_project_status(
+        &mut self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let project = self.project_mut_for_owner(project_id, caller_user_id, "project.restore")?;
+        project.restore();
+        Ok(project.clone())
+    }
+
+    pub fn delete_project_record(
+        &mut self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.ensure_project_owner(project_id, caller_user_id, "project.delete")?;
+        self.projects.remove(project_id).ok_or_else(|| {
+            project_error("project.delete", format!("project `{project_id}` was not found"))
+        })
+    }
+
+    pub fn ensure_project_owner(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        let project = self.get_project(project_id)?;
+        if project.owner_user_id() != caller_user_id {
+            return Err(project_error(
+                operation,
+                format!("user `{caller_user_id}` does not own project `{project_id}`"),
+            ));
+        }
+        Ok(project)
+    }
+
+    fn project_mut_for_owner(
+        &mut self,
+        project_id: &str,
+        caller_user_id: &str,
+        operation: &'static str,
+    ) -> Result<&mut RuntimeProject, DaemonError> {
+        self.ensure_project_owner(project_id, caller_user_id, operation)?;
+        self.projects.get_mut(project_id).ok_or_else(|| {
+            project_error(operation, format!("project `{project_id}` was not found"))
+        })
+    }
+
+    fn resolve_project_selection(
+        &mut self,
+        request: &CreateSessionRequest,
+    ) -> Result<String, DaemonError> {
+        match &request.project_selection {
+            SessionProjectSelection::Default => Ok(self.ensure_default_project(
+                &request.owner_user_id,
+                &request.workspace_id,
+                request.default_project_name_hint.as_deref(),
+            )),
+            SessionProjectSelection::Existing { project_id } => {
+                let project = self.ensure_project_owner(
+                    project_id,
+                    &request.owner_user_id,
+                    "session.create",
+                )?;
+                if project.workspace_id() != request.workspace_id {
+                    return Err(project_error(
+                        "session.create",
+                        format!(
+                            "project `{project_id}` belongs to workspace `{}` instead of `{}`",
+                            project.workspace_id(), request.workspace_id
+                        ),
+                    ));
+                }
+                if project.status() != RuntimeProjectStatus::Active {
+                    return Err(project_error(
+                        "session.create",
+                        format!(
+                            "project `{project_id}` is archived; restore it before creating a session"
+                        ),
+                    ));
+                }
+                Ok(project_id.clone())
+            }
+            SessionProjectSelection::New => {
+                let number = self.next_named_project_number(
+                    &request.owner_user_id,
+                    &request.workspace_id,
+                );
+                let id = self.next_named_project_id(
+                    &request.owner_user_id,
+                    &request.workspace_id,
+                    number,
+                );
+                let project = RuntimeProject::new(
+                    id.clone(),
+                    request.owner_user_id.clone(),
+                    request.workspace_id.clone(),
+                    format!("Project-{number}"),
+                    RuntimeProjectKind::Named,
+                );
+                self.projects.insert(id.clone(), project);
+                Ok(id)
+            }
+        }
+    }
+
+    fn ensure_default_project(
+        &mut self,
+        owner_user_id: &str,
+        workspace_id: &str,
+        name_hint: Option<&str>,
+    ) -> String {
+        if let Some(project) = self.projects.values().find(|project| {
+            project.owner_user_id() == owner_user_id
+                && project.workspace_id() == workspace_id
+                && project.kind() == RuntimeProjectKind::Default
+        }) {
+            return project.id().to_string();
+        }
+        let id = default_project_id(owner_user_id, workspace_id);
+        let name = name_hint
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| default_project_name(workspace_id));
+        let project = RuntimeProject::new(
+            id.clone(),
+            owner_user_id.to_string(),
+            workspace_id.to_string(),
+            name,
+            RuntimeProjectKind::Default,
+        );
+        self.projects.insert(id.clone(), project);
+        id
+    }
+
+    fn next_named_project_number(&self, owner_user_id: &str, workspace_id: &str) -> u64 {
+        self.projects
+            .values()
+            .filter(|project| {
+                project.owner_user_id() == owner_user_id
+                    && project.workspace_id() == workspace_id
+            })
+            .filter_map(|project| project.name().strip_prefix("Project-"))
+            .filter_map(|number| number.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    fn next_named_project_id(
+        &self,
+        owner_user_id: &str,
+        workspace_id: &str,
+        number: u64,
+    ) -> String {
+        let mut salt = number;
+        loop {
+            let candidate = format!(
+                "project-{:016x}",
+                stable_hash(&format!("{owner_user_id}\0{workspace_id}\0{salt}"))
+            );
+            if !self.projects.contains_key(&candidate) {
+                return candidate;
+            }
+            salt = salt.saturating_add(1);
+        }
     }
 
     pub(crate) fn remove_restored_session(&mut self, session_id: &str) -> Option<RuntimeSession> {
@@ -1015,4 +1262,48 @@ fn resolve_workspace_link_ref_in_session<'a>(
             message: format!("workspace link `{normalized_ref}` is ambiguous"),
         }),
     }
+}
+
+fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
+    let normalized = name.trim();
+    if normalized.is_empty() {
+        return Err(project_error(
+            "project.rename",
+            "project name cannot be empty".to_string(),
+        ));
+    }
+    if normalized.chars().count() > 120 {
+        return Err(project_error(
+            "project.rename",
+            "project name cannot exceed 120 characters".to_string(),
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+fn project_error(operation: &'static str, message: String) -> DaemonError {
+    DaemonError::LocalTransport { operation, message }
+}
+
+fn default_project_id(owner_user_id: &str, workspace_id: &str) -> String {
+    format!(
+        "project-default-{:016x}",
+        stable_hash(&format!("{owner_user_id}\0{workspace_id}"))
+    )
+}
+
+fn default_project_name(workspace_id: &str) -> String {
+    let trimmed = workspace_id.trim().trim_end_matches(['/', '\\']);
+    std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Project")
+        .to_string()
+}
+
+fn stable_hash(value: &str) -> u64 {
+    value.as_bytes().iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
 }

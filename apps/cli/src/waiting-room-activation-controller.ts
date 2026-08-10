@@ -28,6 +28,7 @@ export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
   execution_mode: "build" | "plan"
   permission_level: "required" | "yolo"
+  projectSelection?: WaitingRoomLaunchConfig["projectSelection"]
 }
 
 export type WaitingRoomActivationControllerDeps = {
@@ -258,6 +259,7 @@ export function createWaitingRoomActivationController(
         execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
         permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
         workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
+        projectSelection: launch.projectSelection ?? { kind: "default" },
         ...(sliceRef ? { sliceRef } : {}),
       },
     )

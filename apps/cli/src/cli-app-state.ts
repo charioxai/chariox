@@ -59,6 +59,7 @@ import type {
 import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
   WorkspaceScreenMode,
 } from "./workspace-screen.js"
@@ -108,6 +109,7 @@ export function createCliAppState(options: {
   const [providerRunState, setProviderRunState] = createSignal<RuntimeProviderRun | null>(initialBinding?.providerRun ?? null)
   const [createdSessionState, setCreatedSessionState] = createSignal(initialBinding?.createdSession ?? false)
   const [availableSessions, setAvailableSessions] = createSignal<SessionListEntry[]>(initialSessions)
+  const [waitingRoomProjects, setWaitingRoomProjects] = createSignal<WaitingRoomProjectSummary[]>([])
   const [providerCatalogState, setProviderCatalogState] = createSignal<ProviderCatalog>(initialProviderCatalog)
   const [providerCommandCatalogState, setProviderCommandCatalogState] = createSignal<ProviderCommandCatalogs>(initialProviderCommandCatalogs)
   const [terminalCommandCatalogState, setTerminalCommandCatalogState] = createSignal<TerminalCommandCatalog | null>(initialTerminalCommandCatalog)
@@ -227,6 +229,8 @@ export function createCliAppState(options: {
     setCreatedSessionState,
     availableSessions,
     setAvailableSessions,
+    waitingRoomProjects,
+    setWaitingRoomProjects,
     providerCatalogState,
     setProviderCatalogState,
     providerCommandCatalogState,

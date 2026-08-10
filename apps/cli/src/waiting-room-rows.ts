@@ -28,6 +28,7 @@ import type {
   WaitingRoomState,
   WaitingRoomTargetState,
 } from "./waiting-room-types.js"
+import { waitingRoomProjectRows, waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export function waitingRoomRows(
   state: WaitingRoomState,
@@ -44,12 +45,14 @@ export function waitingRoomRows(
   const visibleSessions = waitingRoomSessions(sessions)
   const terminals = waitingRoomTerminals(remote)
   const terminalTitles = terminals.map(formatWaitingRoomTerminalTitle)
+  const projects = waitingRoomProjectsForNavigation(remote.projects)
   const titleWidth = Math.max(
     waitingRoomSessionTitleWidth(sessions),
     waitingRoomExternalProviderSessionTitleWidth(remote),
     waitingRoomSliceTitleWidth(remote),
     ...terminalTitles.map((title) => Math.max(0, title.length)),
     "Add New Terminal".length,
+    ...projects.map((project) => project.name.length),
   )
   const rows: WaitingRoomRow[] = waitingRoomStartRows(state, choice, {
     modelOptions,
@@ -61,7 +64,11 @@ export function waitingRoomRows(
     titleWidth,
   })
 
-  rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))
+  if (projects.length > 0) {
+    rows.push(...waitingRoomProjectRows(state, remote.projects, sessions, { inventoryLoading, loadingText, titleWidth }))
+  } else {
+    rows.push(...waitingRoomSessionRows(state, sessions, { inventoryLoading, loadingText, titleWidth }))
+  }
   rows.push(...waitingRoomExternalProviderSessionRows(state, remote, { inventoryLoading, loadingText, titleWidth }))
 
   rows.push(

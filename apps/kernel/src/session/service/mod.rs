@@ -14,8 +14,9 @@ use super::types::{
 };
 use super::{
     unix_epoch_ms, AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
-    CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeSession,
-    SessionConfigState, SessionInvite, SessionMember, SessionStatus, SessionStore,
+    CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeProject,
+    RuntimeProjectKind, RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite,
+    SessionMember, SessionProjectSelection, SessionStatus, SessionStore,
     WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
     WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
@@ -153,6 +154,7 @@ pub struct AgentPromptScheduleCollection {
 #[derive(Debug, Clone)]
 pub struct SessionService {
     store: SessionStore,
+    projects: BTreeMap<String, RuntimeProject>,
     ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
     host_daemon_id: String,

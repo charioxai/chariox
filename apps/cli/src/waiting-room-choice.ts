@@ -24,6 +24,8 @@ import {
 } from "./waiting-room-slices.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import { projectSelectionFromId } from "./waiting-room-projects.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export function waitingRoomModel(state: WaitingRoomState, catalog: ProviderCatalog) {
   return catalogModelOptions(catalog, state.providerId).find((option) => option.id === state.modelId) ?? null
@@ -55,8 +57,10 @@ export function waitingRoomChoice(
     selectedKernelRef: placement.kernelRef,
   })
   const allSlices = waitingRoomAllSlices(remote)
+  const projects = waitingRoomProjectsForNavigation(remote.projects)
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
+    project: projects[state.projectIndex] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
@@ -73,6 +77,7 @@ export function waitingRoomChoice(
     providerId: state.providerId,
     model,
     effort: state.effort,
+    projectSelection: projectSelectionFromId(state.projectSelectionId),
     providerCatalogFallback: providerCatalogIsLocalFallback(catalog),
   }
 }

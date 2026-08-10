@@ -5,7 +5,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionConfigState, SessionService,
+    CreateSessionRequest, PromptQueueItem, RuntimeProject, RuntimeSession, SessionConfigState,
+    SessionService,
 };
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,66 @@ impl SessionStateStore {
 
     pub(crate) fn list_all_sessions(&self) -> Vec<RuntimeSession> {
         self.read().list_all_sessions()
+    }
+
+    pub(crate) fn list_projects(
+        &self,
+        owner_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
+        self.read().list_projects(owner_user_id, include_archived)
+    }
+
+    pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
+        self.read().get_project(project_id)
+    }
+
+    pub(crate) fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
+        self.read().sessions_in_project(project_id)
+    }
+
+    pub(crate) fn durable_projects(&self) -> Vec<RuntimeProject> {
+        self.read().durable_projects()
+    }
+
+    pub(crate) fn restore_projects(&self, projects: Vec<RuntimeProject>) {
+        self.write().restore_projects(projects)
+    }
+
+    pub(crate) fn rename_project(
+        &self,
+        project_id: &str,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .rename_project(project_id, name, caller_user_id)
+    }
+
+    pub(crate) fn archive_project(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write().archive_project(project_id, caller_user_id)
+    }
+
+    pub(crate) fn restore_project_status(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .restore_project_status(project_id, caller_user_id)
+    }
+
+    pub(crate) fn delete_project_record(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .delete_project_record(project_id, caller_user_id)
     }
 
     pub(crate) fn create_session(

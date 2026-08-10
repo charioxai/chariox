@@ -2,11 +2,14 @@ import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
 import type { ProviderAccountSummary } from "@arroba/kernel-client"
 import type { ThemeName } from "./theme-registry.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type WaitingRoomFocus =
   | "new"
   | "launch-machine"
   | "launch-kernel"
+  | "project"
+  | "project-entry"
   | "provider"
   | "model"
   | "effort"
@@ -38,6 +41,7 @@ export type WaitingRoomKeyState = {
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
+  projectIndex: number
   externalSessionIndex?: number
   machineIndex: number
   remoteKernelIndex: number
@@ -47,6 +51,7 @@ export type WaitingRoomState = {
   workspaceLiveSyncMode: "off" | "managed" | "tracked"
   selectedMachineRef?: string
   selectedKernelRef?: string
+  projectSelectionId: string
   sliceSelectionId?: string
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
@@ -102,6 +107,7 @@ export type WaitingRoomRemoteState = {
   externalProviderSessions?: ExternalProviderSessionRecord[]
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
+  projects?: WaitingRoomProjectSummary[]
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

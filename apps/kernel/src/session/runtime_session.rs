@@ -65,6 +65,8 @@ struct WorkflowPublicationState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
+    #[serde(default)]
+    project_id: String,
     alias: Option<String>,
     workspace_id: String,
     worktree_id: String,
@@ -159,6 +161,7 @@ impl RuntimeSession {
 
         Self {
             id: id.clone(),
+            project_id: String::new(),
             alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
@@ -208,6 +211,18 @@ impl RuntimeSession {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub(crate) fn assign_project_id(&mut self, project_id: impl Into<String>) -> bool {
+        if !self.project_id.is_empty() {
+            return false;
+        }
+        self.project_id = project_id.into();
+        true
     }
 
     pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {

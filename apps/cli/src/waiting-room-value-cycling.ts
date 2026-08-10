@@ -22,6 +22,7 @@ import {
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import { cycleWaitingRoomProjectSelectionId } from "./waiting-room-projects.js"
 
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
@@ -97,6 +98,16 @@ export function cycleWaitingRoomFocusedValue(
   }
   if (state.focus === "launch-kernel") {
     return context.normalizeState(cycleWaitingRoomLaunchKernel(state, remote, delta))
+  }
+  if (state.focus === "project") {
+    return {
+      ...state,
+      projectSelectionId: cycleWaitingRoomProjectSelectionId(
+        state.projectSelectionId,
+        remote.projects,
+        delta,
+      ),
+    }
   }
   if (state.focus === "live-sync") {
     const modes: readonly WaitingRoomState["workspaceLiveSyncMode"][] = ["off", "managed", "tracked"]

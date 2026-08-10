@@ -41,6 +41,7 @@ export type CliAutomationProcessCompositionDeps = {
   waitingRoomState: AnyFn
   setWaitingRoomState: AnyFn
   availableSessions: AnyFn
+  waitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
@@ -107,6 +108,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     isAttached: deps.isAttached,
     waitingRoomState: deps.waitingRoomState,
     availableSessions: deps.availableSessions,
+    waitingRoomProjects: deps.waitingRoomProjects,
     providerCatalogState: deps.providerCatalogState,
     waitingRoomCloudNotice: deps.waitingRoomCloudNotice,
     waitingRoomInventoryStatus: deps.waitingRoomInventoryStatus,

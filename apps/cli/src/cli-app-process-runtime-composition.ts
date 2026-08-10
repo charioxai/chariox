@@ -45,6 +45,7 @@ export function createCliAppProcessRuntimeComposition(
     waitingRoomState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
     availableSessions: deps.availableSessions,
+    waitingRoomProjects: deps.waitingRoomProjects,
     providerCatalogState: deps.providerCatalogState,
     waitingRoomCloudNotice: deps.waitingRoomCloudNotice,
     waitingRoomInventoryStatus: deps.waitingRoomInventoryStatus,

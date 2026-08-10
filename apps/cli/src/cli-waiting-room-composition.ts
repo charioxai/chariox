@@ -54,6 +54,8 @@ export type CliWaitingRoomCompositionDeps = {
   setWaitingRoomState: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
+  waitingRoomProjects: AnyFn
+  setWaitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   setProviderCatalogState: AnyFn
   providerCommandCatalogState: AnyFn
@@ -133,6 +135,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getThemeRegistry: deps.themeRegistryState,
     getCurrentProvider: () => deps.options.provider ?? "opencode",
@@ -174,6 +177,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     isKernelHidden: deps.waitingRoomHiddenKernelController.isKernelHidden,
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
+    getProjects: deps.waitingRoomProjects,
+    setProjects: deps.setWaitingRoomProjects,
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
@@ -268,6 +273,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getWorkspaceTarget: deps.pendingWorkspaceTarget,
     getWorktreeTarget: deps.pendingWorktreeTarget,
@@ -289,7 +295,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       account_profile: launch.account_profile,
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null)),
+    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection),
     importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
     loadOlderExternalProviderSessions: async () => {
       const pageState = deps.externalProviderSessionsPageState()
@@ -362,6 +368,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,

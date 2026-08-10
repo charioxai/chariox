@@ -30,6 +30,7 @@ import {
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type CliAutomationSnapshotDeps = {
   attachmentId?: () => string | null
@@ -45,6 +46,7 @@ export type CliAutomationSnapshotDeps = {
   isAttached: () => boolean
   waitingRoomState: () => WaitingRoomState
   availableSessions: () => SessionListEntry[]
+  waitingRoomProjects?: () => WaitingRoomProjectSummary[]
   providerCatalogState: () => ProviderCatalog
   waitingRoomCloudNotice: () => string | null
   waitingRoomInventoryStatus: () => "loading" | "ready" | "error"
@@ -163,6 +165,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
           externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
           slices: deps.slicesState(),
+          projects: deps.waitingRoomProjects?.() ?? [],
         }, deps.waitingRoomTargets(), deps.themeRegistryState()).map((row) => ({
           id: row.id,
           externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,

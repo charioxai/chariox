@@ -12,6 +12,7 @@ import { getWaitingRoomPublicSnapshotRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import { listSlices } from "./slice-api.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type RemoteMachineView = WaitingRoomRemoteMachineView
 
@@ -27,6 +28,7 @@ export type WaitingRoomInventory = {
   machineId: string
   machineAlias?: string | null
   sessions: WaitingRoomPublicSessionSummary[]
+  projects: WaitingRoomProjectSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
@@ -64,6 +66,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
       machine_id: payload.relay_status.machine_id,
       machine_alias: payload.relay_status.machine_alias ?? null,
     })).sort((left, right) => right.created_at_ms - left.created_at_ms),
+    projects: (payload.projects ?? []) as WaitingRoomProjectSummary[],
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines ?? [],
     remoteKernels: payload.remote_kernels ?? [],

@@ -32,6 +32,7 @@ export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room
 
 export type SessionListEntry = {
   id: string
+  project_id?: string
   alias?: string | null
   workspace_id?: string
   worktree_id: string
@@ -52,7 +53,28 @@ export type SessionListEntry = {
   last_prompt_sent_at_ms?: number | null
   attachment_ids?: string[]
   connected_cli_count?: number
+  joined_collaborator_count?: number
+  pending_collaboration_invite_count?: number
   activity?: SessionActivitySummary
+  agents?: Array<{
+    id: string
+    alias?: string | null
+    provider: string
+    model?: string | null
+    variant?: string | null
+    mode?: string | null
+    permission?: string | null
+    activity?: {
+      working?: boolean
+      error?: boolean
+      unread_idle_output?: boolean
+    }
+  }>
+  workflows?: Array<{
+    id: string
+    alias?: string | null
+    activity?: { working?: boolean; error?: boolean }
+  }>
 }
 
 export type SessionActivitySummary = {

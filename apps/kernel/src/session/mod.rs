@@ -6,6 +6,7 @@ mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
 mod runtime_interactions;
+mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
 mod service;
@@ -72,6 +73,9 @@ pub use types::{
     DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+};
+pub use runtime_project::{
+    RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub use workflow_publication::{

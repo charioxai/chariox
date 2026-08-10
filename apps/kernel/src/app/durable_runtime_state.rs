@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
-use crate::session::{DurablePromptPrivateState, RuntimeSession};
+use crate::session::{DurablePromptPrivateState, RuntimeProject, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -310,6 +310,7 @@ impl DaemonApp {
                 .or_default()
                 .push(state);
         }
+        self.sessions.restore_projects(snapshot.projects);
         for mut session in snapshot.sessions {
             if !restored_session_ids.contains(session.id()) {
                 continue;
@@ -609,6 +610,24 @@ impl DaemonApp {
 
     fn restore_durable_state_event(&mut self, event: DurableStateEvent) -> Result<(), DaemonError> {
         match event.kind.as_str() {
+            "project.created" | "project.updated" => {
+                let project: RuntimeProject = decode_durable_payload_field(
+                    &event,
+                    "project",
+                    "durable_state.restore_project",
+                )?;
+                self.sessions.restore_projects(vec![project]);
+            }
+            "project.deleted" => {
+                let project: RuntimeProject = decode_durable_payload_field(
+                    &event,
+                    "project",
+                    "durable_state.restore_project_delete",
+                )?;
+                let _ = self
+                    .sessions
+                    .delete_project_record(project.id(), project.owner_user_id());
+            }
             "session.created" => {
                 if durable_payload_entity_belongs_to_other_owner(
                     &event,
