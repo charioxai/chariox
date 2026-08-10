@@ -1,22 +1,11 @@
-import type { SessionProjectSelection } from "@arroba/kernel-client"
-
 import type { SessionListEntry } from "./sessions.js"
+import type {
+  SessionProjectSelection,
+  WaitingRoomPublicProjectSummary,
+} from "@arroba/kernel-client"
 
-export type WaitingRoomProjectSummary = {
-  id: string
-  owner_user_id: string
-  workspace_id: string
-  name: string
-  kind: "default" | "named"
-  status: "active" | "archived"
-  created_at_ms: number
-  updated_at_ms: number
-  archived_at_ms?: number | null
-  session_count: number
-  last_session_activity_at_ms?: number | null
-  joined_collaborator_count: number
-  pending_collaboration_invite_count: number
-}
+export type WaitingRoomProjectSummary = WaitingRoomPublicProjectSummary
+export type { SessionProjectSelection }
 
 export const DEFAULT_PROJECT_SELECTION_ID = "default"
 export const NEW_PROJECT_SELECTION_ID = "new"
@@ -44,7 +33,7 @@ export function waitingRoomProjectOptions(
   workspaceId?: string | null,
 ): Array<{ id: string; label: string; project?: WaitingRoomProjectSummary }> {
   const existing = (projects ?? [])
-    .filter((project) => project.status === "active")
+    .filter((project) => project.status === "active" && project.kind === "named")
     .filter((project) => !workspaceId || project.workspace_id === workspaceId)
     .sort((left, right) => (
       (right.last_session_activity_at_ms ?? right.updated_at_ms)
@@ -55,7 +44,7 @@ export function waitingRoomProjectOptions(
     { id: DEFAULT_PROJECT_SELECTION_ID, label: "Default" },
     ...existing.map((project) => ({
       id: existingProjectSelectionId(project.id),
-      label: project.kind === "default" ? `${project.name} (default)` : project.name,
+      label: project.name,
       project,
     })),
     { id: NEW_PROJECT_SELECTION_ID, label: "New" },

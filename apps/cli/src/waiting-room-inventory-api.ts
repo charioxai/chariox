@@ -28,7 +28,7 @@ export type WaitingRoomInventory = {
   machineId: string
   machineAlias?: string | null
   sessions: WaitingRoomPublicSessionSummary[]
-  projects: WaitingRoomProjectSummary[]
+  projects?: WaitingRoomProjectSummary[]
   relayStatus: RelayStatusView
   remoteMachines: RemoteMachineView[]
   remoteKernels: RemoteKernelView[]
@@ -66,7 +66,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
       machine_id: payload.relay_status.machine_id,
       machine_alias: payload.relay_status.machine_alias ?? null,
     })).sort((left, right) => right.created_at_ms - left.created_at_ms),
-    projects: (payload.projects ?? []) as WaitingRoomProjectSummary[],
+    projects: payload.projects ?? [],
     relayStatus: payload.relay_status,
     remoteMachines: payload.remote_machines ?? [],
     remoteKernels: payload.remote_kernels ?? [],

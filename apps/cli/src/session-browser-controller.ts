@@ -4,6 +4,7 @@ import {
   clampSessionBrowserIndex,
   nextSessionBrowserIndex,
   resolveSessionBrowserKeyAction,
+  sessionBrowserVisibleSessions,
   type SessionBrowserKeyEvent,
 } from "@arroba/kernel-client/session-browser-policy"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -46,7 +47,9 @@ export function createSessionBrowserController(deps: SessionBrowserControllerDep
   const selectedWaitingRoomState = (selectedIndex: number): WaitingRoomState => ({
     ...deps.waitingRoomState(),
     focus: "session",
-    sessionIndex: selectedIndex,
+    sessionIndex: Math.max(0, sessionBrowserVisibleSessions(deps.availableSessions()).findIndex((session) => (
+      session.id === deps.visibleSessions()[selectedIndex]?.id
+    ))),
   })
 
   const handleKey = (event: SessionBrowserKeyEvent) => {

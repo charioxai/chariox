@@ -72,7 +72,7 @@ export type WaitingRoomActivationControllerDeps = {
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
-    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+    session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
     launch: WaitingRoomLaunchConfig,
   ) => Promise<void>
@@ -259,7 +259,7 @@ export function createWaitingRoomActivationController(
         execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
         permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
         workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
-        projectSelection: launch.projectSelection ?? { kind: "default" },
+        ...(launch.projectSelection ? { projectSelection: launch.projectSelection } : {}),
         ...(sliceRef ? { sliceRef } : {}),
       },
     )

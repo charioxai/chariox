@@ -79,6 +79,7 @@ test("workflow inspector controller wires node-instructions editor callbacks", (
 function session(): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,

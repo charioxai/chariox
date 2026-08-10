@@ -108,6 +108,39 @@ test("createSession forwards worktree placement to the kernel request", async ()
   }])
 })
 
+test("createSession forwards the selected project policy to the kernel request", async () => {
+  const sent: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      sent.push(request)
+      return { SessionCreated: { session: runtimeSession({ project_id: "project-1" }) } }
+    },
+  } as unknown as LocalIpcClient
+
+  await createSession(
+    client,
+    "/workspace",
+    "/workspace",
+    undefined,
+    undefined,
+    null,
+    null,
+    null,
+    null,
+    { kind: "existing", project_id: "project-1" },
+  )
+
+  assert.deepEqual(sent, [{
+    CreateSession: {
+      workspace_id: "/workspace",
+      worktree_id: "/workspace",
+      alias: null,
+      slice_ref: null,
+      project_selection: { kind: "existing", project_id: "project-1" },
+    },
+  }])
+})
+
 test("getSessionState merges projected agent activity into the returned session", async () => {
   const client = {
     send: async () => ({
@@ -146,6 +179,7 @@ test("getSessionState merges projected agent activity into the returned session"
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "/workspace",
     worktree_id: "/workspace",

@@ -6,6 +6,7 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import {
   createWaitingRoomLifecycleActionController,
   type WaitingRoomLifecycleActionControllerDeps,
@@ -125,6 +126,63 @@ test("waiting room lifecycle action blocks active slice deletion before confirma
   assert.equal(harness.footerMessages().at(-1)?.message, "slice busy-dev has 1 active agent")
 })
 
+test("waiting room lifecycle action archives a selected project through the aggregate kernel command", async () => {
+  const project = projectSummary()
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    projects: [project],
+  })
+
+  await harness.controller.applyAction("archive")
+
+  assert.deepEqual(harness.archivedProjectIds(), [project.id])
+  assert.equal(harness.footerMessages().at(-1)?.message, "archived project Frontend")
+})
+
+test("waiting room lifecycle action surfaces the kernel idle blocker for projects", async () => {
+  const project = projectSummary()
+  const blocker = "Project project-1 cannot be archived until all sessions are idle; active sessions: session-1"
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    projects: [project],
+    projectArchiveError: blocker,
+  })
+
+  await harness.controller.applyAction("archive")
+
+  assert.deepEqual(harness.archivedProjectIds(), [])
+  assert.equal(harness.footerMessages().at(-1)?.message, blocker)
+})
+
+test("waiting room lifecycle action deletes a selected project through the aggregate kernel command", async () => {
+  const project = projectSummary()
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "project-entry", projectIndex: 0 }),
+    projects: [project],
+    sessionBrowserOpen: true,
+  })
+
+  await harness.controller.applyAction("delete")
+
+  assert.deepEqual(harness.deletedProjectIds(), [project.id])
+  assert.equal(harness.closedSessionBrowserCount(), 1)
+  assert.equal(harness.footerMessages().at(-1)?.message, "deleted project Frontend")
+})
+
+test("waiting room lifecycle action restores and renames projects", async () => {
+  const project = { ...projectSummary(), status: "archived" as const }
+  const harness = createHarness({ projects: [project] })
+
+  await harness.controller.restoreProject(project.id)
+  await harness.controller.renameProject(project.id, "  Web  ")
+
+  assert.deepEqual(harness.restoredProjectIds(), [project.id])
+  assert.deepEqual(harness.renamedProjects(), [{ id: project.id, name: "Web" }])
+  assert.equal(harness.refreshCount(), 2)
+  assert.equal(harness.footerMessages().at(-2)?.message, "restored project Frontend")
+  assert.equal(harness.footerMessages().at(-1)?.message, "renamed project to Web")
+})
+
 function createHarness(options: {
   state?: WaitingRoomState
   sessions?: SessionListEntry[]
@@ -133,6 +191,9 @@ function createHarness(options: {
   slices?: SliceRecord[]
   confirmationController?: WaitingRoomLifecycleConfirmationController
   sessionBrowserOpen?: boolean
+  projects?: WaitingRoomProjectSummary[]
+  projectArchiveError?: string
+  projectDeleteError?: string
 } = {}) {
   let availableSessions = options.sessions ?? [
     session("session-1", "one"),
@@ -147,6 +208,10 @@ function createHarness(options: {
   const forgottenMachineIds: string[] = []
   const hiddenKernelIds: string[] = []
   const deletedSliceIds: string[] = []
+  const archivedProjectIds: string[] = []
+  const deletedProjectIds: string[] = []
+  const restoredProjectIds: string[] = []
+  const renamedProjects: Array<{ id: string; name: string }> = []
   const reconciledStates: WaitingRoomState[] = []
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   let invalidateCount = 0
@@ -161,12 +226,32 @@ function createHarness(options: {
       machines: remoteMachines,
       kernels: remoteKernels,
       slices,
+      projects: options.projects ?? [],
     }),
     getAvailableSessions: () => availableSessions,
     setAvailableSessions: (sessions) => {
       availableSessions = sessions
     },
     getProviderCatalog: () => fallbackProviderCatalog(),
+    getProjects: () => options.projects ?? [],
+    archiveProject: async (projectId) => {
+      if (options.projectArchiveError) throw new Error(options.projectArchiveError)
+      archivedProjectIds.push(projectId)
+      return { project: { id: projectId, name: "Frontend", status: "archived" }, sessions: [] }
+    },
+    deleteProject: async (projectId) => {
+      if (options.projectDeleteError) throw new Error(options.projectDeleteError)
+      deletedProjectIds.push(projectId)
+      return { project: { id: projectId, name: "Frontend", status: "active" }, sessions: [] }
+    },
+    restoreProject: async (projectId) => {
+      restoredProjectIds.push(projectId)
+      return { id: projectId, name: "Frontend" }
+    },
+    renameProject: async (projectId, name) => {
+      renamedProjects.push({ id: projectId, name })
+      return { id: projectId, name }
+    },
     getWorkspaceTarget: () => "/workspace",
     confirmationController: options.confirmationController ?? confirmationController("confirmed"),
     archiveSessionById: async (sessionId) => {
@@ -230,11 +315,31 @@ function createHarness(options: {
     forgottenMachineIds: () => forgottenMachineIds,
     hiddenKernelIds: () => hiddenKernelIds,
     deletedSliceIds: () => deletedSliceIds,
+    archivedProjectIds: () => archivedProjectIds,
+    deletedProjectIds: () => deletedProjectIds,
+    restoredProjectIds: () => restoredProjectIds,
+    renamedProjects: () => renamedProjects,
     reconciledStates: () => reconciledStates,
     footerMessages: () => footerMessages,
     invalidateCount: () => invalidateCount,
     refreshCount: () => refreshCount,
     closedSessionBrowserCount: () => closedSessionBrowserCount,
+  }
+}
+
+function projectSummary(): WaitingRoomProjectSummary {
+  return {
+    id: "project-1",
+    owner_user_id: "owner",
+    workspace_id: "/workspace",
+    name: "Frontend",
+    kind: "named",
+    status: "active",
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    session_count: 1,
+    joined_collaborator_count: 0,
+    pending_collaboration_invite_count: 0,
   }
 }
 

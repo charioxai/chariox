@@ -24,7 +24,7 @@ import {
 } from "./waiting-room-slices.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
-import { projectSelectionFromId } from "./waiting-room-projects.js"
+import { normalizeWaitingRoomProjectSelectionId, projectSelectionFromId } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export function waitingRoomModel(state: WaitingRoomState, catalog: ProviderCatalog) {
@@ -57,10 +57,10 @@ export function waitingRoomChoice(
     selectedKernelRef: placement.kernelRef,
   })
   const allSlices = waitingRoomAllSlices(remote)
-  const projects = waitingRoomProjectsForNavigation(remote.projects)
+  const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state.showArchivedProjects))
   return {
     session: visibleSessions[state.sessionIndex] ?? null,
-    project: projects[state.projectIndex] ?? null,
+    project: projects[state.projectIndex ?? 0] ?? null,
     remoteMachine: remoteMachines[state.machineIndex] ?? null,
     remoteKernel: remoteKernels[state.remoteKernelIndex] ?? null,
     terminal: terminals[state.terminalIndex] ?? null,
@@ -77,7 +77,11 @@ export function waitingRoomChoice(
     providerId: state.providerId,
     model,
     effort: state.effort,
-    projectSelection: projectSelectionFromId(state.projectSelectionId),
+    projectSelection: projectSelectionFromId(normalizeWaitingRoomProjectSelectionId(
+      state.projectSelectionId,
+      remote.projects,
+      remote.workspaceId,
+    )),
     providerCatalogFallback: providerCatalogIsLocalFallback(catalog),
   }
 }

@@ -4,18 +4,24 @@ import {
   clampSessionBrowserIndex,
   sessionBrowserVisibleSessions,
 } from "@arroba/kernel-client/session-browser-policy"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type SessionBrowserProjectionControllerDeps = {
   isAttached: () => boolean
   availableSessions: () => SessionListEntry[]
   selectedIndex: () => number
   setSelectedIndex: (index: number) => void
+  selectedProject?: () => WaitingRoomProjectSummary | null
 }
 
 export function createSessionBrowserProjectionController(
   deps: SessionBrowserProjectionControllerDeps,
 ) {
-  const sessions = () => sessionBrowserVisibleSessions(deps.availableSessions())
+  const sessions = () => {
+    const projectId = deps.selectedProject?.()?.id
+    return sessionBrowserVisibleSessions(deps.availableSessions())
+      .filter((session) => !projectId || session.project_id === projectId)
+  }
   const normalizeIndex = () => {
     const visibleSessions = sessions()
     const index = clampSessionBrowserIndex(deps.selectedIndex(), visibleSessions.length)
@@ -29,5 +35,6 @@ export function createSessionBrowserProjectionController(
     hotkeySections: () => buildHotkeySections(deps.isAttached()),
     sessions,
     normalizeIndex,
+    selectedProject: () => deps.selectedProject?.() ?? null,
   }
 }

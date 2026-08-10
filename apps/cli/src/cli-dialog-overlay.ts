@@ -20,6 +20,7 @@ import {
   sessionBrowserTitle,
 } from "./sessions.js"
 import { theme } from "./theme.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
@@ -33,6 +34,7 @@ type CliDialogOverlayOptions = {
   onDismiss: () => void
   sessions: SessionListEntry[]
   normalizeSessionBrowserIndex: () => number
+  sessionBrowserProject?: WaitingRoomProjectSummary | null
   terminalPairing: TerminalPairingLinkView | null
   terminalPairingQrLines: string[]
   hotkeySections: HotkeySection[]
@@ -78,7 +80,11 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
 function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRenderable {
   const { renderer, dimensions, sessions } = options
   const panel = dialogPanel(renderer, Math.min(112, Math.max(78, Math.floor(dimensions.width * 0.78))), dimensions.width)
-  panel.add(dialogHeader(renderer, "All Sessions", "Enter opens • A/D confirm • Esc closes"))
+  panel.add(dialogHeader(
+    renderer,
+    options.sessionBrowserProject ? `${options.sessionBrowserProject.name} Sessions` : "All Sessions",
+    "Enter opens • A/D confirm • Esc returns",
+  ))
   if (sessions.length === 0) {
     panel.add(new TextRenderable(renderer, {
       content: "No sessions available.",
@@ -102,7 +108,8 @@ function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRendera
     const rowIndex = start + offset
     const selected = rowIndex === index
     const title = sessionBrowserTitle(session)
-    const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}`
+    const details = formatSessionHierarchyDetails(session)
+    const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}  ${details}`
     panel.add(new TextRenderable(renderer, {
       content,
       fg: selected ? theme.primary : theme.text,
@@ -117,6 +124,30 @@ function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRendera
     }))
   }
   return panel
+}
+
+function formatSessionHierarchyDetails(session: SessionListEntry): string {
+  const agentCount = session.activity?.agent_count ?? session.agents?.length ?? 0
+  const working = session.activity?.working_agent_count ?? 0
+  const done = session.activity?.unread_idle_agent_count ?? 0
+  const error = session.activity?.error_agent_count ?? 0
+  const idle = Math.max(0, agentCount - working - done - error)
+  const workflows = session.workflows?.length ?? 0
+  const running = session.workflows?.filter((workflow) => workflow.activity?.working).length ?? 0
+  const joined = session.joined_collaborator_count ?? 0
+  const pending = session.pending_collaboration_invite_count ?? 0
+  const badges = [
+    `${agentCount} agents`,
+    ...(working ? [`${working} WORKING`] : []),
+    ...(idle ? [`${idle} IDLE`] : []),
+    ...(done ? [`${done} DONE`] : []),
+    ...(error ? [`${error} ERROR`] : []),
+    `${workflows} workflows`,
+    ...(running ? [`${running} RUNNING`] : []),
+    `${joined} collaborators joined`,
+    `${pending} invitations pending`,
+  ]
+  return badges.join(" · ")
 }
 
 function renderTerminalPairingPanel(options: CliDialogOverlayOptions): BoxRenderable {

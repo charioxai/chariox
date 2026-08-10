@@ -21,7 +21,7 @@ test("compactFooterSummary compresses attached session action hints for narrow t
 test("compactFooterSummary compresses waiting room hints for narrow terminals", () => {
   const compact = compactFooterSummary(SESSION_NEW_FOOTER_HINT, 80)
 
-  assert.equal(compact, "Waiting room • arrows • Enter • A archive • D delete • Ctrl+T keys")
+  assert.equal(compact, "Waiting room • arrows • Enter • E rename • A archive • D delete • Ctrl+T keys")
   assert.ok(compact.length <= 80)
 })
 

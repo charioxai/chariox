@@ -8,6 +8,7 @@ import {
   waitingRoomSessionLifecycleActionForEvent,
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export type WaitingRoomKeyControllerEvent = {
   name: string
@@ -33,6 +34,8 @@ export type WaitingRoomKeyControllerDeps = {
   setWaitingRoomState: (state: WaitingRoomState) => void
   rebuildTranscript: () => void
   applyLifecycleAction: (action: WaitingRoomSessionLifecycleAction) => void
+  beginProjectRename?: (projectId: string, currentName: string) => void
+  restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
 }
 
@@ -85,6 +88,20 @@ export function createWaitingRoomKeyController(
       if (sessionLifecycleAction) {
         deps.applyLifecycleAction(sessionLifecycleAction)
         return true
+      }
+      if (event.eventType !== "release" && !promptFocused && !event.ctrl && !event.meta && !event.alt && !event.super) {
+        const state = deps.getWaitingRoomState()
+        const project = state.focus === "project-entry"
+          ? waitingRoomProjectsForNavigation(deps.getRemoteState().projects)[state.projectIndex ?? 0]
+          : null
+        if (project && event.name === "e") {
+          deps.beginProjectRename?.(project.id, project.name)
+          return true
+        }
+        if (project && event.name === "r") {
+          deps.restoreProject?.(project.id)
+          return true
+        }
       }
       if (event.eventType !== "release" && (event.name === "return" || event.name === "enter")) {
         deps.activateWaitingRoom()

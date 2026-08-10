@@ -38,6 +38,35 @@ test("session browser projection switches hotkey sections by attachment state", 
   assert.deepEqual(controller.hotkeySections().map((section) => section.title), ["Global", "Waiting room"])
 })
 
+test("session browser projection scopes sessions to the selected project", () => {
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => false,
+    availableSessions: () => [
+      { ...session("frontend-new", "Created", 30), project_id: "frontend" },
+      { ...session("docs", "Created", 40), project_id: "docs" },
+      { ...session("frontend-old", "Created", 20), project_id: "frontend" },
+    ],
+    selectedIndex: () => 0,
+    setSelectedIndex: () => {},
+    selectedProject: () => ({
+      id: "frontend",
+      owner_user_id: "owner",
+      workspace_id: "/workspace",
+      name: "Frontend",
+      kind: "named",
+      status: "active",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 2,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }),
+  })
+
+  assert.deepEqual(controller.sessions().map((item) => item.id), ["frontend-new", "frontend-old"])
+  assert.equal(controller.selectedProject()?.name, "Frontend")
+})
+
 function session(id: string, status: string, lastUsedAtMs: number): SessionListEntry {
   return {
     id,

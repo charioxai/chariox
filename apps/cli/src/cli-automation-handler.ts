@@ -28,6 +28,8 @@ import { launchProviderRun } from "./provider-api.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
 import { resolveAttachTimeProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export type CliAutomationActionDeps = {
   client: LocalIpcClient
@@ -66,6 +68,10 @@ export type CliAutomationActionDeps = {
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
+  waitingRoomProjects?: () => WaitingRoomProjectSummary[]
+  applyWaitingRoomSessionLifecycleAction?: (action: "archive" | "delete", state?: WaitingRoomState) => Promise<void>
+  restoreWaitingRoomProject?: (projectId: string) => Promise<void>
+  renameWaitingRoomProject?: (projectId: string, name: string) => Promise<void>
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -222,7 +228,9 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         const providerId = typeof request.providerId === "string" ? request.providerId : undefined
         const modelId = typeof request.modelId === "string" ? request.modelId : undefined
         const effort = typeof request.effort === "string" ? request.effort : undefined
-        const focus = request.focus === "launch-machine" || request.focus === "launch-kernel" || request.focus === "new"
+        const projectSelectionId = typeof request.projectSelectionId === "string" ? request.projectSelectionId : undefined
+        const showArchivedProjects = typeof request.showArchivedProjects === "boolean" ? request.showArchivedProjects : undefined
+        const focus = request.focus === "launch-machine" || request.focus === "launch-kernel" || request.focus === "project" || request.focus === "new"
           ? request.focus
           : undefined
         if (
@@ -231,9 +239,11 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           && providerId === undefined
           && modelId === undefined
           && effort === undefined
+          && projectSelectionId === undefined
+          && showArchivedProjects === undefined
           && focus === undefined
         ) {
-          throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> providerId=<id> modelId=<id> effort=<level> focus=new|launch-machine|launch-kernel")
+          throw new Error("usage: set_waiting_room_launch machineRef=<id> kernelRef=<id> providerId=<id> modelId=<id> effort=<level> projectSelectionId=default|new|existing:<id> showArchivedProjects=<boolean> focus=new|launch-machine|launch-kernel|project")
         }
         deps.setWaitingRoomState({
           ...deps.waitingRoomState(),
@@ -242,8 +252,43 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           ...(providerId !== undefined ? { providerId: providerId as WaitingRoomState["providerId"] } : {}),
           ...(modelId !== undefined ? { modelId } : {}),
           ...(effort !== undefined ? { effort } : {}),
+          ...(projectSelectionId !== undefined ? { projectSelectionId } : {}),
+          ...(showArchivedProjects !== undefined ? { showArchivedProjects } : {}),
           ...(focus !== undefined ? { focus } : {}),
         })
+        return deps.snapshot()
+      }
+      case "select_waiting_room_project": {
+        if (deps.isAttached()) throw new Error("cannot select a waiting-room project while attached")
+        const projectId = typeof request.projectId === "string" ? request.projectId : ""
+        const projectIndex = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? []).findIndex((project) => project.id === projectId)
+        if (projectIndex < 0) throw new Error("usage: select_waiting_room_project projectId=<id>")
+        deps.setWaitingRoomState({ ...deps.waitingRoomState(), focus: "project-entry", projectIndex })
+        return deps.snapshot()
+      }
+      case "waiting_room_project_action": {
+        if (deps.isAttached()) throw new Error("cannot mutate a waiting-room project while attached")
+        const projectId = typeof request.projectId === "string" ? request.projectId : ""
+        const projectIndex = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? []).findIndex((project) => project.id === projectId)
+        if (projectIndex < 0) throw new Error("usage: waiting_room_project_action projectId=<id> projectAction=rename|archive|delete|restore")
+        const projectAction = request.projectAction
+        if (projectAction === "rename") {
+          const name = typeof request.projectName === "string" ? request.projectName.trim() : ""
+          if (!name) throw new Error("waiting_room_project_action rename requires projectName=<name>")
+          if (!deps.renameWaitingRoomProject) throw new Error("project rename is unavailable in this CLI")
+          await deps.renameWaitingRoomProject(projectId, name)
+        } else if (projectAction === "restore") {
+          if (!deps.restoreWaitingRoomProject) throw new Error("project restore is unavailable in this CLI")
+          await deps.restoreWaitingRoomProject(projectId)
+        } else if (projectAction === "archive" || projectAction === "delete") {
+          if (!deps.applyWaitingRoomSessionLifecycleAction) throw new Error("project lifecycle is unavailable in this CLI")
+          const state = { ...deps.waitingRoomState(), focus: "project-entry" as const, projectIndex }
+          deps.setWaitingRoomState(state)
+          await deps.applyWaitingRoomSessionLifecycleAction(projectAction, state)
+          await deps.applyWaitingRoomSessionLifecycleAction(projectAction, state)
+        } else {
+          throw new Error("waiting_room_project_action projectAction must be rename|archive|delete|restore")
+        }
         return deps.snapshot()
       }
       case "snapshot":

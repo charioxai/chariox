@@ -151,7 +151,7 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
-    options.setProjects?.(snapshot.projects)
+    options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
       ...(snapshot.externalProviderSessionsHasMore !== undefined
@@ -198,11 +198,11 @@ export function createWaitingRoomInventoryRefreshController(
           sessions,
           projects: patch.projects
             ? mergeWaitingRoomProjectRows(
-                activeInventory.projects,
+                activeInventory.projects ?? [],
                 patch.projects,
                 patch.removedProjectIds ?? [],
               )
-            : activeInventory.projects,
+            : activeInventory.projects ?? [],
         }
         rememberInventory(nextInventory)
         options.persistInventory?.(nextInventory)

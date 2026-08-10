@@ -10,6 +10,7 @@ export type WaitingRoomFocus =
   | "launch-kernel"
   | "project"
   | "project-entry"
+  | "archived-projects"
   | "provider"
   | "model"
   | "effort"
@@ -41,7 +42,7 @@ export type WaitingRoomKeyState = {
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
-  projectIndex: number
+  projectIndex?: number
   externalSessionIndex?: number
   machineIndex: number
   remoteKernelIndex: number
@@ -51,7 +52,8 @@ export type WaitingRoomState = {
   workspaceLiveSyncMode: "off" | "managed" | "tracked"
   selectedMachineRef?: string
   selectedKernelRef?: string
-  projectSelectionId: string
+  projectSelectionId?: string
+  showArchivedProjects?: boolean
   sliceSelectionId?: string
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
@@ -91,6 +93,7 @@ export type WaitingRoomRemoteKernel = {
 }
 
 export type WaitingRoomRemoteState = {
+  workspaceId?: string
   inventoryStatus?: "loading" | "ready" | "error"
   loadingFrame?: number
   cloudNotice?: string | null

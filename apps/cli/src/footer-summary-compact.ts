@@ -22,6 +22,7 @@ const COMPACT_REPLACEMENTS: Array<[RegExp, string]> = [
 const LOW_PRIORITY_SEGMENTS = [
   /^Ctrl\+P workflow$/i,
   /^Tab focus$/i,
+  /^R restore$/i,
   /^A archive$/i,
   /^D delete$/i,
   /^arrows$/i,

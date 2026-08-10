@@ -8,7 +8,7 @@ import {
 import type { WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 export function waitingRoomProjectRows(
-  state: Pick<WaitingRoomState, "focus" | "projectIndex">,
+  state: Pick<WaitingRoomState, "focus" | "projectIndex" | "showArchivedProjects">,
   projects: readonly WaitingRoomProjectSummary[] | undefined,
   sessions: readonly SessionListEntry[],
   options: { inventoryLoading: boolean; loadingText: string; titleWidth: number },
@@ -27,7 +27,7 @@ export function waitingRoomProjectRows(
       scrollbar: "",
     }]
   }
-  const all = [...active, ...archived]
+  const all = [...active, ...(state.showArchivedProjects ? archived : [])]
   const rows: WaitingRoomRow[] = [{
     id: "project-header",
     title: "Projects",
@@ -38,6 +38,18 @@ export function waitingRoomProjectRows(
     selectable: false,
     scrollbar: "",
   }]
+  if (archived.length > 0) {
+    rows.push({
+      id: "archived-projects",
+      title: "Archived projects",
+      value: `${state.showArchivedProjects ? "shown" : "hidden"} · ${archived.length} project${archived.length === 1 ? "" : "s"} · use left/right`,
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "archived-projects",
+      selectable: true,
+      scrollbar: "",
+    })
+  }
   for (const [projectIndex, project] of all.entries()) {
     const projectSessions = sessionsForProject(sessions, project.id)
     rows.push({
@@ -46,7 +58,7 @@ export function waitingRoomProjectRows(
       value: formatWaitingRoomProjectSummary(project, projectSessions),
       titleWidth: options.titleWidth,
       indent: 1,
-      focused: state.focus === "project-entry" && state.projectIndex === projectIndex,
+      focused: state.focus === "project-entry" && (state.projectIndex ?? 0) === projectIndex,
       selectable: true,
       scrollbar: "",
     })
@@ -56,8 +68,12 @@ export function waitingRoomProjectRows(
 
 export function waitingRoomProjectsForNavigation(
   projects: readonly WaitingRoomProjectSummary[] | undefined,
+  includeArchived = true,
 ): WaitingRoomProjectSummary[] {
-  return [...activeWaitingRoomProjects(projects), ...archivedWaitingRoomProjects(projects)]
+  return [
+    ...activeWaitingRoomProjects(projects),
+    ...(includeArchived ? archivedWaitingRoomProjects(projects) : []),
+  ]
 }
 
 export function formatWaitingRoomProjectSummary(
@@ -76,8 +92,8 @@ export function formatWaitingRoomProjectSummary(
   if (activity.error > 0) parts.push(`${activity.error} ERROR`)
   parts.push(`${activity.workflowCount} workflows`)
   if (activity.runningWorkflows > 0) parts.push(`${activity.runningWorkflows} RUNNING`)
-  parts.push(`${project.joined_collaborator_count} joined`)
-  parts.push(`${project.pending_collaboration_invite_count} pending`)
+  parts.push(`${project.joined_collaborator_count} collaborators joined`)
+  parts.push(`${project.pending_collaboration_invite_count} invitations pending`)
   if (project.status === "archived") parts.push("ARCHIVED")
   return parts.join(" · ")
 }

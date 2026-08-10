@@ -26,8 +26,7 @@ import {
   clearStagedWaitingRoomWorktreeSelection,
   stageWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
-import type { SessionProjectSelection } from "@arroba/kernel-client"
-import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -270,7 +269,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     ownerKernelRef: choice.kernelRef,
     ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
-    projectSelection: choice.projectSelection,
+    ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
@@ -340,7 +339,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     ownerKernelRef: choice.kernelRef,
     ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
-    projectSelection: choice.projectSelection,
+    ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
@@ -452,6 +451,10 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       return { action: "open-terminal-pairing" }
     case "join-sessions":
       return { action: "open-session-browser" }
+    case "project-entry":
+      return { action: "open-session-browser" }
+    case "archived-projects":
+      return { action: "info", message: "Use left/right to show or hide archived projects." }
     case "external-session-more":
       return { action: "load-older-external-sessions" }
     default:

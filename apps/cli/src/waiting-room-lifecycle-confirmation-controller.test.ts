@@ -96,6 +96,37 @@ test("waiting room lifecycle confirmation formats bulk archive targets", () => {
   })
 })
 
+test("waiting room lifecycle confirmation requires the project shortcut twice", () => {
+  const controller = createWaitingRoomLifecycleConfirmationController()
+  const decision = {
+    action: "archive-project" as const,
+    project: {
+      id: "project-1",
+      owner_user_id: "owner",
+      workspace_id: "/workspace",
+      name: "Frontend",
+      kind: "named" as const,
+      status: "active" as const,
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 1,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    },
+  }
+
+  assert.equal(controller.confirm("archive", decision).action, "await-confirmation")
+  assert.deepEqual(controller.confirm("archive", decision), {
+    action: "confirmed",
+    target: {
+      kind: "project",
+      id: "project-1",
+      label: "project Frontend",
+      verb: "archive",
+    },
+  })
+})
+
 test("waiting room lifecycle confirmation formats slice delete targets", () => {
   const controller = createWaitingRoomLifecycleConfirmationController()
 

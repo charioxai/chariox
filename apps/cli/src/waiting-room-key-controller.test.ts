@@ -4,6 +4,7 @@ import test from "node:test"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import {
   createWaitingRoomKeyController,
   type WaitingRoomKeyControllerDeps,
@@ -56,6 +57,22 @@ test("waiting room key controller activates on enter", () => {
   assert.deepEqual(harness.calls(), ["activate"])
 })
 
+test("waiting room key controller renames and restores the focused project", () => {
+  const project = projectSummary({ status: "archived" })
+  const harness = createHarness({
+    state: waitingRoomState({ focus: "project-entry", projectIndex: 0, showArchivedProjects: true }),
+    projects: [project],
+  })
+
+  assert.equal(harness.controller.handleKey({ name: "e", eventType: "press" }), true)
+  assert.equal(harness.controller.handleKey({ name: "r", eventType: "press" }), true)
+
+  assert.deepEqual(harness.calls(), [
+    `rename:${project.id}:${project.name}`,
+    `restore:${project.id}`,
+  ])
+})
+
 function createHarness(options: {
   attached?: boolean
   hotkeysOpen?: boolean
@@ -64,6 +81,7 @@ function createHarness(options: {
   commandCenterQuery?: string
   state?: WaitingRoomState
   sessions?: SessionListEntry[]
+  projects?: WaitingRoomProjectSummary[]
 } = {}) {
   let state = options.state ?? waitingRoomState()
   const calls: string[] = []
@@ -80,7 +98,7 @@ function createHarness(options: {
     getWaitingRoomState: () => state,
     getSessions: () => options.sessions ?? [],
     getProviderCatalog: () => fallbackProviderCatalog(),
-    getRemoteState: () => ({}),
+    getRemoteState: () => options.projects ? { projects: options.projects } : {},
     reconcileWaitingRoom: (nextState) => {
       calls.push("reconcile")
       reconciledStates.push(nextState)
@@ -97,6 +115,12 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
+    beginProjectRename: (projectId, name) => {
+      calls.push(`rename:${projectId}:${name}`)
+    },
+    restoreProject: (projectId) => {
+      calls.push(`restore:${projectId}`)
+    },
     activateWaitingRoom: () => {
       calls.push("activate")
     },
@@ -111,7 +135,7 @@ function createHarness(options: {
   }
 }
 
-function waitingRoomState(): WaitingRoomState {
+function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {
   return {
     focus: "new",
     sessionIndex: 0,
@@ -131,5 +155,23 @@ function waitingRoomState(): WaitingRoomState {
       left: false,
       right: false,
     },
+    ...overrides,
+  }
+}
+
+function projectSummary(overrides: Partial<WaitingRoomProjectSummary> = {}): WaitingRoomProjectSummary {
+  return {
+    id: "project-1",
+    owner_user_id: "owner",
+    workspace_id: "/workspace",
+    name: "Workspace",
+    kind: "default",
+    status: "active",
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    session_count: 0,
+    joined_collaborator_count: 0,
+    pending_collaboration_invite_count: 0,
+    ...overrides,
   }
 }

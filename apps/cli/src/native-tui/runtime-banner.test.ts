@@ -337,6 +337,7 @@ test("native TUI runtime banner omits sync line for passive skill snapshots", ()
 function session(overrides: Partial<RuntimeSession>): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/repo",
     worktree_id: "/repo",
     created_at_ms: 1,

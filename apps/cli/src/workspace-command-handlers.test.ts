@@ -318,6 +318,7 @@ function workspaceDeps(
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     status: "Active",
     workspace_id: "/repo/main",

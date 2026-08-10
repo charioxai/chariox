@@ -51,6 +51,42 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })
 
+test("waiting room start rows place project selection below Kernel", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "opencode")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ projectSelectionId: "existing:project-1" }),
+    { providerId: "opencode", model: modelOptions[0] ?? null, effort: "high" },
+    {
+      modelOptions,
+      remote: {
+        projects: [{
+          id: "project-1",
+          owner_user_id: "owner",
+          workspace_id: "/workspace",
+          name: "Frontend",
+          kind: "named",
+          status: "active",
+          created_at_ms: 1,
+          updated_at_ms: 2,
+          session_count: 0,
+          joined_collaborator_count: 0,
+          pending_collaboration_invite_count: 0,
+        }],
+      },
+      targets: { workspacePath: "/workspace", worktreePath: "/workspace" },
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows[2]?.id, "launch-kernel")
+  assert.equal(rows[3]?.id, "project")
+  assert.equal(rows[3]?.value, "Frontend")
+})
+
 test("waiting room start rows render loading placeholders before inventory arrives", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")

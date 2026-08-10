@@ -52,6 +52,7 @@ export function buildDetachedSessionState(options: CliOptions): RuntimeSession {
   const worktree = options.worktree ?? workspace
   return {
     id: NO_SESSION_ID,
+    project_id: "",
     alias: null,
     workspace_id: workspace,
     worktree_id: worktree,

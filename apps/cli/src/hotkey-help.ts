@@ -27,10 +27,12 @@ const SESSION_HOTKEYS: HotkeyItem[] = [
 ]
 
 const WAITING_ROOM_HOTKEYS: HotkeyItem[] = [
-  { keys: "Arrow keys", description: "Move through options and browse the visible session preview." },
-  { keys: "Enter", description: "Create, attach, or open the full session list from Join Existing Session." },
-  { keys: "A", description: "Archive the selected session, or all sessions from Join Existing Session, after confirmation." },
-  { keys: "D / Delete", description: "Delete the selected session, all sessions, or inactive remote inventory after confirmation." },
+  { keys: "Arrow keys", description: "Move through options, projects, sessions, and remote inventory." },
+  { keys: "Enter", description: "Create, attach, or open the selected project's sessions." },
+  { keys: "E", description: "Rename the selected project." },
+  { keys: "A", description: "Archive the selected project or session after confirmation." },
+  { keys: "D / Delete", description: "Delete the selected project, session, or inactive remote inventory after confirmation." },
+  { keys: "R", description: "Restore the selected archived project." },
 ]
 
 export function buildHotkeySections(attached: boolean): HotkeySection[] {

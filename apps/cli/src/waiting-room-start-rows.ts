@@ -90,20 +90,22 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
-    {
-      id: "project",
-      title: "Project",
-      value: describeWaitingRoomProjectSelection(
-        state.projectSelectionId,
-        remote.projects,
-        options.targets?.workspacePath,
-      ),
-      titleWidth: options.titleWidth,
-      indent: 1,
-      focused: state.focus === "project",
-      selectable: true,
-      scrollbar: "",
-    },
+    ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
+      ? [{
+          id: "project",
+          title: "Project",
+          value: describeWaitingRoomProjectSelection(
+            state.projectSelectionId ?? "default",
+            remote.projects,
+            options.targets?.workspacePath,
+          ),
+          titleWidth: options.titleWidth,
+          indent: 1,
+          focused: state.focus === "project",
+          selectable: true,
+          scrollbar: "",
+        }]
+      : []),
     {
       id: "provider",
       title: "Provider",

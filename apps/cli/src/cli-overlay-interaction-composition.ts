@@ -17,6 +17,7 @@ import {
   clampSessionBrowserIndex,
 } from "@arroba/kernel-client/session-browser-policy"
 import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -29,6 +30,7 @@ export type CliOverlayInteractionCompositionDeps = {
   debugLogsEnabled: boolean
   isAttached: AnyFn
   availableSessions: AnyFn
+  waitingRoomProjects: AnyFn
   sessionBrowserIndex: AnyFn
   setSessionBrowserIndex: AnyFn
   currentFocusedRenderable: AnyFn
@@ -63,6 +65,12 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     availableSessions: deps.availableSessions,
     selectedIndex: deps.sessionBrowserIndex,
     setSelectedIndex: deps.setSessionBrowserIndex,
+    selectedProject: () => {
+      const state = deps.waitingRoomState()
+      return state.focus === "project-entry"
+        ? waitingRoomProjectsForNavigation(deps.waitingRoomProjects())[state.projectIndex ?? 0] ?? null
+        : null
+    },
   })
   const hotkeySections = sessionBrowserProjectionController.hotkeySections
   const sessionBrowserSessions = sessionBrowserProjectionController.sessions
@@ -105,6 +113,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         onDismiss,
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
+        sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),
         terminalPairing: deps.terminalPairingState(),
         terminalPairingQrLines: deps.terminalPairingQrLines(),
         hotkeySections: hotkeySections(),

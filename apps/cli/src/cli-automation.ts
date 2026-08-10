@@ -35,6 +35,11 @@ export type CliAutomationRequest = {
   providerId?: unknown
   modelId?: unknown
   effort?: unknown
+  projectSelectionId?: unknown
+  showArchivedProjects?: unknown
+  projectId?: unknown
+  projectName?: unknown
+  projectAction?: unknown
 }
 
 export type CliAutomationResponse = {

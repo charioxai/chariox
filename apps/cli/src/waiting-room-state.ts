@@ -35,7 +35,6 @@ import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import { normalizeWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import {
-  DEFAULT_PROJECT_SELECTION_ID,
   normalizeWaitingRoomProjectSelectionId,
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
@@ -54,7 +53,6 @@ export function createWaitingRoomState(
     {
       focus: "new",
       sessionIndex: 0,
-      projectIndex: 0,
       externalSessionIndex: 0,
       machineIndex: 0,
       remoteKernelIndex: 0,
@@ -64,7 +62,6 @@ export function createWaitingRoomState(
       workspaceLiveSyncMode: "off",
       selectedMachineRef: "local",
       selectedKernelRef: "local",
-      projectSelectionId: DEFAULT_PROJECT_SELECTION_ID,
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -95,7 +92,7 @@ export function normalizeWaitingRoomState(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
-  const projects = waitingRoomProjectsForNavigation(remote.projects)
+  const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state.showArchivedProjects))
   const externalSessions = externalProviderSessionPageSessions(remote)
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
@@ -138,6 +135,7 @@ export function normalizeWaitingRoomState(
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     projectIndex: projects.length === 0 ? 0 : modulo(state.projectIndex ?? 0, projects.length),
+    showArchivedProjects: Boolean(state.showArchivedProjects),
     externalSessionIndex: externalProviderSessionSelectionIndex(externalSessions, {
       selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
     }),
@@ -149,10 +147,15 @@ export function normalizeWaitingRoomState(
     workspaceLiveSyncMode: normalizeWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
-    projectSelectionId: normalizeWaitingRoomProjectSelectionId(
-      state.projectSelectionId,
-      remote.projects,
-    ),
+    ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
+      ? {
+          projectSelectionId: normalizeWaitingRoomProjectSelectionId(
+            state.projectSelectionId,
+            remote.projects,
+            remote.workspaceId,
+          ),
+        }
+      : {}),
     ...(sliceSelection.sliceSelectionId !== undefined ? { sliceSelectionId: sliceSelection.sliceSelectionId } : {}),
     ...(sliceSelection.sliceDisplayMode !== undefined ? { sliceDisplayMode: sliceSelection.sliceDisplayMode } : {}),
     modelId: selected?.id ?? state.modelId,

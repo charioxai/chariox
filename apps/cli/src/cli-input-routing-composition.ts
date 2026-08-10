@@ -41,6 +41,7 @@ export type CliInputRoutingCompositionDeps = {
     clear: AnyFn
     currentText: AnyFn
     cursorOffset: AnyFn
+    setText: AnyFn
   }
   setPromptHistoryIndex: AnyFn
   setPromptHistoryDraft: AnyFn
@@ -130,6 +131,7 @@ export type CliInputRoutingCompositionDeps = {
     plainText: AnyFn
     isFocused: AnyFn
     hasInput: AnyFn
+    focus: AnyFn
   }
   ensureBackgroundPollersStarted: AnyFn
   workflowNodeInstructionsEditor: AnyFn
@@ -168,6 +170,8 @@ export type CliInputRoutingCompositionDeps = {
   }
   waitingRoomState: AnyFn
   availableSessions: AnyFn
+  waitingRoomProjects: AnyFn
+  waitingRoomTargets: AnyFn
   providerCatalogState: AnyFn
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
@@ -178,6 +182,8 @@ export type CliInputRoutingCompositionDeps = {
   reconcileWaitingRoom: AnyFn
   setWaitingRoomState: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
+  restoreWaitingRoomProject: AnyFn
+  renameWaitingRoomProject: AnyFn
   activateWaitingRoom: AnyFn
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
@@ -192,6 +198,7 @@ export type CliInputRoutingCompositionDeps = {
 
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
+  let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
@@ -390,7 +397,17 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
 
   const waitingRoomPromptBootstrapController = createWaitingRoomPromptBootstrapController({
     isAttached: deps.isAttached,
-    startSessionFromWaitingRoomDefaults: () => deps.startSessionFromWaitingRoomDefaults(),
+    startSessionFromWaitingRoomDefaults: async () => {
+      if (pendingProjectRenameId) {
+        const projectId = pendingProjectRenameId
+        pendingProjectRenameId = null
+        const name = deps.promptTextController.currentText().trim()
+        await deps.renameWaitingRoomProject(projectId, name)
+        deps.promptTextController.setText("")
+        return
+      }
+      return deps.startSessionFromWaitingRoomDefaults()
+    },
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
@@ -480,7 +497,23 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     navigatePromptHistoryInput: deps.navigatePromptHistoryInput,
     handleHotkeysToggleShortcut: deps.handleHotkeysToggleShortcut,
   })
-  const handlePromptKeyDown = promptKeyDownController.handleKeyDown
+  const handlePromptKeyDown = (
+    event: Parameters<typeof promptKeyDownController.handleKeyDown>[0],
+  ) => {
+    if (
+      pendingProjectRenameId
+      && event.eventType !== "release"
+      && event.name === "escape"
+    ) {
+      pendingProjectRenameId = null
+      deps.promptTextController.clear()
+      deps.flashFooter("project rename canceled", "info")
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      return true
+    }
+    return promptKeyDownController.handleKeyDown(event)
+  }
 
   const promptTurnNavigationController = createPromptTurnNavigationController({
     isAttached: deps.isAttached,
@@ -505,11 +538,13 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
+      workspaceId: deps.waitingRoomTargets().workspacePath,
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
+      projects: deps.waitingRoomProjects(),
     }),
     getThemeRegistry: deps.themeRegistryState,
     reconcileWaitingRoom: deps.reconcileWaitingRoom,
@@ -517,6 +552,15 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     rebuildTranscript: deps.rebuildTranscript,
     applyLifecycleAction: (action) => {
       void deps.applyWaitingRoomSessionLifecycleAction(action)
+    },
+    beginProjectRename: (projectId, currentName) => {
+      pendingProjectRenameId = projectId
+      deps.promptTextController.setText(currentName)
+      deps.promptInputRefController.focus()
+      deps.flashFooter("edit the project name and press Enter", "info")
+    },
+    restoreProject: (projectId) => {
+      void deps.restoreWaitingRoomProject(projectId)
     },
     activateWaitingRoom: () => {
       void deps.activateWaitingRoom()

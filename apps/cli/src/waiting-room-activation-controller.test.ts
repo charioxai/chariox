@@ -481,6 +481,7 @@ function createHarness(options: {
 function runtimeSession(id: string, alias: string | null, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id,
+    project_id: "project-default",
     alias,
     workspace_id: "/workspace",
     worktree_id: "/worktree",

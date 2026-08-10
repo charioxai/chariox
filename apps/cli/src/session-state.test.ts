@@ -125,6 +125,7 @@ test("deriveAttachedCliTransitionState keeps queued-only sessions out of active 
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",

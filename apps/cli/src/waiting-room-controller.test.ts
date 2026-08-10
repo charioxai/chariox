@@ -158,6 +158,58 @@ test("waiting room activation stages create-worktree selections for session crea
   }
 })
 
+test("waiting room session creation preserves Default, Existing, and New project policies", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [{
+      id: "existing:/workspace",
+      kind: "existing",
+      label: "main",
+      path: "/workspace",
+      branch: "main",
+      isCurrent: true,
+    }],
+  })
+  const project = {
+    id: "project-1",
+    owner_user_id: "owner",
+    workspace_id: "/workspace",
+    name: "Frontend",
+    kind: "named" as const,
+    status: "active" as const,
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    session_count: 0,
+    joined_collaborator_count: 0,
+    pending_collaboration_invite_count: 0,
+  }
+  const policies = [
+    ["default", { kind: "default" }],
+    ["existing:project-1", { kind: "existing", project_id: "project-1" }],
+    ["new", { kind: "new" }],
+  ] as const
+
+  try {
+    for (const [projectSelectionId, expected] of policies) {
+      const decision = deriveWaitingRoomCreateSessionDecision({
+        state: waitingRoomState({ projectSelectionId }),
+        catalog: catalog(),
+        currentProvider: "opencode",
+        currentModel: "opencode/gpt-5.4",
+        remote: { workspaceId: "/workspace", projects: [project] },
+      })
+
+      assert.equal(decision.action, "create")
+      if (decision.action === "create") {
+        assert.deepEqual(decision.launch.projectSelection, expected)
+      }
+    }
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
 test("waiting room remote kernel selection creates a remote owner launch without worker placement", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",

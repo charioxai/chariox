@@ -103,11 +103,15 @@ export function cycleWaitingRoomFocusedValue(
     return {
       ...state,
       projectSelectionId: cycleWaitingRoomProjectSelectionId(
-        state.projectSelectionId,
+        state.projectSelectionId ?? "default",
         remote.projects,
         delta,
+        remote.workspaceId,
       ),
     }
+  }
+  if (state.focus === "archived-projects") {
+    return { ...state, showArchivedProjects: !state.showArchivedProjects, projectIndex: 0 }
   }
   if (state.focus === "live-sync") {
     const modes: readonly WaitingRoomState["workspaceLiveSyncMode"][] = ["off", "managed", "tracked"]
