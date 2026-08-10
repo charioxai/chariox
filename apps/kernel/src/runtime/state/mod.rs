@@ -200,6 +200,7 @@ mod local_prompt_submission_owned_state;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
+mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;

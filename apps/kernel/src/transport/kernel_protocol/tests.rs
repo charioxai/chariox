@@ -97,7 +97,7 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
             ..
         } => {
             assert_eq!(inventory_version, "inventory-b");
-            assert_eq!(schema_version, 10);
+            assert_eq!(schema_version, 11);
             assert_eq!(
                 sessions
                     .iter()
@@ -106,6 +106,40 @@ fn waiting_room_rows_changed_event_sends_only_changed_and_removed_rows() {
                 vec!["session-a", "session-c"]
             );
             assert_eq!(removed_session_ids, vec!["session-b"]);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
+fn waiting_room_rows_changed_event_sends_project_upserts_and_removals() {
+    let mut previous = waiting_room_snapshot("inventory-a", Vec::new());
+    previous.projects = vec![
+        project_summary("project-a", "A"),
+        project_summary("project-b", "B"),
+    ];
+    let mut current = waiting_room_snapshot("inventory-b", Vec::new());
+    current.projects = vec![
+        project_summary("project-a", "A renamed"),
+        project_summary("project-c", "C"),
+    ];
+
+    let event = waiting_room_rows_changed_event(current, Some(&previous))
+        .expect("project changes should produce a row event");
+    match event {
+        KernelEvent::WaitingRoomRowsChanged {
+            projects,
+            removed_project_ids,
+            ..
+        } => {
+            assert_eq!(
+                projects
+                    .iter()
+                    .map(|project| project.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["project-a", "project-c"]
+            );
+            assert_eq!(removed_project_ids, vec!["project-b"]);
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -413,12 +447,13 @@ fn waiting_room_snapshot(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
 ) -> WaitingRoomPublicSnapshot {
     WaitingRoomPublicSnapshot {
-        schema_version: 10,
+        schema_version: 11,
         inventory_version: inventory_version.to_string(),
         structural_version: format!("structural-{inventory_version}"),
         activity_revision: format!("activity-{inventory_version}"),
         generated_at_ms: 100,
         sessions,
+        projects: Vec::new(),
         external_provider_sessions: Vec::new(),
         external_provider_sessions_has_more: false,
         external_provider_sessions_next_cursor: None,
@@ -442,6 +477,7 @@ fn waiting_room_snapshot(
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
         id: id.to_string(),
+        project_id: "project-a".to_string(),
         alias: None,
         workspace_id: "workspace-1".to_string(),
         worktree_id: "worktree-1".to_string(),
@@ -454,8 +490,28 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
         last_prompt_sent_at_ms: None,
         status: crate::session::SessionStatus::Active,
         connected_cli_count: 0,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
         activity: crate::local::WaitingRoomSessionActivitySummary::default(),
         agents: Vec::new(),
         workflows: Vec::new(),
+    }
+}
+
+fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
+    crate::local::WaitingRoomPublicProjectSummary {
+        id: id.to_string(),
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        workspace_id: "workspace-1".to_string(),
+        name: name.to_string(),
+        kind: crate::session::RuntimeProjectKind::Named,
+        status: crate::session::RuntimeProjectStatus::Active,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        archived_at_ms: None,
+        session_count: 0,
+        last_session_activity_at_ms: None,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
     }
 }

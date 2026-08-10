@@ -68,6 +68,7 @@ test("resolveSessionAgentReference rejects stale explicit focus instead of falli
 function sessionWithAgents(agents: AgentInstance[]): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
     created_at_ms: 1,

@@ -910,6 +910,7 @@ test("queued prompts for agent ignore queues outside session agents", () => {
 function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "/repo",
     worktree_id: "/repo",

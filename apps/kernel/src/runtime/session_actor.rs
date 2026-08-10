@@ -20,6 +20,11 @@ impl SessionActor {
         matches!(
             request,
             LocalDaemonRequest::CreateSession(_)
+                | LocalDaemonRequest::ListProjects(_)
+                | LocalDaemonRequest::RenameProject(_)
+                | LocalDaemonRequest::ArchiveProject(_)
+                | LocalDaemonRequest::DeleteProject(_)
+                | LocalDaemonRequest::RestoreProject(_)
                 | LocalDaemonRequest::AttachToSession(_)
                 | LocalDaemonRequest::DetachFromSession(_)
                 | LocalDaemonRequest::FocusAgent(_)

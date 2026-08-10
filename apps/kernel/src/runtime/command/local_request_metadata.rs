@@ -399,6 +399,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::ListProjects(_) => "project.list",
+        LocalDaemonRequest::RenameProject(_) => "project.rename",
+        LocalDaemonRequest::ArchiveProject(_) => "project.archive",
+        LocalDaemonRequest::DeleteProject(_) => "project.delete",
+        LocalDaemonRequest::RestoreProject(_) => "project.restore",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
         LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",

@@ -38,6 +38,7 @@ function makeAgent(id: string, overrides: Partial<AgentInstance> = {}): AgentIns
 function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",

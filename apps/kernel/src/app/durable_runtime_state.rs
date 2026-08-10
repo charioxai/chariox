@@ -319,7 +319,7 @@ impl DaemonApp {
                 session.restore_durable_prompt_private_states(states);
             }
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session);
+            self.restore_session_with_project_migration(session);
         }
         let restored_slices = snapshot
             .slices
@@ -504,7 +504,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session.clone());
+            self.restore_session_with_project_migration(session.clone());
             self.update_session_projection(session);
         }
         Ok(())
@@ -518,7 +518,7 @@ impl DaemonApp {
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
         self.prompt_state_owner.restore_session_state(&session);
-        self.sessions.restore_session(session.clone());
+        self.restore_session_with_project_migration(session.clone());
         self.update_session_projection(session);
         Ok(())
     }
@@ -535,7 +535,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session.clone());
+            self.restore_session_with_project_migration(session.clone());
             self.update_session_projection(session.clone());
             crate::logging::info_with_fields(
                 "durable_state.restore",
@@ -575,6 +575,13 @@ impl DaemonApp {
             );
         }
         Ok(())
+    }
+
+    fn restore_session_with_project_migration(&self, session: RuntimeSession) -> RuntimeSession {
+        let project_name =
+            crate::runtime::workspace_git_common::workspace_display_label(session.workspace_id());
+        self.sessions
+            .restore_session_with_default_project_name_hint(session, project_name.as_deref())
     }
 
     #[allow(dead_code)]
@@ -652,7 +659,7 @@ impl DaemonApp {
                 )?;
                 self.mark_agent_external_provider_sessions_attached(&default_agent);
                 self.prompt_state_owner.restore_session_state(&session);
-                self.sessions.restore_session(session.clone());
+                self.restore_session_with_project_migration(session.clone());
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
@@ -735,7 +742,7 @@ impl DaemonApp {
                     session.restore_durable_prompt_private_states(&private_states);
                 }
                 self.prompt_state_owner.restore_session_state(&session);
-                self.sessions.restore_session(session.clone());
+                self.restore_session_with_project_migration(session.clone());
                 self.update_session_projection(session);
             }
             "agent.created" => {
@@ -813,7 +820,7 @@ impl DaemonApp {
                 self.prompt_state_owner.remove_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
-                self.sessions.restore_session(session.clone());
+                self.restore_session_with_project_migration(session.clone());
                 self.update_session_projection(session);
             }
             "session.deleted" => {

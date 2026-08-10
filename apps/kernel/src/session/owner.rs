@@ -77,6 +77,15 @@ impl SessionStateStore {
         self.read().list_projects(owner_user_id, include_archived)
     }
 
+    pub(crate) fn list_visible_projects(
+        &self,
+        caller_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
+        self.read()
+            .list_visible_projects(caller_user_id, include_archived)
+    }
+
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
         self.read().get_project(project_id)
     }
@@ -149,6 +158,23 @@ impl SessionStateStore {
 
     pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
         self.write().restore_session(session)
+    }
+
+    pub(crate) fn restore_session_with_default_project_name_hint(
+        &self,
+        session: RuntimeSession,
+        default_project_name_hint: Option<&str>,
+    ) -> RuntimeSession {
+        self.write()
+            .restore_session_with_default_project_name_hint(session, default_project_name_hint)
+    }
+
+    pub(crate) fn restore_ended_session(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write()
+            .transition_session(session_id, super::SessionStatus::Parked)
     }
 
     pub(crate) fn remove_restored_session(&self, session_id: &str) -> Option<RuntimeSession> {

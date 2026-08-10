@@ -2,7 +2,7 @@ use super::*;
 
 use crate::session::{
     PromptQueueItem, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionLevel,
+    RuntimeInteractionCustomChoice, RuntimeInteractionLevel, RuntimeProject,
 };
 use crate::slice::{
     SliceBackendKind, SliceDisplayEndpoint, SliceLogEntry, SliceProviderLoginStart, SliceRecord,

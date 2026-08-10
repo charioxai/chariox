@@ -29,7 +29,7 @@ pub enum LocalDaemonResponse {
     ProjectRenamed { project: RuntimeProject, },
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
-    ProjectRestored { project: RuntimeProject, },
+    ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
     SessionState {

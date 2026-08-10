@@ -120,4 +120,3 @@ impl RuntimeProject {
         self.archived_at_ms = None;
     }
 }
-

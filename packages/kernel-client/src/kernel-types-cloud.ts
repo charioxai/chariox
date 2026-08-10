@@ -1,5 +1,8 @@
 import type { ExternalProviderSessionRecord } from "./external-provider-sessions.js"
-import type { WaitingRoomPublicSessionSummary } from "./kernel-types-session.js"
+import type {
+  WaitingRoomPublicProjectSummary,
+  WaitingRoomPublicSessionSummary,
+} from "./kernel-types-session.js"
 
 export type RelayStatus = {
   configured: boolean
@@ -312,6 +315,7 @@ export type WaitingRoomInventorySnapshot = {
   structural_version: string
   activity_revision: string
   sessions: WaitingRoomPublicSessionSummary[]
+  projects: WaitingRoomPublicProjectSummary[]
   relay_status: RelayStatus
   remote_machines?: RemoteMachineRecord[]
   remote_kernels?: RelayKernelPresence[]

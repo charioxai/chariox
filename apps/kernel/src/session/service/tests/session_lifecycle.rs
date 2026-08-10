@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::RuntimeSession;
+use crate::session::{RuntimeProjectKind, RuntimeSession};
 
 #[test]
 fn creates_gets_and_lists_sessions() {
@@ -721,4 +721,41 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
     assert_eq!(session.queued_prompts().len(), 1);
     assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
     assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");
+}
+
+#[test]
+fn legacy_session_project_migration_uses_repo_label_hint_and_is_restart_stable() {
+    let legacy = RuntimeSession::new(
+        "legacy-session",
+        Some("legacy".to_string()),
+        "/workspace/arroba",
+        "/workspace/arroba",
+        "machine-test",
+        "daemon-test",
+    );
+    let mut legacy_json = serde_json::to_value(&legacy).expect("legacy session should encode");
+    legacy_json
+        .as_object_mut()
+        .expect("session should encode as an object")
+        .remove("project_id");
+    let legacy: RuntimeSession =
+        serde_json::from_value(legacy_json).expect("legacy session should decode");
+
+    let mut first_service = SessionService::new(&test_config());
+    let migrated = first_service
+        .restore_session_with_default_project_name_hint(legacy, Some("mgutierrez09/arroba"));
+    let project = first_service
+        .get_project(migrated.project_id())
+        .expect("migrated default project should exist");
+    assert_eq!(project.name(), "mgutierrez09/arroba");
+    assert_eq!(project.kind(), RuntimeProjectKind::Default);
+
+    let mut restarted_service = SessionService::new(&test_config());
+    restarted_service.restore_projects(first_service.durable_projects());
+    let restored = restarted_service.restore_session(migrated);
+    let restored_project = restarted_service
+        .get_project(restored.project_id())
+        .expect("default project should survive restart");
+    assert_eq!(restored_project.id(), project.id());
+    assert_eq!(restored_project.name(), "mgutierrez09/arroba");
 }

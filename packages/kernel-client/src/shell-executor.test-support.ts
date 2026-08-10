@@ -32,6 +32,7 @@ export function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance
 export function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "/repo",
     worktree_id: "/repo",

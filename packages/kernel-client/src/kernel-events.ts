@@ -101,6 +101,8 @@ export type KernelEvent =
       directory?: string | null
       worktree_label?: string | null
     } | null
+    projects: import("./kernel-types-session.js").WaitingRoomPublicProjectSummary[]
+    removed_project_ids: string[]
     sessions: WaitingRoomPublicSessionSummary[]
     removed_session_ids: string[]
   }

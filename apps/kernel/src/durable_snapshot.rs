@@ -9,7 +9,9 @@ use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
 };
-use crate::session::{DurablePromptPrivateState, RuntimeProject, RuntimeSession, SessionStateStore};
+use crate::session::{
+    DurablePromptPrivateState, RuntimeProject, RuntimeSession, SessionStateStore,
+};
 use crate::slice::{SliceBackupRecord, SliceRecord, SliceSavedStateRecord, SliceStore};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,13 +41,13 @@ impl DurableKernelSnapshotPayload {
         slices: &SliceStore,
         metaagent_events: &MetaagentEventStore,
     ) -> Self {
-        let sessions = sessions.read().durable_sessions();
         let projects = sessions.read().durable_projects();
-        let durable_session_ids = sessions
+        let durable_sessions = sessions.read().durable_sessions();
+        let durable_session_ids = durable_sessions
             .iter()
             .map(|session| session.id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
-        let prompt_private_states = sessions
+        let prompt_private_states = durable_sessions
             .iter()
             .flat_map(RuntimeSession::durable_prompt_private_states)
             .collect();
@@ -60,7 +62,7 @@ impl DurableKernelSnapshotPayload {
         let metaagent_snapshot = metaagent_events.snapshot();
         Self {
             projects,
-            sessions,
+            sessions: durable_sessions,
             prompt_private_states,
             agents,
             slices: slice_records,

@@ -129,6 +129,8 @@ pub(crate) enum KernelEvent {
         schema_version: u32,
         generated_at_ms: u64,
         launch_target: Option<WaitingRoomLaunchTarget>,
+        projects: Vec<crate::local::WaitingRoomPublicProjectSummary>,
+        removed_project_ids: Vec<String>,
         sessions: Vec<WaitingRoomPublicSessionSummary>,
         removed_session_ids: Vec<String>,
     },
@@ -353,6 +355,7 @@ pub(crate) fn waiting_room_rows_changed_event(
     if previous_snapshot.is_some_and(|previous| {
         previous.schema_version == snapshot.schema_version
             && previous.launch_target == snapshot.launch_target
+            && previous.projects == snapshot.projects
             && previous.sessions == snapshot.sessions
     }) {
         return None;
@@ -364,6 +367,36 @@ pub(crate) fn waiting_room_rows_changed_event(
                 .iter()
                 .map(|session| (session.id.as_str(), session))
                 .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let previous_projects = previous_snapshot
+        .map(|previous| {
+            previous
+                .projects
+                .iter()
+                .map(|project| (project.id.as_str(), project))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let current_project_ids = snapshot
+        .projects
+        .iter()
+        .map(|project| project.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let projects = snapshot
+        .projects
+        .iter()
+        .filter(|project| previous_projects.get(project.id.as_str()).copied() != Some(*project))
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_project_ids = previous_snapshot
+        .map(|previous| {
+            previous
+                .projects
+                .iter()
+                .filter(|project| !current_project_ids.contains(project.id.as_str()))
+                .map(|project| project.id.clone())
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     let current_session_ids = snapshot
@@ -394,6 +427,8 @@ pub(crate) fn waiting_room_rows_changed_event(
         schema_version: snapshot.schema_version,
         generated_at_ms: snapshot.generated_at_ms,
         launch_target: snapshot.launch_target,
+        projects,
+        removed_project_ids,
         sessions,
         removed_session_ids,
     })

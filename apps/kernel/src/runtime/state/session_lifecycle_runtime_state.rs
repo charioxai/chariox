@@ -10,6 +10,24 @@ impl KernelRuntimeState {
         &self,
         request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let existing_project_ids = self
+            .owned
+            .session_store
+            .durable_projects()
+            .into_iter()
+            .map(|project| project.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let request = if matches!(
+            request.project_selection,
+            crate::session::SessionProjectSelection::Default
+        ) {
+            let name = crate::runtime::workspace_git_common::workspace_display_label(
+                &request.workspace_id,
+            );
+            request.with_default_project_name_hint(name)
+        } else {
+            request
+        };
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if slice_ref.is_some() && kernel_ref.is_some() {
@@ -47,6 +65,14 @@ impl KernelRuntimeState {
             self.owned.create_session_response(request)?
         };
         if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+            let project = self.owned.session_store.get_project(session.project_id())?;
+            if !existing_project_ids.contains(project.id()) {
+                self.owned.durable_state_store.append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": &project }),
+                )?;
+            }
             if let Some(slice_ref) = slice_ref {
                 let session_id = session.id().to_string();
                 let agent_id = agent.id().to_string();
@@ -72,6 +98,7 @@ impl KernelRuntimeState {
                 serde_json::json!({
                     "session": session,
                     "default_agent": agent,
+                    "project": project,
                 }),
             )?;
         }

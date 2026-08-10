@@ -45,8 +45,10 @@ impl SessionService {
                         .to_string(),
             });
         }
-        let alias = match request.alias {
-            Some(alias) if !alias.trim().is_empty() => normalize_session_alias(Some(alias))?,
+        let alias = match request.alias.as_ref() {
+            Some(alias) if !alias.trim().is_empty() => {
+                normalize_session_alias(Some(alias.clone()))?
+            }
             _ if !request.hidden => Some(self.default_session_alias(&request.workspace_id)),
             _ => None,
         };
@@ -125,12 +127,20 @@ impl SessionService {
         }
     }
 
-    pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
+    pub(crate) fn restore_session(&mut self, session: RuntimeSession) -> RuntimeSession {
+        self.restore_session_with_default_project_name_hint(session, None)
+    }
+
+    pub(crate) fn restore_session_with_default_project_name_hint(
+        &mut self,
+        mut session: RuntimeSession,
+        default_project_name_hint: Option<&str>,
+    ) -> RuntimeSession {
         if session.project_id().is_empty() {
             let project_id = self.ensure_default_project(
                 session.owner_user_id(),
                 session.workspace_id(),
-                None,
+                default_project_name_hint,
             );
             debug_assert!(session.assign_project_id(project_id));
         } else if !self.projects.contains_key(session.project_id()) {
@@ -152,20 +162,48 @@ impl SessionService {
         }
     }
 
-    pub fn list_projects(&self, owner_user_id: &str, include_archived: bool) -> Vec<RuntimeProject> {
+    pub fn list_projects(
+        &self,
+        owner_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
         self.projects
             .values()
             .filter(|project| project.owner_user_id() == owner_user_id)
+            .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
+            .cloned()
+            .collect()
+    }
+
+    pub fn list_visible_projects(
+        &self,
+        caller_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
+        let visible_project_ids = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|session| session.has_member(caller_user_id))
+            .map(|session| session.project_id().to_string())
+            .collect::<BTreeSet<_>>();
+        self.projects
+            .values()
             .filter(|project| {
-                include_archived || project.status() == RuntimeProjectStatus::Active
+                project.owner_user_id() == caller_user_id
+                    || visible_project_ids.contains(project.id())
             })
+            .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
             .cloned()
             .collect()
     }
 
     pub fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
         self.projects.get(project_id).cloned().ok_or_else(|| {
-            project_error("project.get", format!("project `{project_id}` was not found"))
+            project_error(
+                "project.get",
+                format!("project `{project_id}` was not found"),
+            )
         })
     }
 
@@ -216,7 +254,10 @@ impl SessionService {
     ) -> Result<RuntimeProject, DaemonError> {
         self.ensure_project_owner(project_id, caller_user_id, "project.delete")?;
         self.projects.remove(project_id).ok_or_else(|| {
-            project_error("project.delete", format!("project `{project_id}` was not found"))
+            project_error(
+                "project.delete",
+                format!("project `{project_id}` was not found"),
+            )
         })
     }
 
@@ -253,11 +294,26 @@ impl SessionService {
         request: &CreateSessionRequest,
     ) -> Result<String, DaemonError> {
         match &request.project_selection {
-            SessionProjectSelection::Default => Ok(self.ensure_default_project(
-                &request.owner_user_id,
-                &request.workspace_id,
-                request.default_project_name_hint.as_deref(),
-            )),
+            SessionProjectSelection::Default => {
+                let project_id = self.ensure_default_project(
+                    &request.owner_user_id,
+                    &request.workspace_id,
+                    request.default_project_name_hint.as_deref(),
+                );
+                if self
+                    .projects
+                    .get(&project_id)
+                    .is_some_and(|project| project.status() == RuntimeProjectStatus::Archived)
+                {
+                    return Err(project_error(
+                        "session.create",
+                        format!(
+                            "default project `{project_id}` is archived; restore it before creating a session"
+                        ),
+                    ));
+                }
+                Ok(project_id)
+            }
             SessionProjectSelection::Existing { project_id } => {
                 let project = self.ensure_project_owner(
                     project_id,
@@ -269,7 +325,8 @@ impl SessionService {
                         "session.create",
                         format!(
                             "project `{project_id}` belongs to workspace `{}` instead of `{}`",
-                            project.workspace_id(), request.workspace_id
+                            project.workspace_id(),
+                            request.workspace_id
                         ),
                     ));
                 }
@@ -284,10 +341,8 @@ impl SessionService {
                 Ok(project_id.clone())
             }
             SessionProjectSelection::New => {
-                let number = self.next_named_project_number(
-                    &request.owner_user_id,
-                    &request.workspace_id,
-                );
+                let number =
+                    self.next_named_project_number(&request.owner_user_id, &request.workspace_id);
                 let id = self.next_named_project_id(
                     &request.owner_user_id,
                     &request.workspace_id,
@@ -340,8 +395,7 @@ impl SessionService {
         self.projects
             .values()
             .filter(|project| {
-                project.owner_user_id() == owner_user_id
-                    && project.workspace_id() == workspace_id
+                project.owner_user_id() == owner_user_id && project.workspace_id() == workspace_id
             })
             .filter_map(|project| project.name().strip_prefix("Project-"))
             .filter_map(|number| number.parse::<u64>().ok())
@@ -1303,7 +1357,10 @@ fn default_project_name(workspace_id: &str) -> String {
 }
 
 fn stable_hash(value: &str) -> u64 {
-    value.as_bytes().iter().fold(0xcbf29ce484222325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    })
+    value
+        .as_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
 }

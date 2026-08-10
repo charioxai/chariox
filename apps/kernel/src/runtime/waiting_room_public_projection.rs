@@ -9,10 +9,10 @@ use sha2::{Digest, Sha256};
 use crate::error::DaemonError;
 use crate::local::{
     ExternalProviderSessionRecord, RelayStatus, RemoteMachineRecord, TerminalRecord,
-    WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary, WaitingRoomPublicSessionSummary,
-    WaitingRoomPublicSnapshot, WaitingRoomPublicWorkflowEdgeSummary,
-    WaitingRoomPublicWorkflowEndpointSummary, WaitingRoomPublicWorkflowNodeSummary,
-    WaitingRoomPublicWorkflowSummary,
+    WaitingRoomAgentRuntimePlacement, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
+    WaitingRoomPublicProjectSummary, WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
+    WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
+    WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
 };
 use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::runtime::waiting_room_activity::{
@@ -22,7 +22,8 @@ use crate::runtime::waiting_room_activity::{
 use crate::runtime::workspace_git_common::{
     detect_git_branch, workspace_display_label, worktree_display_label,
 };
-use crate::session::{unix_epoch_ms, RuntimeSession};
+use crate::session::{unix_epoch_ms, RuntimeProject, RuntimeSession};
+use crate::slice::SliceRecord;
 
 const WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS: u64 = 30_000;
 static LAUNCH_TARGET_CACHE: OnceLock<StdMutex<Option<CachedLaunchTarget>>> = OnceLock::new();
@@ -109,7 +110,10 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .is_some_and(|cached| cached.metaagent_event_revision == metaagent_event_revision);
         let entries = runtime_sessions
             .iter()
-            .filter(|session| session.has_member(caller_user_id))
+            .filter(|session| {
+                session.has_member(caller_user_id)
+                    && session.status() != crate::session::SessionStatus::Ended
+            })
             .map(|session| {
                 let session_id = session.id().to_string();
                 let previous_entry = previous.and_then(|cached| cached.entries.get(&session_id));
@@ -198,6 +202,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
         session_revision: u64,
         metaagent_events: &MetaagentEventStore,
         external_working_agents: &BTreeMap<String, BTreeSet<String>>,
+        runtime_projects: &[RuntimeProject],
+        slices: &[SliceRecord],
         external_provider_sessions: Vec<ExternalProviderSessionRecord>,
         external_provider_sessions_has_more: bool,
         external_provider_sessions_next_cursor: Option<String>,
@@ -216,6 +222,8 @@ impl WaitingRoomSessionSummaryProjectionStore {
             caller_user_id,
         );
         let auxiliary_fingerprint = waiting_room_snapshot_auxiliary_fingerprint(
+            runtime_projects,
+            slices,
             &external_provider_sessions,
             external_provider_sessions_has_more,
             external_provider_sessions_next_cursor.as_deref(),
@@ -236,9 +244,20 @@ impl WaitingRoomSessionSummaryProjectionStore {
             snapshot.generated_at_ms = generated_at_ms;
             return Ok(snapshot);
         }
-        let sessions = projected_sessions.summaries.iter().cloned().collect();
+        let mut sessions = projected_sessions
+            .summaries
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        enrich_waiting_room_agent_slice_placements(&mut sessions, slices);
+        let projects = waiting_room_public_project_summaries(
+            runtime_projects,
+            runtime_sessions,
+            caller_user_id,
+        );
         let snapshot = build_waiting_room_public_snapshot_from_summaries(
             sessions,
+            projects,
             external_provider_sessions,
             external_provider_sessions_has_more,
             external_provider_sessions_next_cursor,
@@ -321,6 +340,7 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     );
     build_waiting_room_public_snapshot_from_summaries(
         sessions,
+        Vec::new(),
         external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
@@ -338,6 +358,8 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
     summary_projection: &WaitingRoomSessionSummaryProjectionStore,
     metaagent_events: &MetaagentEventStore,
     external_working_agents: &BTreeMap<String, BTreeSet<String>>,
+    runtime_projects: &[RuntimeProject],
+    slices: &[SliceRecord],
     external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<String>,
@@ -353,6 +375,8 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
         session_revision,
         metaagent_events,
         external_working_agents,
+        runtime_projects,
+        slices,
         external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
@@ -366,6 +390,8 @@ pub(crate) fn build_waiting_room_public_snapshot_from_cached_shared(
 }
 
 fn waiting_room_snapshot_auxiliary_fingerprint(
+    runtime_projects: &[RuntimeProject],
+    slices: &[SliceRecord],
     external_provider_sessions: &[ExternalProviderSessionRecord],
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<&str>,
@@ -377,6 +403,8 @@ fn waiting_room_snapshot_auxiliary_fingerprint(
     hash_waiting_room_version(
         "serialize waiting room snapshot auxiliary inputs",
         &serde_json::json!({
+            "projects": runtime_projects,
+            "slices": slices,
             "external_provider_sessions": external_provider_sessions,
             "external_provider_sessions_has_more": external_provider_sessions_has_more,
             "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
@@ -390,6 +418,7 @@ fn waiting_room_snapshot_auxiliary_fingerprint(
 
 fn build_waiting_room_public_snapshot_from_summaries(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
+    projects: Vec<WaitingRoomPublicProjectSummary>,
     external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<String>,
@@ -410,12 +439,14 @@ fn build_waiting_room_public_snapshot_from_summaries(
     let launch_target = infer_waiting_room_launch_target();
     let structural_version = waiting_room_structural_version(
         &sessions,
+        &projects,
         &external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor.as_deref(),
         launch_target.as_ref(),
     )?;
-    let activity_revision = waiting_room_activity_revision(&sessions, &external_provider_sessions)?;
+    let activity_revision =
+        waiting_room_activity_revision(&sessions, &projects, &external_provider_sessions)?;
     let inventory_version = waiting_room_inventory_version(
         &structural_version,
         &activity_revision,
@@ -425,12 +456,13 @@ fn build_waiting_room_public_snapshot_from_summaries(
         &terminals,
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 10,
+        schema_version: 11,
         inventory_version,
         structural_version,
         activity_revision,
         generated_at_ms,
         sessions,
+        projects,
         external_provider_sessions,
         external_provider_sessions_has_more,
         external_provider_sessions_next_cursor,
@@ -543,6 +575,7 @@ fn waiting_room_inventory_version(
 
 fn waiting_room_structural_version(
     sessions: &[WaitingRoomPublicSessionSummary],
+    projects: &[WaitingRoomPublicProjectSummary],
     external_provider_sessions: &[ExternalProviderSessionRecord],
     external_provider_sessions_has_more: bool,
     external_provider_sessions_next_cursor: Option<&str>,
@@ -604,6 +637,20 @@ fn waiting_room_structural_version(
         "serialize waiting room structural inventory",
         &serde_json::json!({
             "sessions": sessions,
+            "projects": projects.iter().map(|project| serde_json::json!({
+                "id": project.id,
+                "owner_user_id": project.owner_user_id,
+                "workspace_id": project.workspace_id,
+                "name": project.name,
+                "kind": project.kind,
+                "status": project.status,
+                "created_at_ms": project.created_at_ms,
+                "updated_at_ms": project.updated_at_ms,
+                "archived_at_ms": project.archived_at_ms,
+                "session_count": project.session_count,
+                "joined_collaborator_count": project.joined_collaborator_count,
+                "pending_collaboration_invite_count": project.pending_collaboration_invite_count,
+            })).collect::<Vec<_>>(),
             "external_provider_sessions": external_provider_sessions,
             "external_provider_sessions_has_more": external_provider_sessions_has_more,
             "external_provider_sessions_next_cursor": external_provider_sessions_next_cursor,
@@ -614,6 +661,7 @@ fn waiting_room_structural_version(
 
 fn waiting_room_activity_revision(
     sessions: &[WaitingRoomPublicSessionSummary],
+    projects: &[WaitingRoomPublicProjectSummary],
     external_provider_sessions: &[ExternalProviderSessionRecord],
 ) -> Result<String, DaemonError> {
     let activity = sessions
@@ -642,6 +690,10 @@ fn waiting_room_activity_revision(
         "serialize waiting room activity inventory",
         &serde_json::json!({
             "sessions": activity,
+            "projects": projects.iter().map(|project| serde_json::json!({
+                "id": project.id,
+                "last_session_activity_at_ms": project.last_session_activity_at_ms,
+            })).collect::<Vec<_>>(),
             "external_provider_sessions": external_provider_sessions.iter().map(|session| serde_json::json!({
                 "external_session_id": session.external_session_id,
                 "last_modified_at_ms": session.last_modified_at_ms,
@@ -741,6 +793,7 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 .clone();
             WaitingRoomPublicSessionSummary {
                 id: session.id().to_string(),
+                project_id: session.project_id().to_string(),
                 alias: session.alias().map(ToOwned::to_owned),
                 workspace_id: workspace_id.clone(),
                 worktree_id: worktree_id.clone(),
@@ -753,6 +806,12 @@ fn waiting_room_session_summaries_from_refs<'a>(
                 last_prompt_sent_at_ms: session.last_prompt_sent_at_ms(),
                 status: session.status(),
                 connected_cli_count: session.attachment_ids().len(),
+                joined_collaborator_count: session
+                    .members()
+                    .iter()
+                    .filter(|member| member.user_id() != session.owner_user_id())
+                    .count(),
+                pending_collaboration_invite_count: pending_session_invite_count(session),
                 activity: waiting_room_session_activity_summary(&session, caller_user_id),
                 agents: waiting_room_public_agent_summaries(
                     &session,
@@ -808,6 +867,7 @@ fn waiting_room_public_agent_summaries(
                 workspace_label: workspace_label.clone(),
                 directory: Some(workspace_id.clone()),
                 worktree_label,
+                runtime_placement: waiting_room_agent_runtime_placement(session, agent),
                 extension_grants: agent.extension_grants().to_vec(),
                 activity: waiting_room_agent_activity_summary(session, agent, caller_user_id),
                 metaagent_event_counts: agent
@@ -822,6 +882,129 @@ fn waiting_room_public_agent_summaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     agents
+}
+
+fn waiting_room_agent_runtime_placement(
+    session: &RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> WaitingRoomAgentRuntimePlacement {
+    let (kernel_id, machine_id) = agent.remote_execution().map_or_else(
+        || {
+            (
+                session.host_daemon_id().to_string(),
+                session.host_machine_id().to_string(),
+            )
+        },
+        |remote| {
+            (
+                remote.worker_kernel_id.clone(),
+                remote.worker_machine_id.clone(),
+            )
+        },
+    );
+    WaitingRoomAgentRuntimePlacement {
+        kernel_id,
+        machine_id,
+        slice_id: None,
+        slice_name: None,
+        slice_display_endpoint: None,
+    }
+}
+
+fn pending_session_invite_count(session: &RuntimeSession) -> usize {
+    let now_ms = unix_epoch_ms();
+    session
+        .invites()
+        .iter()
+        .filter(|invite| {
+            !invite.is_revoked() && !invite.is_expired(now_ms) && !invite.is_exhausted()
+        })
+        .count()
+}
+
+fn enrich_waiting_room_agent_slice_placements(
+    sessions: &mut [WaitingRoomPublicSessionSummary],
+    slices: &[SliceRecord],
+) {
+    for session in sessions {
+        for agent in &mut session.agents {
+            let Some(slice) = slices.iter().find(|slice| {
+                slice.agent_ids.iter().any(|agent_id| agent_id == &agent.id)
+                    || (slice.agent_ids.is_empty()
+                        && (slice.session_id.as_deref() == Some(session.id.as_str())
+                            || slice.session_ids.iter().any(|id| id == &session.id))
+                        && slice.worker_kernel_id.as_deref()
+                            == Some(agent.runtime_placement.kernel_id.as_str()))
+            }) else {
+                continue;
+            };
+            agent.runtime_placement.slice_id = Some(slice.id.clone());
+            agent.runtime_placement.slice_name = Some(slice.name.clone());
+            agent.runtime_placement.slice_display_endpoint = slice.display_endpoint.clone();
+        }
+    }
+}
+
+fn waiting_room_public_project_summaries(
+    projects: &[RuntimeProject],
+    sessions: &[Arc<RuntimeSession>],
+    caller_user_id: &str,
+) -> Vec<WaitingRoomPublicProjectSummary> {
+    let mut summaries = projects
+        .iter()
+        .map(|project| {
+            let project_sessions = sessions
+                .iter()
+                .map(AsRef::as_ref)
+                .filter(|session| {
+                    session.project_id() == project.id() && session.has_member(caller_user_id)
+                })
+                .collect::<Vec<_>>();
+            WaitingRoomPublicProjectSummary {
+                id: project.id().to_string(),
+                owner_user_id: project.owner_user_id().to_string(),
+                workspace_id: project.workspace_id().to_string(),
+                name: project.name().to_string(),
+                kind: project.kind(),
+                status: project.status(),
+                created_at_ms: project.created_at_ms(),
+                updated_at_ms: project.updated_at_ms(),
+                archived_at_ms: project.archived_at_ms(),
+                session_count: project_sessions.len(),
+                last_session_activity_at_ms: project_sessions
+                    .iter()
+                    .filter_map(|session| {
+                        session
+                            .last_prompt_sent_at_ms()
+                            .or(session.last_used_at_ms())
+                            .or(Some(session.created_at_ms()))
+                    })
+                    .max(),
+                joined_collaborator_count: project_sessions
+                    .iter()
+                    .map(|session| {
+                        session
+                            .members()
+                            .iter()
+                            .filter(|member| member.user_id() != session.owner_user_id())
+                            .count()
+                    })
+                    .sum(),
+                pending_collaboration_invite_count: project_sessions
+                    .iter()
+                    .map(|session| pending_session_invite_count(session))
+                    .sum(),
+            }
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|left, right| {
+        right
+            .last_session_activity_at_ms
+            .cmp(&left.last_session_activity_at_ms)
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    summaries
 }
 
 fn cached_worktree_label(worktree_id: &str, workspace_id: &str) -> Option<String> {
@@ -961,7 +1144,128 @@ mod tests {
         waiting_room_activity_revision, waiting_room_session_summaries,
         waiting_room_structural_version, WaitingRoomSessionSummaryProjectionStore,
     };
-    use crate::session::{RuntimeSession, WorkflowDefinition};
+    use crate::session::{
+        RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
+    };
+
+    fn disconnected_relay_status() -> RelayStatus {
+        RelayStatus {
+            configured: false,
+            connected: false,
+            relay_url: None,
+            relay_token_configured: false,
+            daemon_id: "daemon".to_string(),
+            daemon_alias: None,
+            machine_id: "machine".to_string(),
+            machine_alias: None,
+        }
+    }
+
+    #[test]
+    fn archived_project_retains_aggregate_while_session_rows_hide_and_restore() {
+        let mut session = RuntimeSession::new(
+            "session-project",
+            Some("project-session".to_string()),
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        assert!(session.assign_project_id("project-1"));
+        session.touch();
+        let initial_activity_at_ms = session.last_used_at_ms();
+        let mut project = RuntimeProject::new(
+            "project-1",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "workspace",
+            "owner/repo",
+            RuntimeProjectKind::Default,
+        );
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+
+        let active_sessions = vec![Arc::new(session.clone())];
+        let active = build_waiting_room_public_snapshot_from_cached_shared(
+            &active_sessions,
+            1,
+            &projection,
+            &metaagent_events,
+            &BTreeMap::new(),
+            &[project.clone()],
+            &[],
+            Vec::new(),
+            false,
+            None,
+            disconnected_relay_status(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("active project should project");
+        assert_eq!(active.sessions.len(), 1);
+        assert_eq!(active.projects[0].session_count, 1);
+        assert_eq!(
+            active.projects[0].last_session_activity_at_ms,
+            initial_activity_at_ms
+        );
+
+        assert!(session.transition_to(SessionStatus::Ended));
+        project.archive();
+        let archived_sessions = vec![Arc::new(session.clone())];
+        let archived = build_waiting_room_public_snapshot_from_cached_shared(
+            &archived_sessions,
+            2,
+            &projection,
+            &metaagent_events,
+            &BTreeMap::new(),
+            &[project.clone()],
+            &[],
+            Vec::new(),
+            false,
+            None,
+            disconnected_relay_status(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            2,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("archived project should project");
+        assert!(archived.sessions.is_empty());
+        assert_eq!(archived.projects[0].session_count, 1);
+        assert_eq!(
+            archived.projects[0].last_session_activity_at_ms,
+            initial_activity_at_ms
+        );
+
+        assert!(session.transition_to(SessionStatus::Parked));
+        project.restore();
+        let restored_sessions = vec![Arc::new(session)];
+        let restored = build_waiting_room_public_snapshot_from_cached_shared(
+            &restored_sessions,
+            3,
+            &projection,
+            &metaagent_events,
+            &BTreeMap::new(),
+            &[project],
+            &[],
+            Vec::new(),
+            false,
+            None,
+            disconnected_relay_status(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            3,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("restored project should project");
+        assert_eq!(restored.sessions.len(), 1);
+        assert_eq!(restored.sessions[0].status, SessionStatus::Parked);
+        assert_eq!(restored.projects[0].session_count, 1);
+    }
 
     #[test]
     fn waiting_room_session_summaries_project_workspace_metadata() {
@@ -1275,6 +1579,8 @@ mod tests {
                 &projection,
                 &metaagent_events,
                 &BTreeMap::new(),
+                &[],
+                &[],
                 Vec::new(),
                 false,
                 None,
@@ -1312,6 +1618,8 @@ mod tests {
             &projection,
             &metaagent_events,
             &BTreeMap::new(),
+            &[],
+            &[],
             Vec::new(),
             false,
             None,
@@ -1344,6 +1652,8 @@ mod tests {
             &projection,
             &metaagent_events,
             &BTreeMap::new(),
+            &[],
+            &[],
             Vec::new(),
             false,
             None,
@@ -1423,7 +1733,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 10);
+        assert_eq!(snapshot.schema_version, 11);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());
@@ -1461,12 +1771,12 @@ mod tests {
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert_eq!(
-            waiting_room_structural_version(&initial, &[], false, None, None).unwrap(),
-            waiting_room_structural_version(&activity_only, &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&initial, &[], &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&activity_only, &[], &[], false, None, None).unwrap(),
         );
         assert_ne!(
-            waiting_room_activity_revision(&initial, &[]).unwrap(),
-            waiting_room_activity_revision(&activity_only, &[]).unwrap(),
+            waiting_room_activity_revision(&initial, &[], &[]).unwrap(),
+            waiting_room_activity_revision(&activity_only, &[], &[]).unwrap(),
         );
 
         session.set_alias(Some("renamed".to_string()));
@@ -1476,8 +1786,9 @@ mod tests {
             crate::session::DEFAULT_LOCAL_USER_ID,
         );
         assert_ne!(
-            waiting_room_structural_version(&activity_only, &[], false, None, None).unwrap(),
-            waiting_room_structural_version(&structural_change, &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&activity_only, &[], &[], false, None, None).unwrap(),
+            waiting_room_structural_version(&structural_change, &[], &[], false, None, None)
+                .unwrap(),
         );
     }
 }
