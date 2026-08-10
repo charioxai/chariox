@@ -98,6 +98,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
         if let Some(cached) = state.get(caller_user_id).filter(|cached| {
             cached.session_revision == session_revision
                 && cached.metaagent_event_revision == metaagent_event_revision
+                && cached_session_sources_match(cached, runtime_sessions, caller_user_id)
         }) {
             return ProjectedSessionSummaries {
                 revision: cached.projection_revision,
@@ -292,6 +293,28 @@ impl WaitingRoomSessionSummaryProjectionStore {
         self.snapshot_build_count
             .load(std::sync::atomic::Ordering::Relaxed)
     }
+}
+
+fn cached_session_sources_match(
+    cached: &CachedSessionSummaries,
+    runtime_sessions: &[Arc<RuntimeSession>],
+    caller_user_id: &str,
+) -> bool {
+    let mut visible_session_count = 0;
+    for session in runtime_sessions
+        .iter()
+        .filter(|session| session.has_member(caller_user_id))
+    {
+        visible_session_count += 1;
+        if !cached
+            .entries
+            .get(session.id())
+            .is_some_and(|entry| Arc::ptr_eq(&entry.source, session))
+        {
+            return false;
+        }
+    }
+    visible_session_count == cached.entries.len()
 }
 
 pub(crate) fn build_waiting_room_public_snapshot(
@@ -1155,6 +1178,7 @@ mod tests {
     };
     use crate::session::{
         RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
+        WorkflowRun, WorkflowRunStatus,
     };
 
     fn disconnected_relay_status() -> RelayStatus {
@@ -1483,6 +1507,91 @@ mod tests {
             summaries[0].workflows[0].prompt.as_deref(),
             Some("Shared workflow context")
         );
+    }
+
+    #[test]
+    fn same_revision_cache_reprojects_completed_workflow_source() {
+        fn session_with_workflow_status(status: WorkflowRunStatus) -> RuntimeSession {
+            let mut session = RuntimeSession::new(
+                "session-1",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "daemon",
+            );
+            session.create_workflow(WorkflowDefinition::new(
+                "workflow-1",
+                Some("review".to_string()),
+            ));
+            let mut run = WorkflowRun::new(
+                "workflow-run-1",
+                "workflow-1",
+                "endpoint-1",
+                "node-1",
+                None,
+                None,
+                Vec::new(),
+                Vec::new(),
+            );
+            run.set_status(status);
+            session.create_workflow_run(run);
+            session
+        }
+
+        let metaagent_events = MetaagentEventStore::default();
+        let projection = WaitingRoomSessionSummaryProjectionStore::default();
+        let build = |session: RuntimeSession, generated_at_ms| {
+            build_waiting_room_public_snapshot_from_cached_shared(
+                &[Arc::new(session)],
+                2,
+                &projection,
+                &metaagent_events,
+                &BTreeMap::new(),
+                &[],
+                &[],
+                Vec::new(),
+                false,
+                None,
+                disconnected_relay_status(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                generated_at_ms,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .expect("waiting-room workflow activity should project")
+        };
+
+        // This deliberately reproduces the former race: an older source was cached with the
+        // post-completion revision, followed by the completed source at that same revision.
+        let running = build(
+            session_with_workflow_status(WorkflowRunStatus::Running),
+            100,
+        );
+        let completed = build(
+            session_with_workflow_status(WorkflowRunStatus::Completed),
+            200,
+        );
+
+        assert!(running.sessions[0].workflows[0].activity.working);
+        assert!(!completed.sessions[0].workflows[0].activity.working);
+        assert_ne!(running.activity_revision, completed.activity_revision);
+        assert_ne!(running.inventory_version, completed.inventory_version);
+
+        let event = crate::transport::kernel_protocol::waiting_room_rows_changed_event(
+            completed,
+            Some(&running),
+        )
+        .expect("workflow completion should publish a waiting-room row delta");
+        let crate::transport::kernel_protocol::KernelEvent::WaitingRoomRowsChanged {
+            sessions, ..
+        } = event
+        else {
+            panic!("workflow completion should emit waiting_room_rows_changed");
+        };
+        assert_eq!(sessions.len(), 1);
+        assert!(!sessions[0].workflows[0].activity.working);
     }
 
     #[test]

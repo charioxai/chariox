@@ -68,6 +68,16 @@ impl SessionStateProjectionStore {
             .clone()
     }
 
+    pub(crate) fn list_shared_with_revision(&self) -> (Option<Arc<[Arc<RuntimeSession>]>>, u64) {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Writers replace the list before publishing the change sequence. Reading both while
+        // holding the list lock prevents pairing an older list with a newer revision.
+        (state.session_list.clone(), self.changes.sequence())
+    }
+
     pub(crate) fn has_warmed_list(&self) -> bool {
         self.state
             .read()

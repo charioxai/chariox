@@ -114,6 +114,26 @@ impl AgentServiceStore {
         self.write().set_agent_state(agent_id, state)
     }
 
+    pub(crate) fn mark_unexpected_provider_exit_error(
+        &self,
+        agent_id: &str,
+        had_active_prompt: bool,
+    ) -> Result<bool, DaemonError> {
+        if !had_active_prompt || self.get_agent(agent_id)?.state() == AgentState::Error {
+            return Ok(false);
+        }
+        self.set_agent_state(agent_id, AgentState::Error)?;
+        Ok(true)
+    }
+
+    pub(crate) fn clear_local_prompt_error(&self, agent_id: &str) -> Result<bool, DaemonError> {
+        if self.get_agent(agent_id)?.state() != AgentState::Error {
+            return Ok(false);
+        }
+        self.set_agent_state(agent_id, AgentState::Idle)?;
+        Ok(true)
+    }
+
     pub fn set_agent_processing(
         &self,
         agent_id: &str,

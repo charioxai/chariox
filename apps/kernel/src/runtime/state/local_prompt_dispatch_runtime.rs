@@ -930,6 +930,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_prompt_admission_clears_prior_agent_error() {
+        let (runtime, session_id, agent_id, _, provider_run_id, first_dispatch) =
+            runtime_with_admitted_prompt().await;
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
+            .expect("first prompt should settle");
+        runtime
+            .owned
+            .agent_store
+            .set_agent_state(&agent_id, crate::agent::AgentState::Error)
+            .expect("error state should seed");
+
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "pending-recovery-prompt",
+                    &first_dispatch.source_attachment_id,
+                    &agent_id,
+                    "recover after provider failure",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("recovery prompt should be admitted");
+
+        assert!(matches!(
+            submission.outcome,
+            PromptSubmissionOutcome::Started { .. }
+        ));
+        assert_ne!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .state(),
+            crate::agent::AgentState::Error,
+        );
+    }
+
+    #[tokio::test]
     async fn failed_local_dispatch_emits_completion_and_settles_agent() {
         let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;

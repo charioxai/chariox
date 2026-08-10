@@ -117,9 +117,6 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
-    let runtime_sessions = session_projection
-        .list_shared()
-        .unwrap_or_else(|| Arc::from([]));
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = paired_terminal_records();
@@ -132,9 +129,11 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let external_working_agents = session_projection.external_observed_working_agents();
     let runtime_projects = runtime_state.list_waiting_room_projects(caller_user_id);
     let slices = runtime_state.list_slices();
+    let (runtime_sessions, session_revision) = session_projection.list_shared_with_revision();
+    let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
     build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
-        session_projection.change_sequence(),
+        session_revision,
         waiting_room_session_summaries,
         &metaagent_events,
         &external_working_agents,

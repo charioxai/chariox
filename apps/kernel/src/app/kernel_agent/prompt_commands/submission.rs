@@ -297,6 +297,11 @@ impl<'a> KernelAgentService<'a> {
             admission.prompt.clone(),
             admission.force_queue || admission.provider_run_is_starting,
         )?;
+        if admission.remote_execution.is_none() {
+            self.app
+                .agents
+                .clear_local_prompt_error(&admission.target_agent_id)?;
+        }
         Ok(KernelPromptOwnerSubmission { admission, outcome })
     }
 
