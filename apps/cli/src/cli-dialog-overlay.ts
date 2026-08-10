@@ -14,11 +14,7 @@ import {
   type TerminalPairingLinkView,
 } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import {
-  sessionBrowserStatus,
-  sessionBrowserTimestamp,
-  sessionBrowserTitle,
-} from "./sessions.js"
+import { sessionBrowserCardLines } from "./session-browser-card.js"
 import { theme } from "./theme.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
@@ -94,28 +90,43 @@ function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRendera
   }
 
   const index = options.normalizeSessionBrowserIndex()
-  const statusWidth = Math.max("Status".length, ...sessions.map((session) => sessionBrowserStatus(session).length))
-  const lastUsedWidth = Math.max("Last used".length, "0000-00-00 00:00 UTC".length)
-  const createdAtWidth = Math.max("Created at".length, "0000-00-00 00:00 UTC".length)
-  panel.add(new TextRenderable(renderer, {
-    content: `  ${"Session".padEnd(30, " ")} ${"Status".padEnd(statusWidth, " ")}  ${"Last used".padEnd(lastUsedWidth, " ")}  ${"Created at".padEnd(createdAtWidth, " ")}`,
-    fg: theme.textMuted,
-    wrapMode: "none",
-  }))
-  const maxRows = Math.max(4, Math.min(14, dimensions.height - 12))
+  const availablePanelHeight = dimensions.height - Math.max(1, Math.floor(dimensions.height / 5))
+  const maxRows = Math.max(1, Math.min(5, Math.floor((availablePanelHeight - 5) / 6)))
   const start = Math.min(Math.max(0, index - maxRows + 1), Math.max(0, sessions.length - maxRows))
   for (const [offset, session] of sessions.slice(start, start + maxRows).entries()) {
     const rowIndex = start + offset
     const selected = rowIndex === index
-    const title = sessionBrowserTitle(session)
-    const details = formatSessionHierarchyDetails(session)
-    const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}  ${details}`
-    panel.add(new TextRenderable(renderer, {
-      content,
+    const lines = sessionBrowserCardLines(session, selected)
+    const card = new BoxRenderable(renderer, {
+      flexDirection: "column",
+    })
+    card.add(new TextRenderable(renderer, {
+      content: lines.title,
       fg: selected ? theme.primary : theme.text,
       ...(selected ? { attributes: TextAttributes.BOLD } : {}),
       wrapMode: "none",
     }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.timestamps,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.agents,
+      fg: selected ? theme.text : theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.workflows,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.collaborations,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    panel.add(card)
   }
   if (sessions.length > maxRows) {
     panel.add(new TextRenderable(renderer, {
@@ -124,30 +135,6 @@ function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRendera
     }))
   }
   return panel
-}
-
-function formatSessionHierarchyDetails(session: SessionListEntry): string {
-  const agentCount = session.activity?.agent_count ?? session.agents?.length ?? 0
-  const working = session.activity?.working_agent_count ?? 0
-  const done = session.activity?.unread_idle_agent_count ?? 0
-  const error = session.activity?.error_agent_count ?? 0
-  const idle = Math.max(0, agentCount - working - done - error)
-  const workflows = session.workflows?.length ?? 0
-  const running = session.workflows?.filter((workflow) => workflow.activity?.working).length ?? 0
-  const joined = session.joined_collaborator_count ?? 0
-  const pending = session.pending_collaboration_invite_count ?? 0
-  const badges = [
-    `${agentCount} agents`,
-    ...(working ? [`${working} WORKING`] : []),
-    ...(idle ? [`${idle} IDLE`] : []),
-    ...(done ? [`${done} DONE`] : []),
-    ...(error ? [`${error} ERROR`] : []),
-    `${workflows} workflows`,
-    ...(running ? [`${running} RUNNING`] : []),
-    `${joined} collaborators joined`,
-    `${pending} invitations pending`,
-  ]
-  return badges.join(" · ")
 }
 
 function renderTerminalPairingPanel(options: CliDialogOverlayOptions): BoxRenderable {
