@@ -1291,9 +1291,10 @@ arroba-cloud
               passed that policy with zero findings; all seven workflow definitions parse and
               enforce the same gate. The ownership-scoped cleanup removed all event-service
               containers, images, build layers, scanner caches, and build-step containers without
-              pruning unrelated Docker state. Hosted GitHub Actions verification is currently
-              unable to start because of the account billing/spending-limit gate, not a workflow
-              or test failure. Remote acceptance still requires separately assigned AEDS and AEGS
+              pruning unrelated Docker state. Hosted GitHub Actions verification subsequently ran
+              successfully for <code>arroba-aeds</code> and all six first-wave production AEGS
+              repositories: formatting, Clippy, tests, ShellCheck, and OCI image builds are green.
+              Remote acceptance still requires separately assigned AEDS and AEGS
               hosts, their TLS and secret configuration, and the full
               cross-host failure matrix. A read-only 2026-07-28 snapshot of the existing relay
               host showed negligible load and 3.1 GiB available memory, but only 14 GiB free disk
