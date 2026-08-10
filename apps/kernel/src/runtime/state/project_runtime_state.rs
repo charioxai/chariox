@@ -176,20 +176,7 @@ impl KernelRuntimeState {
         let mut busy = Vec::new();
         for session_id in session_ids {
             let session = self.session_snapshot(&session_id).await?;
-            let has_live_native_provider_run = self
-                .owned
-                .provider_run_projection
-                .list_for_session(&session_id)
-                .into_iter()
-                .any(|run| {
-                    !run.client_interface().is_arroba()
-                        && matches!(
-                            run.state(),
-                            crate::provider::ProviderRunState::Starting
-                                | crate::provider::ProviderRunState::Running
-                        )
-                });
-            if !project_session_is_idle(&session, has_live_native_provider_run) {
+            if !project_session_is_idle(&session) {
                 busy.push(
                     session
                         .alias()
@@ -229,24 +216,24 @@ impl KernelRuntimeState {
     }
 }
 
-fn project_session_is_idle(
-    session: &crate::session::RuntimeSession,
-    has_live_native_provider_run: bool,
-) -> bool {
-    !has_live_native_provider_run
-        && !session.has_any_prompt_work()
+fn project_session_is_idle(session: &crate::session::RuntimeSession) -> bool {
+    !session.has_any_prompt_work()
         && !session.has_active_session_task()
         && !session.has_pending_session_task()
+        && session.active_interactions().is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::project_session_is_idle;
-    use crate::session::{PromptQueueItem, PromptStatus, RuntimeSession};
+    use crate::session::{
+        PromptQueueItem, PromptStatus, RuntimeInteraction, RuntimeInteractionKind,
+        RuntimeInteractionLevel, RuntimeSession,
+    };
     use std::collections::VecDeque;
 
     #[test]
-    fn idle_guard_ignores_parked_provider_pointer_but_rejects_prompt_work() {
+    fn idle_guard_ignores_attached_native_process_but_rejects_authoritative_work() {
         let mut session = RuntimeSession::new(
             "session-1",
             None,
@@ -255,9 +242,8 @@ mod tests {
             "machine",
             "kernel",
         );
-        session.set_active_provider_run(Some("provider-run-parked".to_string()));
-        assert!(project_session_is_idle(&session, false));
-        assert!(!project_session_is_idle(&session, true));
+        session.set_active_provider_run(Some("native-provider-run-starting".to_string()));
+        assert!(project_session_is_idle(&session));
 
         let active = PromptQueueItem::new(
             "prompt-active",
@@ -267,7 +253,7 @@ mod tests {
             PromptStatus::Running,
         );
         session.mirror_agent_prompt_state("agent-1", Some(active), VecDeque::new());
-        assert!(!project_session_is_idle(&session, false));
+        assert!(!project_session_is_idle(&session));
 
         let queued = PromptQueueItem::new(
             "prompt-queued",
@@ -277,6 +263,21 @@ mod tests {
             PromptStatus::Queued,
         );
         session.mirror_agent_prompt_state("agent-1", None, VecDeque::from([queued]));
-        assert!(!project_session_is_idle(&session, false));
+        assert!(!project_session_is_idle(&session));
+
+        session.mirror_agent_prompt_state("agent-1", None, VecDeque::new());
+        session.add_active_interaction(RuntimeInteraction::new(
+            "interaction-1",
+            "agent-1",
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            None,
+            "Approve?",
+            Vec::new(),
+            None,
+            None,
+            None,
+        ));
+        assert!(!project_session_is_idle(&session));
     }
 }

@@ -146,6 +146,66 @@ fn waiting_room_rows_changed_event_sends_project_upserts_and_removals() {
 }
 
 #[test]
+fn waiting_room_rows_changed_event_keeps_archived_ended_session_and_restores_it() {
+    let mut active =
+        waiting_room_snapshot("inventory-active", vec![session_summary("session-a", 1)]);
+    active.projects = vec![project_summary("project-a", "A")];
+
+    let mut ended = session_summary("session-a", 1);
+    ended.status = crate::session::SessionStatus::Ended;
+    let mut archived_project = project_summary("project-a", "A");
+    archived_project.status = crate::session::RuntimeProjectStatus::Archived;
+    archived_project.archived_at_ms = Some(2);
+    let mut archived = waiting_room_snapshot("inventory-archived", vec![ended]);
+    archived.projects = vec![archived_project];
+
+    let archived_event = waiting_room_rows_changed_event(archived.clone(), Some(&active))
+        .expect("archiving should upsert the ended drill-down row");
+    match archived_event {
+        KernelEvent::WaitingRoomRowsChanged {
+            sessions,
+            removed_session_ids,
+            projects,
+            ..
+        } => {
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].id, "session-a");
+            assert_eq!(sessions[0].status, crate::session::SessionStatus::Ended);
+            assert!(removed_session_ids.is_empty());
+            assert_eq!(
+                projects[0].status,
+                crate::session::RuntimeProjectStatus::Archived
+            );
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+
+    let mut parked = session_summary("session-a", 1);
+    parked.status = crate::session::SessionStatus::Parked;
+    let mut restored = waiting_room_snapshot("inventory-restored", vec![parked]);
+    restored.projects = vec![project_summary("project-a", "A")];
+    let restored_event = waiting_room_rows_changed_event(restored, Some(&archived))
+        .expect("restoring should upsert the parked drill-down row");
+    match restored_event {
+        KernelEvent::WaitingRoomRowsChanged {
+            sessions,
+            removed_session_ids,
+            projects,
+            ..
+        } => {
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].status, crate::session::SessionStatus::Parked);
+            assert!(removed_session_ids.is_empty());
+            assert_eq!(
+                projects[0].status,
+                crate::session::RuntimeProjectStatus::Active
+            );
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[test]
 fn waiting_room_rows_changed_event_skips_unchanged_rows() {
     let previous = waiting_room_snapshot("inventory-a", vec![session_summary("session-a", 1)]);
     let current = waiting_room_snapshot("inventory-b", vec![session_summary("session-a", 1)]);

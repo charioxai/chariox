@@ -134,6 +134,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     isOpen: deps.sessionBrowserOpen,
     visibleSessions: sessionBrowserSessions,
     availableSessions: deps.availableSessions,
+    selectedProject: sessionBrowserProjectionController.selectedProject,
     normalizeSelectedIndex: normalizeSessionBrowserIndex,
     setSelectedIndex: (updater) => deps.setSessionBrowserIndex((index: number) => updater(index)),
     waitingRoomState: deps.waitingRoomState,

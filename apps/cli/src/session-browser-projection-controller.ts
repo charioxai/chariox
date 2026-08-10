@@ -18,9 +18,10 @@ export function createSessionBrowserProjectionController(
   deps: SessionBrowserProjectionControllerDeps,
 ) {
   const sessions = () => {
-    const projectId = deps.selectedProject?.()?.id
-    return sessionBrowserVisibleSessions(deps.availableSessions())
-      .filter((session) => !projectId || session.project_id === projectId)
+    const project = deps.selectedProject?.() ?? null
+    return sessionBrowserVisibleSessions(deps.availableSessions(), {
+      includeEnded: project?.status === "archived",
+    }).filter((session) => !project || session.project_id === project.id)
   }
   const normalizeIndex = () => {
     const visibleSessions = sessions()

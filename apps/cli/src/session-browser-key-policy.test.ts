@@ -93,6 +93,13 @@ test("sessionBrowserVisibleSessions filters ended sessions and sorts by recent a
   ]).map((session) => session.id), ["prompted", "activity", "recent", "old"])
 })
 
+test("sessionBrowserVisibleSessions can include ended sessions for archived project drill-down", () => {
+  assert.deepEqual(sessionBrowserVisibleSessions([
+    session("active", { status: "Active", created_at_ms: 10 }),
+    session("ended", { status: "Ended", created_at_ms: 20 }),
+  ], { includeEnded: true }).map((item) => item.id), ["ended", "active"])
+})
+
 test("clampSessionBrowserIndex keeps selection in range", () => {
   assert.equal(clampSessionBrowserIndex(-1, 3), 0)
   assert.equal(clampSessionBrowserIndex(5, 3), 2)

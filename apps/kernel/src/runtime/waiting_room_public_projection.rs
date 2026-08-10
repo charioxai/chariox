@@ -110,10 +110,7 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .is_some_and(|cached| cached.metaagent_event_revision == metaagent_event_revision);
         let entries = runtime_sessions
             .iter()
-            .filter(|session| {
-                session.has_member(caller_user_id)
-                    && session.status() != crate::session::SessionStatus::Ended
-            })
+            .filter(|session| session.has_member(caller_user_id))
             .map(|session| {
                 let session_id = session.id().to_string();
                 let previous_entry = previous.and_then(|cached| cached.entries.get(&session_id));
@@ -249,6 +246,15 @@ impl WaitingRoomSessionSummaryProjectionStore {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
+        let archived_project_ids = runtime_projects
+            .iter()
+            .filter(|project| project.status() == crate::session::RuntimeProjectStatus::Archived)
+            .map(|project| project.id())
+            .collect::<BTreeSet<_>>();
+        sessions.retain(|session| {
+            session.status != crate::session::SessionStatus::Ended
+                || archived_project_ids.contains(session.project_id.as_str())
+        });
         enrich_waiting_room_agent_slice_placements(&mut sessions, slices);
         let projects = waiting_room_public_project_summaries(
             runtime_projects,
@@ -334,7 +340,10 @@ pub(crate) fn build_waiting_room_public_snapshot_from_shared(
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
     let sessions = waiting_room_session_summaries_from_refs(
-        runtime_sessions.iter().map(AsRef::as_ref),
+        runtime_sessions
+            .iter()
+            .map(AsRef::as_ref)
+            .filter(|session| session.status() != crate::session::SessionStatus::Ended),
         metaagent_events,
         caller_user_id,
     );
@@ -1162,7 +1171,7 @@ mod tests {
     }
 
     #[test]
-    fn archived_project_retains_aggregate_while_session_rows_hide_and_restore() {
+    fn archived_project_retains_ended_rows_while_ordinary_ended_rows_stay_hidden() {
         let mut session = RuntimeSession::new(
             "session-project",
             Some("project-session".to_string()),
@@ -1181,17 +1190,37 @@ mod tests {
             "owner/repo",
             RuntimeProjectKind::Default,
         );
+        let mut ordinary_ended_session = RuntimeSession::new(
+            "ordinary-ended-session",
+            Some("ordinary-ended".to_string()),
+            "workspace",
+            "ordinary-worktree",
+            "machine",
+            "daemon",
+        );
+        assert!(ordinary_ended_session.assign_project_id("project-2"));
+        assert!(ordinary_ended_session.transition_to(SessionStatus::Ended));
+        let ordinary_active_project = RuntimeProject::new(
+            "project-2",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "workspace",
+            "Still active",
+            RuntimeProjectKind::Named,
+        );
         let metaagent_events = MetaagentEventStore::default();
         let projection = WaitingRoomSessionSummaryProjectionStore::default();
 
-        let active_sessions = vec![Arc::new(session.clone())];
+        let active_sessions = vec![
+            Arc::new(session.clone()),
+            Arc::new(ordinary_ended_session.clone()),
+        ];
         let active = build_waiting_room_public_snapshot_from_cached_shared(
             &active_sessions,
             1,
             &projection,
             &metaagent_events,
             &BTreeMap::new(),
-            &[project.clone()],
+            &[project.clone(), ordinary_active_project.clone()],
             &[],
             Vec::new(),
             false,
@@ -1205,22 +1234,31 @@ mod tests {
         )
         .expect("active project should project");
         assert_eq!(active.sessions.len(), 1);
-        assert_eq!(active.projects[0].session_count, 1);
+        assert_eq!(active.sessions[0].id, "session-project");
+        let active_project = active
+            .projects
+            .iter()
+            .find(|summary| summary.id == "project-1")
+            .expect("active project summary should exist");
+        assert_eq!(active_project.session_count, 1);
         assert_eq!(
-            active.projects[0].last_session_activity_at_ms,
+            active_project.last_session_activity_at_ms,
             initial_activity_at_ms
         );
 
         assert!(session.transition_to(SessionStatus::Ended));
         project.archive();
-        let archived_sessions = vec![Arc::new(session.clone())];
+        let archived_sessions = vec![
+            Arc::new(session.clone()),
+            Arc::new(ordinary_ended_session.clone()),
+        ];
         let archived = build_waiting_room_public_snapshot_from_cached_shared(
             &archived_sessions,
             2,
             &projection,
             &metaagent_events,
             &BTreeMap::new(),
-            &[project.clone()],
+            &[project.clone(), ordinary_active_project.clone()],
             &[],
             Vec::new(),
             false,
@@ -1233,23 +1271,30 @@ mod tests {
             crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .expect("archived project should project");
-        assert!(archived.sessions.is_empty());
-        assert_eq!(archived.projects[0].session_count, 1);
+        assert_eq!(archived.sessions.len(), 1);
+        assert_eq!(archived.sessions[0].id, "session-project");
+        assert_eq!(archived.sessions[0].status, SessionStatus::Ended);
+        let archived_project = archived
+            .projects
+            .iter()
+            .find(|summary| summary.id == "project-1")
+            .expect("archived project summary should exist");
+        assert_eq!(archived_project.session_count, 1);
         assert_eq!(
-            archived.projects[0].last_session_activity_at_ms,
+            archived_project.last_session_activity_at_ms,
             initial_activity_at_ms
         );
 
         assert!(session.transition_to(SessionStatus::Parked));
         project.restore();
-        let restored_sessions = vec![Arc::new(session)];
+        let restored_sessions = vec![Arc::new(session), Arc::new(ordinary_ended_session)];
         let restored = build_waiting_room_public_snapshot_from_cached_shared(
             &restored_sessions,
             3,
             &projection,
             &metaagent_events,
             &BTreeMap::new(),
-            &[project],
+            &[project, ordinary_active_project],
             &[],
             Vec::new(),
             false,
@@ -1263,8 +1308,17 @@ mod tests {
         )
         .expect("restored project should project");
         assert_eq!(restored.sessions.len(), 1);
+        assert_eq!(restored.sessions[0].id, "session-project");
         assert_eq!(restored.sessions[0].status, SessionStatus::Parked);
-        assert_eq!(restored.projects[0].session_count, 1);
+        assert_eq!(
+            restored
+                .projects
+                .iter()
+                .find(|summary| summary.id == "project-1")
+                .expect("restored project summary should exist")
+                .session_count,
+            1
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import {
   clampSessionBrowserIndex,
   nextSessionBrowserIndex,
@@ -20,6 +21,7 @@ export type SessionBrowserControllerDeps = {
   isOpen: () => boolean
   visibleSessions: () => SessionListEntry[]
   availableSessions: () => SessionListEntry[]
+  selectedProject?: () => WaitingRoomProjectSummary | null
   normalizeSelectedIndex: () => number
   setSelectedIndex: (updater: (index: number) => number) => void
   waitingRoomState: () => WaitingRoomState
@@ -82,6 +84,11 @@ export function createSessionBrowserController(deps: SessionBrowserControllerDep
       return true
     }
     if (action.action === "submit") {
+      const project = deps.selectedProject?.()
+      if (project?.status === "archived") {
+        deps.flashFooter(`restore project ${project.name} before opening its sessions`, "error")
+        return true
+      }
       const decision = deriveWaitingRoomActivationDecision({
         state: selectedWaitingRoomState(action.selectedIndex),
         sessions: deps.availableSessions(),
@@ -101,6 +108,11 @@ export function createSessionBrowserController(deps: SessionBrowserControllerDep
       return true
     }
     if (action.action === "lifecycle") {
+      const project = deps.selectedProject?.()
+      if (project?.status === "archived") {
+        deps.flashFooter(`restore project ${project.name} before changing its sessions`, "error")
+        return true
+      }
       void deps.applyLifecycleAction(
         action.lifecycleAction,
         selectedWaitingRoomState(action.selectedIndex),
