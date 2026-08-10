@@ -2,7 +2,7 @@
 use super::support::*;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn relay_waiting_room_subscription_observes_shared_router_mutations() {
+async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observes_mutations() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -96,12 +96,71 @@ async fn relay_waiting_room_subscription_observes_shared_router_mutations() {
         &subscription_private_key,
     )
     .await;
-    let _ = expect_named_client_event(
+    let first_inventory = expect_named_client_event(
         &mut client_socket,
         &subscription_private_key,
         "waiting_room_rows_changed",
     )
+    .await
+    .1;
+
+    let (mut reloaded_client_socket, _) = connect_async(&url)
+        .await
+        .expect("reloaded waiting-room client should connect to relay");
+    send_client_envelope(
+        &mut reloaded_client_socket,
+        &RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+        },
+    )
     .await;
+    let _reloaded_daemon_public_key = expect_client_connected(&mut reloaded_client_socket).await;
+    let reloaded_subscription_private_key = relay_crypto::generate_private_key_base64();
+    let reloaded_subscription_public_key =
+        relay_crypto::public_key_from_private_key_base64(&reloaded_subscription_private_key)
+            .expect("reloaded subscription public key should derive");
+    send_client_envelope(
+        &mut reloaded_client_socket,
+        &RelayEnvelope::ClientSubscribe {
+            request_id: "waiting-room-reload-subscribe".to_string(),
+            subscription_id: "waiting-room-reload-subscription".to_string(),
+            target: ClientTarget {
+                daemon_id: Some(config.daemon_id.clone()),
+                daemon_alias: None,
+            },
+            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            attachment_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+            client_public_key: reloaded_subscription_public_key,
+            subscription_scope: Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE.to_string()),
+            resume_from_event_id: None,
+        },
+    )
+    .await;
+    let _ = expect_json_client_response(
+        &mut reloaded_client_socket,
+        "waiting-room-reload-subscribe",
+        &reloaded_subscription_private_key,
+    )
+    .await;
+    let reloaded_inventory = tokio::time::timeout(
+        Duration::from_secs(2),
+        expect_named_client_event(
+            &mut reloaded_client_socket,
+            &reloaded_subscription_private_key,
+            "waiting_room_rows_changed",
+        ),
+    )
+    .await
+    .expect("reloaded waiting-room subscriber should receive its own unchanged baseline")
+    .1;
+    assert_eq!(
+        reloaded_inventory["inventory_version"], first_inventory["inventory_version"],
+        "each null-cursor subscriber should receive the same unchanged inventory baseline",
+    );
 
     let request = LocalDaemonRequest::CreateSession(
         CreateSessionRequest::new("workspace-relay-inventory", "worktree-relay-inventory")
