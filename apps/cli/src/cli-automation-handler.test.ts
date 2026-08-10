@@ -440,6 +440,68 @@ test("automation action handler drives project selection and lifecycle through T
   assert.deepEqual(result, { waitingRoomState, lifecycle: ["archive", "archive"] })
 })
 
+test("automation exposes an archived project before resolving its lifecycle index", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  const lifecycleStates: WaitingRoomState[] = []
+  const projects = [
+    {
+      id: "project-active",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Active",
+      kind: "named" as const,
+      status: "active" as const,
+      created_at_ms: 1,
+      updated_at_ms: 3,
+      session_count: 0,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    },
+    {
+      id: "project-archived",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Archived",
+      kind: "named" as const,
+      status: "archived" as const,
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 0,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    },
+  ]
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    waitingRoomProjects: () => projects,
+    applyWaitingRoomSessionLifecycleAction: async (_action, state) => {
+      if (state) lifecycleStates.push(state)
+    },
+    snapshot: () => ({ waitingRoomState }),
+  })
+
+  await handler({ action: "select_waiting_room_project", projectId: "project-archived" })
+  await handler({
+    action: "waiting_room_project_action",
+    projectId: "project-archived",
+    projectAction: "delete",
+  })
+
+  assert.equal(waitingRoomState.showArchivedProjects, true)
+  assert.equal(waitingRoomState.projectIndex, 1)
+  assert.deepEqual(lifecycleStates.map((state) => ({
+    showArchivedProjects: state.showArchivedProjects,
+    projectIndex: state.projectIndex,
+  })), [
+    { showArchivedProjects: true, projectIndex: 1 },
+    { showArchivedProjects: true, projectIndex: 1 },
+  ])
+})
+
 test("automation connect action refreshes waiting room when already connected", async () => {
   let refreshed = false
   const handler = createCliAutomationActionHandler({

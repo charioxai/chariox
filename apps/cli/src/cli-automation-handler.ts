@@ -261,15 +261,22 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
       case "select_waiting_room_project": {
         if (deps.isAttached()) throw new Error("cannot select a waiting-room project while attached")
         const projectId = typeof request.projectId === "string" ? request.projectId : ""
-        const projectIndex = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? []).findIndex((project) => project.id === projectId)
+        const projects = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? [])
+        const projectIndex = projects.findIndex((project) => project.id === projectId)
         if (projectIndex < 0) throw new Error("usage: select_waiting_room_project projectId=<id>")
-        deps.setWaitingRoomState({ ...deps.waitingRoomState(), focus: "project-entry", projectIndex })
+        deps.setWaitingRoomState({
+          ...deps.waitingRoomState(),
+          focus: "project-entry",
+          projectIndex,
+          ...(projects[projectIndex]?.status === "archived" ? { showArchivedProjects: true } : {}),
+        })
         return deps.snapshot()
       }
       case "waiting_room_project_action": {
         if (deps.isAttached()) throw new Error("cannot mutate a waiting-room project while attached")
         const projectId = typeof request.projectId === "string" ? request.projectId : ""
-        const projectIndex = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? []).findIndex((project) => project.id === projectId)
+        const projects = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? [])
+        const projectIndex = projects.findIndex((project) => project.id === projectId)
         if (projectIndex < 0) throw new Error("usage: waiting_room_project_action projectId=<id> projectAction=rename|archive|delete|restore")
         const projectAction = request.projectAction
         if (projectAction === "rename") {
@@ -282,7 +289,12 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
           await deps.restoreWaitingRoomProject(projectId)
         } else if (projectAction === "archive" || projectAction === "delete") {
           if (!deps.applyWaitingRoomSessionLifecycleAction) throw new Error("project lifecycle is unavailable in this CLI")
-          const state = { ...deps.waitingRoomState(), focus: "project-entry" as const, projectIndex }
+          const state = {
+            ...deps.waitingRoomState(),
+            focus: "project-entry" as const,
+            projectIndex,
+            ...(projects[projectIndex]?.status === "archived" ? { showArchivedProjects: true } : {}),
+          }
           deps.setWaitingRoomState(state)
           await deps.applyWaitingRoomSessionLifecycleAction(projectAction, state)
           await deps.applyWaitingRoomSessionLifecycleAction(projectAction, state)
