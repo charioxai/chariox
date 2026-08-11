@@ -1456,10 +1456,47 @@ arroba-cloud
               AEGS host remains forbidden.
             </p>
             <p>
+              On 2026-08-11 Jira, Linear, GitLab, Sentry, and Slack were added sequentially to the
+              same dedicated AEGS host at isolated loopback ports and public TLS origins. Together
+              with GitHub, all six production AEGSs and the public dummy now remain concurrently
+              active. Each production integration has its own immutable digest, Compose project,
+              SQLite volume, root-protected secret directory, systemd unit, Caddy hostname, 0.25
+              CPU limit, and 128 MiB memory limit except GitHub's existing 256 MiB limit. With all
+              seven containers healthy, measured container memory was approximately 21 MiB in
+              total, host memory available remained 3.2 GiB, swap use remained zero, and 34 GiB of
+              disk remained free.
+            </p>
+            <p>
+              A single authenticated WSS connection then reconciled six simultaneous AEDS routes
+              and delivered signed synthetic webhooks through
+              <code>GitHub, Jira, Linear, GitLab, Sentry, and Slack AEGS → AEDS → kernel client</code>.
+              Each provider produced exactly one canonical delivery, each delivery was
+              acknowledged, and replaying the identical provider occurrence returned
+              <code>duplicate: true</code> with the same delivery ID. The acceptance harness found
+              and closed a missing Rustls feature which had restricted it to local
+              <code>ws://</code>; a compile-time regression now protects public
+              <code>wss://</code> validation. Jira and GitLab used the explicit
+              provider-reconciliation-pending path: desired interests were durably saved while
+              dynamic provider webhook creation correctly remained pending legitimate OAuth.
+              This does not claim live-provider acceptance.
+            </p>
+            <p>
+              AEDS and GitHub passed guarded service restart acceptance with the full six-service
+              set active, after which Jira, Linear, GitLab, Sentry, and Slack were restarted and
+              checked one at a time. A full AEGS-host reboot then recovered Caddy, Docker, the
+              dummy, and all six production AEGSs automatically. Every public readiness endpoint
+              passed within the new boot, and the six-provider WSS delivery plus duplicate replay
+              matrix passed again after recovery.
+            </p>
+            <p>
               The guarded read-only acceptance run <code>ovh-final-20260811</code>, bound to clean
               OSS revision <code>7b35367bf</code>, independently rechecked distinct machine IDs,
               exact host-role markers, the active AEDS and GitHub systemd units, public readiness,
               and capacity on both hosts. It passed without restarting or mutating either service.
+              The subsequent <code>ovh-final-clean-20260811</code> run, bound to clean revision
+              <code>f7a0b30f7</code>, required the exact concurrent production set
+              <code>github,jira,linear,gitlab,sentry,slack</code> and passed both read-only and
+              guarded restart modes.
             </p>
           </div>
 
@@ -1491,7 +1528,7 @@ arroba-cloud
               </tr>
               <tr>
                 <td>AEGS host</td>
-                <td>Dummy, GitHub, and later first-wave AEGSs as concurrently runnable isolated services</td>
+                <td>Dummy plus all six concurrently runnable first-wave production AEGSs</td>
                 <td>
                   Separate container, identity, secrets, limits, state, logs, loopback port, and TLS
                   hostname per AEGS. Install and validate integrations sequentially, then keep the
