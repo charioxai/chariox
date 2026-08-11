@@ -425,9 +425,7 @@ impl DurableKernelStateStore {
     }
 
     pub fn latest_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
-        if let Some(snapshot) = self.latest_entity_checkpoint()? {
-            return Ok(Some(snapshot));
-        }
+        let checkpoint = self.latest_entity_checkpoint()?;
         let connection = self.lock_connection("durable_state.latest_snapshot")?;
         let mut statement = connection
             .prepare(
@@ -449,7 +447,7 @@ impl DurableKernelStateStore {
         });
         let (sequence, timestamp_ms, payload_json) = match result {
             Ok(value) => value,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(checkpoint),
             Err(error) => {
                 return Err(DaemonError::LocalTransport {
                     operation: "durable_state.latest_snapshot",
@@ -457,7 +455,7 @@ impl DurableKernelStateStore {
                 })
             }
         };
-        Ok(Some(DurableStateSnapshot {
+        let legacy = DurableStateSnapshot {
             sequence: sequence.max(0) as u64,
             timestamp_ms: timestamp_ms.max(0) as u64,
             payload: serde_json::from_str(&payload_json).map_err(|error| {
@@ -466,6 +464,10 @@ impl DurableKernelStateStore {
                     message: error.to_string(),
                 }
             })?,
+        };
+        Ok(Some(match checkpoint {
+            Some(checkpoint) if checkpoint.sequence >= legacy.sequence => checkpoint,
+            _ => legacy,
         }))
     }
 
@@ -1053,6 +1055,44 @@ mod tests {
             "writer-thread compaction should remove superseded snapshots"
         );
         drop(connection);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn newer_legacy_snapshot_supersedes_an_older_entity_checkpoint() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-newer-legacy-snapshot-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        store
+            .save_entity_checkpoint(
+                1,
+                vec![DurableCheckpointEntity {
+                    kind: "sessions".to_string(),
+                    id: "checkpoint-session".to_string(),
+                    payload_json: serde_json::json!({"id": "checkpoint-session"}).to_string(),
+                }],
+            )
+            .expect("entity checkpoint should save");
+        store
+            .save_snapshot(
+                2,
+                serde_json::json!({"sessions": [{"id": "legacy-session"}]}),
+            )
+            .expect("newer legacy snapshot should save");
+
+        let snapshot = store
+            .latest_snapshot()
+            .expect("snapshot should load")
+            .expect("snapshot should exist");
+        assert_eq!(snapshot.sequence, 2);
+        assert_eq!(snapshot.payload["sessions"][0]["id"], "legacy-session");
 
         drop(store);
         let _ = std::fs::remove_file(&path);

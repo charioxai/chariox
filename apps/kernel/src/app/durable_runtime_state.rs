@@ -13,6 +13,71 @@ use crate::session::{DurablePromptPrivateState, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
+
+#[derive(Default)]
+struct DurableRestoreDiagnostics {
+    ignored_prompt_state_count: usize,
+    sample_missing_session_ids: BTreeSet<String>,
+    sample_truncated: bool,
+}
+
+impl DurableRestoreDiagnostics {
+    fn record_missing_prompt_session(&mut self, session_id: String) {
+        self.ignored_prompt_state_count += 1;
+        if self.sample_missing_session_ids.len() < DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT {
+            self.sample_missing_session_ids.insert(session_id);
+        } else if !self.sample_missing_session_ids.contains(&session_id) {
+            self.sample_truncated = true;
+        }
+    }
+
+    fn log_summary(&self) {
+        if self.ignored_prompt_state_count == 0 {
+            return;
+        }
+        let sample_session_ids = self
+            .sample_missing_session_ids
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        crate::logging::warn_with_fields(
+            "durable_state.restore",
+            "ignored prompt states for missing runtime sessions",
+            serde_json::json!({
+                "ignored_prompt_state_count": self.ignored_prompt_state_count,
+                "missing_session_sample_count": self.sample_missing_session_ids.len(),
+                "sample_session_ids": sample_session_ids,
+                "sample_truncated": self.sample_truncated,
+            }),
+        );
+    }
+}
+
+#[cfg(test)]
+mod durable_restore_diagnostics_tests {
+    use super::{DurableRestoreDiagnostics, DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT};
+
+    #[test]
+    fn missing_session_diagnostics_retain_a_bounded_sample() {
+        let mut diagnostics = DurableRestoreDiagnostics::default();
+        for index in 0..(DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT + 5) {
+            diagnostics.record_missing_prompt_session(format!("session-{index:02}"));
+        }
+        diagnostics.record_missing_prompt_session("session-00".to_string());
+
+        assert_eq!(
+            diagnostics.ignored_prompt_state_count,
+            DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT + 6
+        );
+        assert_eq!(
+            diagnostics.sample_missing_session_ids.len(),
+            DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT
+        );
+        assert!(diagnostics.sample_truncated);
+    }
+}
+
 fn decode_durable_payload_field<T>(
     event: &DurableStateEvent,
     field: &'static str,
@@ -182,12 +247,14 @@ impl DaemonApp {
             }
             None => 0,
         };
+        let mut diagnostics = DurableRestoreDiagnostics::default();
         for event in self
             .durable_state
             .load_events_after(replay_after_sequence)?
         {
-            self.restore_durable_state_event(event)?;
+            self.restore_durable_state_event(event, &mut diagnostics)?;
         }
+        diagnostics.log_summary();
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
@@ -560,7 +627,11 @@ impl DaemonApp {
         ))
     }
 
-    fn restore_durable_state_event(&mut self, event: DurableStateEvent) -> Result<(), DaemonError> {
+    fn restore_durable_state_event(
+        &mut self,
+        event: DurableStateEvent,
+        diagnostics: &mut DurableRestoreDiagnostics,
+    ) -> Result<(), DaemonError> {
         match event.kind.as_str() {
             "session.created" => {
                 let session: RuntimeSession = decode_durable_payload_field(
@@ -592,15 +663,7 @@ impl DaemonApp {
                 let session = match self.sessions.get_session(&prompt_state.session_id) {
                     Ok(session) => session,
                     Err(DaemonError::SessionNotFound { .. }) => {
-                        crate::logging::warn_with_fields(
-                            "durable_state.restore",
-                            "ignored prompt state for a missing runtime session",
-                            serde_json::json!({
-                                "session_id": prompt_state.session_id,
-                                "agent_id": prompt_state.agent_id,
-                                "event_id": event.event_id,
-                            }),
-                        );
+                        diagnostics.record_missing_prompt_session(prompt_state.session_id);
                         return Ok(());
                     }
                     Err(error) => return Err(error),
