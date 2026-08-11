@@ -65,12 +65,19 @@ impl KernelRuntimeState {
             self.owned.create_session_response(request)?
         };
         if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
-            let project = self.owned.session_store.get_project(session.project_id())?;
-            if !existing_project_ids.contains(project.id()) {
+            let project = if session.is_hidden() {
+                None
+            } else {
+                Some(self.owned.session_store.get_project(session.project_id())?)
+            };
+            if let Some(project) = project
+                .as_ref()
+                .filter(|project| !existing_project_ids.contains(project.id()))
+            {
                 self.owned.durable_state_store.append_event(
                     "project.created",
                     Some(project.id().to_string()),
-                    serde_json::json!({ "project": &project }),
+                    serde_json::json!({ "project": project }),
                 )?;
             }
             if let Some(slice_ref) = slice_ref {
@@ -92,14 +99,17 @@ impl KernelRuntimeState {
                     serde_json::json!({ "slice": &slice }),
                 )?;
             }
+            let mut payload = serde_json::json!({
+                "session": session,
+                "default_agent": agent,
+            });
+            if let Some(project) = project {
+                payload["project"] = serde_json::json!(project);
+            }
             self.owned.durable_state_store.append_event(
                 "session.created",
                 Some(session.id().to_string()),
-                serde_json::json!({
-                    "session": session,
-                    "default_agent": agent,
-                    "project": project,
-                }),
+                payload,
             )?;
         }
         Ok(response)
@@ -687,7 +697,8 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
-        let (session, terminated_run_ids) = owned.delete_session_ref(session_ref, workspace_id)?;
+        let (session, terminated_run_ids, removed_project) =
+            owned.delete_session_ref(session_ref, workspace_id)?;
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -699,6 +710,9 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
             .await?;
+        if let Some(project) = removed_project {
+            self.append_project_durable_event("project.deleted", &project)?;
+        }
         self.detach_session_slices(&session).await?;
         Ok(session)
     }

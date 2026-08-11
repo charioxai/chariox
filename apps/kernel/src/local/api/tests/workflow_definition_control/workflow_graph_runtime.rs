@@ -484,6 +484,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(materialized.is_hidden());
+    assert_eq!(materialized.project_id(), "");
     assert_eq!(materialized.owner_user_id(), runtime_owner_user_id);
     assert!(materialized.has_member(runtime_owner_user_id));
     assert_ne!(materialized.id(), source_session.id());
@@ -537,6 +538,20 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(listed.is_empty());
+
+    let projects = match harness
+        .dispatch_as_user(
+            runtime_owner_user_id,
+            LocalDaemonRequest::ListProjects(ListProjectsRequest {
+                include_archived: true,
+            }),
+        )
+        .expect("publication runtime should not create a project")
+    {
+        LocalDaemonResponse::ProjectsListed { projects } => projects,
+        _ => panic!("unexpected local response"),
+    };
+    assert!(projects.is_empty());
 
     let hidden_state = match harness
         .dispatch_as_user(

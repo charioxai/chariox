@@ -116,6 +116,14 @@ impl SessionService {
     }
 
     pub fn delete_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        self.delete_session_with_project_cleanup(session_id)
+            .map(|(session, _)| session)
+    }
+
+    pub(crate) fn delete_session_with_project_cleanup(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
         let deleted =
             self.store
                 .remove(session_id)
@@ -123,7 +131,16 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         self.ephemeral_session_ids.remove(session_id);
-        Ok(deleted)
+        let project_id = deleted.project_id().to_string();
+        let project_has_visible_sessions = self
+            .store
+            .list()
+            .into_iter()
+            .any(|session| !session.is_hidden() && session.project_id() == project_id.as_str());
+        let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
+            .then(|| self.projects.remove(&project_id))
+            .flatten();
+        Ok((deleted, removed_project))
     }
 
     pub fn add_attachment_to_session(

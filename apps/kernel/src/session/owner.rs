@@ -102,6 +102,10 @@ impl SessionStateStore {
         self.write().restore_projects(projects)
     }
 
+    pub(crate) fn remove_projects_without_visible_sessions(&self) -> Vec<RuntimeProject> {
+        self.write().remove_projects_without_visible_sessions()
+    }
+
     pub(crate) fn rename_project(
         &self,
         project_id: &str,
@@ -202,6 +206,13 @@ impl SessionStateStore {
 
     pub(crate) fn delete_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().delete_session(session_id)
+    }
+
+    pub(crate) fn delete_session_with_project_cleanup(
+        &self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.write().delete_session_with_project_cleanup(session_id)
     }
 
     pub(crate) fn set_active_provider_run(

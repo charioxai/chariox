@@ -223,9 +223,29 @@ impl DaemonApp {
                 self.restore_durable_state_event(event)?;
             }
         }
+        self.remove_restored_projects_without_visible_sessions()?;
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        Ok(())
+    }
+
+    fn remove_restored_projects_without_visible_sessions(&self) -> Result<(), DaemonError> {
+        for project in self.sessions.remove_projects_without_visible_sessions() {
+            self.durable_state.append_event(
+                "project.deleted",
+                Some(project.id().to_string()),
+                serde_json::json!({ "project": &project }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "removed project without visible sessions",
+                serde_json::json!({
+                    "project_id": project.id(),
+                    "project_name": project.name(),
+                }),
+            );
+        }
         Ok(())
     }
 
@@ -504,7 +524,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.restore_session_with_project_migration(session.clone());
+            let session = self.restore_session_with_project_migration(session);
             self.update_session_projection(session);
         }
         Ok(())
@@ -518,7 +538,7 @@ impl DaemonApp {
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
         self.prompt_state_owner.restore_session_state(&session);
-        self.restore_session_with_project_migration(session.clone());
+        let session = self.restore_session_with_project_migration(session);
         self.update_session_projection(session);
         Ok(())
     }
@@ -535,7 +555,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.restore_session_with_project_migration(session.clone());
+            let session = self.restore_session_with_project_migration(session);
             self.update_session_projection(session.clone());
             crate::logging::info_with_fields(
                 "durable_state.restore",
@@ -659,7 +679,7 @@ impl DaemonApp {
                 )?;
                 self.mark_agent_external_provider_sessions_attached(&default_agent);
                 self.prompt_state_owner.restore_session_state(&session);
-                self.restore_session_with_project_migration(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
@@ -742,7 +762,7 @@ impl DaemonApp {
                     session.restore_durable_prompt_private_states(&private_states);
                 }
                 self.prompt_state_owner.restore_session_state(&session);
-                self.restore_session_with_project_migration(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.update_session_projection(session);
             }
             "agent.created" => {
@@ -820,7 +840,7 @@ impl DaemonApp {
                 self.prompt_state_owner.remove_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
-                self.restore_session_with_project_migration(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.update_session_projection(session);
             }
             "session.deleted" => {
@@ -973,6 +993,81 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_restore_removes_project_without_visible_sessions() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let project = crate::session::RuntimeProject::new(
+            "legacy-empty-project",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "legacy-workspace",
+            "Legacy empty project",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        let mut hidden_session = crate::session::RuntimeSession::new(
+            "legacy-publication-runtime",
+            None,
+            "legacy-workspace",
+            "legacy-worktree",
+            config.host_machine_id.clone(),
+            config.daemon_id.clone(),
+        );
+        hidden_session.set_hidden(true);
+        assert!(hidden_session.assign_project_id(project.id()));
+        let default_agent = crate::agent::AgentInstance::new(
+            "legacy-publication-agent",
+            "legacy-publication-agent-ref",
+            hidden_session.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            app.durable_state_store()
+                .append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": &project }),
+                )
+                .expect("legacy empty project should persist");
+            app.durable_state_store()
+                .append_event(
+                    "session.created",
+                    Some(hidden_session.id().to_string()),
+                    serde_json::json!({
+                        "session": &hidden_session,
+                        "default_agent": &default_agent,
+                        "project": &project,
+                    }),
+                )
+                .expect("legacy hidden publication runtime should persist");
+        }
+
+        let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restore");
+        assert!(app.sessions().get_project(project.id()).is_err());
+        assert_eq!(
+            app.sessions()
+                .get_session(hidden_session.id())
+                .expect("hidden publication runtime should remain")
+                .project_id(),
+            ""
+        );
+        drop(app);
+
+        let app = DaemonApp::bootstrap(config).expect("daemon should restore cleanup event");
+        assert!(app.sessions().get_project(project.id()).is_err());
+        assert_eq!(
+            app.sessions()
+                .get_session(hidden_session.id())
+                .expect("hidden publication runtime should survive cleanup restart")
+                .project_id(),
+            ""
+        );
+    }
 
     #[test]
     fn restart_reconciliation_restores_missing_slice_agent_ids_from_worker_placement() {

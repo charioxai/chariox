@@ -387,7 +387,14 @@ impl KernelRuntimeOwnedState {
         &self,
         session_ref: &str,
         workspace_id: Option<&str>,
-    ) -> Result<(crate::session::RuntimeSession, Vec<String>), DaemonError> {
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Vec<String>,
+            Option<crate::session::RuntimeProject>,
+        ),
+        DaemonError,
+    > {
         let session = self
             .session_store
             .read()
@@ -403,7 +410,9 @@ impl KernelRuntimeOwnedState {
             } else {
                 self.end_session(&session_id)?
             };
-        let mut deleted = self.session_store.delete_session(ended.id())?;
+        let (mut deleted, removed_project) = self
+            .session_store
+            .delete_session_with_project_cleanup(ended.id())?;
         deleted.set_agents(ended.agents().to_vec());
         crate::provider::shutdown_provider_mcp_proxy_session(&session_id);
         self.session_projection.remove(deleted.id());
@@ -416,7 +425,7 @@ impl KernelRuntimeOwnedState {
                 "session_alias": deleted.alias(),
             }),
         );
-        Ok((deleted, terminated_run_ids))
+        Ok((deleted, terminated_run_ids, removed_project))
     }
 }
 

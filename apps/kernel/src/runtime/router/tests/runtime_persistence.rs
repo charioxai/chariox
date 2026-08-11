@@ -221,21 +221,23 @@ async fn runtime_end_and_delete_session_survive_kernel_restart() {
     assert!(app.agents.get_session_agents(&ended_session_id).is_empty());
 
     let delete_config = DaemonConfig::for_tests();
-    let deleted_session_id = {
+    let (deleted_session_id, deleted_project_id) = {
         let mut app = DaemonApp::bootstrap(delete_config.clone()).expect("daemon should boot");
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
+        let project_id = session.project_id().to_string();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
         router
             .runtime_state
             .delete_session_ref(session.id(), None)
             .await
             .expect("session should delete");
-        session.id().to_string()
+        (session.id().to_string(), project_id)
     };
     let app = DaemonApp::bootstrap(delete_config).expect("daemon should reboot");
     assert!(app.sessions().get_session(&deleted_session_id).is_err());
+    assert!(app.sessions().get_project(&deleted_project_id).is_err());
     assert!(app
         .agents
         .get_session_agents(&deleted_session_id)

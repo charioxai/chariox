@@ -91,7 +91,7 @@ impl KernelRuntimeState {
         ),
         DaemonError,
     > {
-        self.owned.session_store.read().ensure_project_owner(
+        let project = self.owned.session_store.read().ensure_project_owner(
             project_id,
             caller_user_id,
             "project.delete",
@@ -103,11 +103,13 @@ impl KernelRuntimeState {
             self.owned.terminal_stream.remove_session(deleted.id());
             deleted_sessions.push(deleted);
         }
-        let project = self
-            .owned
-            .session_store
-            .delete_project_record(project_id, caller_user_id)?;
-        self.append_project_durable_event("project.deleted", &project)?;
+        if self.owned.session_store.get_project(project_id).is_ok() {
+            let deleted_project = self
+                .owned
+                .session_store
+                .delete_project_record(project_id, caller_user_id)?;
+            self.append_project_durable_event("project.deleted", &deleted_project)?;
+        }
         self.owned.runtime_projection_changes.record_change();
         Ok((project, deleted_sessions))
     }
@@ -202,7 +204,7 @@ impl KernelRuntimeState {
         Ok(sessions)
     }
 
-    fn append_project_durable_event(
+    pub(super) fn append_project_durable_event(
         &self,
         kind: &str,
         project: &crate::session::RuntimeProject,

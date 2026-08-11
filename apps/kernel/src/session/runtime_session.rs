@@ -225,6 +225,11 @@ impl RuntimeSession {
         true
     }
 
+    pub(crate) fn clear_project_id_for_hidden_restore(&mut self) {
+        debug_assert!(self.hidden);
+        self.project_id.clear();
+    }
+
     pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {
         &self.agent_prompt_schedules
     }

@@ -130,12 +130,56 @@ fn hidden_sessions_do_not_get_default_aliases() {
     let hidden = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
         .expect("hidden session should be created");
+    assert_eq!(hidden.project_id(), "");
+    assert!(service
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+
     let visible = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-2"))
         .expect("visible session should be created");
 
     assert_eq!(hidden.alias(), None);
     assert_eq!(visible.alias(), Some("repo-1"));
+    assert_eq!(service.list_projects(DEFAULT_LOCAL_USER_ID, true).len(), 1);
+}
+
+#[test]
+fn restoring_hidden_session_detaches_it_from_legacy_project() {
+    let mut source = SessionService::new(&test_config());
+    let visible = source
+        .create_session(CreateSessionRequest::new("/repo", "worktree-visible"))
+        .expect("visible session should be created");
+    let project = source
+        .get_project(visible.project_id())
+        .expect("visible project should exist");
+
+    let mut hidden = RuntimeSession::new(
+        "hidden-runtime",
+        None,
+        "/repo",
+        "worktree-hidden",
+        "machine-test",
+        "daemon-test",
+    );
+    hidden.set_hidden(true);
+    assert!(hidden.assign_project_id(project.id()));
+
+    let mut restored = SessionService::new(&test_config());
+    restored.restore_projects(vec![project.clone()]);
+    let hidden = restored.restore_session(hidden);
+    assert_eq!(hidden.project_id(), "");
+    assert!(restored
+        .list_visible_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+
+    assert_eq!(
+        restored.remove_projects_without_visible_sessions(),
+        vec![project]
+    );
+    assert!(restored
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
 }
 
 #[test]
@@ -401,6 +445,7 @@ fn delete_session_removes_it_from_registry() {
     let created = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
+    let project_id = created.project_id().to_string();
 
     let deleted = service
         .delete_session(created.id())
@@ -412,6 +457,33 @@ fn delete_session_removes_it_from_registry() {
         Err(DaemonError::SessionNotFound { .. })
     ));
     assert!(service.list_sessions().is_empty());
+    assert!(service.get_project(&project_id).is_err());
+    assert!(service
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+}
+
+#[test]
+fn delete_session_keeps_project_until_last_visible_session_is_deleted() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let second = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-2"))
+        .expect("second session should be created");
+    assert_eq!(first.project_id(), second.project_id());
+    let project_id = first.project_id().to_string();
+
+    service
+        .delete_session(first.id())
+        .expect("first session should delete");
+    assert!(service.get_project(&project_id).is_ok());
+
+    service
+        .delete_session(second.id())
+        .expect("second session should delete");
+    assert!(service.get_project(&project_id).is_err());
 }
 
 #[test]

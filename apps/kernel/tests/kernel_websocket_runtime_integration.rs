@@ -21,6 +21,8 @@ where
         .expect("test thread should finish");
 }
 
+#[path = "kernel_websocket_runtime_integration/project_lifecycle.rs"]
+mod project_lifecycle;
 #[path = "kernel_websocket_runtime_integration/prompt_replay.rs"]
 mod prompt_replay;
 #[path = "kernel_websocket_runtime_integration/prompt_responsiveness.rs"]

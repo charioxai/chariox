@@ -52,6 +52,58 @@ fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
 }
 
 #[test]
+fn project_delete_cascades_when_last_session_removes_project_record() {
+    let harness = LocalRouterTestHarness::new();
+    let first = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-delete", "worktree-delete-1")
+                .with_project_selection(SessionProjectSelection::New),
+        ))
+        .expect("named project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let second = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-delete", "worktree-delete-2")
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: first.project_id().to_string(),
+                }),
+        ))
+        .expect("second project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+
+    let (project, sessions) = match harness
+        .dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+            project_id: first.project_id().to_string(),
+        }))
+        .expect("project should delete")
+    {
+        LocalDaemonResponse::ProjectDeleted { project, sessions } => (project, sessions),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(project.id(), first.project_id());
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().any(|session| session.id() == first.id()));
+    assert!(sessions.iter().any(|session| session.id() == second.id()));
+
+    let projects = match harness
+        .dispatch(LocalDaemonRequest::ListProjects(ListProjectsRequest {
+            include_archived: true,
+        }))
+        .expect("projects should list")
+    {
+        LocalDaemonResponse::ProjectsListed { projects } => projects,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert!(projects.is_empty());
+}
+
+#[test]
 fn project_requests_enforce_owner_and_named_numbering() {
     let harness = LocalRouterTestHarness::new();
     let create = |harness: &LocalRouterTestHarness| match harness

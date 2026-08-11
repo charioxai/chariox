@@ -55,7 +55,11 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let project_id = self.resolve_project_selection(&request)?;
+        let project_id = if request.hidden {
+            None
+        } else {
+            Some(self.resolve_project_selection(&request)?)
+        };
         let mut session = RuntimeSession::new(
             self.store.next_session_id(),
             alias,
@@ -64,7 +68,9 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
-        debug_assert!(session.assign_project_id(project_id));
+        if let Some(project_id) = project_id {
+            debug_assert!(session.assign_project_id(project_id));
+        }
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
@@ -136,7 +142,9 @@ impl SessionService {
         mut session: RuntimeSession,
         default_project_name_hint: Option<&str>,
     ) -> RuntimeSession {
-        if session.project_id().is_empty() {
+        if session.is_hidden() {
+            session.clear_project_id_for_hidden_restore();
+        } else if session.project_id().is_empty() {
             let project_id = self.ensure_default_project(
                 session.owner_user_id(),
                 session.workspace_id(),
@@ -184,17 +192,35 @@ impl SessionService {
             .store
             .list()
             .into_iter()
+            .filter(|session| !session.is_hidden())
             .filter(|session| session.has_member(caller_user_id))
             .map(|session| session.project_id().to_string())
             .collect::<BTreeSet<_>>();
         self.projects
             .values()
-            .filter(|project| {
-                project.owner_user_id() == caller_user_id
-                    || visible_project_ids.contains(project.id())
-            })
+            .filter(|project| visible_project_ids.contains(project.id()))
             .filter(|project| include_archived || project.status() == RuntimeProjectStatus::Active)
             .cloned()
+            .collect()
+    }
+
+    pub(crate) fn remove_projects_without_visible_sessions(&mut self) -> Vec<RuntimeProject> {
+        let visible_project_ids = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|session| !session.is_hidden())
+            .map(|session| session.project_id().to_string())
+            .collect::<BTreeSet<_>>();
+        let empty_project_ids = self
+            .projects
+            .keys()
+            .filter(|project_id| !visible_project_ids.contains(project_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        empty_project_ids
+            .into_iter()
+            .filter_map(|project_id| self.projects.remove(&project_id))
             .collect()
     }
 
