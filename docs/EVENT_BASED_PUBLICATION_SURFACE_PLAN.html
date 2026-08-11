@@ -550,7 +550,7 @@
           <a href="#acceptance">Acceptance</a>
         </nav>
         <p class="aside-meta">
-          Status: first-wave packages green; OVH AEDS plus concurrent dummy/GitHub staging active; web, PTY, and real GitHub delivery validated<br />
+          Status: first-wave packages green; separate OVH AEDS/AEGS staging active; web, PTY, and real GitHub, GitLab, and Sentry delivery validated<br />
           Scope: first-wave integrations<br />
           Updated: 2026-08-11
         </p>
@@ -1331,7 +1331,7 @@ arroba-cloud
               reclaiming approximately 5.5 GiB without pruning unrelated Docker state.
               Separate AEDS and AEGS hosts, TLS, persistence, reboot, restore, and the GitHub live
               provider path are now proven. Completing live-provider acceptance for Jira, Linear,
-              GitLab, Sentry, and Slack still requires legitimate provider applications and
+              and Slack still requires legitimate provider applications and
               tenant credentials; staging must not substitute invented OAuth identities. A
               read-only 2026-07-28 snapshot of the existing relay
               host showed negligible load. A fresh read-only 2026-08-10 check reported 3.2 GiB
@@ -1341,7 +1341,7 @@ arroba-cloud
             <p>
               The Sentry first-wave adapter was subsequently aligned with Sentry's current
               Integration Platform instead of retaining the synthetic generic-OAuth assumption.
-              Revision <code>4d66b017</code> implements the external-install callback carrying
+              Revision <code>4d66b017</code> first implemented the external-install callback carrying
               <code>installationId</code>, <code>orgSlug</code>, and state; exchanges and refreshes
               the installation-scoped short-lived token; encrypts credentials at rest; isolates
               organization scopes by AEGS connection ID; and maps every signed delivery back to
@@ -1356,9 +1356,58 @@ arroba-cloud
               <code>sha256:1484889719fdbfbaf0d6d2fd41cfce428719608923de141fbf5e55a39306c67a</code>
               also passed an exact Linux/amd64 OCI title, source-revision, and protocol-label
               check; the temporary local image and registry login were removed afterward.
-              Deployment is intentionally held until a real Sentry App supplies its slug, client ID, and
-              client secret; the old staging image remains healthy rather than being restarted
-              with invented credentials.
+              A real unpublished public Sentry App named
+              <code>Arroba Event Notifications</code> now supplies the staging slug, client ID,
+              client secret, callback, webhook URL, organization scope, and the real
+              <code>issue.created</code>/<code>issue.resolved</code> event interests. Live
+              installation exposed two additional provider-contract defects that synthetic OAuth
+              could not reveal: the token exchange must explicitly use
+              <code>grant_type=authorization_code</code>, and verified Sentry Apps remain pending
+              until the integration calls the installation-details API with
+              <code>{"status":"installed"}</code>. Both are covered by focused mock-provider
+              regressions. Revision <code>5b980ba1</code> passed twelve tests, formatting, Clippy,
+              ShellCheck, Compose rendering, vulnerability scanning, and OCI provenance/SBOM
+              verification in CI/release runs <code>31490910866</code> and
+              <code>31491315449</code>. Its exact image digest
+              <code>sha256:2a2227faf0fbbe2500f09f29d9eb4ac8790cefd383b8716519ac18cf82c71a60</code>
+              is deployed on the separate AEGS VPS with a checksummed pre-upgrade database backup.
+              Final Sentry acceptance deliberately removes the older pending installation and
+              performs a clean installation against this revision before counting a real issue
+              webhook as evidence; manually repairing a pre-fix installation is not accepted as
+              the end-to-end proof.
+            </p>
+            <p>
+              Real Sentry-provider acceptance completed on 2026-08-11. Sentry accepted a new
+              error event as issue <code>140086217</code> and emitted an authenticated
+              <code>issue.created</code> Integration Platform webhook. The drill found two
+              deployment-state defects rather than adapter defects: Sentry's installation-side
+              service-hook projection had to be refreshed after the granular webhook migration,
+              and the AEDS producer capability still named the obsolete
+              <code>issue.alerted</code>/<code>metric.alerted</code> interests instead of
+              <code>issue.created</code>. The production allowlist is now least-privilege and
+              matches the deployed adapter exactly:
+              <code>issue.created</code> and <code>issue.resolved</code>. Repeating the drill then
+              returned HTTP 202 from the Sentry AEGS, advanced AEDS acknowledgements from 42 to
+              43 with zero pending or expired deliveries, queued the canonical prompt in the
+              published workflow, and completed workflow run
+              <code>0000019ff1137dd0</code>. A real PTY observed the queued prompt and reported
+              <code>event delivery connected; active routes=4</code>. The temporary diagnostic
+              Sentry personal token was revoked after use. Revision <code>648e0548</code> now
+              authenticates and acknowledges Sentry's mandatory
+              <code>installation.created</code>/<code>installation.deleted</code> lifecycle
+              callbacks without publishing them as workflow events; invalid signatures remain
+              rejected. Fourteen tests, formatting, Clippy, ShellCheck, Compose checks, the
+              container build, high/critical vulnerability scan, provenance, and SBOM checks
+              passed in CI/release runs <code>31498390232</code> and
+              <code>31498712299</code>. Immutable digest
+              <code>sha256:03e59c546bf615791efd2335be20ea15fa658abb9ab54addd0956ab0c8a18d2d</code>
+              was deployed after a checksummed database backup, and a signed public-TLS
+              lifecycle probe returned HTTP 200 with no AEDS publication. The shared AEDS
+              six-provider acceptance fixture was corrected to the same
+              <code>issue.created</code> contract in private revision <code>8f7da918</code> and
+              passed hosted CI run <code>31498391001</code>. The drill kernel bearer was also
+              rotated on both AEDS and the kernel after it appeared in diagnostic output; the old
+              credential is no longer accepted.
             </p>
             <p>
               The OSS deployment orchestrator now includes a guarded remote-host acceptance
@@ -1408,6 +1457,18 @@ arroba-cloud
               command, while the kernel emits canonical RFC 3339 UTC instants. Focused CLI and
               kernel regressions pass, and a post-restart PTY test started and completed the
               workflow with the expected prompt.
+            </p>
+            <p>
+              Time handling is now enforced as a platform contract rather than patched for one
+              developer timezone. OSS rejects timezone-free event instants, canonicalizes wire
+              instants to RFC 3339 UTC, validates recurring schedule zones as IANA identifiers,
+              and centralizes client-side instant parsing and local presentation. Cloud stores
+              instants in timezone-aware columns and its isolated PostgreSQL harness explicitly
+              resets every database to UTC so a developer's machine timezone cannot leak into
+              migration expectations. The same Cloud migration suite passes under
+              <code>UTC</code>, <code>Europe/Helsinki</code>,
+              <code>America/New_York</code>, and <code>Asia/Tokyo</code>; the production behavior
+              still renders for the viewer's real locale and zone, including DST.
             </p>
             <p>
               Final product validation used a real Cloud identity and the hosted relay rather than
@@ -1529,6 +1590,27 @@ arroba-cloud
               plaintext downgrade probe returned HTTP 401. A subsequent GitLab-only matrix passed
               after service restart, the post-upgrade checksummed backup completed, and AEDS ended
               with zero pending or expired deliveries.
+            </p>
+            <p>
+              Live GitLab-provider acceptance followed using a legitimate GitLab OAuth
+              application, the real project
+              <code>arroba-event-publication-drill/gitlab-event-publication-drill</code>, and a
+              dynamically reconciled project webhook. Transferring the same
+              <code>merge_request.opened@1</code> interest between two published workflows in the
+              same execution environment tombstoned the old binding, removed its provider hook,
+              and left exactly one active subscription and one active GitLab hook. Opening merge
+              request <code>!2</code> then traversed
+              <code>GitLab → GitLab AEGS → remote AEDS → local kernel → workflow queue → agent</code>;
+              AEDS acknowledgements advanced from 41 to 42 with zero pending or expired
+              deliveries, and workflow run <code>0000019ff086c892</code> completed from the
+              canonical event prompt. A real PTY subsequently showed the same active binding,
+              queue, environment, and connected AEDS status through
+              <code>/workflow publication event list</code> and
+              <code>/workflow publication event status</code>. The drill also found GitLab's
+              create-hook default for push events: omitting the field silently enabled push
+              notifications. The adapter now sends explicit false values for every unrequested
+              event family and includes a regression test, so one catalog interest cannot produce
+              unrelated queued workflow prompts.
             </p>
             <p>
               AEDS and GitHub passed guarded service restart acceptance with the full six-service
