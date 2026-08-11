@@ -1354,7 +1354,9 @@ arroba-cloud
               scan, provenance, and SBOM verification passed in CI/release runs
               <code>31482505196</code> and <code>31482782795</code>. Deployment of digest
               <code>sha256:1484889719fdbfbaf0d6d2fd41cfce428719608923de141fbf5e55a39306c67a</code>
-              is intentionally held until a real Sentry App supplies its slug, client ID, and
+              also passed an exact Linux/amd64 OCI title, source-revision, and protocol-label
+              check; the temporary local image and registry login were removed afterward.
+              Deployment is intentionally held until a real Sentry App supplies its slug, client ID, and
               client secret; the old staging image remains healthy rather than being restarted
               with invented credentials.
             </p>
