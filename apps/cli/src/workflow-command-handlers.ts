@@ -63,7 +63,7 @@ import {
   isWorkflowSettingsCommand,
 } from "./workflow-settings-command-handlers.js"
 import { handleWorkflowTerminalCommand } from "./workflow-terminal-command-handler.js"
-import { handleWorkflowEventPublicationCommand } from "./workflow-event-publication-command-handler.js"
+import { handleWorkflowPublicationCommand } from "./workflow-event-publication-command-handler.js"
 import {
   handleWorkflowWatchdogCommand,
   type WorkflowWatchdogPayload,
@@ -336,15 +336,15 @@ export async function handleWorkflowSlashCommand(
     return
   }
 
-  if (subcommand === "publication" && (args[1] === "event" || args[1] === "events")) {
+  if (subcommand === "publication") {
     if (!deps.sendWorkflowEventPublicationRequest) {
-      deps.flashFooter("event publication commands are unavailable", "error")
+      deps.flashFooter("workflow publication commands are unavailable", "error")
       return
     }
-    await handleWorkflowEventPublicationCommand({
+    await handleWorkflowPublicationCommand({
       ...deps,
       sendWorkflowEventPublicationRequest: deps.sendWorkflowEventPublicationRequest,
-    }, args.slice(2))
+    }, args.slice(1))
     return
   }
 

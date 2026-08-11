@@ -107,6 +107,15 @@ node ./hetzner-acceptance.mjs \
   --aegs-url https://github-events.example
 ```
 
+Acceptance accepts one shared `--ssh-key`, or the preferred host-specific
+`--aeds-ssh-key` and `--aegs-ssh-key` pair. Key paths are used only for SSH and
+are never retained in evidence.
+
+The preflight accepts `--ssh-key` when every host shares an operator key, or
+`--aeds-ssh-key`, `--aegs-ssh-key`, and (when a relay is checked)
+`--relay-ssh-key` for the preferred host-specific credential layout. SSH key
+paths are used only for the probes and are never written to evidence.
+
 All service-specific containers, TLS examples, systemd units, migrations, and
 operational scripts remain in their private component repositories.
 

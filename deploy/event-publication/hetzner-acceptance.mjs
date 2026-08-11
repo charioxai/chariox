@@ -19,6 +19,8 @@ export function parseArgs(argv) {
     aegsHost: "",
     relayHost: "",
     sshKey: "",
+    aedsSshKey: "",
+    aegsSshKey: "",
     aedsUrl: "",
     aegsUrl: "",
     evidenceDir: "",
@@ -38,6 +40,8 @@ export function parseArgs(argv) {
     else if (value === "--aegs-host") options.aegsHost = next()
     else if (value === "--relay-host") options.relayHost = next()
     else if (value === "--ssh-key") options.sshKey = next()
+    else if (value === "--aeds-ssh-key") options.aedsSshKey = next()
+    else if (value === "--aegs-ssh-key") options.aegsSshKey = next()
     else if (value === "--aeds-url") options.aedsUrl = next()
     else if (value === "--aegs-url") options.aegsUrl = next()
     else if (value === "--evidence-dir") options.evidenceDir = next()
@@ -55,11 +59,13 @@ export function validateOptions(options) {
     ["--component", options.component],
     ["--aeds-host", options.aedsHost],
     ["--aegs-host", options.aegsHost],
-    ["--ssh-key", options.sshKey],
     ["--aeds-url", options.aedsUrl],
     ["--aegs-url", options.aegsUrl],
   ]) {
     if (!String(value ?? "").trim()) throw new Error(`${name} is required`)
+  }
+  if (!options.sshKey && (!options.aedsSshKey || !options.aegsSshKey)) {
+    throw new Error("--ssh-key or both --aeds-ssh-key and --aegs-ssh-key are required")
   }
   if (!/^[a-z0-9][a-z0-9-]{2,48}$/.test(options.runId)) {
     throw new Error("--run-id must contain 3-49 lowercase letters, digits, or hyphens")
@@ -205,7 +211,11 @@ export async function runAcceptance(options, dependencies = {}) {
       url,
       restart: options.executeRestarts,
     })
-    results[role] = await runSsh(host, options.sshKey, command)
+    results[role] = await runSsh(
+      host,
+      options[`${role}SshKey`] || options.sshKey,
+      command,
+    )
   }
   const record = {
     schemaVersion: 1,
@@ -283,7 +293,8 @@ function usage() {
     "  node deploy/event-publication/hetzner-acceptance.mjs \\",
     "    --preflight PATH --run-id RUN_ID --component COMPONENT \\",
     "    --aeds-host USER@HOST --aegs-host USER@HOST [--relay-host USER@HOST] \\",
-    "    --ssh-key PATH --aeds-url https://HOST --aegs-url https://HOST \\",
+    "    [--ssh-key PATH | --aeds-ssh-key PATH --aegs-ssh-key PATH] \\",
+    "    --aeds-url https://HOST --aegs-url https://HOST \\",
     "    [--evidence-dir PATH] [--execute-restarts]",
     "",
     "The default run is read-only. --execute-restarts restarts only the exact AEDS",

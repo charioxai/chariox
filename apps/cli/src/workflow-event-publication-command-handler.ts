@@ -1,12 +1,15 @@
 import {
   createDefaultShellContext,
+  executeWorkflowPublicationCommand,
   executeWorkflowEventPublicationCommand,
   type RuntimeSession,
+  type ShellCommandResult,
 } from "@arroba/kernel-client"
 
-type WorkflowEventPublicationCommandDeps = {
+type WorkflowPublicationCommandDeps = {
   sessionState: () => RuntimeSession
   currentWorkspaceTarget: () => string
+  selectedWorkflowId?: () => string | null
   sendWorkflowEventPublicationRequest: (
     request: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>
@@ -15,25 +18,45 @@ type WorkflowEventPublicationCommandDeps = {
   flashFooter: (message: string, tone: "info" | "error") => void
 }
 
-export async function handleWorkflowEventPublicationCommand(
-  deps: WorkflowEventPublicationCommandDeps,
+export async function handleWorkflowPublicationCommand(
+  deps: WorkflowPublicationCommandDeps,
   args: string[],
+): Promise<void> {
+  await executeAndRenderPublicationCommand(deps, (context) =>
+    executeWorkflowPublicationCommand(
+      args,
+      context,
+      { client: { send: deps.sendWorkflowEventPublicationRequest } },
+    ))
+}
+
+export async function handleWorkflowEventPublicationCommand(
+  deps: WorkflowPublicationCommandDeps,
+  args: string[],
+): Promise<void> {
+  await executeAndRenderPublicationCommand(deps, (context) =>
+    executeWorkflowEventPublicationCommand(
+      args,
+      context,
+      { send: deps.sendWorkflowEventPublicationRequest },
+    ))
+}
+
+async function executeAndRenderPublicationCommand(
+  deps: WorkflowPublicationCommandDeps,
+  execute: (context: ReturnType<typeof createDefaultShellContext>) => Promise<ShellCommandResult>,
 ): Promise<void> {
   const session = deps.sessionState()
   const workspace = deps.currentWorkspaceTarget()
-  const result = await executeWorkflowEventPublicationCommand(
-    args,
-    createDefaultShellContext({
+  const result = await execute(createDefaultShellContext({
       workspace,
       worktree: session.worktree_id ?? workspace,
       sessionId: session.id,
       agentId: session.focused_agent_id ?? undefined,
-      workflowId: session.workflows?.[0]?.id,
-    }),
-    { send: deps.sendWorkflowEventPublicationRequest },
-  )
+      workflowId: deps.selectedWorkflowId?.() ?? session.workflows?.[0]?.id,
+    }))
   if (!result.ok) {
-    deps.flashFooter(result.message ?? "event publication command failed", "error")
+    deps.flashFooter(result.message ?? "workflow publication command failed", "error")
     return
   }
   const updatedSession = sessionFromResult(result.data)

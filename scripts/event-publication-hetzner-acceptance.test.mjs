@@ -17,6 +17,8 @@ const options = {
   aegsHost: "root@aegs.example",
   relayHost: "root@relay.example",
   sshKey: "/tmp/key",
+  aedsSshKey: "",
+  aegsSshKey: "",
   aedsUrl: "https://aeds.example",
   aegsUrl: "https://github-events.example",
   evidenceDir: "/tmp/evidence",
@@ -62,6 +64,16 @@ test("arguments require exact hosts, TLS origins, and a first-wave component", (
   assert.throws(
     () => validateOptions({ ...options, aegsHost: options.relayHost }),
     /relay host/,
+  )
+  assert.doesNotThrow(() => validateOptions({
+    ...options,
+    sshKey: "",
+    aedsSshKey: "/tmp/aeds-key",
+    aegsSshKey: "/tmp/aegs-key",
+  }))
+  assert.throws(
+    () => validateOptions({ ...options, sshKey: "", aedsSshKey: "/tmp/aeds-key" }),
+    /both --aeds-ssh-key and --aegs-ssh-key/,
   )
 })
 
@@ -126,6 +138,30 @@ test("acceptance checks AEDS then exactly one AEGS and retains bounded evidence"
   assert.equal(result.record.component, "github")
   assert.match(written, /arroba-event-publication-hetzner-acceptance/)
   assert.doesNotMatch(written, /sshKey/)
+})
+
+test("acceptance uses role-specific SSH keys without retaining their paths", async () => {
+  const roleSpecific = {
+    ...options,
+    sshKey: "",
+    aedsSshKey: "/tmp/aeds-key",
+    aegsSshKey: "/tmp/aegs-key",
+  }
+  const calls = []
+  let written = ""
+  await runAcceptance(roleSpecific, {
+    readFile: async () => JSON.stringify(preflight()),
+    revision: "a".repeat(40),
+    dirty: false,
+    runSsh: async (host, key) => {
+      calls.push({ host, key })
+      return `host=${host}`
+    },
+    mkdir: async () => {},
+    writeFile: async (_path, value) => { written = value },
+  })
+  assert.deepEqual(calls.map((call) => call.key), ["/tmp/aeds-key", "/tmp/aegs-key"])
+  assert.doesNotMatch(written, /aeds-key|aegs-key/)
 })
 
 test("acceptance refuses stale preflight revisions and dirty execution state", async () => {

@@ -15,6 +15,9 @@ export function parseArgs(argv) {
     aegsHost: "",
     relayHost: "",
     sshKey: "",
+    aedsSshKey: "",
+    aegsSshKey: "",
+    relaySshKey: "",
     runId: "",
     evidenceDir: "",
   }
@@ -29,6 +32,9 @@ export function parseArgs(argv) {
     else if (value === "--aegs-host") options.aegsHost = next()
     else if (value === "--relay-host") options.relayHost = next()
     else if (value === "--ssh-key") options.sshKey = next()
+    else if (value === "--aeds-ssh-key") options.aedsSshKey = next()
+    else if (value === "--aegs-ssh-key") options.aegsSshKey = next()
+    else if (value === "--relay-ssh-key") options.relaySshKey = next()
     else if (value === "--run-id") options.runId = next()
     else if (value === "--evidence-dir") options.evidenceDir = next()
     else if (value === "--help" || value === "-h") options.help = true
@@ -41,10 +47,18 @@ export function validateOptions(options) {
   for (const [name, value] of [
     ["--aeds-host", options.aedsHost],
     ["--aegs-host", options.aegsHost],
-    ["--ssh-key", options.sshKey],
     ["--run-id", options.runId],
   ]) {
     if (!String(value ?? "").trim()) throw new Error(`${name} is required`)
+  }
+  if (!options.sshKey && !options.aedsSshKey) {
+    throw new Error("--aeds-ssh-key or --ssh-key is required")
+  }
+  if (!options.sshKey && !options.aegsSshKey) {
+    throw new Error("--aegs-ssh-key or --ssh-key is required")
+  }
+  if (options.relayHost && !options.sshKey && !options.relaySshKey) {
+    throw new Error("--relay-ssh-key or --ssh-key is required when --relay-host is set")
   }
   if (!/^[a-z0-9][a-z0-9-]{2,48}$/.test(options.runId)) {
     throw new Error("--run-id must contain 3-49 lowercase letters, digits, or hyphens")
@@ -163,9 +177,11 @@ export async function runPreflight(options, dependencies = {}) {
   const revision = dependencies.revision ?? await gitOutput(["rev-parse", "HEAD"])
   const dirty = dependencies.dirty ?? Boolean((await gitOutput(["status", "--porcelain"])).trim())
   const [aeds, aegs, relay] = await Promise.all([
-    runSsh(options.aedsHost, options.sshKey, "aeds"),
-    runSsh(options.aegsHost, options.sshKey, "aegs"),
-    options.relayHost ? runSsh(options.relayHost, options.sshKey, "relay") : null,
+    runSsh(options.aedsHost, options.aedsSshKey || options.sshKey, "aeds"),
+    runSsh(options.aegsHost, options.aegsSshKey || options.sshKey, "aegs"),
+    options.relayHost
+      ? runSsh(options.relayHost, options.relaySshKey || options.sshKey, "relay")
+      : null,
   ])
   assertPhysicalSeparation(aeds, aegs, relay)
   const evidence = {
@@ -235,8 +251,9 @@ function usage() {
   return [
     "Usage:",
     "  node deploy/event-publication/host-separation-preflight.mjs \\",
-    "    --aeds-host USER@HOST --aegs-host USER@HOST --ssh-key PATH --run-id RUN_ID \\",
-    "    [--relay-host USER@HOST] [--evidence-dir PATH]",
+    "    --aeds-host USER@HOST --aegs-host USER@HOST --run-id RUN_ID \\",
+    "    [--ssh-key PATH | --aeds-ssh-key PATH --aegs-ssh-key PATH] \\",
+    "    [--relay-host USER@HOST] [--relay-ssh-key PATH] [--evidence-dir PATH]",
     "",
     "The command is read-only. It verifies capacity, Docker, role markers, and physical",
     "host separation before any event-service deployment is allowed.",

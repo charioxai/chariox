@@ -2,7 +2,64 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { RuntimeSession } from "@arroba/kernel-client"
-import { handleWorkflowEventPublicationCommand } from "./workflow-event-publication-command-handler.js"
+import {
+  handleWorkflowEventPublicationCommand,
+  handleWorkflowPublicationCommand,
+} from "./workflow-event-publication-command-handler.js"
+
+test("TUI publication handler creates an event-based publication for the selected workflow", async () => {
+  const notices: string[] = []
+  const requests: Record<string, unknown>[] = []
+  const updated = session({
+    workflows: [
+      { id: "workflow-1", alias: null, nodes: [], edges: [], endpoints: [] },
+      { id: "workflow-2", alias: null, nodes: [], edges: [], endpoints: [] },
+    ],
+  })
+  await handleWorkflowPublicationCommand({
+    ...deps(notices),
+    selectedWorkflowId: () => "workflow-2",
+    sendWorkflowEventPublicationRequest: async (request) => {
+      requests.push(request)
+      return {
+        WorkflowPublicationCreated: {
+          publication: {
+            id: "publication-1",
+            alias: "event_publication",
+            workflow_id: "workflow-2",
+            endpoint_id: "endpoint-1",
+            kind: "event_based",
+            enabled: true,
+          },
+          session: updated,
+        },
+      }
+    },
+  }, ["create", "endpoint-1", "event_publication", "--kind", "event_based"])
+
+  assert.deepEqual(requests, [{
+    CreateWorkflowPublication: {
+      session_id: "session-1",
+      workflow_ref: "workflow-2",
+      endpoint_ref: "endpoint-1",
+      expected_workflow_revision: null,
+      operation_key: null,
+      queue_ref: null,
+      alias: "event_publication",
+      kind: "event_based",
+      route: null,
+      methods: [],
+      transport: null,
+      parser: null,
+      input_schema: null,
+      trace_exposure: null,
+      mode: null,
+      sync_timeout_ms: null,
+      poll_ms: null,
+    },
+  }])
+  assert.match(notices[0] ?? "", /created workflow publication publication-1/)
+})
 
 test("TUI event publication handler renders paged catalog results", async () => {
   const notices: string[] = []

@@ -248,7 +248,7 @@ impl KernelRuntimeOwnedState {
             event_type: binding.event_type,
             event_type_version: binding.event_type_version,
             occurrence_id: format!("test-occurrence-{now_ms}"),
-            occurred_at: format!("{now_ms}"),
+            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             prompt: request
                 .prompt
                 .unwrap_or_else(|| "Process this Arroba event notification test.".to_string()),

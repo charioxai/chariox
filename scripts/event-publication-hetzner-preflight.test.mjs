@@ -18,6 +18,9 @@ const baseOptions = {
   aegsHost: "root@aegs.example",
   relayHost: "root@relay.example",
   sshKey: "/tmp/event-services-key",
+  aedsSshKey: "",
+  aegsSshKey: "",
+  relaySshKey: "",
   runId: "event-preflight-001",
   evidenceDir: "",
 }
@@ -52,6 +55,9 @@ test("preflight requires exact distinct hosts, key, and run identity", () => {
       aegsHost: "root@aegs.example",
       relayHost: "root@relay.example",
       sshKey: "/tmp/key",
+      aedsSshKey: "",
+      aegsSshKey: "",
+      relaySshKey: "",
       runId: "event-run-001",
       evidenceDir: "",
     },
@@ -67,6 +73,17 @@ test("preflight requires exact distinct hosts, key, and run identity", () => {
   assert.throws(
     () => validateOptions({ ...baseOptions, runId: "../../unsafe" }),
     /run-id/,
+  )
+  assert.doesNotThrow(() => validateOptions({
+    ...baseOptions,
+    sshKey: "",
+    aedsSshKey: "/tmp/aeds-key",
+    aegsSshKey: "/tmp/aegs-key",
+    relaySshKey: "/tmp/relay-key",
+  }))
+  assert.throws(
+    () => validateOptions({ ...baseOptions, sshKey: "", aedsSshKey: "/tmp/aeds-key" }),
+    /--aegs-ssh-key/,
   )
 })
 
@@ -148,4 +165,31 @@ test("successful preflight retains revision, resource, and separation evidence",
   assert.equal(evidence.hosts.aeds.machineId, "machine-a")
   assert.equal(evidence.hosts.aegs.machineId, "machine-b")
   assert.equal(evidence.hosts.relay.machineId, "machine-c")
+})
+
+test("preflight routes host-specific SSH keys without persisting them", async (context) => {
+  const evidenceDir = await mkdtemp(path.join(os.tmpdir(), "arroba-event-preflight-keys-"))
+  context.after(() => rm(evidenceDir, { recursive: true, force: true }))
+  const options = {
+    ...baseOptions,
+    sshKey: "",
+    aedsSshKey: "/tmp/aeds-key",
+    aegsSshKey: "/tmp/aegs-key",
+    relaySshKey: "/tmp/relay-key",
+    evidenceDir,
+  }
+  const observed = []
+  await runPreflight(options, {
+    revision: "b".repeat(40),
+    dirty: false,
+    runSsh: async (host, key, role) => {
+      observed.push({ host, key, role })
+      return hostEvidence(role, host, `machine-${role}`)
+    },
+  })
+  assert.deepEqual(observed, [
+    { host: options.aedsHost, key: options.aedsSshKey, role: "aeds" },
+    { host: options.aegsHost, key: options.aegsSshKey, role: "aegs" },
+    { host: options.relayHost, key: options.relaySshKey, role: "relay" },
+  ])
 })
