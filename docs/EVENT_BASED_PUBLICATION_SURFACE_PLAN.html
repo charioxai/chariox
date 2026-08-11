@@ -1486,7 +1486,10 @@ arroba-cloud
               checked one at a time. A full AEGS-host reboot then recovered Caddy, Docker, the
               dummy, and all six production AEGSs automatically. Every public readiness endpoint
               passed within the new boot, and the six-provider WSS delivery plus duplicate replay
-              matrix passed again after recovery.
+              matrix passed again after recovery. Finally, Jira, Linear, GitLab, Sentry, and Slack
+              each completed its owned checksummed SQLite/WAL backup and destructive restore one
+              at a time; public readiness and the complete six-provider delivery/deduplication
+              matrix passed again after all restores. AEDS ended with zero pending deliveries.
             </p>
             <p>
               The guarded read-only acceptance run <code>ovh-final-20260811</code>, bound to clean
