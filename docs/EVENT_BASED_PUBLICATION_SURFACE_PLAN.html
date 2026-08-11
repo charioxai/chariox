@@ -1318,14 +1318,14 @@ arroba-cloud
               AEGS durable delivery, restart, backup, and restore slice passes locally.
               On 2026-08-11 the current revisions of Jira
               (<code>4e515cc5</code>), Linear (<code>1a84d342</code>), GitLab
-              (<code>4c2cb72b</code>), Sentry (<code>6f417f44</code>), and Slack
+              (<code>4c2cb72b</code>), Sentry (<code>4d66b017</code>), and Slack
               (<code>c76cf4f5</code>) each passed hosted CI and a new sequential release-image
               workflow after a Linux Compose parsing defect was found in the unquoted
               <code>tmpfs</code> short syntax. Every repository now renders its production Compose
               definition in CI and asserts the exact mount option before building. Their new
               immutable image digests are respectively
               <code>ea6d804e…a379</code>, <code>9dd4ac63…a158</code>,
-              <code>63356376…0d24</code>, <code>9e74ae87…c6e5</code>, and
+              <code>63356376…0d24</code>, <code>14848897…c67a</code>, and
               <code>02dff589…73c0</code>; every release passed the vulnerability, provenance, and
               SBOM gates. Task-owned local Rust outputs and validation images were then removed,
               reclaiming approximately 5.5 GiB without pruning unrelated Docker state.
@@ -1337,6 +1337,26 @@ arroba-cloud
               host showed negligible load. A fresh read-only 2026-08-10 check reported 3.2 GiB
               available memory and 13 GiB free disk at 83% utilization; no event service was
               installed there and the host remains protected relay-only capacity.
+            </p>
+            <p>
+              The Sentry first-wave adapter was subsequently aligned with Sentry's current
+              Integration Platform instead of retaining the synthetic generic-OAuth assumption.
+              Revision <code>4d66b017</code> implements the external-install callback carrying
+              <code>installationId</code>, <code>orgSlug</code>, and state; exchanges and refreshes
+              the installation-scoped short-lived token; encrypts credentials at rest; isolates
+              organization scopes by AEGS connection ID; and maps every signed delivery back to
+              exactly one authorized installation. The webhook boundary now requires
+              <code>Request-ID</code>, <code>Sentry-Hook-Timestamp</code>,
+              <code>Sentry-Hook-Resource</code>, and <code>Sentry-Hook-Signature</code>, uses the
+              Sentry App client secret as the single production signing credential, and rejects
+              timestamps outside a five-minute replay window. Nine focused tests, Clippy,
+              ShellCheck, Compose rendering, the container build, a zero-high/critical Trivy
+              scan, provenance, and SBOM verification passed in CI/release runs
+              <code>31482505196</code> and <code>31482782795</code>. Deployment of digest
+              <code>sha256:1484889719fdbfbaf0d6d2fd41cfce428719608923de141fbf5e55a39306c67a</code>
+              is intentionally held until a real Sentry App supplies its slug, client ID, and
+              client secret; the old staging image remains healthy rather than being restarted
+              with invented credentials.
             </p>
             <p>
               The OSS deployment orchestrator now includes a guarded remote-host acceptance
