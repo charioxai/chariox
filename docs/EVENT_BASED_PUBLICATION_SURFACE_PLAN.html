@@ -1481,6 +1481,15 @@ arroba-cloud
               This does not claim live-provider acceptance.
             </p>
             <p>
+              The TLS-capable acceptance harness is released from private AEDS revision
+              <code>f48ba8e470244b171e27b8ff968fb662727bb074</code>. Its immutable image
+              <code>sha256:3438a360…a9f19</code> passed the fixed high/critical vulnerability,
+              provenance, and SBOM gates, then replaced the earlier AEDS staging image after a
+              checksummed backup. The upgrade retained two active workflow routes and 26
+              acknowledgements with zero pending deliveries. The final six-provider WSS
+              delivery and duplicate-replay matrix passed against that exact deployed image.
+            </p>
+            <p>
               AEDS and GitHub passed guarded service restart acceptance with the full six-service
               set active, after which Jira, Linear, GitLab, Sentry, and Slack were restarted and
               checked one at a time. A full AEGS-host reboot then recovered Caddy, Docker, the
