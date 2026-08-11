@@ -550,7 +550,7 @@
           <a href="#acceptance">Acceptance</a>
         </nav>
         <p class="aside-meta">
-          Status: first-wave packages green; separate OVH AEDS/AEGS staging active; web, PTY, and real GitHub, GitLab, and Sentry delivery validated<br />
+          Status: first wave implemented; separate OVH AEDS/AEGS staging active; web, PTY, and all six real provider deliveries validated<br />
           Scope: first-wave integrations<br />
           Updated: 2026-08-11
         </p>
@@ -1329,10 +1329,9 @@ arroba-cloud
               <code>02dff589…73c0</code>; every release passed the vulnerability, provenance, and
               SBOM gates. Task-owned local Rust outputs and validation images were then removed,
               reclaiming approximately 5.5 GiB without pruning unrelated Docker state.
-              Separate AEDS and AEGS hosts, TLS, persistence, reboot, restore, and the GitHub live
-              provider path are now proven. Completing live-provider acceptance for Jira, Linear,
-              and Slack still requires legitimate provider applications and
-              tenant credentials; staging must not substitute invented OAuth identities. A
+              Separate AEDS and AEGS hosts, TLS, persistence, reboot, restore, and all six live
+              provider paths are now proven with legitimate provider applications and tenants;
+              staging did not substitute invented OAuth identities. A
               read-only 2026-07-28 snapshot of the existing relay
               host showed negligible load. A fresh read-only 2026-08-10 check reported 3.2 GiB
               available memory and 13 GiB free disk at 83% utilization; no event service was
@@ -1430,8 +1429,9 @@ arroba-cloud
             <p>
               On 2026-08-11 the dedicated OVH AEDS VPS
               <code>vps-775dbb36.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
-              was fenced as the <code>aeds</code> role and deployed from immutable image
-              <code>ghcr.io/mgutierrez09/arroba-aeds@sha256:65489ebb676c52ee02ecc2d103a77c5d8a6b483ac99cbb0ac7d80c215416c3fd</code>.
+              was fenced as the <code>aeds</code> role and is deployed from private revision
+              <code>3ee73b1d1df0a0ac21d7ca6822d6c935e83bca15</code> and immutable image
+              <code>ghcr.io/mgutierrez09/arroba-aeds@sha256:a7194caf850567ad9ee2ce43e00e146abcea4d74e9320a3347f967a2eaa1c76d</code>.
               Its public WSS/HTTPS edge is
               <code>https://aeds.57.131.138.28.sslip.io</code>. A real local kernel connected to it,
               reconciled a workflow-owned dummy subscription on the separate AEGS host, and
@@ -1440,6 +1440,12 @@ arroba-cloud
               Repeating the same occurrence produced the same delivery identity without a second
               workflow execution. AEDS acknowledged immediately after durable kernel acceptance;
               subsequent execution used the ordinary workflow endpoint queue semantics.
+              The final upgrade followed a checksummed backup, preserved all durable routes and
+              acknowledgements, and made authentication failures protocol-native: a wrong kernel
+              bearer now receives the typed, non-retryable
+              <code>invalid_kernel_credentials</code> frame rather than an ambiguous transport
+              close. The live kernel automatically reconnected after the upgrade and completed a
+              queued event without manual intervention.
             </p>
             <p>
               The checksummed SQLite/WAL backup and destructive restore drill preserved the active
@@ -1483,6 +1489,18 @@ arroba-cloud
               Both surfaces observed the same published workflow and remote AEDS connection.
             </p>
             <p>
+              The final frontend pass repeated this against the locally built product web terminal
+              connected through a real relay to the live event kernel. The Event-based
+              notifications panel displayed seven bounded recommended entries and paged category
+              facets; Jira, Linear, GitLab, Sentry, Slack, and GitHub were all marked
+              <code>development_preview</code>. Searching for Slack returned one result, and its
+              service detail exposed publisher, operator, credential-boundary copy, and the
+              selectable <code>app.mentioned</code>, <code>message.channels</code>, and
+              <code>reaction.added</code> definitions. A retained browser screenshot records that
+              product state. A separate real PTY search showed the same Slack catalog identity and
+              availability through the kernel protocol.
+            </p>
+            <p>
               A restart benchmark against the 1.9 GiB durable database also found a snapshot
               selection defect: an older entity checkpoint was preferred over a newer legacy
               snapshot, forcing hundreds of thousands of journal records to replay and emitting a
@@ -1516,10 +1534,12 @@ arroba-cloud
               <code>fe5b8595016eda7dcf943fd728e90ac0dabe239f</code>, limited to 0.5 CPU and
               128 MiB, and restored successfully after a full host reboot with its durable test
               subscription intact. The GitHub AEGS is pinned to revision
-              <code>a5cd9ea2117e4cf9d5e0e3a7b20f8a2da3c9a959</code> and immutable image digest
-              <code>sha256:e4e8670d21233d69abd40a37015c4d5c8b737a8b95e928c5c83b44180a2d8396</code>;
+              <code>f379df0eae9413741fc23bd5dd56a965bbe4f536</code> and immutable image digest
+              <code>sha256:dac35156a73129c305db62fb6cffc7047ffcfdbf1c57f685586248859a7c2f33</code>;
               its release passed provenance, SBOM, and high/critical vulnerability gates before an
               in-place remote upgrade retained the authorized connection and active subscription.
+              A fresh checksummed backup preceded the upgrade, and the standalone operational
+              health command now loads the deployed non-default port and exact expected revision.
               The service is capped at 0.5 CPU and 256 MiB; a final audit measured approximately
               1.24 MiB for GitHub and 14.05 MiB for the 128 MiB dummy while both remained healthy,
               leaving 3.3 GiB available memory, 34 GiB free disk, and unused swap. The GitHub App
@@ -1562,7 +1582,47 @@ arroba-cloud
               <code>wss://</code> validation. Jira and GitLab used the explicit
               provider-reconciliation-pending path: desired interests were durably saved while
               dynamic provider webhook creation correctly remained pending legitimate OAuth.
-              This does not claim live-provider acceptance.
+              This synthetic matrix alone did not claim live-provider acceptance; the live-provider
+              validations recorded below now provide that acceptance evidence.
+            </p>
+            <p>
+              Real Jira Cloud acceptance then used the authorized Arroba development application
+              and project <code>KAN</code>. Creating issue <code>KAN-1</code> emitted the genuine
+              provider webhook, traversed Jira AEGS, AEDS, the durable kernel inbox, and the normal
+              workflow endpoint queue, and completed the workflow run. Deleting the publication
+              tombstoned its binding and removed the dynamic upstream webhook; the temporary issue
+              was deleted. Jira revision
+              <code>48227cf79b8d192d119f26bb34adebc72fa60504</code> and immutable digest
+              <code>sha256:9d71f9a2d56c19b016ca8cf879275dc8733bd3ce4b89ff62492b8eab18b15bdd</code>
+              were subsequently deployed after a checksummed backup. Its standalone health command
+              now resolves the configured loopback port and verifies that exact revision.
+            </p>
+            <p>
+              Real Linear acceptance used an authorized organization connection and issue
+              <code>ARR-7</code>. The actual issue event produced one canonical delivery and a
+              completed queued workflow run. Removing the publication reduced the provider-side
+              subscription count from one to zero, tombstoned the binding, and the drill issues
+              were deleted. This proves provider subscription reconciliation and deletion rather
+              than only signed synthetic webhook handling.
+            </p>
+            <p>
+              Real Slack acceptance used the <code>Arroba Event Notifications</code> Slack app in
+              the <code>Arroba Event Validation</code> workspace, with independently authorized
+              <code>app_mention</code>, <code>message.channels</code>, and
+              <code>reaction_added</code> interests. Genuine channel messages first proved that
+              notifications arriving while a workflow run is busy remain ordinary queued prompts.
+              The drill exposed a kernel lifecycle defect: a completed workflow run released its
+              logical provider run but retained the managed PTY, allowing a later run to inherit an
+              expired runtime credential. The kernel now removes the managed process and tracking
+              atomically when a non-reused workflow provider run completes; a focused regression and
+              three consecutive live deliveries, including one after an AEDS restart, pass with a
+              fresh provider process each time. A real PTY observed the queued event, AEDS route
+              status, binding list, and deletion; deletion tombstoned the binding and returned the
+              active route count from five to four. Slack revision
+              <code>bf47a98835ad52bf161f8cc2c8e3ab26bb3e75f7</code> is deployed as immutable
+              digest
+              <code>sha256:834c1ec7e99cdfd9f2cad10c7b86401c919025c27ffc9bcf6a818c84da66cdc9</code>
+              after a checksummed backup.
             </p>
             <p>
               The TLS-capable acceptance harness is released from private AEDS revision

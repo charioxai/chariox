@@ -607,6 +607,10 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
         resolved_run.node_runs()[1].status(),
         crate::session::WorkflowNodeRunStatus::Ready
     );
+    assert!(
+        !app.lock().await.pty().has_process(run.id()),
+        "a completed workflow provider run must release its managed PTY before a later run can launch with fresh runtime credentials"
+    );
 
     let durable_session = runtime
         .owned
