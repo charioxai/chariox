@@ -1318,14 +1318,14 @@ arroba-cloud
               AEGS durable delivery, restart, backup, and restore slice passes locally.
               On 2026-08-11 the current revisions of Jira
               (<code>4e515cc5</code>), Linear (<code>1a84d342</code>), GitLab
-              (<code>96244fb9</code>), Sentry (<code>6f417f44</code>), and Slack
+              (<code>4c2cb72b</code>), Sentry (<code>6f417f44</code>), and Slack
               (<code>c76cf4f5</code>) each passed hosted CI and a new sequential release-image
               workflow after a Linux Compose parsing defect was found in the unquoted
               <code>tmpfs</code> short syntax. Every repository now renders its production Compose
               definition in CI and asserts the exact mount option before building. Their new
               immutable image digests are respectively
               <code>ea6d804e…a379</code>, <code>9dd4ac63…a158</code>,
-              <code>1ed1a42c…f103</code>, <code>9e74ae87…c6e5</code>, and
+              <code>63356376…0d24</code>, <code>9e74ae87…c6e5</code>, and
               <code>02dff589…73c0</code>; every release passed the vulnerability, provenance, and
               SBOM gates. Task-owned local Rust outputs and validation images were then removed,
               reclaiming approximately 5.5 GiB without pruning unrelated Docker state.
@@ -1463,7 +1463,8 @@ arroba-cloud
               SQLite volume, root-protected secret directory, systemd unit, Caddy hostname, 0.25
               CPU limit, and 128 MiB memory limit except GitHub's existing 256 MiB limit. With all
               seven containers healthy, measured container memory was approximately 21 MiB in
-              total, host memory available remained 3.2 GiB, swap use remained zero, and 34 GiB of
+              total initially and approximately 26 MiB in the final audit, host memory available
+              remained 3.2 GiB, swap use remained zero, and 34 GiB of
               disk remained free.
             </p>
             <p>
@@ -1488,6 +1489,24 @@ arroba-cloud
               checksummed backup. The upgrade retained two active workflow routes and 26
               acknowledgements with zero pending deliveries. The final six-provider WSS
               delivery and duplicate-replay matrix passed against that exact deployed image.
+            </p>
+            <p>
+              The GitLab AEGS was subsequently aligned with GitLab 19.1 Standard Webhooks at
+              private revision <code>4c2cb72bb4fbe9935b2000645f72f30735e58524</code>. New hooks now
+              configure a 32-byte <code>whsec_&lt;base64&gt;</code> signing token; inbound requests
+              require <code>webhook-id</code>, <code>webhook-timestamp</code>, and the space-separated
+              <code>webhook-signature</code> list, verify the raw-body HMAC-SHA256 in constant time,
+              and reject stale timestamps. Legacy token verification remains only for older
+              self-managed installations configured with a legacy token; a <code>whsec_</code>
+              deployment cannot downgrade to plaintext <code>X-Gitlab-Token</code>. Hosted CI and
+              release gates passed, including zero reported image vulnerabilities plus provenance
+              and SBOM inspection, and immutable digest <code>sha256:63356376…0d24</code> replaced
+              only the GitLab container after a checksummed backup. The staging secret was rotated
+              to the standard token shape. A six-provider WSS matrix then passed signed delivery,
+              acknowledgement, and same-ID duplicate replay for every producer; an explicit
+              plaintext downgrade probe returned HTTP 401. A subsequent GitLab-only matrix passed
+              after service restart, the post-upgrade checksummed backup completed, and AEDS ended
+              with zero pending or expired deliveries.
             </p>
             <p>
               AEDS and GitHub passed guarded service restart acceptance with the full six-service
