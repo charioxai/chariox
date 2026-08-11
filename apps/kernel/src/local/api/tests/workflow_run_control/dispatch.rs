@@ -630,8 +630,8 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
         let claim = app
             .workspace_coordinator()
             .acquire_worktree_write_claim(
-                "workspace-1".to_string(),
-                "worktree-shared".to_string(),
+                interactive_session.workspace_id().to_string(),
+                interactive_session.worktree_id().to_string(),
                 interactive_session.id().to_string(),
                 Some("interactive-test-claim".to_string()),
                 "interactive_prompt_test",

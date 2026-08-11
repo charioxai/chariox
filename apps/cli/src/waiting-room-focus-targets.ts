@@ -9,10 +9,12 @@ import { waitingRoomPreviewSessions, waitingRoomSessions } from "./waiting-room-
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export type WaitingRoomFocusTarget = {
   focus: WaitingRoomFocus
   sessionIndex: number
+  projectIndex: number
   machineIndex: number
   remoteKernelIndex: number
   sliceIndex: number
@@ -26,7 +28,7 @@ export function moveWaitingRoomFocus(
   delta: number,
   remote: WaitingRoomRemoteState = {},
 ) {
-  const order = waitingRoomFocusTargets(sessions, remote)
+  const order = waitingRoomFocusTargets(sessions, remote, state)
   const externalSessions = externalProviderSessionPageSessions(remote)
   const externalSessionIndex = externalProviderSessionSelectionIndex(externalSessions, {
     selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
@@ -36,6 +38,7 @@ export function moveWaitingRoomFocus(
     order.findIndex((target) => (
       target.focus === state.focus
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
+      && (target.focus !== "project-entry" || target.projectIndex === (state.projectIndex ?? 0))
       && (target.focus !== "machine" || target.machineIndex === state.machineIndex)
       && (target.focus !== "remote-kernel" || target.remoteKernelIndex === state.remoteKernelIndex)
       && (target.focus !== "slice-entry" || target.sliceIndex === (state.sliceIndex ?? 0))
@@ -52,6 +55,11 @@ export function moveWaitingRoomFocus(
     ...state,
     focus: next.focus,
     sessionIndex: next.focus === "session" ? next.sessionIndex : state.sessionIndex,
+    ...(next.focus === "project-entry"
+      ? { projectIndex: next.projectIndex }
+      : state.projectIndex !== undefined
+        ? { projectIndex: state.projectIndex }
+        : {}),
     machineIndex: next.focus === "machine" ? next.machineIndex : state.machineIndex,
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
     terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
@@ -69,6 +77,7 @@ export function moveWaitingRoomFocus(
 export function waitingRoomFocusTargets(
   sessions: SessionListEntry[],
   remote: WaitingRoomRemoteState = {},
+  state?: Pick<WaitingRoomState, "showArchivedProjects">,
 ): WaitingRoomFocusTarget[] {
   const visibleSessions = waitingRoomSessions(sessions)
   const previewSessions = waitingRoomPreviewSessions(sessions)
@@ -77,10 +86,13 @@ export function waitingRoomFocusTargets(
   const slices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
   const externalSessions = externalProviderSessionPageSessions(remote)
+  const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state?.showArchivedProjects))
+  const archivedProjectCount = (remote.projects ?? []).filter((project) => project.status === "archived").length
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
     { focus: "launch-kernel" as const, sessionIndex: 0 },
+    ...(remote.projects !== undefined ? [{ focus: "project" as const, sessionIndex: 0 }] : []),
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
@@ -89,11 +101,14 @@ export function waitingRoomFocusTargets(
     { focus: "live-sync" as const, sessionIndex: 0 },
     { focus: "collaborators" as const, sessionIndex: 0 },
     { focus: "slice" as const, sessionIndex: 0 },
-    ...(visibleSessions.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
-    ...previewSessions.map((session) => ({
-      focus: "session" as const,
-      sessionIndex: Math.max(0, visibleSessions.findIndex((candidate) => candidate.id === session.id)),
-    })),
+    ...(visibleSessions.length > 0 || projects.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
+    ...(archivedProjectCount > 0 ? [{ focus: "archived-projects" as const, sessionIndex: 0 }] : []),
+    ...(projects.length > 0
+      ? projects.map((_, projectIndex) => ({ focus: "project-entry" as const, sessionIndex: 0, projectIndex }))
+      : previewSessions.map((session) => ({
+          focus: "session" as const,
+          sessionIndex: Math.max(0, visibleSessions.findIndex((candidate) => candidate.id === session.id)),
+        }))),
     ...externalSessions.map((_, externalSessionIndex) => ({
       focus: "external-session" as const,
       sessionIndex: 0,
@@ -131,6 +146,7 @@ export function waitingRoomFocusTargets(
     sliceIndex: 0,
     terminalIndex: 0,
     externalSessionIndex: 0,
+    projectIndex: 0,
     ...target,
   }))
 }

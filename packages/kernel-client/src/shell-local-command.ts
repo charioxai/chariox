@@ -8,7 +8,7 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
         ok: true,
         message: [
           "arroba-shell commands:",
-          "session list|status|new|attach|use|members|invite|join|mode|permissions",
+          "session list|status|new|attach|use|members|invites|invite|join|revoke-invite|mode|permissions",
           "kernel health|status|remote-runtime|runtime|debug-bundle [label]|delete",
           "agent list|spawn [--count <n>]|focus|inspect|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",

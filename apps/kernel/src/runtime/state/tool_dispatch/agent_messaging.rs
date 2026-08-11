@@ -70,8 +70,10 @@ impl KernelRuntimeState {
             message: format!("invalid send-agent-message arguments: {error}"),
         })?;
         let message = args.message.trim();
-        if message.is_empty() {
-            return Ok(agent_message_failure("message must not be empty"));
+        if message.is_empty() && args.attachments.is_empty() {
+            return Ok(agent_message_failure(
+                "message or at least one attachment must be provided",
+            ));
         }
         let idempotency_key = args
             .idempotency_key
@@ -104,6 +106,7 @@ impl KernelRuntimeState {
             let fingerprint = serde_json::to_vec(&serde_json::json!({
                 "target_agent_id": target.id(),
                 "message": message,
+                "attachments": &args.attachments,
             }))
             .map(|payload| format!("sha256:{:x}", Sha256::digest(payload)))
             .unwrap_or_default();
@@ -137,7 +140,12 @@ impl KernelRuntimeState {
             .unwrap_or_else(|| target.agent_ref());
         let source_attachment_id = self.ensure_agent_message_attachment(session.id(), sender)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
-        let visible_prompt = format!("Message from @{sender_label}:\n\n{message}");
+        let visible_prompt = if message.is_empty() {
+            format!("agent {sender_label} message:")
+        } else {
+            format!("agent {sender_label} message:\n\n{message}")
+        };
+        let attachment_count = args.attachments.len();
         let source_identity = serde_json::json!({
             "agent_id": sender.id(),
             "agent_alias": sender_label,
@@ -157,7 +165,8 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
             visible_prompt,
             crate::session::PromptStatus::Queued,
         )
-        .with_hidden_system_context(hidden_context);
+        .with_hidden_system_context(hidden_context)
+        .with_attachments(args.attachments);
         if let Some((operation_id, fingerprint)) = durable_identity.as_ref() {
             prompt = prompt.with_durable_operation(operation_id, fingerprint);
         }
@@ -203,6 +212,7 @@ session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
                 "source_agent_alias": sender_label,
                 "target_agent_id": target.id(),
                 "target_agent_alias": target_label,
+                "attachment_count": attachment_count,
                 "provider_run_id": provider_run_id,
             }),
         };

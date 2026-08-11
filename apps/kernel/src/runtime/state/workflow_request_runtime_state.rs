@@ -177,7 +177,11 @@ impl KernelRuntimeState {
                 let op = request.op.clone();
                 let event_store = owned.workflow_design_events.clone();
                 let result = owned
-                    .workflow_apply_design_op(request, &caller_user_id)
+                    .workflow_apply_design_op(
+                        request,
+                        &caller_user_id,
+                        caller_metaagent_id.as_deref(),
+                    )
                     .map(|session| {
                         let event = event_store.append(session_id, origin_client_id, op_id, op);
                         LocalDaemonResponse::WorkflowDesignOpAccepted { session, event }

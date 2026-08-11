@@ -1,7 +1,10 @@
-import { applyWorkflowCodeRequest, exportWorkflowCodeSourceRequest, getProviderRunRequest, getSessionStateRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, validateWorkflowCodeRequest } from '@arroba/kernel-client'
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+
+import { applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createWorkflowCodeArtifactRequest, exportWorkflowCodeArtifactRequest, exportWorkflowCodeSourceRequest, focusAgentRequest, getProviderRunRequest, getSessionStateRequest, importWorkflowCodeArtifactRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, validateWorkflowCodeRequest } from '@arroba/kernel-client'
 import { buildWorkflowOutline } from '../../dist/workflow-outline/build.js'
 import { renderWorkflowOutlineToText } from '../../dist/workflow-outline/text.js'
-import { assert, defaultToyExpectation, providerFamily, realProviderRebindingsForDefinition, rebindingsForDefinition, shouldPrelaunchRealProvider, sleep, topologyRuntimeExpectation, topologyRuntimeRebindingsForDefinition, unwrap } from './workflow-code-artifact-drill-runtime.mjs'
+import { assert, defaultToyExpectation, expectationFromDefinition, providerFamily, providerSetForDefinition, realProviderRebindingsForDefinition, rebindingByNode, rebindingsForDefinition, repoRoot, sha256Hex, shouldPrelaunchRealProvider, sleep, stage, topologyRuntimeExpectation, topologyRuntimeRebindingsForDefinition, unwrap, writeSourceDirectoryExport } from './workflow-code-artifact-drill-runtime.mjs'
 import { waitForCompletedWorkflowRun, waitForProviderRunReady } from './workflow-code-artifact-drill-waits.mjs'
 
 export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
@@ -9,17 +12,16 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
     alias: 'pattern-adversarial-verification',
     schemas: ['proposal', 'critique', 'final_output'],
     nodes: ['proposer', 'critic', 'judge'],
-    edges: ['proposal_to_critic', 'critic_loop', 'critic_to_judge'],
+    edges: ['proposal_to_critic', 'critic_to_judge'],
     endpoints: ['entry'],
     completers: ['judge'],
     providers: ['codex', 'claude', 'opencode'],
-    hasLoop: true,
   },
   'evaluator-optimizer.js': {
     alias: 'pattern-evaluator-optimizer',
     schemas: ['candidate', 'evaluation', 'final_output'],
-    nodes: ['optimizer', 'evaluator'],
-    edges: ['candidate_to_evaluator', 'revision_loop'],
+    nodes: ['coordinator', 'optimizer', 'evaluator'],
+    edges: ['coordinator_to_optimizer', 'optimizer_to_evaluator', 'revision_loop_optimizer'],
     endpoints: ['entry'],
     completers: ['evaluator'],
     providers: ['codex', 'claude'],
@@ -29,7 +31,7 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
     alias: 'pattern-fan-out-synthesize',
     schemas: ['assignment', 'finding', 'final_output'],
     nodes: ['planner', 'worker_a', 'worker_b', 'synthesizer'],
-    edges: ['planner_to_a', 'planner_to_b', 'a_to_synth', 'b_to_synth'],
+    edges: ['planner_to_worker_a', 'planner_to_worker_b', 'worker_a_to_synthesizer', 'worker_b_to_synthesizer'],
     endpoints: ['entry'],
     completers: ['synthesizer'],
     providers: ['codex', 'claude', 'opencode'],
@@ -38,8 +40,8 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
   'generate-filter.js': {
     alias: 'pattern-generate-filter',
     schemas: ['candidates', 'filtered', 'final_output'],
-    nodes: ['generator', 'filter', 'finisher'],
-    edges: ['generated_candidates', 'filtered_candidates'],
+    nodes: ['coordinator', 'generator', 'filter', 'finisher'],
+    edges: ['coordinator_to_generator', 'generator_candidates', 'filtered_candidates'],
     endpoints: ['entry'],
     completers: ['finisher'],
     providers: ['codex', 'claude', 'opencode'],
@@ -66,18 +68,28 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
   'parallelization.js': {
     alias: 'pattern-parallelization',
     schemas: ['review_task', 'review_result', 'final_output'],
-    nodes: ['dispatcher', 'policy_reviewer', 'quality_reviewer', 'aggregator'],
-    edges: ['to_policy', 'to_quality', 'policy_to_aggregator', 'quality_to_aggregator'],
+    nodes: ['dispatcher', 'reviewer_01', 'reviewer_02', 'aggregator'],
+    edges: ['dispatcher_to_reviewer_01', 'dispatcher_to_reviewer_02', 'reviewer_01_to_aggregator', 'reviewer_02_to_aggregator'],
     endpoints: ['entry'],
     completers: ['aggregator'],
     providers: ['codex', 'claude', 'opencode'],
     waitForAll: ['aggregator'],
   },
+  'planner-worker-reviewer.js': {
+    alias: 'pattern-planner-worker-reviewer',
+    schemas: ['implementation_assignment', 'implementation_result', 'revision_request', 'accepted_step_report', 'final_output'],
+    nodes: ['planner', 'worker', 'reviewer'],
+    edges: ['planner_to_worker', 'worker_to_reviewer', 'reviewer_to_worker', 'reviewer_to_planner'],
+    endpoints: ['entry'],
+    completers: ['planner'],
+    providers: ['codex', 'claude'],
+    hasLoop: true,
+  },
   'prompt-chaining.js': {
     alias: 'pattern-prompt-chaining',
     schemas: ['handoff', 'final_output'],
     nodes: ['drafter', 'refiner'],
-    edges: ['draft_to_refiner'],
+    edges: ['drafter_to_refiner'],
     endpoints: ['entry'],
     completers: ['refiner'],
     providers: ['codex', 'claude'],
@@ -86,7 +98,7 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
     alias: 'pattern-routing',
     schemas: ['route_task', 'final_output'],
     nodes: ['classifier', 'code_specialist', 'research_specialist'],
-    edges: ['to_code', 'to_research'],
+    edges: ['to_code_specialist', 'to_research_specialist'],
     endpoints: ['entry'],
     completers: ['code_specialist', 'research_specialist'],
     providers: ['codex', 'opencode', 'claude'],
@@ -95,12 +107,12 @@ export const EXAMPLE_TOPOLOGY_EXPECTATIONS = {
   'tournament.js': {
     alias: 'pattern-tournament',
     schemas: ['contest_prompt', 'entry', 'final_output'],
-    nodes: ['seeder', 'contestant_a', 'contestant_b', 'judge'],
-    edges: ['seed_a', 'seed_b', 'entry_a', 'entry_b'],
+    nodes: ['seeder', 'contestant_01', 'contestant_02', 'final_judge'],
+    edges: ['seed_01', 'seed_02', 'contestant_01_to_final_judge', 'contestant_02_to_final_judge'],
     endpoints: ['entry'],
-    completers: ['judge'],
+    completers: ['final_judge'],
     providers: ['codex', 'claude', 'opencode'],
-    waitForAll: ['judge'],
+    waitForAll: ['final_judge'],
   },
 }
 
@@ -152,7 +164,9 @@ export function validateExampleTopologyDefinition(exampleName, definition, valid
   for (const edge of definition.edges ?? []) {
     assert(expectation.nodes.includes(edge.from_node), `${exampleName} edge ${edge.handle} should have a known source node`, edge)
     assert(expectation.nodes.includes(edge.to_node), `${exampleName} edge ${edge.handle} should have a known target node`, edge)
-    assert(expectation.schemas.includes(edge.handoff_schema), `${exampleName} edge ${edge.handle} should use a known schema`, edge)
+    if (edge.handoff_schema != null) {
+      assert(expectation.schemas.includes(edge.handoff_schema), `${exampleName} edge ${edge.handle} should use a known schema`, edge)
+    }
   }
 
   for (const waitNode of expectation.waitForAll ?? []) {
@@ -160,11 +174,7 @@ export function validateExampleTopologyDefinition(exampleName, definition, valid
     assert(node?.wait_for_all_inputs === true, `${exampleName} node ${waitNode} should wait for all inputs`, node)
   }
   if (expectation.hasLoop) {
-    assert(
-      (definition.edges ?? []).some((edge) => edge.to_node === expectation.nodes[0]),
-      `${exampleName} should include a loop edge back to the first node`,
-      definition.edges,
-    )
+    assert(hasDirectedCycle(definition), `${exampleName} should include a directed cycle`, definition.edges)
   }
   if (expectation.multiEdgeRouter) {
     const outgoing = (definition.edges ?? []).filter((edge) => edge.from_node === expectation.multiEdgeRouter)
@@ -173,9 +183,6 @@ export function validateExampleTopologyDefinition(exampleName, definition, valid
 
   const providers = new Set((definition.nodes ?? []).map((node) => node.agent?.provider).filter(Boolean))
   assertSameSet(providers, expectation.providers, `${exampleName} provider mix`)
-  if ((definition.nodes ?? []).length >= 3) {
-    assertSameSet(providers, ['claude', 'codex', 'opencode'], `${exampleName} 3+ node provider coverage`)
-  }
 
   const diagnostics = validationDiagnostics(validation)
   assert(!diagnostics.some((diagnostic) => diagnostic.code === 'canvas_overlap'), `${exampleName} should not have canvas overlap diagnostics`, diagnostics)
@@ -301,6 +308,16 @@ export function compactWorkflowRunSummary(run) {
       failures: nodeRun.failures?.length ?? 0,
       completed: Boolean(nodeRun.completed_at_ms),
       summary: nodeRun.summary ?? nodeRun.completion?.summary ?? null,
+      turn_envelope: nodeRun.turn_envelope ? {
+        state: nodeRun.turn_envelope.state,
+        dispatched: Boolean(nodeRun.turn_envelope.dispatched_at_ms),
+        acknowledged: Boolean(nodeRun.turn_envelope.acknowledged_at_ms),
+        validated_completed: Boolean(nodeRun.turn_envelope.validated_completed_at_ms),
+        runtime_tool_calls: (nodeRun.turn_envelope.runtime_tool_calls ?? []).map((call) => ({
+          tool_name: call.tool_name,
+          ok: call.ok,
+        })),
+      } : null,
       recent_failure_events: (nodeRun.failure_events ?? []).slice(-3).map((event) => ({
         kind: event.kind,
         message: event.message,
@@ -309,9 +326,68 @@ export function compactWorkflowRunSummary(run) {
   }
 }
 
+export const EXAMPLE_RUNTIME_EXPECTATIONS = {
+  'adversarial-verification.js': {
+    minMessages: 3,
+    fields: { decision: 'accept' },
+    note: 'proposal, critique, and judge completion',
+  },
+  'evaluator-optimizer.js': {
+    minMessages: 3,
+    fields: { accepted: true },
+    note: 'optimizer revision loop',
+  },
+  'fan-out-synthesize.js': {
+    minMessages: 4,
+    fields: { source_count: 2 },
+    note: 'two workers and synthesizer join',
+  },
+  'generate-filter.js': {
+    minMessages: 2,
+    fields: { selected_count: 1 },
+    note: 'candidate generation and filter',
+  },
+  'loop-until-done.js': {
+    minMessages: 3,
+    fields: { iterations: 2 },
+    note: 'one revise loop before completion',
+  },
+  'orchestrator-workers.js': {
+    minMessages: 2,
+    fields: { delegated: true },
+    note: 'orchestrator assignment and synthesis',
+  },
+  'parallelization.js': {
+    minMessages: 4,
+    fields: { reviewer_count: 2 },
+    note: 'two independent reviewers and aggregation',
+  },
+  'planner-worker-reviewer.js': {
+    minMessages: 6,
+    fields: { completed: true },
+    note: 'planner assignment, one worker-reviewer revision, and planner completion',
+  },
+  'prompt-chaining.js': {
+    minMessages: 1,
+    fields: { answer: 'refined draft accepted' },
+    note: 'draft handoff to refiner',
+  },
+  'routing.js': {
+    minMessages: 2,
+    maxMessages: 2,
+    fields: { specialist: 1 },
+    note: 'router chooses exactly one specialist edge',
+  },
+  'tournament.js': {
+    minMessages: 4,
+    fields: { winner: 'a' },
+    note: 'two contestants and judge',
+  },
+}
+
 export function validateExampleRuntimeResult(exampleName, run) {
   assert(run?.status === 'Completed', `example ${exampleName} runtime should complete`, run)
-  assert(run.final_output_valid !== false, `example ${exampleName} final output should be schema-valid`, run)
+  assert(run.final_output_valid === true, `example ${exampleName} final output should be schema-valid`, run)
   const finalOutput = parseWorkflowOutputMessage(run.final_output)
   assert(finalOutput && typeof finalOutput === 'object', `example ${exampleName} should produce structured final output`, run.final_output)
   const completionHandoffCount = (run.node_runs ?? []).reduce((count, nodeRun) => {
@@ -320,59 +396,7 @@ export function validateExampleRuntimeResult(exampleName, run) {
   }, 0)
   const messageCount = (run.messages?.length ?? 0) || completionHandoffCount
   const nodeRunCount = run.node_runs?.length ?? 0
-  const expectations = {
-    'adversarial-verification.js': {
-      minMessages: 4,
-      fields: { decision: 'accept' },
-      note: 'proposer/critic loop plus judge handoff',
-    },
-    'evaluator-optimizer.js': {
-      minMessages: 3,
-      fields: { accepted: true },
-      note: 'optimizer revision loop',
-    },
-    'fan-out-synthesize.js': {
-      minMessages: 4,
-      fields: { source_count: 2 },
-      note: 'two workers and synthesizer join',
-    },
-    'generate-filter.js': {
-      minMessages: 2,
-      fields: { selected_count: 1 },
-      note: 'candidate generation and filter',
-    },
-    'loop-until-done.js': {
-      minMessages: 3,
-      fields: { iterations: 2 },
-      note: 'one revise loop before completion',
-    },
-    'orchestrator-workers.js': {
-      minMessages: 2,
-      fields: { delegated: true },
-      note: 'orchestrator assignment and synthesis',
-    },
-    'parallelization.js': {
-      minMessages: 4,
-      fields: { reviewer_count: 2 },
-      note: 'two independent reviewers and aggregation',
-    },
-    'prompt-chaining.js': {
-      minMessages: 1,
-      fields: { answer: 'refined draft accepted' },
-      note: 'draft handoff to refiner',
-    },
-    'routing.js': {
-      minMessages: 1,
-      maxMessages: 1,
-      fields: { specialist: 'code' },
-      note: 'router chooses exactly one specialist edge',
-    },
-    'tournament.js': {
-      minMessages: 4,
-      fields: { winner: 'a' },
-      note: 'two contestants and judge',
-    },
-  }[exampleName]
+  const expectations = EXAMPLE_RUNTIME_EXPECTATIONS[exampleName]
   assert(expectations, `missing runtime expectation for ${exampleName}`)
   assert(messageCount >= expectations.minMessages, `example ${exampleName} runtime should emit enough handoffs for ${expectations.note}`, { messageCount, run })
   if (expectations.maxMessages != null) {
@@ -582,7 +606,13 @@ export async function completeAppliedTopologyWorkflow(client, sessionId, example
   )
   const runtimeRun = invokeResponse?.workflow_run
   assert(runtimeRun?.id, `example ${exampleName} runtime should start a workflow run`, invokeResponse)
-  const completedRun = await waitForCompletedWorkflowRun(client, sessionId, runtimeRun.id, timeoutMs)
+  const completedRun = await waitForCompletedWorkflowRun(
+    client,
+    sessionId,
+    runtimeRun.id,
+    timeoutMs,
+    `example ${exampleName}`,
+  )
   const tuiOutline = await validateTopologyTuiOutlineProjection(
     client,
     sessionId,

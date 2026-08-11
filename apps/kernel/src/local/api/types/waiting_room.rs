@@ -24,6 +24,8 @@ pub struct WaitingRoomInventorySnapshot {
     pub structural_version: String,
     pub activity_revision: String,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    #[serde(default)]
+    pub projects: Vec<WaitingRoomPublicProjectSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     #[serde(default)]
@@ -48,6 +50,8 @@ pub struct WaitingRoomPublicSnapshot {
     pub activity_revision: String,
     pub generated_at_ms: u64,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    #[serde(default)]
+    pub projects: Vec<WaitingRoomPublicProjectSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
     #[serde(default)]
@@ -67,6 +71,7 @@ pub struct WaitingRoomPublicSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomPublicSessionSummary {
     pub id: String,
+    pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub workspace_id: String,
@@ -87,11 +92,36 @@ pub struct WaitingRoomPublicSessionSummary {
     pub status: crate::session::SessionStatus,
     pub connected_cli_count: usize,
     #[serde(default)]
+    pub joined_collaborator_count: usize,
+    #[serde(default)]
+    pub pending_collaboration_invite_count: usize,
+    #[serde(default)]
     pub activity: WaitingRoomSessionActivitySummary,
     #[serde(default)]
     pub agents: Vec<WaitingRoomPublicAgentSummary>,
     #[serde(default)]
     pub workflows: Vec<WaitingRoomPublicWorkflowSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomPublicProjectSummary {
+    pub id: String,
+    pub owner_user_id: String,
+    pub workspace_id: String,
+    pub name: String,
+    pub kind: crate::session::RuntimeProjectKind,
+    pub status: crate::session::RuntimeProjectStatus,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at_ms: Option<u64>,
+    pub session_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session_activity_at_ms: Option<u64>,
+    #[serde(default)]
+    pub joined_collaborator_count: usize,
+    #[serde(default)]
+    pub pending_collaboration_invite_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,12 +180,25 @@ pub struct WaitingRoomPublicAgentSummary {
     pub directory: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_label: Option<String>,
+    pub runtime_placement: WaitingRoomAgentRuntimePlacement,
     #[serde(default)]
     pub extension_grants: Vec<crate::extension::ExtensionGrant>,
     #[serde(default)]
     pub activity: WaitingRoomPublicItemActivitySummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metaagent_event_counts: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingRoomAgentRuntimePlacement {
+    pub kernel_id: String,
+    pub machine_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice_display_endpoint: Option<crate::slice::SliceDisplayEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +253,7 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             structural_version: snapshot.structural_version,
             activity_revision: snapshot.activity_revision,
             sessions: snapshot.sessions,
+            projects: snapshot.projects,
             external_provider_sessions: snapshot.external_provider_sessions,
             external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,
             external_provider_sessions_next_cursor: snapshot.external_provider_sessions_next_cursor,

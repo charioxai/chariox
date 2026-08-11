@@ -12,26 +12,30 @@ const DELETE_PREFIX = "/workflow registry delete "
 
 export function buildWorkflowRegistryItems(
   input: string,
-  context: Pick<CommandCenterContext, "workflowRegistryEntries">,
+  context: Pick<CommandCenterContext, "commandTree" | "workflowRegistryEntries">,
 ): CommandCenterItem[] | null {
   const entries = [...(context.workflowRegistryEntries ?? [])].sort((left, right) => left.name.localeCompare(right.name))
   if (entries.length === 0) {
     return null
   }
 
-  if (input.startsWith(LOAD_PREFIX)) {
+  if (input.startsWith(LOAD_PREFIX) && commandTreeContains(context.commandTree, "workflow-registry-load")) {
     return workflowNameItems(entries, input.slice(LOAD_PREFIX.length), "load")
   }
-  if (input.startsWith(GET_PREFIX)) {
+  if (input.startsWith(GET_PREFIX) && commandTreeContains(context.commandTree, "workflow-registry-get")) {
     return workflowNameItems(entries, input.slice(GET_PREFIX.length), "get")
   }
-  if (input.startsWith(DELETE_PREFIX)) {
+  if (input.startsWith(DELETE_PREFIX) && commandTreeContains(context.commandTree, "workflow-registry-delete")) {
     return workflowNameItems(entries.filter((entry) => entry.sourceScope !== "builtin"), input.slice(DELETE_PREFIX.length), "delete")
   }
-  if (input.startsWith(RUN_PREFIX)) {
+  if (input.startsWith(RUN_PREFIX) && commandTreeContains(context.commandTree, "workflow-registry-run")) {
     return workflowRunItems(entries, input.slice(RUN_PREFIX.length))
   }
   return null
+}
+
+function commandTreeContains(nodes: CommandCenterContext["commandTree"], id: string): boolean {
+  return nodes.some((node) => node.id === id || commandTreeContains(node.children ?? [], id))
 }
 
 function workflowNameItems(

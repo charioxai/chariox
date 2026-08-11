@@ -5,28 +5,22 @@ import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
 import { createWorkflowDefinitionController } from "./workflow-definition-controller.js"
 
 test("workflow definition controller creates workflows and selects the new canvas", async () => {
+  const nextSession = { ...session("session-updated"), workflows: [workflow("workflow-test", "New")] }
   const harness = createHarness({
-    CreateWorkflow: {
-      WorkflowCreated: {
-        workflow: workflow("workflow-2", "New"),
-        session: session("session-updated"),
-      },
-    },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   })
 
   const payload = await harness.controller.createWorkflow("New")
 
-  assert.equal(payload.workflow.id, "workflow-2")
-  assert.equal(harness.selectedWorkflowId, "workflow-2")
+  assert.equal(payload.workflow.id, "workflow-test")
+  assert.equal(harness.selectedWorkflowId, "workflow-test")
   assert.equal(harness.selectedNodeId, null)
   assert.equal(harness.rebuilds, 1)
   assert.equal(harness.layouts, 1)
-  assert.deepEqual(harness.requests.at(-1), {
-    CreateWorkflow: {
-      session_id: "session-1",
-      alias: "New",
-    },
-  })
+  assert.deepEqual(harness.designOps, [{
+    kind: "workflow_create",
+    workflow: { id: "workflow-test", alias: "New" },
+  }])
 })
 
 test("workflow definition controller lists and resolves workflows", async () => {
@@ -49,14 +43,11 @@ test("workflow definition controller lists and resolves workflows", async () => 
 })
 
 test("workflow definition controller aliases workflows and repaints", async () => {
-  const nextSession = session("session-updated")
+  const current = workflow("workflow-1", "Old")
+  const nextSession = { ...session("session-updated"), workflows: [workflow("workflow-1", "Main")] }
   const harness = createHarness({
-    AliasWorkflow: {
-      WorkflowAliased: {
-        workflow: workflow("workflow-1", "Main"),
-        session: nextSession,
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   })
 
   const payload = await harness.controller.assignWorkflowAlias("workflow-1", "Main")
@@ -65,13 +56,26 @@ test("workflow definition controller aliases workflows and repaints", async () =
   assert.equal(harness.appliedSession, nextSession)
   assert.equal(harness.rebuilds, 1)
   assert.equal(harness.layouts, 1)
-  assert.deepEqual(harness.requests.at(-1), {
-    AliasWorkflow: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      alias: "Main",
-    },
+  assert.deepEqual(harness.designOps, [{
+    kind: "workflow_update",
+    workflow_id: "workflow-1",
+    patch: { alias: "Main" },
+  }])
+})
+
+test("workflow definition controller deletes a resolved workflow through design ops", async () => {
+  const deleted = workflow("workflow-1", "Main")
+  const nextSession = { ...session("session-updated"), workflows: [] }
+  const harness = createHarness({
+    ResolveWorkflow: { WorkflowResolved: { workflow: deleted } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   })
+
+  const payload = await harness.controller.deleteWorkflow("Main")
+
+  assert.equal(payload.workflow.id, "workflow-1")
+  assert.equal(payload.session, nextSession)
+  assert.deepEqual(harness.designOps, [{ kind: "workflow_remove", workflow_id: "workflow-1" }])
 })
 
 function createHarness(responses: Record<string, Record<string, unknown>>) {
@@ -89,8 +93,10 @@ function createHarness(responses: Record<string, Record<string, unknown>>) {
     layouts: 0,
   }
   const requests: Record<string, unknown>[] = []
+  const designOps: unknown[] = []
   const controller = createWorkflowDefinitionController({
     sessionId: () => "session-1",
+    createWorkflowDesignId: (prefix) => `${prefix}-test`,
     applySessionState: (nextSession) => {
       state.appliedSession = nextSession
     },
@@ -106,6 +112,12 @@ function createHarness(responses: Record<string, Record<string, unknown>>) {
     applyResponseLayout: () => {
       state.layouts += 1
     },
+    applyWorkflowDesignOp: async (op) => {
+      designOps.push(op)
+      const payload = responses.ApplyWorkflowDesignOp?.WorkflowDesignOpAccepted as { session: RuntimeSession } | undefined
+      if (!payload) throw new Error("missing ApplyWorkflowDesignOp response")
+      return payload
+    },
     sendRequest: async (request) => {
       requests.push(request)
       const variant = Object.keys(request)[0] ?? ""
@@ -115,6 +127,7 @@ function createHarness(responses: Record<string, Record<string, unknown>>) {
   return {
     controller,
     requests,
+    designOps,
     get selectedWorkflowId() { return state.selectedWorkflowId },
     get selectedNodeId() { return state.selectedNodeId },
     get appliedSession() { return state.appliedSession },

@@ -24,6 +24,7 @@ import type {
 
 export type RuntimeSession = {
   id: string
+  project_id: string
   alias?: string | null
   workspace_id: string
   worktree_id: string
@@ -66,6 +67,26 @@ export type RuntimeSession = {
   workspace_links?: WorkspaceLinkDefinition[]
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   external_provider_imports?: ExternalProviderImportMetadata[]
+}
+
+export type RuntimeProjectKind = "default" | "named"
+export type RuntimeProjectStatus = "active" | "archived"
+
+export type SessionProjectSelection =
+  | { kind: "default" }
+  | { kind: "existing"; project_id: string }
+  | { kind: "new" }
+
+export type RuntimeProject = {
+  id: string
+  owner_user_id: string
+  workspace_id: string
+  name: string
+  kind: RuntimeProjectKind
+  status: RuntimeProjectStatus
+  created_at_ms: number
+  updated_at_ms: number
+  archived_at_ms?: number | null
 }
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
@@ -142,6 +163,7 @@ export type SessionAgentDefaults = {
 
 export type WaitingRoomPublicSessionSummary = {
   id: string
+  project_id: string
   kernel_id?: string | null
   kernel_alias?: string | null
   machine_id?: string | null
@@ -158,9 +180,18 @@ export type WaitingRoomPublicSessionSummary = {
   last_prompt_sent_at_ms?: number | null
   status: string
   connected_cli_count: number
+  joined_collaborator_count?: number
+  pending_collaboration_invite_count?: number
   activity?: WaitingRoomSessionActivitySummary
   agents?: WaitingRoomPublicAgentSummary[]
   workflows?: WaitingRoomPublicWorkflowSummary[]
+}
+
+export type WaitingRoomPublicProjectSummary = RuntimeProject & {
+  session_count: number
+  last_session_activity_at_ms?: number | null
+  joined_collaborator_count: number
+  pending_collaboration_invite_count: number
 }
 
 export type WaitingRoomSessionActivitySummary = {
@@ -200,8 +231,17 @@ export type WaitingRoomPublicAgentSummary = {
   workspace_label?: string | null
   directory?: string | null
   worktree_label?: string | null
+  runtime_placement: WaitingRoomAgentRuntimePlacement
   extension_grants?: ExtensionGrant[]
   activity?: WaitingRoomPublicItemActivitySummary
+}
+
+export type WaitingRoomAgentRuntimePlacement = {
+  kernel_id: string
+  machine_id: string
+  slice_id?: string | null
+  slice_name?: string | null
+  slice_display_endpoint?: import("./kernel-types-cloud.js").SliceDisplayEndpoint | null
 }
 
 export type WaitingRoomPublicWorkflowSummary = {

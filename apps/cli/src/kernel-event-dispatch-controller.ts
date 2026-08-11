@@ -13,6 +13,7 @@ import type { WorkflowDesignOpForwarded } from "@arroba/kernel-client/kernel-typ
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView } from "./relay-api.js"
 import type { RemoteMachineView } from "./waiting-room-inventory-api.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 type AssistantMessageCompletedEvent = Extract<KernelEvent, { event: "assistant_message_completed" }>
 type KernelEventAgentActivityChanged = Extract<KernelEvent, { event: "agent_activity_changed" }>
@@ -70,6 +71,8 @@ type KernelEventDispatchControllerDeps = {
     activityRevision: string
     sessions: WaitingRoomPublicSessionSummary[]
     removedSessionIds: string[]
+    projects: WaitingRoomProjectSummary[]
+    removedProjectIds: string[]
   }) => Promise<unknown> | unknown
   applyRelayStatusChanged: (status: RelayStatusView) => Promise<unknown> | unknown
   applyRemoteMachinesChanged: (machines: RemoteMachineView[]) => Promise<unknown> | unknown
@@ -283,12 +286,22 @@ export function createKernelEventDispatchController(
       deps.appendNotice("Kernel sent malformed waiting-room removed-session update.", "warning")
       return
     }
+    if (!Array.isArray(event.projects) || event.projects.some((project) => !isRecord(project) || typeof project.id !== "string")) {
+      deps.appendNotice("Kernel sent malformed waiting-room project update.", "warning")
+      return
+    }
+    if (!Array.isArray(event.removed_project_ids) || event.removed_project_ids.some((projectId) => typeof projectId !== "string")) {
+      deps.appendNotice("Kernel sent malformed waiting-room removed-project update.", "warning")
+      return
+    }
     await deps.applyWaitingRoomRowsChanged({
       inventoryVersion: event.inventory_version,
       structuralVersion: event.structural_version,
       activityRevision: event.activity_revision,
       sessions: event.sessions as unknown as WaitingRoomPublicSessionSummary[],
       removedSessionIds: event.removed_session_ids,
+      projects: event.projects as unknown as WaitingRoomProjectSummary[],
+      removedProjectIds: event.removed_project_ids,
     })
   }
 

@@ -2,6 +2,7 @@ import net from "node:net"
 import path from "node:path"
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { setTimeout as sleep } from "node:timers/promises"
+import { deflateSync } from "node:zlib"
 import { LocalIpcClient } from "../../dist/ipc.js"
 import {
   attachToSessionRequest,
@@ -30,6 +31,7 @@ import {
 import {
   providerAuthFailureFromTerminalText,
   resolveCommandPath,
+  screenIsRunning,
   screenQuit,
   screenStuff,
   startScreen,
@@ -44,11 +46,60 @@ import {
   runNativeOpenCodePromptDetached,
   sendClaudeRenderedPromptViaKernelInput,
 } from "./native-tui-provider-drivers.mjs"
+import { providerModelSelectionMatches } from "./provider-model-selection.mjs"
 
 const repoRoot = path.resolve(new URL("../../../..", import.meta.url).pathname)
 const cliRoot = path.resolve(repoRoot, "apps/cli")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
+export const nativeAttachmentImagePng = solidColorPng(220, 30, 30)
+export const arrobaAttachmentImagePng = solidColorPng(30, 80, 220)
+
+function solidColorPng(red, green, blue) {
+  const width = 256
+  const height = 256
+  const stride = width * 3 + 1
+  const pixels = Buffer.alloc(stride * height)
+  for (let y = 0; y < height; y += 1) {
+    const row = y * stride
+    for (let x = 0; x < width; x += 1) {
+      pixels[row + 1 + x * 3] = red
+      pixels[row + 2 + x * 3] = green
+      pixels[row + 3 + x * 3] = blue
+    }
+  }
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 2
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(pixels)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ])
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii")
+  const body = Buffer.concat([typeBytes, data])
+  const chunk = Buffer.alloc(data.length + 12)
+  chunk.writeUInt32BE(data.length, 0)
+  body.copy(chunk, 4)
+  chunk.writeUInt32BE(pngCrc32(body), data.length + 8)
+  return chunk
+}
+
+function pngCrc32(bytes) {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
 
 function unwrap(response, variant) {
   if (!response || !(variant in response)) {
@@ -280,6 +331,12 @@ async function waitForHistoryMarkers(
   throw new Error(`timed out waiting for all history markers; missing=${JSON.stringify(lastMissing)}; seen=${JSON.stringify(seen)}`)
 }
 
+async function assertScreenSessionRunning(screenName, logFile) {
+  if (await screenIsRunning(screenName)) return
+  const log = await readFile(logFile, "utf8").catch(() => "")
+  throw new Error(`screen ${screenName} exited while waiting for provider history\n${log.slice(-4_000)}`)
+}
+
 function badgeSnapshotForAlias(snapshot, alias) {
   return snapshot.session?.agents?.find((agent) => agent.alias === alias)?.badge ?? null
 }
@@ -470,7 +527,10 @@ function attachedFilePrompt(markerText) {
   return `Read the attached file and reply with exactly ${markerText} and nothing else.`
 }
 
-function attachedImagePrompt(markerText) {
+export function attachedImagePrompt(markerText, provider) {
+  if (provider === "claude") {
+    return `Please inspect the attached image and identify its dominant color in one sentence. Include the phrase ${markerText}.`
+  }
   return `Reply with exactly ${markerText} and nothing else after receiving the attached image.`
 }
 
@@ -505,6 +565,65 @@ export async function attachSubscribedTerminalClient(client, sessionId, clientId
   return attachment
 }
 
+export function nativeProviderSelectedModel(provider, options = {}) {
+  return options.providerModels?.[provider]
+    ?? (provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default")
+}
+
+export function nativeProviderLaunchArgs(provider, options = {}) {
+  if (provider === "codex") {
+    return [
+      "--model",
+      nativeProviderSelectedModel(provider, options),
+      "--effort",
+      options.codexEffort ?? "high",
+      "--server-in-kernel",
+    ]
+  }
+  if (provider === "opencode") {
+    return [
+      ...(options.providerModels?.opencode ? ["--model", options.providerModels.opencode] : []),
+      "--server-in-kernel",
+    ]
+  }
+  if (provider === "claude" && options.providerModels?.claude) {
+    return ["--model", options.providerModels.claude]
+  }
+  return []
+}
+
+function nativeProviderSelectedEffort(provider, options = {}) {
+  if (provider === "codex") return options.codexEffort ?? "high"
+  if (provider === "claude") return "low"
+  return null
+}
+
+export function assertNativeProviderAgentSelections(provider, options, agents) {
+  const expected = {
+    provider,
+    model: nativeProviderSelectedModel(provider, options),
+    effort: nativeProviderSelectedEffort(provider, options),
+  }
+  const selections = agents.map((agent) => ({
+    id: agent.id,
+    alias: agent.alias,
+    provider: agent.provider,
+    model: agent.model ?? null,
+    effort: agent.effort ?? null,
+  }))
+  const mismatch = selections.find((agent) => (
+    agent.provider !== expected.provider
+      || !providerModelSelectionMatches(provider, expected.model, agent.model)
+      || agent.effort !== expected.effort
+  ))
+  if (mismatch) {
+    throw new Error(
+      `native ${provider} agent selection mismatch: expected ${expected.provider}/${expected.model}/${expected.effort ?? "<none>"}; received ${mismatch.provider}/${mismatch.model ?? "<none>"}/${mismatch.effort ?? "<none>"}`,
+    )
+  }
+  return selections
+}
+
 export async function runProviderScenario({
   provider,
   root,
@@ -531,11 +650,7 @@ export async function runProviderScenario({
     : provider === "codex"
       ? ["cdx-remote-a", "cdx-remote-b"]
       : ["cc-remote-a", "cc-remote-b"]
-  const providerArgs = provider === "codex"
-    ? ["--model", "gpt-5.4-mini", "--effort", "high", "--server-in-kernel"]
-    : provider === "opencode"
-      ? ["--server-in-kernel"]
-    : []
+  const providerArgs = nativeProviderLaunchArgs(provider, options)
   if (options.includePermissions) {
     providerArgs.push("--permissions", "required")
   }
@@ -547,8 +662,8 @@ export async function runProviderScenario({
     nativeB: provider === "claude" ? "Jupiter is the largest planet in the Solar System" : `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
     arrobaPermission: `${marker}ARROBAPERMISSION`,
-    nativeAttachment: `${marker}NATIVEATTACHMENT`,
-    arrobaAttachment: `${marker}ARROBAATTACHMENT`,
+    nativeAttachment: provider === "claude" ? "dominant color is red" : `${marker}NATIVEATTACHMENT`,
+    arrobaAttachment: provider === "claude" ? "dominant color is blue" : `${marker}ARROBAATTACHMENT`,
     nativeSkill: `${marker}NATIVESKILL`,
     arrobaSkill: `${marker}ARROBASKILL`,
   }
@@ -714,6 +829,24 @@ export async function runProviderScenario({
       `remote-native-${provider}-drill-${process.pid}`,
     )
     const agents = await waitForNamedAgents(client, sessionId, aliases)
+    const agentSelections = assertNativeProviderAgentSelections(provider, options, agents)
+    const waitForScenarioHistoryMarkers = async (observedAgents, expectedByAgent, waitOptions = {}) =>
+      await waitForHistoryMarkers(
+        client,
+        sessionId,
+        attachment.id,
+        observedAgents,
+        expectedByAgent,
+        {
+          ...waitOptions,
+          onPending: async (pending) => {
+            await assertScreenSessionRunning(screenA, logs.a)
+            await assertScreenSessionRunning(screenB, logs.b)
+            await assertScreenSessionRunning(screenCli, logs.cli)
+            await waitOptions.onPending?.(pending)
+          },
+        },
+      )
     if (!remotePlacement) {
       await waitForActiveProviderRun(client, sessionId)
     }
@@ -745,8 +878,8 @@ export async function runProviderScenario({
       "--provider",
       provider,
       "--model",
-      provider === "codex" ? "gpt-5.4-mini" : provider === "claude" ? "sonnet" : "default",
-      ...(provider === "codex" ? ["--effort", "high"] : []),
+      nativeProviderSelectedModel(provider, options),
+      ...(provider === "codex" ? ["--effort", options.codexEffort ?? "high"] : []),
     ], process.env)
     await waitForAutomationReady(automationSocket, logs.cliDir)
     const snapshot = await automationRequest(automationSocket, {
@@ -771,19 +904,19 @@ export async function runProviderScenario({
     if (!skipBaselineTurns) {
       if (provider === "opencode") {
         await runNativeOpenCodePrompt(proxyA, providerSessionA, worktree, `Reply with exactly ${markers.nativeA} and nothing else.`, logs.nativeA)
-        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        await waitForScenarioHistoryMarkers(agents, {
           [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         })
         await runNativeOpenCodePrompt(proxyB, providerSessionB, worktree, `Reply with exactly ${markers.nativeB} and nothing else.`, logs.nativeB)
       } else if (provider === "codex") {
         await runNativeCodexPrompt(proxyA, providerSessionA, `Reply with exactly ${markers.nativeA} and nothing else.`)
-        await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+        await waitForScenarioHistoryMarkers(agents, {
           [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         })
         await runNativeCodexPrompt(proxyB, providerSessionB, `Reply with exactly ${markers.nativeB} and nothing else.`)
       }
 
-      await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      await waitForScenarioHistoryMarkers(agents, {
         [aliases[0]]: { prompts: [markers.nativeA], outputs: [markers.nativeA] },
         [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
       })
@@ -799,7 +932,7 @@ export async function runProviderScenario({
       })
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
 
-      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      const histories = await waitForScenarioHistoryMarkers(agents, {
         [aliases[0]]: { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
         [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
       })
@@ -831,14 +964,14 @@ export async function runProviderScenario({
         baselinePrompt(provider, "nativeB", markers),
       )
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[1]], {
+      await waitForScenarioHistoryMarkers([agents[1]], {
         [aliases[1]]: { prompts: [markers.nativeB], outputs: [markers.nativeB] },
       })
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
         command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
       })
-      const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
+      const histories = await waitForScenarioHistoryMarkers(agents, {
         [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
       })
       badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
@@ -882,7 +1015,7 @@ export async function runProviderScenario({
         } else {
           await runNativeCodexPrompt(proxyA, providerSessionA, nativeSkillPrompt)
         }
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
@@ -894,7 +1027,7 @@ export async function runProviderScenario({
           action: "workspace_shell_exec",
           command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
         })
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
@@ -907,7 +1040,7 @@ export async function runProviderScenario({
           providerRunA,
           `Use the ${nativeCapabilities.skillName} skill. Give the native skill marker.`,
         )
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.nativeSkill] },
         }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeSkill), 90_000)
@@ -919,7 +1052,7 @@ export async function runProviderScenario({
           action: "workspace_shell_exec",
           command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
         })
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
         }, { onPending: settleCapabilityPermission })
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
@@ -948,15 +1081,15 @@ export async function runProviderScenario({
         provider === "opencode" ? "arroba-attachment.txt" : "arroba-attachment.png",
       )
       if (provider === "codex") {
-        await writeFile(nativeAttachmentPath, tinyPng)
-        await writeFile(arrobaAttachmentPath, tinyPng)
-        await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment), [
+        await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
+        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment, provider), [
           { type: "localImage", path: nativeAttachmentPath },
         ])
       } else if (provider === "claude") {
-        await writeFile(nativeAttachmentPath, tinyPng)
-        await writeFile(arrobaAttachmentPath, tinyPng)
-        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment)}`)
+        await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
+        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment, provider)}`)
         await sleep(250)
         await screenStuff(screenA, "\r")
       } else {
@@ -980,7 +1113,7 @@ export async function runProviderScenario({
       } else {
         await waitForLogOccurrences(logs.proxyA, "remote_rendered_attachments_intercepted", 1)
       }
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+      await waitForScenarioHistoryMarkers([agents[0]], {
         [aliases[0]]: { prompts: [markers.nativeAttachment], outputs: [markers.nativeAttachment] },
       })
       await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.nativeAttachment), 60_000)
@@ -996,16 +1129,14 @@ export async function runProviderScenario({
         action: "submit_prompt",
         prompt: provider === "opencode"
           ? attachedFilePrompt(markers.arrobaAttachment)
-          : provider === "claude"
-            ? attachedImagePrompt(markers.arrobaAttachment)
-            : attachedImagePrompt(markers.arrobaAttachment),
+          : attachedImagePrompt(markers.arrobaAttachment, provider),
         attachments: [{
           url: arrobaAttachmentPath,
           mime: provider === "opencode" ? "text/plain" : "image/png",
           filename: path.basename(arrobaAttachmentPath),
         }],
       })
-      await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+      await waitForScenarioHistoryMarkers([agents[0]], {
         [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
       })
       await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaAttachment), 60_000)
@@ -1051,7 +1182,7 @@ export async function runProviderScenario({
         extendedChecks.nativePermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [markers.nativePermission], outputs: [markers.nativePermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
@@ -1082,7 +1213,7 @@ export async function runProviderScenario({
         extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
-        await waitForHistoryMarkers(client, sessionId, attachment.id, [agents[0]], {
+        await waitForScenarioHistoryMarkers([agents[0]], {
           [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
@@ -1102,6 +1233,8 @@ export async function runProviderScenario({
 
     return {
       provider,
+      model: nativeProviderSelectedModel(provider, options),
+      ...(provider === "codex" ? { effort: options.codexEffort ?? "high" } : {}),
       sessionId,
       marker,
       relayUrl,
@@ -1109,6 +1242,7 @@ export async function runProviderScenario({
       machineRef: machineRef ?? null,
       sliceRef: sliceRef ?? null,
       agentAliases: aliases,
+      agentSelections,
       observerSawAgents: snapshot.session.agentCount,
       badgeTransitions,
       providerSessions: provider === "opencode" || provider === "codex" ? {

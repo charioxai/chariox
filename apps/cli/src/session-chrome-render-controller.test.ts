@@ -44,7 +44,7 @@ test("session chrome render controller clears prompt meta while detached", () =>
 
   assert.deepEqual(calls, [
     "placeholder",
-    "summary:none:none:ready:muted:Waiting room • arrows • Enter • A archive • D delete • Ctrl+T keys:none",
+    "summary:none:none:ready:muted:Waiting room • arrows • Enter • E rename • A archive • D delete • Ctrl+T keys:none",
     "meta:0",
     "status",
     "footers",

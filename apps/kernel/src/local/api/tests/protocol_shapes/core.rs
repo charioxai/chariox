@@ -1,6 +1,95 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_project_management_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 250);
+
+    let create = LocalDaemonRequest::CreateSession(
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_project_selection(crate::session::SessionProjectSelection::Existing {
+                project_id: "project-1".to_string(),
+            }),
+    );
+    assert_eq!(
+        serde_json::to_value(create)
+            .expect("project-selecting session create request should encode")
+            .pointer("/CreateSession/project_selection"),
+        Some(&serde_json::json!({
+            "kind": "existing",
+            "project_id": "project-1"
+        }))
+    );
+
+    let requests = [
+        LocalDaemonRequest::ListProjects(ListProjectsRequest {
+            include_archived: true,
+        }),
+        LocalDaemonRequest::RenameProject(RenameProjectRequest {
+            project_id: "project-1".to_string(),
+            name: "Renamed".to_string(),
+        }),
+        LocalDaemonRequest::ArchiveProject(ArchiveProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+        LocalDaemonRequest::DeleteProject(crate::local::DeleteProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+        LocalDaemonRequest::RestoreProject(RestoreProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+    ];
+    assert_eq!(
+        requests
+            .into_iter()
+            .map(|request| serde_json::to_value(request).expect("project request should encode"))
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!({ "ListProjects": { "include_archived": true } }),
+            serde_json::json!({ "RenameProject": { "project_id": "project-1", "name": "Renamed" } }),
+            serde_json::json!({ "ArchiveProject": { "project_id": "project-1" } }),
+            serde_json::json!({ "DeleteProject": { "project_id": "project-1" } }),
+            serde_json::json!({ "RestoreProject": { "project_id": "project-1" } }),
+        ]
+    );
+
+    let project: crate::session::RuntimeProject = serde_json::from_value(serde_json::json!({
+        "id": "project-1",
+        "owner_user_id": "owner-1",
+        "workspace_id": "workspace-1",
+        "name": "Owner/repo",
+        "kind": "default",
+        "status": "archived",
+        "created_at_ms": 10,
+        "updated_at_ms": 20,
+        "archived_at_ms": 20
+    }))
+    .expect("runtime project should decode");
+    let response = LocalDaemonResponse::ProjectArchived {
+        project,
+        sessions: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("project response should encode"),
+        serde_json::json!({
+            "ProjectArchived": {
+                "project": {
+                    "id": "project-1",
+                    "owner_user_id": "owner-1",
+                    "workspace_id": "workspace-1",
+                    "name": "Owner/repo",
+                    "kind": "default",
+                    "status": "archived",
+                    "created_at_ms": 10,
+                    "updated_at_ms": 20,
+                    "archived_at_ms": 20
+                },
+                "sessions": []
+            }
+        })
+    );
+}
+
+#[test]
 fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 250);
 

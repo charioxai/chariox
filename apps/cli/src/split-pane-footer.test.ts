@@ -67,6 +67,23 @@ test("formatSplitPaneFooter prefers an override variant when idle", () => {
   )
 })
 
+test("formatSplitPaneFooter does not mix an idle selection into an active run", () => {
+  assert.equal(
+    formatSplitPaneFooter(
+      { ...primaryAgent, provider: "opencode", model: "opencode/kimi-k2.7-code" },
+      {
+        agentInstanceId: "agent-a",
+        provider: "opencode",
+        model: "opencode/kimi-k2.7-code",
+        variant: null,
+      },
+      null,
+      { provider: "codex", model: "gpt-5.6-luna", variant: "high" },
+    ),
+    "Planner • OpenCode • OpenCode Kimi-K2.7-Code",
+  )
+})
+
 test("formatSplitPaneFooter marks Meta mode agents", () => {
   assert.equal(
     formatSplitPaneFooter({ ...primaryAgent, meta_mode: { activated_at_ms: 1 } }, null, null),

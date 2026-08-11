@@ -26,6 +26,7 @@ import {
   clearStagedWaitingRoomWorktreeSelection,
   stageWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
+import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -39,6 +40,7 @@ export type WaitingRoomLaunchConfig = {
   workspaceLiveSyncMode?: "off" | "managed" | "tracked"
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
+  projectSelection?: SessionProjectSelection | null
 }
 
 export type WaitingRoomStateUpdate = {
@@ -92,6 +94,7 @@ export type WaitingRoomKeyNavigationDecision =
 export type WaitingRoomSessionLifecycleDecision =
   | { action: WaitingRoomSessionLifecycleAction; session: SessionListEntry }
   | { action: "archive-all"; sessions: SessionListEntry[] }
+  | { action: "archive-project"; project: WaitingRoomProjectSummary }
   | { action: "error"; message: string }
 
 export type WaitingRoomDeleteDecision =
@@ -100,6 +103,7 @@ export type WaitingRoomDeleteDecision =
   | { action: "delete-machine"; machineId: string; label: string }
   | { action: "delete-kernel"; kernelId: string; label: string }
   | { action: "delete-slice"; sliceId: string; label: string }
+  | { action: "delete-project"; project: WaitingRoomProjectSummary }
   | { action: "error"; message: string }
 
 export type WaitingRoomModelSelectionDecision =
@@ -265,6 +269,7 @@ export function deriveWaitingRoomActivationDecision(options: {
     ownerKernelRef: choice.kernelRef,
     ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
+    ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
@@ -334,6 +339,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     ownerKernelRef: choice.kernelRef,
     ...(choice.workerKernelRef ? { workerKernelRef: choice.workerKernelRef } : {}),
     workspaceLiveSyncMode: options.state.workspaceLiveSyncMode,
+    ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
   }
@@ -445,6 +451,10 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       return { action: "open-terminal-pairing" }
     case "join-sessions":
       return { action: "open-session-browser" }
+    case "project-entry":
+      return { action: "open-session-browser" }
+    case "archived-projects":
+      return { action: "info", message: "Use left/right to show or hide archived projects." }
     case "external-session-more":
       return { action: "load-older-external-sessions" }
     default:
@@ -457,8 +467,15 @@ export function deriveWaitingRoomSessionLifecycleDecision(options: {
   state: WaitingRoomState
   sessions: SessionListEntry[]
   catalog: ProviderCatalog
+  remote?: WaitingRoomRemoteState
 }): WaitingRoomSessionLifecycleDecision {
-  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog)
+  const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
+  if (options.state.focus === "project-entry" && choice.project) {
+    if (choice.project.status === "archived") {
+      return { action: "error", message: `project ${choice.project.name} is already archived; press R to restore it` }
+    }
+    return { action: "archive-project", project: choice.project }
+  }
   if (options.state.focus === "join-sessions" && options.action === "archive") {
     const sessions = options.sessions.filter((session) => session.status !== "Ended")
     if (sessions.length === 0) {
@@ -492,6 +509,9 @@ export function deriveWaitingRoomDeleteDecision(options: {
   remote?: WaitingRoomRemoteState
 }): WaitingRoomDeleteDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
+  if (options.state.focus === "project-entry" && choice.project) {
+    return { action: "delete-project", project: choice.project }
+  }
   if (options.state.focus === "join-sessions") {
     const sessions = options.sessions.filter((session) => session.status !== "Ended")
     if (sessions.length === 0) {

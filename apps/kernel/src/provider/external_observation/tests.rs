@@ -232,6 +232,28 @@ fn normalized_observed_prompt_text_ignores_generated_attachment_markup() {
 }
 
 #[test]
+fn normalized_observed_prompt_text_ignores_provider_native_attachment_suffixes() {
+    let prompt = "agent agent-2 message:\n\nReview the attached evidence.";
+
+    assert_eq!(
+        normalized_observed_prompt_text(&format!(
+            "{prompt}Attachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8="
+        )),
+        Some("agent agent-2 message: Review the attached evidence.".to_string())
+    );
+    assert_eq!(
+        normalized_observed_prompt_text(&format!(
+            "{prompt}\nAttachment: note.txt (text/plain) at file:///tmp/note.txt\n\nfile contents"
+        )),
+        Some("agent agent-2 message: Review the attached evidence.".to_string())
+    );
+    assert_eq!(
+        normalized_observed_prompt_text("Explain what the Attachment: label means."),
+        Some("Explain what the Attachment: label means.".to_string())
+    );
+}
+
+#[test]
 fn observed_prompt_text_ignores_arroba_generated_runtime_context() {
     let observed = "run the check <runtime-instructions>generated</runtime-instructions> \
         <native-permission-instructions>generated</native-permission-instructions>";

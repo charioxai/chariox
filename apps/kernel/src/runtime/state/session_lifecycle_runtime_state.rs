@@ -8,7 +8,7 @@ pub(crate) struct AgentOutputSeenAck {
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
-        request: crate::session::CreateSessionRequest,
+        mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
@@ -24,9 +24,25 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let mut request = request;
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
+        }
+        request = canonicalize_session_workspace(request);
+        let existing_project_ids = self
+            .owned
+            .session_store
+            .durable_projects()
+            .into_iter()
+            .map(|project| project.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        if matches!(
+            request.project_selection,
+            crate::session::SessionProjectSelection::Default
+        ) {
+            let name = crate::runtime::workspace_git_common::workspace_display_label(
+                &request.workspace_id,
+            );
+            request = request.with_default_project_name_hint(name);
         }
         if let Some(slice_ref) = slice_ref.as_deref() {
             let slice = self
@@ -47,6 +63,21 @@ impl KernelRuntimeState {
             self.owned.create_session_response(request)?
         };
         if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+            let project = if session.is_hidden() {
+                None
+            } else {
+                Some(self.owned.session_store.get_project(session.project_id())?)
+            };
+            if let Some(project) = project
+                .as_ref()
+                .filter(|project| !existing_project_ids.contains(project.id()))
+            {
+                self.owned.durable_state_store.append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": project }),
+                )?;
+            }
             if let Some(slice_ref) = slice_ref {
                 let session_id = session.id().to_string();
                 let agent_id = agent.id().to_string();
@@ -66,13 +97,17 @@ impl KernelRuntimeState {
                     serde_json::json!({ "slice": &slice }),
                 )?;
             }
+            let mut payload = serde_json::json!({
+                "session": session,
+                "default_agent": agent,
+            });
+            if let Some(project) = project {
+                payload["project"] = serde_json::json!(project);
+            }
             self.owned.durable_state_store.append_event(
                 "session.created",
                 Some(session.id().to_string()),
-                serde_json::json!({
-                    "session": session,
-                    "default_agent": agent,
-                }),
+                payload,
             )?;
         }
         Ok(response)
@@ -660,7 +695,8 @@ impl KernelRuntimeState {
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
-        let (session, terminated_run_ids) = owned.delete_session_ref(session_ref, workspace_id)?;
+        let (session, terminated_run_ids, removed_project) =
+            owned.delete_session_ref(session_ref, workspace_id)?;
         for provider_run_id in terminated_run_ids {
             let (_, process_key) = self
                 .with_app_side_effect(|app| {
@@ -672,6 +708,9 @@ impl KernelRuntimeState {
         }
         self.append_session_durable_event("session.deleted", &session, "runtime_delete_session")
             .await?;
+        if let Some(project) = removed_project {
+            self.append_project_durable_event("project.deleted", &project)?;
+        }
         self.detach_session_slices(&session).await?;
         Ok(session)
     }
@@ -738,6 +777,30 @@ fn prepare_local_session_worktree_placement(
     )?;
     request.worktree_id = resolved;
     Ok(request)
+}
+
+fn canonicalize_session_workspace(
+    mut request: crate::session::CreateSessionRequest,
+) -> crate::session::CreateSessionRequest {
+    let Some(workspace_id) = crate::runtime::workspace_git_common::canonical_workspace_path(
+        &request.workspace_id,
+        &request.worktree_id,
+    ) else {
+        return request;
+    };
+    if workspace_id != request.workspace_id {
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "canonicalized session workspace from linked worktree",
+            serde_json::json!({
+                "requested_workspace_id": request.workspace_id,
+                "worktree_id": request.worktree_id,
+                "workspace_id": workspace_id,
+            }),
+        );
+        request.workspace_id = workspace_id;
+    }
+    request
 }
 
 fn codex_linux_slice_live_sync_request(
@@ -825,6 +888,39 @@ mod tests {
             "feature/session-placement"
         );
         let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn linked_worktree_workspace_is_canonicalized_to_the_main_repository() {
+        let repo = temp_git_repo("session-workspace-canonicalization");
+        let worktree = repo.with_file_name(format!(
+            "{}-linked",
+            repo.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/session-workspace-canonicalization",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let request = crate::session::CreateSessionRequest::new(
+            worktree.display().to_string(),
+            worktree.display().to_string(),
+        );
+
+        let adjusted = canonicalize_session_workspace(request);
+
+        assert_eq!(
+            adjusted.workspace_id,
+            std::fs::canonicalize(&repo).unwrap().display().to_string()
+        );
+        assert_eq!(adjusted.worktree_id, worktree.display().to_string());
+        let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&repo);
     }
 

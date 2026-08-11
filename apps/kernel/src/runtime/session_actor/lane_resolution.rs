@@ -11,7 +11,12 @@ pub(super) async fn resolve_session_lane_key(
     request: &LocalDaemonRequest,
 ) -> Result<String, DaemonError> {
     match request {
-        LocalDaemonRequest::CreateSession(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),
+        LocalDaemonRequest::CreateSession(_)
+        | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::RenameProject(_)
+        | LocalDaemonRequest::ArchiveProject(_)
+        | LocalDaemonRequest::DeleteProject(_)
+        | LocalDaemonRequest::RestoreProject(_) => Ok(SESSION_CREATE_LANE_ID.to_string()),
         LocalDaemonRequest::AttachToSession(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

@@ -68,6 +68,7 @@ export function createCliAppWorkflowProjectionComposition(
 
 export type CliAppWorkflowActionCompositionDeps = Record<string, any> & {
   client: any
+  originClientId: string
   bindWorkflowNodeInstructionsEditor: AnyFn
   workflowNodeInstructionsEditor: AnyFn
   setWorkflowNodeInstructionsEditor: AnyFn
@@ -117,6 +118,7 @@ export function createCliAppWorkflowActionComposition(
 
   const workflowController = createWorkflowController({
     sendRequest: (request) => deps.client.send(request) as Promise<Record<string, unknown>>,
+    originClientId: deps.originClientId,
     isAttached: deps.isAttached,
     sessionState: deps.sessionState,
     applySessionState: deps.applySessionState,

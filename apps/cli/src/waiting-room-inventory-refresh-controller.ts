@@ -13,6 +13,7 @@ import type {
   RemoteMachineView,
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 const maximumTrackedKernelInventories = 64
@@ -23,6 +24,8 @@ type WaitingRoomRowsChangedPatch = {
   activityRevision: string
   sessions: WaitingRoomPublicSessionSummary[]
   removedSessionIds: string[]
+  projects?: WaitingRoomProjectSummary[]
+  removedProjectIds?: string[]
 }
 
 type WaitingRoomInventoryRefreshControllerOptions = {
@@ -34,6 +37,8 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
+  getProjects?: () => WaitingRoomProjectSummary[]
+  setProjects?: (projects: WaitingRoomProjectSummary[]) => void
   setRelayStatus: (status: RelayStatusView) => void
   setRemoteMachines: (machines: RemoteMachineView[]) => void
   setRemoteKernels: (kernels: RemoteKernelView[]) => void
@@ -146,6 +151,7 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
+    options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),
       ...(snapshot.externalProviderSessionsHasMore !== undefined
@@ -190,16 +196,31 @@ export function createWaitingRoomInventoryRefreshController(
           structuralVersion: patch.structuralVersion,
           activityRevision: patch.activityRevision,
           sessions,
+          projects: patch.projects
+            ? mergeWaitingRoomProjectRows(
+                activeInventory.projects ?? [],
+                patch.projects,
+                patch.removedProjectIds ?? [],
+              )
+            : activeInventory.projects ?? [],
         }
         rememberInventory(nextInventory)
         options.persistInventory?.(nextInventory)
         options.setAvailableSessions(mergedCachedSessions(inventoriesByKernel.values()))
+        options.setProjects?.(nextInventory.projects)
       } else {
         options.setAvailableSessions(mergeWaitingRoomSessionRows(
           currentInventoryVersion === null ? [] : options.getAvailableSessions(),
           patch.sessions,
           patch.removedSessionIds,
         ))
+        if (patch.projects) {
+          options.setProjects?.(mergeWaitingRoomProjectRows(
+            options.getProjects?.() ?? [],
+            patch.projects,
+            patch.removedProjectIds ?? [],
+          ))
+        }
       }
       options.reconcileWaitingRoom(options.getWaitingRoomState())
     },
@@ -241,6 +262,22 @@ export function createWaitingRoomInventoryRefreshController(
       inventoryInvalidated = true
     },
   }
+}
+
+function mergeWaitingRoomProjectRows(
+  current: readonly WaitingRoomProjectSummary[],
+  changed: readonly WaitingRoomProjectSummary[],
+  removedIds: readonly string[],
+): WaitingRoomProjectSummary[] {
+  const removed = new Set(removedIds)
+  const byId = new Map(current.filter((project) => !removed.has(project.id)).map((project) => [project.id, project]))
+  for (const project of changed) {
+    if (!removed.has(project.id)) byId.set(project.id, project)
+  }
+  return Array.from(byId.values()).sort((left, right) => (
+    (right.last_session_activity_at_ms ?? right.updated_at_ms)
+    - (left.last_session_activity_at_ms ?? left.updated_at_ms)
+  ))
 }
 
 function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): SessionListEntry[] {

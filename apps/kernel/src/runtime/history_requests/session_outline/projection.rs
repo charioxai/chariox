@@ -181,25 +181,55 @@ fn unique_provider_tool_call_count(events: &[&HistoryEvent]) -> usize {
             let entry = event.to_session_history_entry();
             let call_id = entry
                 .as_ref()
-                .and_then(|entry| entry.merge_key.as_deref())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string)
-                .or_else(|| {
-                    entry.as_ref().and_then(|entry| {
-                        let value = serde_json::from_str::<serde_json::Value>(&entry.text).ok()?;
-                        value
-                            .get("id")
-                            .or_else(|| value.get("call_id"))
-                            .and_then(|value| value.as_str())
-                            .filter(|value| !value.trim().is_empty())
-                            .map(str::to_string)
-                    })
-                })
+                .and_then(provider_tool_call_id)
                 .unwrap_or_else(|| format!("history-event:{}", event.sequence));
             (event.provider_run_id.clone(), call_id)
         })
         .collect::<BTreeSet<_>>()
         .len()
+}
+
+fn provider_tool_call_id(entry: &crate::history::SessionHistoryEntry) -> Option<String> {
+    provider_tool_payload(&entry.text)
+        .and_then(|value| {
+            value
+                .get("call_id")
+                .or_else(|| value.get("id"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| truncated_provider_tool_payload_field(&entry.text, "call_id"))
+        .or_else(|| truncated_provider_tool_payload_field(&entry.text, "id"))
+        .or_else(|| {
+            entry
+                .merge_key
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn truncated_provider_tool_payload_field(text: &str, field: &str) -> Option<String> {
+    let (_, payload) = text.split_once('\n')?;
+    let prefix = format!("  \"{field}\":");
+    payload
+        .lines()
+        .find_map(|line| {
+            let value = line.strip_prefix(&prefix)?.trim_start();
+            serde_json::Deserializer::from_str(value)
+                .into_iter::<String>()
+                .next()?
+                .ok()
+        })
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn provider_tool_payload(text: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(text).ok().or_else(|| {
+        let (_, payload) = text.split_once('\n')?;
+        serde_json::from_str(payload).ok()
+    })
 }
 
 fn grouped_blob_title(kind: SessionHistoryEntryKind, entry_count: usize) -> String {
@@ -446,7 +476,89 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provider_tool_blob_counts_codex_call_and_output_as_one_call() {
+        let call = provider_tool_event_with_text(
+            1,
+            "custom_tool_call-ctc-1",
+            format!(
+                "codex tool item\n{}",
+                serde_json::json!({
+                    "type": "custom_tool_call",
+                    "id": "ctc-1",
+                    "call_id": "call-1",
+                })
+            ),
+        );
+        let output = provider_tool_event_with_text(
+            2,
+            "custom_tool_call_output-call-1",
+            format!(
+                "codex tool item\n{}",
+                serde_json::json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "call-1",
+                })
+            ),
+        );
+
+        let blob = outline_blob_from_event_group(&[&call, &output]).expect("tool blob");
+
+        assert_eq!(blob.entry_count, 2);
+        assert_eq!(blob.title, "1 tool called");
+    }
+
+    #[test]
+    fn provider_tool_blob_counts_truncated_codex_output_with_its_call() {
+        let call = provider_tool_event_with_text(
+            1,
+            "custom_tool_call-ctc-large",
+            format!(
+                "codex tool item\n{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "type": "custom_tool_call",
+                    "id": "ctc-large",
+                    "call_id": "call-large",
+                }))
+                .expect("tool call payload should serialize")
+            ),
+        );
+        let full_output = serde_json::to_string_pretty(&serde_json::json!({
+            "type": "custom_tool_call_output",
+            "call_id": "call-large",
+            "output": [
+                { "type": "input_text", "text": "x".repeat(20_000) },
+            ],
+        }))
+        .expect("tool output payload should serialize");
+        let truncated_output = full_output.chars().take(16 * 1024).collect::<String>();
+        assert!(serde_json::from_str::<serde_json::Value>(&truncated_output).is_err());
+        let output = provider_tool_event_with_text(
+            2,
+            "custom_tool_call_output-call-large",
+            format!("codex tool item\n{truncated_output}"),
+        );
+
+        let blob = outline_blob_from_event_group(&[&call, &output]).expect("tool blob");
+
+        assert_eq!(blob.entry_count, 2);
+        assert_eq!(blob.title, "1 tool called");
+    }
+
     fn provider_tool_event(sequence: u64, call_id: &str, status: &str) -> HistoryEvent {
+        provider_tool_event_with_text(
+            sequence,
+            call_id,
+            serde_json::json!({
+                "id": call_id,
+                "tool": "bash",
+                "status": status,
+            })
+            .to_string(),
+        )
+    }
+
+    fn provider_tool_event_with_text(sequence: u64, merge_key: &str, text: String) -> HistoryEvent {
         HistoryEvent::transcript(
             sequence,
             &SessionHistoryEntry::provider_output(
@@ -454,13 +566,8 @@ mod tests {
                 "provider-run-1",
                 Some("agent-1"),
                 TerminalOutputKind::ProviderTool,
-                Some(call_id.to_string()),
-                serde_json::json!({
-                    "id": call_id,
-                    "tool": "bash",
-                    "status": status,
-                })
-                .to_string(),
+                Some(merge_key.to_string()),
+                text,
             ),
             HistoryEventTurnContext {
                 session_id: Some("session-1".to_string()),

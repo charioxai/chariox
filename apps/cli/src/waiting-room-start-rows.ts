@@ -19,6 +19,7 @@ import {
 } from "@arroba/kernel-client/waiting-room-runtime-placement"
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
+import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
 
 export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
@@ -29,7 +30,7 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "projectSelectionId" | "sliceSelectionId" | "sliceDisplayMode">,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -89,6 +90,22 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
+      ? [{
+          id: "project",
+          title: "Project",
+          value: describeWaitingRoomProjectSelection(
+            state.projectSelectionId ?? "default",
+            remote.projects,
+            options.targets?.workspacePath,
+          ),
+          titleWidth: options.titleWidth,
+          indent: 1,
+          focused: state.focus === "project",
+          selectable: true,
+          scrollbar: "",
+        }]
+      : []),
     {
       id: "provider",
       title: "Provider",

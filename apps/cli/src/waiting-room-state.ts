@@ -34,6 +34,10 @@ import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import { normalizeWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import {
+  normalizeWaitingRoomProjectSelectionId,
+} from "./waiting-room-projects.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -63,6 +67,8 @@ export function createWaitingRoomState(
       providerId,
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
+      executionMode: "build",
+      permissionLevel: "yolo",
       themeId: normalizeThemeName(themeId, themeRegistry),
       introStep: 0,
       keyState: { up: false, down: false, left: false, right: false },
@@ -86,6 +92,7 @@ export function normalizeWaitingRoomState(
   const remoteKernels = waitingRoomRemoteKernels(remote)
   const allSlices = waitingRoomAllSlices(remote)
   const terminals = waitingRoomTerminals(remote)
+  const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state.showArchivedProjects))
   const externalSessions = externalProviderSessionPageSessions(remote)
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
@@ -117,6 +124,8 @@ export function normalizeWaitingRoomState(
           ? "slice"
         : terminals.length === 0 && state.focus === "terminal"
           ? "add-terminal"
+        : projects.length === 0 && state.focus === "project-entry"
+          ? "new"
         : state.focus === "slice-display"
           ? "slice"
           : state.focus
@@ -125,6 +134,8 @@ export function normalizeWaitingRoomState(
     focus,
     providerId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
+    projectIndex: projects.length === 0 ? 0 : modulo(state.projectIndex ?? 0, projects.length),
+    showArchivedProjects: Boolean(state.showArchivedProjects),
     externalSessionIndex: externalProviderSessionSelectionIndex(externalSessions, {
       selectedExternalProviderSessionIndex: state.externalSessionIndex ?? null,
     }),
@@ -136,12 +147,35 @@ export function normalizeWaitingRoomState(
     workspaceLiveSyncMode: normalizeWorkspaceLiveSyncMode(state.workspaceLiveSyncMode),
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
+    ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
+      ? {
+          projectSelectionId: normalizeWaitingRoomProjectSelectionId(
+            state.projectSelectionId,
+            remote.projects,
+            remote.workspaceId,
+          ),
+        }
+      : {}),
     ...(sliceSelection.sliceSelectionId !== undefined ? { sliceSelectionId: sliceSelection.sliceSelectionId } : {}),
     ...(sliceSelection.sliceDisplayMode !== undefined ? { sliceDisplayMode: sliceSelection.sliceDisplayMode } : {}),
     modelId: selected?.id ?? state.modelId,
     effort: efforts.includes(state.effort) ? state.effort : efforts[0] ?? "",
+    executionMode: waitingRoomExecutionMode(state),
+    permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),
   }
+}
+
+export function waitingRoomExecutionMode(
+  state: Pick<WaitingRoomState, "executionMode">,
+): "build" | "plan" {
+  return state.executionMode === "plan" ? "plan" : "build"
+}
+
+export function waitingRoomPermissionLevel(
+  state: Pick<WaitingRoomState, "permissionLevel">,
+): "required" | "yolo" {
+  return state.permissionLevel === "required" ? "required" : "yolo"
 }
 
 function normalizeWorkspaceLiveSyncMode(value: WaitingRoomState["workspaceLiveSyncMode"]): WaitingRoomState["workspaceLiveSyncMode"] {

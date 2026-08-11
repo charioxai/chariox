@@ -17,7 +17,6 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
     let slice_store = app.slices();
     let session_projection = app.session_state_projection_store();
     let provider_run_projection = app.provider_run_projection_store();
-    let history_store = app.history_store();
     let operational_history_store = app.operational_history_store();
     let durable_state_store = app.durable_state_store();
     let prompt_state_owner = app.prompt_state_owner();
@@ -40,7 +39,6 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
         slice_store,
         session_projection,
         provider_run_projection,
-        history_store,
         operational_history_store,
         durable_state_store,
         prompt_state_owner,
@@ -56,7 +54,7 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
 }
 
 #[test]
-fn workflow_turn_context_lists_outgoing_edge_options() {
+fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instructions() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, router_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -238,10 +236,10 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
         .expect("edge a should be present");
     assert_eq!(option_a["to_node_id"], node_a.id());
     assert_eq!(option_a["to_node_public_label"], "Worker A");
-    assert_eq!(
-        option_a["target_instructions"],
-        "Handle policy-sensitive routing tasks only."
-    );
+    assert!(option_a.get("target_instructions").is_none());
+    assert!(!option_a
+        .to_string()
+        .contains("Handle policy-sensitive routing tasks only."));
     assert_eq!(option_a["to_agent_id"], worker_a.id());
     assert_eq!(option_a["handoff_schema_ref"], "/schemas/route-a.json");
     assert_eq!(option_a["validation_policy"], "halt");
@@ -251,13 +249,16 @@ fn workflow_turn_context_lists_outgoing_edge_options() {
         .expect("edge b should be present");
     assert_eq!(option_b["to_node_id"], node_b.id());
     assert_eq!(option_b["to_node_public_label"], "Worker B");
-    assert_eq!(
-        option_b["target_instructions"],
-        "Handle quality and completeness routing tasks only."
-    );
+    assert!(option_b.get("target_instructions").is_none());
+    assert!(!option_b
+        .to_string()
+        .contains("Handle quality and completeness routing tasks only."));
     assert_eq!(option_b["to_agent_id"], worker_b.id());
     assert_eq!(option_b["handoff_schema_ref"], "/schemas/route-b.json");
     assert_eq!(option_b["validation_policy"], "warn");
+    let payload = result.payload.to_string();
+    assert!(!payload.contains("Handle policy-sensitive routing tasks only."));
+    assert!(!payload.contains("Handle quality and completeness routing tasks only."));
     assert_eq!(
         result.payload["handoff_routing"]["final_json_field"],
         "output.message.workflow_handoffs"

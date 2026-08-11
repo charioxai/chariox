@@ -1,6 +1,6 @@
 const { addWorkflowNodeRequest, attachToSessionRequest, createSessionRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, createWorkflowRequest, getProviderRunRequest, launchProviderRunRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, spawnAgentRequest, updateWorkflowNodeInstructionsRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { logStep, REAL_DASHBOARD_PROMPT, variant } from './live-workflow-publication-drill-runtime.mjs'
-import { createDashboardPublicationSession, createDeterministicPublicationSession, createRealProviderDashboardPublicationSession, publicationRequestTransportOptions } from './live-workflow-publication-drill-session-builders.mjs'
+import { HUMAN_HTTP_COMPOSER_METHODS, createDashboardPublicationSession, createDeterministicPublicationSession, createRealProviderDashboardPublicationSession, createSchedulePublicationArtifacts, publicationRequestTransportOptions } from './live-workflow-publication-drill-session-builders.mjs'
 import { waitForProviderRunReady } from './live-workflow-publication-drill-waiters.mjs'
 
 export async function createPublicationDrillSessionSuite(client, sessionIds, {
@@ -52,7 +52,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, {
       alias: 'public_http',
       route: '/qa/*',
-      methods: ['GET'],
+      methods: HUMAN_HTTP_COMPOSER_METHODS,
       parser: { kind: 'path_template', template: '/qa/:task' },
       mode: 'async',
     })),
@@ -217,7 +217,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     await client.send(createWorkflowPublicationRequest(browserSession.id, browserWorkflow.id, browserEndpoint.id, {
       alias: 'public_human_http_final',
       route: '/final/*',
-      methods: ['GET'],
+      methods: HUMAN_HTTP_COMPOSER_METHODS,
       transport: { kind: 'human_http' },
       parser: { kind: 'path_template', template: '/final/:task' },
       traceExposure: { nodes: { [browserNode.id]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } },
@@ -235,7 +235,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     endpointAlias: 'browser-root',
     publicationAlias: 'public_human_http_root_form',
     route: '/final/*',
-    methods: ['GET'],
+    methods: HUMAN_HTTP_COMPOSER_METHODS,
     transportKind: 'human_http',
     traceExposure: 'all',
   })
@@ -345,17 +345,11 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     await client.send(createWorkflowEndpointRequest(scheduleSession.id, scheduleWorkflow.id, scheduleNode.id, 'schedule')),
     'WorkflowEndpointCreated',
   ).endpoint
-  const schedulePublication = variant(
-    await client.send(createWorkflowPublicationRequest(scheduleSession.id, scheduleWorkflow.id, scheduleEndpoint.id, {
-      alias: 'public_schedule',
-      route: '/schedule',
-      methods: ['POST'],
-      transport: { kind: 'api_sse_json' },
-      parser: { kind: 'json' },
-      mode: 'async',
-    })),
-    'WorkflowPublicationCreated',
-  ).publication
+  const { schedule, publication: schedulePublication } = await createSchedulePublicationArtifacts(client, {
+    sessionId: scheduleSession.id,
+    workflowId: scheduleWorkflow.id,
+    endpointId: scheduleEndpoint.id,
+  })
   return {
     session,
     agent,
@@ -404,6 +398,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     scheduleWorkflow,
     scheduleNode,
     scheduleEndpoint,
+    schedule,
     schedulePublication
   }
 }

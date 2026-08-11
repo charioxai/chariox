@@ -120,6 +120,104 @@ async fn provider_output_pump_treats_unregistered_starting_pty_as_launch_in_prog
 }
 
 #[tokio::test]
+async fn idle_focus_sync_preserves_downstream_provider_launch_in_progress() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-starting-provider-focus",
+            "worktree-starting-provider-focus",
+        ))
+        .expect("session should be created");
+    let downstream_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("downstream"),
+        )
+        .expect("downstream agent should spawn");
+    crate::app::KernelSessionService::new(&mut app)
+        .focus_agent(session.id(), focused_agent.id())
+        .expect("first agent should remain the explicit focus target");
+    let focused_run = app
+        .providers
+        .launch_run_detached(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(focused_agent.id()),
+        )
+        .expect("focused provider should launch");
+    let parked_focused_run = app
+        .providers
+        .park_run_provider_only(session.id(), focused_run.id())
+        .expect("focused provider should park")
+        .into_run();
+    app.sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("parked provider should no longer be active");
+    app.update_provider_run_projection(parked_focused_run);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let downstream_run = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(downstream_agent.id()),
+        )
+        .expect("downstream provider launch should start")
+        .run;
+    runtime
+        .owned
+        .provider_run_projection
+        .update(downstream_run.clone());
+
+    assert!(
+        runtime
+            .owned
+            .should_defer_provider_run_sync_for_focus_change(session.id(), focused_agent.id())
+            .expect("focus deferral should resolve"),
+        "focus changes must not retire a provider launch in progress",
+    );
+
+    runtime
+        .owned
+        .sync_focused_provider_run_if_idle(session.id())
+        .expect("idle focus sync should not disrupt launch handoff");
+
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(downstream_run.id())
+            .expect("downstream run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Starting,
+        "stale focus reconciliation must not terminate a downstream launch in progress",
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        Some(downstream_run.id()),
+        "the downstream launch must remain the session's active provider",
+    );
+}
+
+#[tokio::test]
 async fn local_provider_launch_preserves_and_restores_projected_remote_predecessor() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

@@ -3,6 +3,7 @@ import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import type { WorkflowInspectorMode } from "./workflow-inspector-projection.js"
 import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import { createWorkflowDefinitionController } from "./workflow-definition-controller.js"
+import { createWorkflowDesignOpController } from "./workflow-design-op-controller.js"
 import { createWorkflowRuntimeController } from "./workflow-runtime-controller.js"
 import { createWorkflowScreenController } from "./workflow-screen-controller.js"
 import { createWorkflowSessionStateController } from "./workflow-session-state.js"
@@ -17,6 +18,7 @@ export {
 
 type WorkflowControllerDeps = {
   sendRequest: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+  originClientId: string
   isAttached: () => boolean
   sessionState: () => RuntimeSession
   applySessionState: (session: RuntimeSession) => void
@@ -33,6 +35,11 @@ type WorkflowControllerDeps = {
 }
 
 export function createWorkflowController(deps: WorkflowControllerDeps) {
+  const workflowDesignOps = createWorkflowDesignOpController({
+    sendRequest: deps.sendRequest,
+    sessionId: () => deps.sessionState().id,
+    originClientId: deps.originClientId,
+  })
   const workflowScreen = createWorkflowScreenController({
     isAttached: deps.isAttached,
     workflows: () => deps.sessionState().workflows ?? [],
@@ -56,6 +63,8 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
   const workflowTopology = createWorkflowTopologyController({
     sendRequest: deps.sendRequest,
     sessionId: () => deps.sessionState().id,
+    applyWorkflowDesignOp: workflowDesignOps.applyWorkflowDesignOp,
+    createWorkflowDesignId: workflowDesignOps.createWorkflowDesignId,
   })
   const workflowRuntime = createWorkflowRuntimeController({
     sendRequest: deps.sendRequest,
@@ -70,11 +79,14 @@ export function createWorkflowController(deps: WorkflowControllerDeps) {
   const workflowSettings = createWorkflowSettingsController({
     sendRequest: deps.sendRequest,
     sessionId: () => deps.sessionState().id,
+    applyWorkflowDesignOp: workflowDesignOps.applyWorkflowDesignOp,
     applyWorkflowSessionRefresh: workflowSessionState.applyWorkflowSessionRefresh,
   })
   const workflowDefinitions = createWorkflowDefinitionController({
     sendRequest: deps.sendRequest,
     sessionId: () => deps.sessionState().id,
+    applyWorkflowDesignOp: workflowDesignOps.applyWorkflowDesignOp,
+    createWorkflowDesignId: workflowDesignOps.createWorkflowDesignId,
     applySessionState: deps.applySessionState,
     setSelectedWorkflowId: deps.setSelectedWorkflowId,
     setSelectedWorkflowNodeId: deps.setSelectedWorkflowNodeId,

@@ -164,32 +164,43 @@ function buildPrompt(provider, marker, workspace, observerGate) {
   const promptMarker = `EXTERNAL_PARITY_USER_PROMPT_${marker}`
   const text = [
     `You are running the Arroba external provider live parity drill for provider ${provider}.`,
+    "You are the system under test for a real bug where long external-provider turns lost tool activity or showed IDLE too early across the kernel, TUI, and web.",
+    "Each marked assistant message and tool call is sampled out-of-band by live Arroba observers; its transport, persistence, ordering, grouping, and lifecycle are the test assertions.",
+    "The harmless read-only command payloads are intentionally deterministic. The exact count of 20 reproduces the history-compaction threshold that exposed the bug.",
+    "The Arroba test process launches this provider turn, discovers and imports its native session, attaches kernel/TUI/web observers, and then creates the gate file.",
+    "Before polling, independently verify the drill with the Read tool: inspect apps/cli/scripts/README.md around lines 226-236 and docs/artifacts/scale-performance/README.md around lines 61-68. Those tracked references document this exact three-surface drill and a prior successful Claude 20-marker run.",
     `Drill marker: ${marker}.`,
     `User prompt marker: ${promptMarker}.`,
     `Workspace: ${workspace}.`,
-    `Scratch file prefix: ${observerGate.scratchFilePrefix}.`,
     `Observer gate go file: ${observerGate.goFile}.`,
     "",
     "Requirements:",
-    "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, wait until the observer gate go file exists.",
-    "2. The observer gate setup/wait can use provider tools, but it must not write files, must not include TOOL_STEP_NN markers, and it does not count toward the 20 marked tool calls.",
-    "3. After the go file exists, produce exactly 20 separate assistant progress messages, each with an assistant step marker.",
+    "1. Before emitting any ASSISTANT_STEP_NN, TOOL_STEP_NN, or FINAL_EXTERNAL_PARITY_SUMMARY marker, poll for up to 3 minutes until the observer gate go file exists.",
+    "2. The documentation verification and observer gate setup/wait can use provider tools, but they must not write files, must not include TOOL_STEP_NN markers, and do not count toward the 20 marked tool calls.",
+    "3. After the go file exists, produce exactly 20 distinct assistant text parts in this same overall user turn, each with an assistant step marker; no new user turn is needed.",
     "4. Assistant step markers must be built from prefix ASSISTANT_STEP_ plus two-digit numbers from 01 to 20.",
-    "5. After the go file exists, run exactly 20 observable marked tool calls, each with a tool step marker.",
+    "5. After the go file exists, run exactly 20 observable marked tool calls, each with a tool step marker. Never batch marked tool calls: make exactly one marked tool call per model/tool round.",
     "6. Tool step markers must be built from prefix TOOL_STEP_ plus two-digit numbers from 01 to 20.",
     "7. Each assistant message must include its ASSISTANT_STEP_NN marker and the drill marker.",
     "8. Each marked tool call must make its TOOL_STEP_NN marker observable in either the command, path, or output.",
-    "9. Every marked tool command, including read/list/count/stat/test/delete commands, must begin by printing its own TOOL_STEP_NN marker with printf before doing anything else.",
+    "9. Every marked tool command must begin by printing its own TOOL_STEP_NN marker with printf before doing anything else.",
     "10. Do not rely on a prior file's contents to make a later tool marker visible. The current tool call itself must print the current marker.",
-    "11. Use only workspace-root temporary drill files whose paths begin with the scratch file prefix.",
-    "12. Create, append, read, list, inspect metadata, and delete small text files with that scratch file prefix.",
-    "13. Delete the temporary scratch files before finishing, but do not delete the observer gate go file.",
+    "11. Run the 20 read-only checks listed below in order, one check per marked tool call.",
+    "12. Do not create, modify, or delete files.",
+    "13. The observer gate file belongs to the harness; only test whether it exists.",
     `14. End with the exact final summary marker formed by joining prefix ${finalMarkerPrefix}, an underscore, and the drill marker.`,
     "15. The final summary marker must be the last assistant text and must be emitted only after the TOOL_STEP_20 tool call has completed.",
     "16. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
-    "17. Use only low-risk shell commands: printf, cat, ls, wc, stat, find, test, touch, rm, rmdir, and sleep.",
+    "17. Use only low-risk shell commands: printf, ls, wc, stat, find, test, and sleep.",
     "18. Do not use xattr, chmod, chown, install, Python, Node, Ruby, Perl, network commands, package managers, git, or any command likely to require interactive approval.",
     "19. Include a short `sleep 0.5` in each marked tool call so Arroba can observe the live turn before the final summary.",
+    "20. Ordered checks: 01 `test -f Cargo.toml`; 02 `test -d apps/kernel`; 03 `test -d apps/cli`; 04 `test -f apps/kernel/Cargo.toml`; 05 `test -f apps/cli/package.json`; 06 `wc -l Cargo.toml`; 07 `wc -l apps/kernel/Cargo.toml`; 08 `wc -l apps/cli/package.json`; 09 `stat Cargo.toml`; 10 `stat apps/kernel/Cargo.toml`; 11 `ls apps`; 12 `ls apps/kernel/src`; 13 `ls apps/cli/src`; 14 `find apps/kernel/src -maxdepth 1 -type f`; 15 `find apps/cli/src -maxdepth 1 -type f`; 16 `test -f docs/PROTOCOL.md`; 17 `wc -l docs/PROTOCOL.md`; 18 `test -f docs/ARCHITECTURE.md`; 19 `wc -l docs/ARCHITECTURE.md`; 20 `find packages -maxdepth 1 -type d`.",
+    "21. Required round structure: emit ASSISTANT_STEP_01 text, call TOOL_STEP_01, consume its result, emit ASSISTANT_STEP_02 text, call TOOL_STEP_02, and continue autonomously through ASSISTANT_STEP_20 plus TOOL_STEP_20. Do not stop or discuss message mechanics before all 20 results and the final marker.",
+    "22. An ASSISTANT_STEP_NN marker must be ordinary assistant text, never reasoning and never a provider tool name, title, description, input, command, path, or output.",
+    "23. After the gate opens, each model response before the final summary must contain exactly one assistant step text part and exactly one marked tool call. Wait for that tool result before producing the next numbered response.",
+    "24. Never place two marked tool calls in one model response, invoke marked tools in parallel, or batch later numbered checks before their assistant step text has been emitted.",
+    "25. Never invoke a tool to print or otherwise manufacture an ASSISTANT_STEP_NN marker. This provider supports ordinary assistant text beside one tool call; emit the assistant step as that response's text content block.",
+    "26. The twenty progress parts belong in twenty successive model responses inside this one user turn, separated by the twenty tool results. Do not try to place all twenty progress parts or all twenty tool calls in one model response.",
   ].join("\n")
   return { text, promptMarker }
 }
@@ -217,7 +228,20 @@ function providerCommand(provider, model, prompt, workspace) {
     return { command: "codex", args: ["exec", "--model", model, prompt] }
   }
   if (provider === "claude") {
-    return { command: "claude", args: ["-p", "--model", model, "--permission-mode", "bypassPermissions", "--dangerously-skip-permissions", prompt] }
+    return {
+      command: "claude",
+      args: [
+        "-p",
+        "--model",
+        model,
+        "--permission-mode",
+        "bypassPermissions",
+        "--dangerously-skip-permissions",
+        "--append-system-prompt",
+        "You are the provider system under test in a deterministic, read-only Arroba lifecycle/transcript regression. Verify the tracked drill documentation named in the direct prompt, then complete the bounded gate sequence exactly because the emitted events are the observed assertions.",
+        prompt,
+      ],
+    }
   }
   if (provider === "opencode") {
     return { command: "opencode", args: ["run", "-m", model, prompt] }

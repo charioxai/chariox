@@ -17,6 +17,7 @@ export function createCliAppCommandRoutingComposition(
 ) {
   const commandHandlers = createCliCommandActionComposition(deps as any)
   let requestPromptStop: AnyFn = () => undefined
+  let routeSharedShellCommand: (rawCommand: string) => Promise<boolean> = async () => false
   const commandCenterCommandExecutor = createCommandCenterCommandExecutor({
     onExit: () => deps.requestExit(),
     onWaiting: () => deps.requestWaitingRoom(),
@@ -26,6 +27,8 @@ export function createCliAppCommandRoutingComposition(
     onProvider: commandHandlers.handleProviderCommand,
     onModel: commandHandlers.handleModelCommand,
     onVariant: commandHandlers.handleVariantCommand,
+    onMode: commandHandlers.handleModeCommand,
+    onPermissions: commandHandlers.handlePermissionsCommand,
     onView: commandHandlers.handleViewCommand,
     onUndo: commandHandlers.handleUndoCommand,
     onFork: commandHandlers.handleForkCommand,
@@ -52,6 +55,7 @@ export function createCliAppCommandRoutingComposition(
     onExtension: commandHandlers.handleExtensionCommand,
     flashFooter: deps.flashFooter,
     formatError: deps.formatError,
+    handleSharedShellCommand: (rawCommand) => routeSharedShellCommand(rawCommand),
   })
   const inputRouting = createCliInputRoutingComposition({
     ...deps,
@@ -59,6 +63,7 @@ export function createCliAppCommandRoutingComposition(
     hasActiveTurnWork: deps.anyTurnWork,
   } as any)
   requestPromptStop = inputRouting.requestPromptStop
+  routeSharedShellCommand = inputRouting.handleSharedShellCommand
 
   return {
     ...commandHandlers,

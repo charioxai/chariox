@@ -17,6 +17,8 @@ export type SelectionCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   applyModelSelection: (value: string) => Promise<void>
   applyVariantSelection: (value: string) => Promise<void>
+  applyModeSelection?: (value: string) => Promise<void>
+  applyPermissionSelection?: (value: string) => Promise<void>
   logViewCommand?: (fields: Record<string, unknown>) => void
   setMultiAgentResponseLayout: (layout: MultiAgentResponseLayout) => void
   applyResponseLayout: () => void
@@ -55,6 +57,36 @@ export async function handleVariantSlashCommand(
     return
   }
   await deps.applyVariantSelection(value)
+}
+
+export async function handleModeSlashCommand(
+  deps: SelectionCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "mode" }>,
+): Promise<void> {
+  if (!command.value) {
+    deps.flashFooter("usage: /mode <build|plan>", "error")
+    return
+  }
+  if (!deps.applyModeSelection) {
+    deps.flashFooter("mode selection is unavailable in this build", "error")
+    return
+  }
+  await deps.applyModeSelection(command.value)
+}
+
+export async function handlePermissionsSlashCommand(
+  deps: SelectionCommandHandlerDeps,
+  command: Extract<ParsedSlashCommand, { kind: "permissions" }>,
+): Promise<void> {
+  if (!command.value) {
+    deps.flashFooter("usage: /permissions <required|yolo>", "error")
+    return
+  }
+  if (!deps.applyPermissionSelection) {
+    deps.flashFooter("permission selection is unavailable in this build", "error")
+    return
+  }
+  await deps.applyPermissionSelection(command.value)
 }
 
 export async function handleViewSlashCommand(

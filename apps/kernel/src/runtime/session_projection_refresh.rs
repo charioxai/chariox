@@ -235,6 +235,8 @@ pub(crate) async fn apply_session_projection_refresh(
 
 pub(crate) fn response_sessions(response: &LocalDaemonResponse) -> Vec<RuntimeSession> {
     match response {
+        LocalDaemonResponse::ProjectArchived { sessions, .. }
+        | LocalDaemonResponse::ProjectRestored { sessions, .. } => sessions.clone(),
         LocalDaemonResponse::SessionCreated { session, .. }
         | LocalDaemonResponse::SessionResolved { session }
         | LocalDaemonResponse::SessionState { session, .. }
@@ -323,6 +325,9 @@ pub(crate) fn should_update_agent_runtime_projection_from_response(
 pub(crate) fn response_removed_session_ids(response: &LocalDaemonResponse) -> Vec<&str> {
     match response {
         LocalDaemonResponse::SessionDeleted { session } => vec![session.id()],
+        LocalDaemonResponse::ProjectDeleted { sessions, .. } => {
+            sessions.iter().map(|session| session.id()).collect()
+        }
         LocalDaemonResponse::KernelDeleted {
             deleted_sessions, ..
         } => deleted_sessions

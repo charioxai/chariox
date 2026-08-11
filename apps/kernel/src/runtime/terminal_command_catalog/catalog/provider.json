@@ -4,48 +4,56 @@
     "label": "/provider",
     "description": "Change provider or inspect provider processes",
     "value": "/provider ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "provider-select",
         "label": "switch",
         "description": "Choose the active provider",
-        "value": "/provider "
+        "value": "/provider ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-status",
         "label": "status",
         "description": "Show provider auth status",
-        "value": "/provider status "
+        "value": "/provider status ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-login",
         "label": "login",
         "description": "Start provider login",
-        "value": "/provider login "
+        "value": "/provider login ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-logout",
         "label": "logout",
         "description": "Log out a provider",
-        "value": "/provider logout "
+        "value": "/provider logout ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-reauth",
         "label": "reauth",
         "description": "Reauthenticate a provider",
-        "value": "/provider reauth "
+        "value": "/provider reauth ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-processes",
         "label": "processes",
         "description": "List daemon-tracked provider processes; teardown requires a provider",
-        "value": "/provider processes "
+        "value": "/provider processes ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "provider-processes-teardown",
         "label": "teardown",
         "description": "Tear down safe daemon-tracked provider processes",
-        "value": "/provider processes teardown "
+        "value": "/provider processes teardown ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -54,66 +62,77 @@
     "label": "/config",
     "description": "Inspect and update Arroba user config",
     "value": "/config ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "config-show",
         "label": "show",
         "description": "Show the effective Arroba user config",
-        "value": "/config show"
+        "value": "/config show",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-path",
         "label": "path",
         "description": "Show the Arroba user config path",
-        "value": "/config path"
+        "value": "/config path",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-keys",
         "label": "keys",
         "description": "List settable Arroba user config keys",
-        "value": "/config keys"
+        "value": "/config keys",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-schema",
         "label": "schema",
         "description": "Show Arroba user config key metadata",
-        "value": "/config schema"
+        "value": "/config schema",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-set",
         "label": "set",
         "description": "Set a dotted config key",
-        "value": "/config set "
+        "value": "/config set ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-unset",
         "label": "unset",
         "description": "Unset a dotted config key",
-        "value": "/config unset "
+        "value": "/config unset ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-workspace-live-sync",
         "label": "workspace-live-sync",
         "description": "Set the global workspace live sync policy",
         "value": "/config workspace-live-sync ",
+        "surfaces": ["session", "waiting_room"],
         "children": [
           {
             "id": "config-workspace-live-sync-off",
             "label": "off",
             "description": "Explicitly default new sessions to live sync off; other repositories stay unrestricted",
-            "value": "/config workspace-live-sync off"
+            "value": "/config workspace-live-sync off",
+            "surfaces": ["session", "waiting_room"]
           },
           {
             "id": "config-workspace-live-sync-managed",
             "label": "managed",
             "description": "Default new sessions to managed sync when provider hosts support write fencing",
-            "value": "/config workspace-live-sync managed"
+            "value": "/config workspace-live-sync managed",
+            "surfaces": ["session", "waiting_room"]
           },
           {
             "id": "config-workspace-live-sync-tracked",
             "label": "tracked",
             "description": "Default new sessions to tracked turn-end sync; works on workers without managed write fencing",
-            "value": "/config workspace-live-sync tracked"
+            "value": "/config workspace-live-sync tracked",
+            "surfaces": ["session", "waiting_room"]
           }
         ]
       }
@@ -123,31 +142,50 @@
     "id": "model",
     "label": "/model",
     "description": "Change the active model",
-    "value": "/model "
+    "value": "/model ",
+    "surfaces": ["session", "waiting_room"]
   },
   {
     "id": "variant",
     "label": "/variant",
     "description": "Change the active model variant",
-    "value": "/variant "
+    "value": "/variant ",
+    "surfaces": ["session", "waiting_room"]
+  },
+  {
+    "id": "mode",
+    "label": "/mode",
+    "description": "Change the focused agent mode",
+    "value": "/mode ",
+    "surfaces": ["session", "waiting_room"]
+  },
+  {
+    "id": "permissions",
+    "label": "/permissions",
+    "description": "Change the focused agent permission mode",
+    "value": "/permissions ",
+    "surfaces": ["session", "waiting_room"]
   },
   {
     "id": "view",
     "label": "/view",
     "description": "Change multi-agent response layout",
     "value": "/view ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "view-individual",
         "label": "individual",
         "description": "Show one focused agent transcript at a time",
-        "value": "/view individual"
+        "value": "/view individual",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "view-split",
         "label": "split",
         "description": "Split the response area across active session agents",
-        "value": "/view split"
+        "value": "/view split",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -179,7 +217,8 @@
         "id": "exit",
         "label": "/exit",
         "description": "Leave the CLI",
-        "value": "/exit"
+        "value": "/exit",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -187,6 +226,7 @@
     "id": "waiting",
     "label": "/waiting",
     "description": "Go to the waiting room",
-    "value": "/waiting"
+    "value": "/waiting",
+    "surfaces": ["session", "waiting_room"]
   }
 ]

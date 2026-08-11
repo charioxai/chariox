@@ -28,6 +28,10 @@ export type SessionBrowserSession = {
   created_at_ms?: number | null
 }
 
+export type SessionBrowserVisibilityOptions = {
+  includeEnded?: boolean
+}
+
 export function resolveSessionBrowserKeyAction(options: {
   open: boolean
   event: SessionBrowserKeyEvent
@@ -77,9 +81,12 @@ export function nextSessionBrowserIndex(index: number, delta: number, sessionCou
   return ((next % sessionCount) + sessionCount) % sessionCount
 }
 
-export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(sessions: readonly T[]): T[] {
+export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(
+  sessions: readonly T[],
+  options: SessionBrowserVisibilityOptions = {},
+): T[] {
   return sessions
-    .filter((session) => session.status !== "Ended")
+    .filter((session) => options.includeEnded || session.status !== "Ended")
     .slice()
     .sort((left, right) => waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left))
 }
@@ -87,8 +94,9 @@ export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(s
 export function sessionBrowserPreviewSessions<T extends SessionBrowserSession>(
   sessions: readonly T[],
   limit = DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
+  options: SessionBrowserVisibilityOptions = {},
 ): T[] {
-  return sessionBrowserVisibleSessions(sessions).slice(0, Math.max(0, limit))
+  return sessionBrowserVisibleSessions(sessions, options).slice(0, Math.max(0, limit))
 }
 
 export function clampSessionBrowserIndex(index: number, sessionCount: number): number {

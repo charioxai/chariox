@@ -23,6 +23,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { resolvePendingWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
+import type { SessionProjectSelection } from "@arroba/kernel-client"
 
 export async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())
@@ -40,10 +41,21 @@ export async function createSession(
   workspaceLiveSyncMode?: "off" | "managed" | "tracked" | "unrestricted" | null,
   kernelRef?: string | null,
   worktreePlacement?: Record<string, unknown> | null,
+  projectSelection?: SessionProjectSelection | null,
 ): Promise<RuntimeSession> {
   const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree)
   const response = await client.send<Record<string, unknown>>(
-    createSessionRequest(workspace, resolvedWorktree, alias, agentDefaults, sliceRef, workspaceLiveSyncMode, kernelRef, worktreePlacement),
+    createSessionRequest(
+      workspace,
+      resolvedWorktree,
+      alias,
+      agentDefaults,
+      sliceRef,
+      workspaceLiveSyncMode,
+      kernelRef,
+      worktreePlacement,
+      projectSelection,
+    ),
   )
   const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
   return normalizeRuntimeSession(payload.session)

@@ -31,6 +31,7 @@ import {
 import { resolveShellSliceRef } from "./shell-slice-placement.js"
 import {
   formatSessionInvite,
+  formatSessionInvites,
   formatSessionList,
   formatSessionMembers,
 } from "./shell-session-format.js"
@@ -223,6 +224,15 @@ export async function executeSessionCommand(
       const payload = expectVariant<{ members: SessionMember[]; invites: SessionInvite[] }>(response, "SessionMembersListed")
       return { ok: true, message: formatSessionMembers(payload.members, payload.invites), data: payload }
     }
+    case "invites": {
+      const sessionId = args[0] ?? context.sessionId
+      if (!sessionId) {
+        return { ok: false, message: "usage: session invites [session-ref]" }
+      }
+      const response = await deps.client.send(listSessionMembersRequest(sessionId))
+      const payload = expectVariant<{ members: SessionMember[]; invites: SessionInvite[] }>(response, "SessionMembersListed")
+      return { ok: true, message: formatSessionInvites(payload.invites), data: payload }
+    }
     case "invite": {
       const [inviteAction, maxUsesRaw] = args
       if (inviteAction !== "create") {
@@ -280,7 +290,7 @@ export async function executeSessionCommand(
       }
     }
     default:
-      return { ok: false, message: "usage: session list|status|new|attach|use|members|invite|join|revoke-invite|mode|permissions" }
+      return { ok: false, message: "usage: session list|status|new|attach|use|members|invites|invite|join|revoke-invite|mode|permissions" }
   }
 }
 

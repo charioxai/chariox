@@ -608,7 +608,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "4952e1e6015bd773d864ce65c37151f5e71c5a1b7ac3db4302a0851a8d85c493"
+        "9649636057408cd3863796b076824ea4d95c0d56518dcf7e3221b6fad72255fc"
     );
 }
 

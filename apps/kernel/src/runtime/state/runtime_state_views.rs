@@ -118,7 +118,7 @@ impl KernelRuntimeState {
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         let prompt_activity = self.owned.prompt_activity.read();
         let active_turns = self.owned.active_turns.snapshot();
-        crate::runtime::projection::agent_activity_for_session_projection(
+        let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
             session,
             |agent_id| {
                 self.owned
@@ -138,7 +138,11 @@ impl KernelRuntimeState {
                     .completed_git_turn_snapshots
                     .latest_projection_for_agent(session.id(), agent_id)
             },
-        )
+        );
+        self.owned
+            .session_projection
+            .project_external_observed_activity(session.id(), &mut activity);
+        activity
     }
 
     pub(crate) async fn config_snapshot(&self) -> crate::config::DaemonConfig {

@@ -353,6 +353,8 @@ fn filter_provider_processes(
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
     catalog: Arc<StdMutex<Option<CachedProviderCatalogProjection>>>,
+    refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
+    generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -386,7 +388,56 @@ impl ProviderCatalogProjectionStore {
             });
     }
 
+    pub(crate) fn cached(&self) -> Option<OpenCodeProviderCatalog> {
+        self.catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|cached| cached.catalog.clone())
+    }
+
+    pub(crate) fn begin_refresh(&self) -> Option<u64> {
+        self.refresh_in_progress
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+            .then(|| self.generation.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub(crate) fn update_if_generation(
+        &self,
+        catalog: OpenCodeProviderCatalog,
+        generation: u64,
+    ) -> bool {
+        if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
+            return false;
+        }
+        let mut cached = self
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
+            return false;
+        }
+        *cached = Some(CachedProviderCatalogProjection {
+            cached_at: Instant::now(),
+            catalog,
+        });
+        true
+    }
+
+    pub(crate) fn finish_refresh(&self) {
+        self.refresh_in_progress
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
     pub(crate) fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         *self
             .catalog
             .lock()
@@ -414,5 +465,54 @@ impl ProviderCatalogProjectionStore {
             age_ms: Some(age.as_millis() as u64),
             ttl_ms: ttl.as_millis() as u64,
         }
+    }
+}
+
+#[cfg(test)]
+mod provider_catalog_projection_tests {
+    use super::*;
+
+    fn catalog(provider: &str) -> OpenCodeProviderCatalog {
+        OpenCodeProviderCatalog {
+            all: vec![crate::provider::OpenCodeProviderInfo {
+                id: provider.to_string(),
+                name: provider.to_string(),
+                remote_machine_aliases: Vec::new(),
+                models: Default::default(),
+            }],
+            default: Default::default(),
+            connected: vec![provider.to_string()],
+        }
+    }
+
+    #[test]
+    fn expired_catalog_remains_available_as_last_known_projection() {
+        let store = ProviderCatalogProjectionStore::default();
+        store.update(catalog("codex"));
+
+        assert!(store.get(Duration::ZERO).is_none());
+        assert_eq!(
+            store
+                .cached()
+                .expect("cached catalog should remain")
+                .connected,
+            vec!["codex"]
+        );
+    }
+
+    #[test]
+    fn explicit_invalidation_rejects_an_inflight_refresh() {
+        let store = ProviderCatalogProjectionStore::default();
+        store.update(catalog("codex"));
+        let generation = store
+            .begin_refresh()
+            .expect("first refresh should acquire the gate");
+
+        store.invalidate();
+
+        assert!(!store.update_if_generation(catalog("opencode"), generation));
+        assert!(store.cached().is_none());
+        store.finish_refresh();
+        assert!(store.begin_refresh().is_some());
     }
 }

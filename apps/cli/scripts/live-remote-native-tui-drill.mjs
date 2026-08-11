@@ -52,6 +52,8 @@ import {
   removeHetznerNativeRuntimePaths,
   removeHetznerWorktree,
   restoreHetznerClaudeWorkspaceTrust,
+  seedHetznerOpenCodeRuntimeProfile,
+  seedLocalOpenCodeRuntimeProfile,
   shellQuote,
   sshArgs,
   stopHetznerProcessByEnv,
@@ -61,6 +63,7 @@ import {
 import {
   assertBinary,
   makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
   resolveBuiltBinarySync,
   resolveCommandPath,
   runLogged,
@@ -79,6 +82,7 @@ import {
   sendClaudeRenderedPromptViaKernelInput,
 } from "./lib/native-tui-provider-drivers.mjs"
 import { exportClaudeCredentials } from "./lib/live-provider-thread-transfer-runtime.mjs"
+import { applyProviderModelOverride } from "./lib/drill-provider-profiles.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
@@ -96,7 +100,6 @@ const relayBinary = resolveBuiltBinarySync(
 )
 const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
 const realHomeDir = os.homedir()
-const tinyPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64")
 const execFileAsync = promisify(execFile)
 
 function unwrap(response, variant) {
@@ -155,6 +158,8 @@ function parseArgs(argv) {
     includePermissions: false,
     includeAttachments: false,
     includeMcpSkills: false,
+    providerModels: {},
+    codexEffort: "high",
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -185,6 +190,10 @@ function parseArgs(argv) {
       options.includeAttachments = true
     } else if (arg === "--include-mcp-skills") {
       options.includeMcpSkills = true
+    } else if (arg === "--provider-model") {
+      applyProviderModelOverride(options.providerModels, argv[++index])
+    } else if (arg === "--codex-effort") {
+      options.codexEffort = argv[++index]
     } else if (arg === "--help" || arg === "-h") {
       options.help = true
     } else {
@@ -204,6 +213,14 @@ function parseArgs(argv) {
     if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
       throw new Error(`unsupported provider ${provider}; expected opencode, codex, or claude`)
     }
+  }
+  for (const provider of Object.keys(options.providerModels)) {
+    if (provider !== "opencode" && provider !== "codex" && provider !== "claude") {
+      throw new Error(`unsupported provider model override ${provider}; expected opencode, codex, or claude`)
+    }
+  }
+  if (!options.codexEffort?.trim()) {
+    throw new Error("--codex-effort requires a value")
   }
   return options
 }
@@ -229,6 +246,8 @@ function printHelp() {
     "  --include-permissions         Validate provider-native permissions through the Arroba observer",
     "  --include-attachments         Validate prompt attachment transfer through native TUI providers",
     "  --include-mcp-skills          Validate pre-granted MCP/skill propagation for native TUI providers",
+    "  --provider-model P=M          Override the exact model for a provider",
+    "  --codex-effort E              Override Codex reasoning effort (default high)",
     "  --keep-artifacts-on-failure",
   ].join("\n"))
 }
@@ -381,6 +400,7 @@ async function main() {
   const runId = `${process.pid}-${Date.now()}`
   const root = path.join("/tmp", `arb-remote-native-tui-${runId}`)
   const ports = await makeAvailablePorts({
+    candidateFactory: options.hetznerWorker ? makeNonEphemeralDrillPorts : undefined,
     additionalAvailability: options.hetznerWorker
       ? (candidate) => hetznerNativePortsAreAvailable(options, candidate)
       : undefined,
@@ -424,6 +444,7 @@ async function main() {
   let hetznerWorktreePrepared = false
   let hetznerClaudeTrustPrepared = false
   let hetznerClaudeTrustRestoreFailure = null
+  const localOpenCodeCredentialPaths = []
   const managedSlices = []
   let succeeded = false
   let failure = null
@@ -436,6 +457,30 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
+    if (options.providers.includes("opencode")) {
+      const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim()
+        || path.join(realHomeDir, ".local", "share")
+      const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim()
+        || path.join(sourceXdgDataHome, "opencode")
+      const sourceXdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
+        || path.join(realHomeDir, ".cache")
+      const homeCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+        sourceDataHome: sourceOpenCodeDataHome,
+        sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
+        destinationXdgDataHome: xdgDataHome,
+        destinationXdgCacheHome: xdgCacheHome,
+      })
+      if (homeCredentialPath) localOpenCodeCredentialPaths.push(homeCredentialPath)
+      if (options.standardHomeWorker && !options.hetznerWorker) {
+        const workerCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+          sourceDataHome: sourceOpenCodeDataHome,
+          sourceCacheHome: path.join(sourceXdgCacheHome, "opencode"),
+          destinationXdgDataHome: path.join(root, "worker-xdg-data"),
+          destinationXdgCacheHome: path.join(root, "worker-xdg-cache"),
+        })
+        if (workerCredentialPath) localOpenCodeCredentialPaths.push(workerCredentialPath)
+      }
+    }
     await writeIsolatedKernelConfig({
       xdgConfigHome,
       storageRoot: path.join(root, "home-kernel-storage"),
@@ -467,6 +512,9 @@ async function main() {
       }
       await syncHetznerWorkerKernelConfig(options, root, remoteRuntimeRoot)
       await ensureExecutionDirectory(options, true, remoteTempDir)
+      if (options.providers.includes("opencode")) {
+        await seedHetznerOpenCodeRuntimeProfile(options, remoteRuntimeRoot)
+      }
       if (options.providers.includes("codex")) {
         await syncHetznerCodexAuth(options)
       }
@@ -687,6 +735,9 @@ async function main() {
     await terminateChild(kernel)
     await terminateChild(relayTunnel)
     await terminateChild(relay)
+    for (const credentialPath of localOpenCodeCredentialPaths) {
+      await rm(credentialPath, { force: true })
+    }
     if (options.hetznerWorker) {
       await stopHetznerRuntimeBeforeClaudeTrustRestore({
         stopWorker: () => stopHetznerProcessByEnv(options, {
@@ -706,6 +757,13 @@ async function main() {
         hetznerClaudeTrustRestoreFailure = error
         console.error(`Hetzner Claude workspace trust restoration failed: ${error.message}`)
       })
+      if (remoteRuntimeRoot && options.providers.includes("opencode")) {
+        await removeExecutionFile(
+          options,
+          true,
+          path.posix.join(remoteRuntimeRoot, "xdg-data", "opencode", "auth.json"),
+        ).catch(() => {})
+      }
       if (preserveFailedRun && remoteRuntimeRoot) {
         await copyHetznerDirectoryToLocal(
           options,

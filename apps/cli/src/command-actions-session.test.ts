@@ -37,6 +37,30 @@ test("session new can attach a new session in an existing directory", async () =
   assert.equal(flashedMessage, `attached to session session-dir in ${sessionDir}`)
 })
 
+test("session new forwards detached launch mode and permissions to the kernel", async () => {
+  let agentDefaults: RuntimeSession["agent_defaults"] | undefined
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    isAttached: () => false,
+    currentExecutionMode: () => "plan",
+    currentPermissionLevel: () => "required",
+    createSession: async (_workspace: string, _worktree: string, _alias?: string, defaults?: RuntimeSession["agent_defaults"]) => {
+      agentDefaults = defaults
+      return { id: "session-plan", alias: null }
+    },
+  }))
+
+  await handlers.handleSessionCommand({
+    kind: "session",
+    raw: "/session new",
+    action: "new",
+    args: [],
+    value: "",
+  })
+
+  assert.equal(agentDefaults?.execution_mode, "plan")
+  assert.equal(agentDefaults?.permission_level, "required")
+})
+
 test("session new forwards local git worktree placement to the kernel", async () => {
   const createCalls: Array<{ worktree: string; alias: string | undefined; placement: unknown }> = []
   let flashedMessage = ""

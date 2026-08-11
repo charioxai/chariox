@@ -129,6 +129,10 @@ pub struct CreateSessionRequest {
     pub hidden: bool,
     #[serde(default = "default_session_owner_user_id")]
     pub owner_user_id: String,
+    #[serde(default)]
+    pub project_selection: super::SessionProjectSelection,
+    #[serde(skip)]
+    pub default_project_name_hint: Option<String>,
 }
 
 impl CreateSessionRequest {
@@ -145,6 +149,8 @@ impl CreateSessionRequest {
             metaagent: false,
             hidden: false,
             owner_user_id: default_session_owner_user_id(),
+            project_selection: super::SessionProjectSelection::Default,
+            default_project_name_hint: None,
         }
     }
 
@@ -196,6 +202,19 @@ impl CreateSessionRequest {
 
     pub fn with_owner_user_id(mut self, owner_user_id: impl Into<String>) -> Self {
         self.owner_user_id = owner_user_id.into();
+        self
+    }
+
+    pub fn with_project_selection(
+        mut self,
+        project_selection: super::SessionProjectSelection,
+    ) -> Self {
+        self.project_selection = project_selection;
+        self
+    }
+
+    pub(crate) fn with_default_project_name_hint(mut self, name: Option<String>) -> Self {
+        self.default_project_name_hint = name;
         self
     }
 }

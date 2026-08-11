@@ -18,8 +18,15 @@ pub(crate) async fn dispatch_authenticated_mcp_proxy_call(
             operation: "mcp.proxy.grant",
             message: format!("MCP `{name}` is not granted to provider run `{}`", run.id()),
         })?;
+    let provider_run_id = run.id().to_string();
+    let session_id = run.session_id().to_string();
     tokio::task::spawn_blocking(move || {
-        crate::provider::dispatch_provider_mcp_proxy_request(&backing, payload)
+        crate::provider::dispatch_provider_mcp_proxy_request(
+            &provider_run_id,
+            &session_id,
+            &backing,
+            payload,
+        )
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {

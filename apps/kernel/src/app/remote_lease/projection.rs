@@ -841,11 +841,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .map(|active_prompt| {
                 completions
                     .into_iter()
-                    .filter(|completion| {
-                        completion
-                            .home_prompt_id
-                            .as_deref()
-                            .is_none_or(|prompt_id| prompt_id == active_prompt.id())
+                    .filter(|completion| match completion.home_prompt_id.as_deref() {
+                        Some(prompt_id) => prompt_id == active_prompt.id(),
+                        None => unscoped_completion_matches_prompt(active_prompt),
                     })
                     .collect::<Vec<_>>()
             })
@@ -1309,6 +1307,12 @@ fn stable_prompt_hash(text: &str) -> u64 {
     hasher.finish()
 }
 
+fn unscoped_completion_matches_prompt(prompt: &PromptQueueItem) -> bool {
+    prompt.durable_operation_id().is_none()
+        && prompt.durable_recovery_operation_id().is_none()
+        && prompt.workflow_run_id().is_none()
+}
+
 #[cfg(test)]
 mod explicit_completion_tests {
     use super::*;
@@ -1318,6 +1322,29 @@ mod explicit_completion_tests {
         RuntimeProviderRun,
     };
     use crate::session::PromptSubmissionOutcome;
+
+    #[test]
+    fn unscoped_completion_only_matches_native_origin_prompts() {
+        let native = PromptQueueItem::new(
+            "native-prompt",
+            "attachment-1",
+            "agent-1",
+            "native prompt",
+            PromptStatus::Running,
+        );
+        assert!(unscoped_completion_matches_prompt(&native));
+        assert!(!unscoped_completion_matches_prompt(
+            &native
+                .clone()
+                .with_durable_operation("operation-1", "fingerprint-1")
+        ));
+        assert!(!unscoped_completion_matches_prompt(
+            &native.clone().with_workflow_context("workflow-1", "node-1")
+        ));
+        let mut recovering = native;
+        recovering.begin_durable_recovery_operation();
+        assert!(!unscoped_completion_matches_prompt(&recovering));
+    }
 
     fn provider_run(
         id: &str,

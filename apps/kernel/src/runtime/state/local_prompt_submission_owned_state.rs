@@ -65,6 +65,8 @@ impl KernelRuntimeOwnedState {
         let outcome =
             self.prompt_state_owner
                 .submit_prepared_prompt(&session, prompt, force_queue)?;
+        self.agent_store
+            .clear_local_prompt_error(&target_agent_id)?;
         let outcome_agent_id = match &outcome {
             crate::session::PromptSubmissionOutcome::Started { prompt }
             | crate::session::PromptSubmissionOutcome::Queued { prompt } => {

@@ -1,6 +1,13 @@
 //! Prompt transcript fan-out to terminal streams and history stores.
 
 use super::*;
+use crate::provider_output_policy::output_bounds::{
+    bounded_terminal_output_bytes, should_log_provider_output_truncation,
+    terminal_output_delta_bytes,
+};
+use crate::provider_output_policy::tool_history::{
+    bounded_history_entry, is_unread_output_history_entry,
+};
 
 pub(super) struct TerminalOutputBatchAppend {
     pub(super) provider_run_id: String,
@@ -8,7 +15,6 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
     pub(super) bytes: Vec<u8>,
-    pub(super) history_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,7 +41,6 @@ impl KernelRuntimeOwnedState {
                 kind: crate::terminal::TerminalOutputKind::ProviderError,
                 merge_key: None,
                 bytes: message.as_bytes().to_vec(),
-                history_text: Some(message.to_string()),
             }],
         );
         self.append_history_entries(
@@ -78,8 +83,11 @@ impl KernelRuntimeOwnedState {
             .get_run(provider_run_id)
             .ok()
             .and_then(|run| run.agent_instance_id().map(str::to_string));
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
             session_id,
             agent_id.as_deref(),
@@ -124,6 +132,26 @@ impl KernelRuntimeOwnedState {
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
         for output in outputs {
             let agent_id = output.agent_id;
+            let delta_bytes = terminal_output_delta_bytes(
+                session_id,
+                &output.provider_run_id,
+                agent_id.as_deref(),
+                &output.kind,
+                &output.merge_key,
+                &output.bytes,
+            );
+            let bounded_bytes = bounded_terminal_output_bytes(&output.kind, &delta_bytes);
+            self.log_provider_output_truncation(
+                session_id,
+                &output.provider_run_id,
+                agent_id.as_deref(),
+                &output.kind,
+                delta_bytes.len(),
+                bounded_bytes.len(),
+            );
+            if bounded_bytes.is_empty() {
+                continue;
+            }
             let prompt_metadata = prompt_metadata_cache
                 .entry(agent_id.clone())
                 .or_insert_with(|| {
@@ -136,7 +164,7 @@ impl KernelRuntimeOwnedState {
             let provider_terminal =
                 output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
             let scoped_recipient_attachment_ids = if provider_terminal {
-                std::sync::Arc::from(self.private_recipient_attachment_ids(
+                std::sync::Arc::from(self.agent_owner_recipient_attachment_ids(
                     agent_id.as_deref(),
                     recipient_attachment_ids.clone(),
                 ))
@@ -145,7 +173,8 @@ impl KernelRuntimeOwnedState {
                     .entry(agent_id.clone())
                     .or_insert_with(|| {
                         let mut scoped_recipient_attachment_ids = self
-                            .private_recipient_attachment_ids(
+                            .agent_trace_recipient_attachment_ids(
+                                session_id,
                                 agent_id.as_deref(),
                                 recipient_attachment_ids.clone(),
                             );
@@ -165,10 +194,7 @@ impl KernelRuntimeOwnedState {
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
-                    let message = output
-                        .history_text
-                        .clone()
-                        .unwrap_or_else(|| String::from_utf8_lossy(&output.bytes).into_owned());
+                    let message = String::from_utf8_lossy(&bounded_bytes).into_owned();
                     self.record_workflow_thinking_trace(
                         session_id,
                         &output.provider_run_id,
@@ -186,7 +212,7 @@ impl KernelRuntimeOwnedState {
                 kind: output.kind,
                 merge_key: output.merge_key,
                 recipient_attachment_ids: scoped_recipient_attachment_ids,
-                bytes: output.bytes,
+                bytes: bounded_bytes,
             });
         }
         let records = self.terminal_stream.fan_out_outputs(terminal_outputs);
@@ -212,18 +238,57 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
-        let recipient_attachment_ids =
-            if kind == crate::terminal::TerminalOutputKind::ProviderTerminal {
-                recipient_attachment_ids
-            } else {
-                self.with_metaagent_trace_recipient_ids(
-                    session_id,
-                    agent_id.as_deref(),
-                    recipient_attachment_ids,
-                )
+        let delta_bytes = terminal_output_delta_bytes(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            &kind,
+            &merge_key,
+            bytes,
+        );
+        let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
+        self.log_provider_output_truncation(
+            session_id,
+            provider_run_id,
+            agent_id.as_deref(),
+            &kind,
+            delta_bytes.len(),
+            bounded_bytes.len(),
+        );
+        if bounded_bytes.is_empty() {
+            return crate::terminal::TerminalOutputRecord {
+                record_id: None,
+                timestamp_ms: crate::session::unix_epoch_ms(),
+                session_id: session_id.to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                agent_id,
+                prompt_id: None,
+                prompt_origin: prompt_metadata.prompt_origin,
+                source_attachment_id: prompt_metadata.source_attachment_id,
+                kind,
+                merge_key,
+                recipient_attachment_ids: Vec::new(),
+                pending_recipient_attachment_ids: Vec::new(),
+                bytes: Vec::new(),
+                external_observation_metadata: None,
             };
+        }
+        let recipient_attachment_ids = if kind
+            == crate::terminal::TerminalOutputKind::ProviderTerminal
+        {
+            self.agent_owner_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids)
+        } else {
+            let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            );
+            self.with_metaagent_trace_recipient_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            )
+        };
         let record = self.terminal_stream.fan_out_output_with_prompt_metadata(
             session_id,
             provider_run_id,
@@ -233,7 +298,7 @@ impl KernelRuntimeOwnedState {
             prompt_metadata.prompt_origin,
             prompt_metadata.source_attachment_id.clone(),
             recipient_attachment_ids,
-            bytes,
+            &bounded_bytes,
         );
         if kind != crate::terminal::TerminalOutputKind::ProviderTerminal {
             self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
@@ -241,7 +306,7 @@ impl KernelRuntimeOwnedState {
         if kind != crate::terminal::TerminalOutputKind::PromptEcho
             && kind != crate::terminal::TerminalOutputKind::ProviderTerminal
         {
-            let text = String::from_utf8_lossy(bytes).into_owned();
+            let text = String::from_utf8_lossy(&bounded_bytes).into_owned();
             if kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
                     self.record_workflow_thinking_trace(
@@ -267,6 +332,44 @@ impl KernelRuntimeOwnedState {
             );
         }
         record
+    }
+
+    fn log_provider_output_truncation(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: Option<&str>,
+        kind: &crate::terminal::TerminalOutputKind,
+        original_bytes: usize,
+        bounded_bytes: usize,
+    ) {
+        if bounded_bytes >= original_bytes {
+            return;
+        }
+        let kind_label = format!("{kind:?}");
+        let Some(suppressed_logs) = should_log_provider_output_truncation(
+            session_id,
+            provider_run_id,
+            agent_id,
+            &kind_label,
+            original_bytes,
+        ) else {
+            return;
+        };
+        crate::logging::warn_with_fields(
+            "daemon.provider_output",
+            "truncated oversized provider terminal output",
+            serde_json::json!({
+                "session_id": session_id,
+                "provider_run_id": provider_run_id,
+                "agent_id": agent_id,
+                "kind": kind_label,
+                "original_bytes": original_bytes,
+                "bounded_bytes": bounded_bytes,
+                "omitted_bytes": original_bytes.saturating_sub(bounded_bytes),
+                "suppressed_logs": suppressed_logs,
+            }),
+        );
     }
 
     pub(super) fn active_prompt_transcript_metadata_for_agent(
@@ -333,33 +436,22 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        let _append_guard = self.transcript_history_append_guard();
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
+        let Some(entry) = bounded_history_entry(entry) else {
+            return;
         };
-        // Make authoritative history visible before readers can import the legacy copy.
-        self.append_operational_history_entry_unlocked(&entry, None, None, None);
-        if let Err(error) = self.history_store.append(&session, &entry) {
+        if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
-                "failed to append provider-output session history",
+                "skipping provider-output history append because session lookup failed",
                 serde_json::json!({
                     "session_id": session_id,
                     "error": error.to_string(),
                 }),
             );
+            return;
         }
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -367,38 +459,27 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
     ) {
+        let entries = entries
+            .into_iter()
+            .filter_map(bounded_history_entry)
+            .collect::<Vec<_>>();
         if entries.is_empty() {
             return;
         }
-        let _append_guard = self.transcript_history_append_guard();
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "entry_count": entries.len(),
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        // Make authoritative history visible before readers can import the legacy copy.
-        self.append_operational_history_entries(&entries);
-        if let Err(error) = self.history_store.append_many(&session, &entries) {
+        if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
-                "failed to append provider-output session history batch",
+                "skipping provider-output history append because session lookup failed",
                 serde_json::json!({
                     "session_id": session_id,
                     "entry_count": entries.len(),
                     "error": error.to_string(),
                 }),
             );
+            return;
         }
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entries(&entries);
     }
 
     pub(super) fn append_operational_history_entry(
@@ -610,7 +691,7 @@ impl KernelRuntimeOwnedState {
         timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
         let _append_guard = self.transcript_history_append_guard();
-        let session = self.session_snapshot_without_projection_update(session_id)?;
+        let _ = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
             source_attachment_id,
@@ -624,16 +705,6 @@ impl KernelRuntimeOwnedState {
         }
         if let Some(prompt_id) = prompt_id {
             entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
-        }
-        if let Err(error) = self.history_store.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append prompt session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
         }
         self.append_operational_history_entry_unlocked(
             &entry,
@@ -932,8 +1003,11 @@ impl KernelRuntimeOwnedState {
                     .map(|prompt| prompt.prompt_origin())
             })
         });
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id.as_deref(), recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id.as_deref(),
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids = self.with_metaagent_trace_recipient_ids(
             session_id,
             agent_id.as_deref(),
@@ -953,7 +1027,29 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 
-    pub(super) fn private_recipient_attachment_ids(
+    pub(super) fn agent_trace_recipient_attachment_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return Vec::new();
+        };
+        self.attachment_store.filter_attachment_ids_for_agent_trace(
+            recipient_attachment_ids,
+            &session,
+            agent.owner_user_id(),
+        )
+    }
+
+    pub(super) fn agent_owner_recipient_attachment_ids(
         &self,
         agent_id: Option<&str>,
         recipient_attachment_ids: Vec<String>,
@@ -1003,13 +1099,45 @@ fn user_prompt_history_merge_key(prompt_id: &str) -> String {
     format!("prompt:{prompt_id}")
 }
 
-fn is_unread_output_history_entry(entry: &crate::history::SessionHistoryEntry) -> bool {
-    matches!(
-        entry.kind,
-        crate::history::SessionHistoryEntryKind::ProviderOutput
-            | crate::history::SessionHistoryEntryKind::ProviderReasoning
-            | crate::history::SessionHistoryEntryKind::ProviderTool
-            | crate::history::SessionHistoryEntryKind::ProviderError
-            | crate::history::SessionHistoryEntryKind::Notice
-    )
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_tool_entry(status: &str, output: &str) -> SessionHistoryEntry {
+        SessionHistoryEntry::provider_output(
+            "runtime-bounded-history-session",
+            "runtime-bounded-history-run",
+            Some("runtime-bounded-history-agent"),
+            crate::terminal::TerminalOutputKind::ProviderTool,
+            Some("runtime-bounded-history-tool".to_string()),
+            serde_json::json!({
+                "id": "runtime-bounded-history-tool",
+                "status": status,
+                "output": output,
+            })
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn runtime_history_bounds_and_deduplicates_cumulative_tool_updates() {
+        let first = bounded_history_entry(provider_tool_entry("running", &"x".repeat(1024 * 1024)))
+            .expect("first running tool state should persist");
+        assert!(
+            first.text.len()
+                <= crate::provider_output_policy::output_bounds::MAX_PROVIDER_OUTPUT_RECORD_BYTES
+        );
+        assert!(first.text.contains("\"arroba_truncated\":true"));
+
+        assert!(
+            bounded_history_entry(provider_tool_entry("running", &"y".repeat(2 * 1024 * 1024)))
+                .is_none(),
+            "same-status cumulative updates should not multiply history"
+        );
+
+        assert!(
+            bounded_history_entry(provider_tool_entry("completed", "done")).is_some(),
+            "terminal status transition should persist"
+        );
+    }
 }

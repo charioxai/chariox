@@ -38,6 +38,8 @@ export type SessionCommandHandlerDeps = {
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
+  currentExecutionMode?: () => "build" | "plan"
+  currentPermissionLevel?: () => "required" | "yolo"
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   formatError: (error: unknown) => string
@@ -132,8 +134,8 @@ async function createSession(
       model: deps.currentModelId(),
       effort: deps.currentVariantId(),
       account_profile: deps.accountProfile ?? null,
-      execution_mode: "build",
-      permission_level: "yolo",
+      execution_mode: deps.currentExecutionMode?.() ?? "build",
+      permission_level: deps.currentPermissionLevel?.() ?? "yolo",
     }, worktreePlacement)
     await deps.attachBinding(session, true)
     const placement = sessionWorktree !== deps.currentWorktreeTarget() ? ` in ${sessionWorktree}` : ""

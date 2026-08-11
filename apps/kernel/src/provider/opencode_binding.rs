@@ -225,6 +225,11 @@ fn opencode_workspace_live_sync_permission_rules(
             "action": native_action
         }),
         serde_json::json!({
+            "permission": "doom_loop",
+            "pattern": "*",
+            "action": native_action
+        }),
+        serde_json::json!({
             "permission": "task",
             "pattern": "*",
             "action": "deny"
@@ -277,6 +282,11 @@ fn opencode_permission_rules(
         },
         {
             "permission": "bash",
+            "pattern": "*",
+            "action": action
+        },
+        {
+            "permission": "doom_loop",
             "pattern": "*",
             "action": action
         },
@@ -486,6 +496,11 @@ mod tests {
                     "action": "allow"
                 },
                 {
+                    "permission": "doom_loop",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
                     "permission": "task",
                     "pattern": "*",
                     "action": "allow"
@@ -529,6 +544,11 @@ mod tests {
                 },
                 {
                     "permission": "bash",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
+                    "permission": "doom_loop",
                     "pattern": "*",
                     "action": "allow"
                 },
@@ -580,6 +600,11 @@ mod tests {
                     "action": "allow"
                 },
                 {
+                    "permission": "doom_loop",
+                    "pattern": "*",
+                    "action": "allow"
+                },
+                {
                     "permission": "task",
                     "pattern": "*",
                     "action": "deny"
@@ -627,12 +652,44 @@ mod tests {
                     "action": "ask"
                 },
                 {
+                    "permission": "doom_loop",
+                    "pattern": "*",
+                    "action": "ask"
+                },
+                {
                     "permission": "task",
                     "pattern": "*",
                     "action": "deny"
                 }
             ])
         );
+    }
+
+    #[test]
+    fn doom_loop_permission_tracks_agent_authority_in_all_rule_sets() {
+        for (permission_level, expected_action) in [
+            (crate::provider::AgentPermissionLevel::Yolo, "allow"),
+            (crate::provider::AgentPermissionLevel::Required, "ask"),
+        ] {
+            for rules in [
+                opencode_permission_rules(permission_level),
+                opencode_workspace_live_sync_permission_rules(false, permission_level),
+            ] {
+                let doom_loop = rules
+                    .as_array()
+                    .and_then(|rules| {
+                        rules.iter().find(|rule| {
+                            rule.get("permission").and_then(serde_json::Value::as_str)
+                                == Some("doom_loop")
+                        })
+                    })
+                    .expect("OpenCode rules should include doom_loop authority");
+                assert_eq!(
+                    doom_loop.get("action").and_then(serde_json::Value::as_str),
+                    Some(expected_action)
+                );
+            }
+        }
     }
 
     #[test]

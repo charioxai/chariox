@@ -7,6 +7,7 @@ import {
   handleWorkflowRunCancelCommand,
   handleWorkflowRunPauseCommand,
   handleWorkflowRunResumeCommand,
+  handleWorkflowRunShowCommand,
   handleWorkflowRunsCommand,
   type WorkflowRunCommandDeps,
 } from "./workflow-run-command-handlers.js"
@@ -85,6 +86,24 @@ test("workflow cancel, pause, and resume commands apply returned sessions", asyn
   ])
 })
 
+test("workflow run-show and run-get render the full run payload", async () => {
+  const calls: string[] = []
+  const deps = createDeps(calls, {
+    appendNotice: (message) => calls.push(`notice:${message}`),
+    getWorkflowRun: async (runRef) => ({
+      workflow_run: workflowRun({ id: runRef, status: "Completed" }),
+    }),
+  })
+
+  await handleWorkflowRunShowCommand(deps, ["run-show", "run-1"])
+  await handleWorkflowRunShowCommand(deps, ["run-get", "run-2"])
+
+  assert.match(calls[0] ?? "", /notice:\{[\s\S]*"id": "run-1"/)
+  assert.equal(calls[1], "footer:info:workflow run run-1 [completed]")
+  assert.match(calls[2] ?? "", /notice:\{[\s\S]*"id": "run-2"/)
+  assert.equal(calls[3], "footer:info:workflow run run-2 [completed]")
+})
+
 test("workflow cancel, pause, and resume commands validate usage and runtime support", async () => {
   const calls: string[] = []
   const deps = createDeps(calls)
@@ -102,6 +121,19 @@ test("workflow cancel, pause, and resume commands validate usage and runtime sup
     "footer:error:usage: /workflow pause <run-ref>",
     "footer:error:workflow runtime commands unavailable",
     "footer:error:usage: /workflow resume <run-ref>",
+    "footer:error:workflow runtime commands unavailable",
+  ])
+})
+
+test("workflow run-show validates usage and runtime support", async () => {
+  const calls: string[] = []
+  const deps = createDeps(calls)
+
+  await handleWorkflowRunShowCommand(deps, ["run-show"])
+  await handleWorkflowRunShowCommand(deps, ["run-get", "run-1"])
+
+  assert.deepEqual(calls, [
+    "footer:error:usage: /workflow run-show <run-ref>",
     "footer:error:workflow runtime commands unavailable",
   ])
 })
@@ -156,6 +188,7 @@ function workflowRun(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
     created_at_ms: 1,

@@ -85,7 +85,17 @@ test("executeShellCommand manages session invites and members", async () => {
           }
         }
         if ("ListSessionMembers" in request) {
-          return { SessionMembersListed: { members: session.members, invites: [invite] } }
+          return {
+            SessionMembersListed: {
+              members: session.members,
+              invites: [
+                invite,
+                { ...invite, invite_id: "invite-revoked", revoked_at_ms: 300 },
+                { ...invite, invite_id: "invite-expired", expires_at_ms: 1 },
+                { ...invite, invite_id: "invite-exhausted", used_count: 1 },
+              ],
+            },
+          }
         }
         if ("RevokeSessionInvite" in request) {
           return { SessionInviteRevoked: { invite: { ...invite, revoked_at_ms: 300 }, session } }
@@ -98,16 +108,20 @@ test("executeShellCommand manages session invites and members", async () => {
   const inviteResult = await executeShellCommand(parseShellCommand("session invite create"), context, { client: fake.client })
   const joinResult = await executeShellCommand(parseShellCommand("session join arroba-session-invite-v1.token ana"), context, { client: fake.client, clientId: "shell-ana" })
   const membersResult = await executeShellCommand(parseShellCommand("session members"), context, { client: fake.client })
+  const invitesResult = await executeShellCommand(parseShellCommand("session invites"), context, { client: fake.client })
   const revokeResult = await executeShellCommand(parseShellCommand("session revoke-invite invite-1"), context, { client: fake.client })
 
   assert.match(inviteResult.message ?? "", /session invite invite-1/)
   assert.match(joinResult.message ?? "", /joined session session-1 as ana/)
   assert.match(membersResult.message ?? "", /Session members/)
+  assert.match(invitesResult.message ?? "", /Session invites\n- invite-1 uses=0\/1/)
+  assert.doesNotMatch(invitesResult.message ?? "", /invite-(?:revoked|expired|exhausted)/)
   assert.match(revokeResult.message ?? "", /revoked session invite invite-1/)
   assert.deepEqual(requests, [
     { CreateSessionInvite: { session_id: "session-1", expires_in_ms: null, max_uses: 1, collaboration_level: "private" } },
     { JoinSessionInvite: { invite_token: "arroba-session-invite-v1.token", user_id: "ana" } },
     { AttachToSession: { session_id: "session-1", client_id: "shell-ana", capability_level: "FullTerminal" } },
+    { ListSessionMembers: { session_id: "session-1" } },
     { ListSessionMembers: { session_id: "session-1" } },
     { RevokeSessionInvite: { session_id: "session-1", invite_ref: "invite-1" } },
   ])

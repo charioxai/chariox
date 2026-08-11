@@ -222,6 +222,7 @@ function fakeClient(response: Record<string, unknown>): LocalIpcClient {
 function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id,
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",
     created_at_ms: 1,

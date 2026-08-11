@@ -176,6 +176,7 @@ function automationAgent(overrides: Partial<AgentInstance> = {}): AgentInstance 
 function automationSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
@@ -352,9 +353,9 @@ test("automation action handler sets waiting room launch placement", async () =>
     action: "set_waiting_room_launch",
     machineRef: "machine-peer",
     kernelRef: "kernel-peer",
-    providerId: "dev-stub",
-    modelId: "dev-stub/test",
-    effort: "low",
+    providerId: "codex",
+    modelId: "gpt-5.6-sol",
+    effort: "high",
     focus: "new",
   })
 
@@ -363,12 +364,142 @@ test("automation action handler sets waiting room launch placement", async () =>
       ...waitingRoomFixture(),
       selectedMachineRef: "machine-peer",
       selectedKernelRef: "kernel-peer",
-      providerId: "dev-stub",
-      modelId: "dev-stub/test",
-      effort: "low",
+      providerId: "codex",
+      modelId: "gpt-5.6-sol",
+      effort: "high",
       focus: "new",
     },
   })
+})
+
+test("automation action handler sets waiting room project launch selection", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    snapshot: () => ({ waitingRoomState }),
+  })
+
+  const result = await handler({
+    action: "set_waiting_room_launch",
+    projectSelectionId: "existing:project-1",
+    showArchivedProjects: true,
+    focus: "project",
+  })
+
+  assert.deepEqual(result, {
+    waitingRoomState: {
+      ...waitingRoomFixture(),
+      projectSelectionId: "existing:project-1",
+      showArchivedProjects: true,
+      focus: "project",
+    },
+  })
+})
+
+test("automation action handler drives project selection and lifecycle through TUI controllers", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  const lifecycle: string[] = []
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    waitingRoomProjects: () => [{
+      id: "project-1",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Frontend",
+      kind: "named",
+      status: "active",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 0,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }],
+    applyWaitingRoomSessionLifecycleAction: async (action) => {
+      lifecycle.push(action)
+    },
+    snapshot: () => ({ waitingRoomState, lifecycle }),
+  })
+
+  await handler({ action: "select_waiting_room_project", projectId: "project-1" })
+  const result = await handler({
+    action: "waiting_room_project_action",
+    projectId: "project-1",
+    projectAction: "archive",
+  })
+
+  assert.equal(waitingRoomState.focus, "project-entry")
+  assert.equal(waitingRoomState.projectIndex, 0)
+  assert.deepEqual(result, { waitingRoomState, lifecycle: ["archive", "archive"] })
+})
+
+test("automation exposes an archived project before resolving its lifecycle index", async () => {
+  let waitingRoomState: WaitingRoomState = waitingRoomFixture()
+  const lifecycleStates: WaitingRoomState[] = []
+  const projects = [
+    {
+      id: "project-active",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Active",
+      kind: "named" as const,
+      status: "active" as const,
+      created_at_ms: 1,
+      updated_at_ms: 3,
+      session_count: 0,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    },
+    {
+      id: "project-archived",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Archived",
+      kind: "named" as const,
+      status: "archived" as const,
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 0,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    },
+  ]
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    waitingRoomState: () => waitingRoomState,
+    setWaitingRoomState: (next) => {
+      waitingRoomState = next
+    },
+    waitingRoomProjects: () => projects,
+    applyWaitingRoomSessionLifecycleAction: async (_action, state) => {
+      if (state) lifecycleStates.push(state)
+    },
+    snapshot: () => ({ waitingRoomState }),
+  })
+
+  await handler({ action: "select_waiting_room_project", projectId: "project-archived" })
+  await handler({
+    action: "waiting_room_project_action",
+    projectId: "project-archived",
+    projectAction: "delete",
+  })
+
+  assert.equal(waitingRoomState.showArchivedProjects, true)
+  assert.equal(waitingRoomState.projectIndex, 1)
+  assert.deepEqual(lifecycleStates.map((state) => ({
+    showArchivedProjects: state.showArchivedProjects,
+    projectIndex: state.projectIndex,
+  })), [
+    { showArchivedProjects: true, projectIndex: 1 },
+    { showArchivedProjects: true, projectIndex: 1 },
+  ])
 })
 
 test("automation connect action refreshes waiting room when already connected", async () => {

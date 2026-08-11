@@ -1,4 +1,4 @@
-import type { SessionAgentDefaults } from "./kernel-types.js"
+import type { SessionAgentDefaults, SessionProjectSelection } from "./kernel-types.js"
 import {
   type WorkspaceLiveSyncModeInput,
   workspaceLiveSyncModeProtocolValue,
@@ -13,6 +13,7 @@ export function createSessionRequest(
   workspaceLiveSyncMode?: WorkspaceLiveSyncModeInput | null,
   kernelRef?: string | null,
   worktreePlacement?: Record<string, unknown> | null,
+  projectSelection?: SessionProjectSelection | null,
 ) {
   return {
     CreateSession: {
@@ -24,8 +25,29 @@ export function createSessionRequest(
       ...(kernelRef?.trim() ? { kernel_ref: kernelRef.trim() } : {}),
       ...(worktreePlacement ? { worktree_placement: worktreePlacement } : {}),
       ...(workspaceLiveSyncMode ? { workspace_live_sync_mode: workspaceLiveSyncModeProtocolValue(workspaceLiveSyncMode) } : {}),
+      ...(projectSelection ? { project_selection: projectSelection } : {}),
     },
   }
+}
+
+export function listProjectsRequest(includeArchived = false) {
+  return { ListProjects: { include_archived: includeArchived } }
+}
+
+export function renameProjectRequest(projectId: string, name: string) {
+  return { RenameProject: { project_id: projectId, name } }
+}
+
+export function archiveProjectRequest(projectId: string) {
+  return { ArchiveProject: { project_id: projectId } }
+}
+
+export function deleteProjectRequest(projectId: string) {
+  return { DeleteProject: { project_id: projectId } }
+}
+
+export function restoreProjectRequest(projectId: string) {
+  return { RestoreProject: { project_id: projectId } }
 }
 
 export function listSessionsRequest() {

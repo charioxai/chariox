@@ -1,6 +1,188 @@
 use super::*;
 
 #[test]
+fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-project", "worktree-project")
+                .with_project_selection(SessionProjectSelection::New),
+        ))
+        .expect("named project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+
+    let archived = match harness
+        .dispatch(LocalDaemonRequest::ArchiveProject(ArchiveProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("idle project should archive")
+    {
+        LocalDaemonResponse::ProjectArchived { project, sessions } => (project, sessions),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(
+        archived.0.status(),
+        crate::session::RuntimeProjectStatus::Archived
+    );
+    assert_eq!(archived.1.len(), 1);
+    assert_eq!(archived.1[0].status(), crate::session::SessionStatus::Ended);
+
+    let restored = match harness
+        .dispatch(LocalDaemonRequest::RestoreProject(RestoreProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("archived project should restore")
+    {
+        LocalDaemonResponse::ProjectRestored { project, sessions } => (project, sessions),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(
+        restored.0.status(),
+        crate::session::RuntimeProjectStatus::Active
+    );
+    assert_eq!(restored.1.len(), 1);
+    assert_eq!(
+        restored.1[0].status(),
+        crate::session::SessionStatus::Parked
+    );
+    assert!(restored.1[0].active_provider_run_id().is_none());
+}
+
+#[test]
+fn project_delete_cascades_when_last_session_removes_project_record() {
+    let harness = LocalRouterTestHarness::new();
+    let first = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-delete", "worktree-delete-1")
+                .with_project_selection(SessionProjectSelection::New),
+        ))
+        .expect("named project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let second = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-delete", "worktree-delete-2")
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: first.project_id().to_string(),
+                }),
+        ))
+        .expect("second project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+
+    let (project, sessions) = match harness
+        .dispatch(LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+            project_id: first.project_id().to_string(),
+        }))
+        .expect("project should delete")
+    {
+        LocalDaemonResponse::ProjectDeleted { project, sessions } => (project, sessions),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(project.id(), first.project_id());
+    assert_eq!(sessions.len(), 2);
+    assert!(sessions.iter().any(|session| session.id() == first.id()));
+    assert!(sessions.iter().any(|session| session.id() == second.id()));
+
+    let projects = match harness
+        .dispatch(LocalDaemonRequest::ListProjects(ListProjectsRequest {
+            include_archived: true,
+        }))
+        .expect("projects should list")
+    {
+        LocalDaemonResponse::ProjectsListed { projects } => projects,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert!(projects.is_empty());
+}
+
+#[test]
+fn project_requests_enforce_owner_and_named_numbering() {
+    let harness = LocalRouterTestHarness::new();
+    let create = |harness: &LocalRouterTestHarness| match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-numbering", "worktree-numbering")
+                .with_project_selection(SessionProjectSelection::New),
+        ))
+        .expect("named project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let first = create(&harness);
+    let second = create(&harness);
+    let projects = match harness
+        .dispatch(LocalDaemonRequest::ListProjects(ListProjectsRequest {
+            include_archived: true,
+        }))
+        .expect("projects should list")
+    {
+        LocalDaemonResponse::ProjectsListed { projects } => projects,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(
+        projects
+            .iter()
+            .find(|project| project.id() == first.project_id())
+            .map(|project| project.name()),
+        Some("Project-1")
+    );
+    assert_eq!(
+        projects
+            .iter()
+            .find(|project| project.id() == second.project_id())
+            .map(|project| project.name()),
+        Some("Project-2")
+    );
+
+    let error = harness
+        .dispatch_as_user(
+            "another-user",
+            LocalDaemonRequest::RenameProject(RenameProjectRequest {
+                project_id: first.project_id().to_string(),
+                name: "not-owned".to_string(),
+            }),
+        )
+        .expect_err("non-owner project mutation should fail");
+    assert!(error.to_string().contains("does not own project"));
+}
+
+#[test]
+fn archived_default_project_rejects_default_session_creation_until_restored() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-default-archive", "worktree-default-archive"),
+        ))
+        .expect("default project session should create")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::ArchiveProject(ArchiveProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("default project should archive while idle");
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-default-archive", "worktree-default-archive-2"),
+        ))
+        .expect_err("archived default project should reject session creation");
+    assert!(error
+        .to_string()
+        .contains("restore it before creating a session"));
+}
+
+#[test]
 fn local_request_api_supports_session_attach_and_end() {
     let harness = LocalRouterTestHarness::new();
     let (session, _default_agent) = match harness
@@ -255,11 +437,12 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
         LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
         _ => panic!("unexpected local response"),
     };
+    let workspace_id = session.workspace_id().to_string();
 
     let resolved = match harness
         .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "mai".to_string(),
-            workspace_id: Some("workspace-1".to_string()),
+            workspace_id: Some(workspace_id.clone()),
         }))
         .expect("resolve should succeed")
     {
@@ -270,7 +453,7 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
     let deleted = match harness
         .dispatch(LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
             session_ref: session.id()[..8].to_string(),
-            workspace_id: Some("workspace-1".to_string()),
+            workspace_id: Some(workspace_id.clone()),
         }))
         .expect("delete should succeed")
     {
@@ -285,7 +468,7 @@ fn local_request_api_resolves_and_deletes_sessions_by_ref() {
     assert!(matches!(
         harness.dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "main".to_string(),
-            workspace_id: Some("workspace-1".to_string()),
+            workspace_id: Some(workspace_id),
         })),
         Err(DaemonError::SessionNotFound { .. })
     ));
@@ -406,7 +589,7 @@ fn local_request_api_aliases_sessions() {
     let resolved = match harness
         .dispatch(LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
             session_ref: "alpha".to_string(),
-            workspace_id: Some("workspace-1".to_string()),
+            workspace_id: Some(aliased.workspace_id().to_string()),
         }))
         .expect("alias resolve should succeed")
     {

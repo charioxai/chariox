@@ -66,15 +66,35 @@ test("session browser controller closes after lifecycle removes all visible sess
   assert.equal(harness.isOpen(), false)
 })
 
+test("session browser controller keeps archived project sessions inspection-only", async () => {
+  const harness = createHarness({ archivedProject: true })
+  const controller = createSessionBrowserController(harness.deps)
+
+  assert.equal(controller.handleKey({ name: "enter" }), true)
+  assert.equal(controller.handleKey({ name: "delete" }), true)
+  await flushMicrotasks()
+
+  assert.equal(harness.isOpen(), true)
+  assert.deepEqual(harness.attachedSessions(), [])
+  assert.deepEqual(harness.lifecycleActions(), [])
+  assert.deepEqual(harness.footerMessages().map((entry) => entry.message), [
+    "restore project Archived before opening its sessions",
+    "restore project Archived before changing its sessions",
+  ])
+})
+
 function createHarness(options: {
   selectedIndex?: number
   applyLifecycleAction?: SessionBrowserControllerDeps["applyLifecycleAction"]
+  archivedProject?: boolean
 } = {}) {
   const catalog = fallbackProviderCatalog()
-  let sessions = [
-    session("session-a", { alias: "Alpha", created_at_ms: 1 }),
-    session("session-b", { alias: "Beta", created_at_ms: 2 }),
-  ]
+  let sessions = options.archivedProject
+    ? [session("session-ended", { alias: "Ended", status: "Ended", created_at_ms: 3 })]
+    : [
+      session("session-a", { alias: "Alpha", created_at_ms: 1 }),
+      session("session-b", { alias: "Beta", created_at_ms: 2 }),
+    ]
   let open = true
   let selectedIndex = options.selectedIndex ?? 0
   let renderCount = 0
@@ -84,8 +104,26 @@ function createHarness(options: {
 
   const deps: SessionBrowserControllerDeps = {
     isOpen: () => open,
-    visibleSessions: () => sessionBrowserVisibleSessions(sessions),
+    visibleSessions: () => sessionBrowserVisibleSessions(sessions, {
+      includeEnded: options.archivedProject === true,
+    }),
     availableSessions: () => sessions,
+    selectedProject: () => options.archivedProject
+      ? {
+        id: "project-archived",
+        owner_user_id: "owner",
+        workspace_id: "/workspace",
+        name: "Archived",
+        kind: "named",
+        status: "archived",
+        created_at_ms: 1,
+        updated_at_ms: 2,
+        archived_at_ms: 2,
+        session_count: sessions.length,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }
+      : null,
     normalizeSelectedIndex: () => {
       selectedIndex = clampSessionBrowserIndex(selectedIndex, sessions.length)
       return selectedIndex

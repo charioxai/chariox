@@ -164,7 +164,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9950f133fd73a94870eba88b30b5b4de69ee2d07be1f2881533913aa72cf4a47"
+        "acf0e648cad3f7de65ace837168643d804c0eab7f38539c79b67c4b83b5358fd"
     );
 }
 

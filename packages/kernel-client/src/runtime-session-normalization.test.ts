@@ -301,6 +301,7 @@ test("runtime session normalization handles prompt state lists and session lists
 function session(): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",
     created_at_ms: 1,

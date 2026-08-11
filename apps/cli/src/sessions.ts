@@ -25,13 +25,14 @@ export const ARROBA_ASCII_ART = [
   "/_/   \\_\\_| \\_\\_| \\_\\___/|| _ ) /_/  \\_\\",
 ].join("\n")
 
-export const SESSION_NEW_HELP_TEXT = "Use arrows to choose provider, model, variant, worktree, theme, session preview, or remote inventory. Enter on Join Existing Session opens all sessions. A archives sessions and D deletes selected sessions or inactive remote inventory."
+export const SESSION_NEW_HELP_TEXT = "Use arrows to choose a project, provider, model, variant, worktree, theme, or remote inventory. Enter on a project opens its sessions. E renames, R restores, A archives, and D deletes the selected project or session."
 export const SESSION_NEW_PLACEHOLDER = "Use the waiting room arrows to choose your next session"
-export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • A archives • D deletes inactive • ${HOTKEY_TOGGLE_LABEL} hotkeys`
+export const SESSION_NEW_FOOTER_HINT = `Waiting room • arrows move • Enter confirms • E rename • A archive • D delete • R restore • ${HOTKEY_TOGGLE_LABEL} hotkeys`
 export const SESSION_NEW_ERROR_HINT = "No session attached. Use the waiting room to create or join a session."
 
 export type SessionListEntry = {
   id: string
+  project_id?: string
   alias?: string | null
   workspace_id?: string
   worktree_id: string
@@ -52,7 +53,28 @@ export type SessionListEntry = {
   last_prompt_sent_at_ms?: number | null
   attachment_ids?: string[]
   connected_cli_count?: number
+  joined_collaborator_count?: number
+  pending_collaboration_invite_count?: number
   activity?: SessionActivitySummary
+  agents?: Array<{
+    id: string
+    alias?: string | null
+    provider: string
+    model?: string | null
+    variant?: string | null
+    mode?: string | null
+    permission?: string | null
+    activity?: {
+      working?: boolean
+      error?: boolean
+      unread_idle_output?: boolean
+    }
+  }>
+  workflows?: Array<{
+    id: string
+    alias?: string | null
+    activity?: { working?: boolean; error?: boolean }
+  }>
 }
 
 export type SessionActivitySummary = {

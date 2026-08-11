@@ -25,6 +25,11 @@ pub enum LocalDaemonResponse {
     NativeProviderInteractionResolved { resolution: NativeProviderInteractionResolution, },
     ProviderRunLaunchAccepted { provider_run: RuntimeProviderRun, },
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
+    ProjectsListed { projects: Vec<RuntimeProject>, },
+    ProjectRenamed { project: RuntimeProject, },
+    ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
+    ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
+    ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     SessionsListed { sessions: Vec<RuntimeSession>, },
     SessionResolved { session: RuntimeSession, },
     SessionState {

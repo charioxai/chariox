@@ -20,6 +20,14 @@ export function makePorts(base = 52000 + Math.floor(Math.random() * 4000)) {
   }
 }
 
+export function makeNonEphemeralDrillPorts(base = 20000 + Math.floor(Math.random() * 4000)) {
+  const ports = makePorts(base)
+  if (Math.max(...Object.values(ports)) >= 32768) {
+    throw new Error("non-ephemeral drill ports must stay below 32768")
+  }
+  return ports
+}
+
 export function withDevStubProviderInventory(env) {
   return {
     ...env,
@@ -227,6 +235,24 @@ export async function screenQuit(name) {
 
 export async function screenStuff(name, text) {
   await screen(name, ["-p", "0", "-X", "stuff", text])
+}
+
+export function screenSessionListContains(output, name) {
+  return String(output ?? "").split(/\r?\n/).some((line) => {
+    const session = line.trim().split(/\s+/, 1)[0] ?? ""
+    const separator = session.indexOf(".")
+    return separator > 0 && session.slice(separator + 1) === name
+  })
+}
+
+export async function screenIsRunning(name) {
+  try {
+    const { stdout } = await execFileAsync("screen", ["-ls"])
+    return screenSessionListContains(stdout, name)
+  } catch (error) {
+    const stdout = typeof error === "object" && error && "stdout" in error ? error.stdout : ""
+    return screenSessionListContains(stdout, name)
+  }
 }
 
 export function startScreen(name, logDir, command, args, env) {

@@ -78,6 +78,17 @@ test("waiting room focused value cycling updates local value selectors", () => {
   })
   assert.equal(liveSyncState.workspaceLiveSyncMode, "managed")
 
+  const archivedProjectsState = cycleWaitingRoomFocusedValue({
+    ...state,
+    focus: "archived-projects",
+    showArchivedProjects: false,
+  }, 1, {
+    catalog,
+    themeRegistry: DEFAULT_THEME_REGISTRY,
+    normalizeState: (next) => next,
+  })
+  assert.equal(archivedProjectsState.showArchivedProjects, true)
+
   const sliceDisplayState = cycleWaitingRoomFocusedValue({ ...sliceState, focus: "slice" }, 1, {
     catalog,
     themeRegistry: DEFAULT_THEME_REGISTRY,

@@ -30,6 +30,8 @@ import {
   type WorkspaceShellEntry,
 } from "./workspace-shell.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 
 export type CliAutomationSnapshotDeps = {
   attachmentId?: () => string | null
@@ -45,6 +47,7 @@ export type CliAutomationSnapshotDeps = {
   isAttached: () => boolean
   waitingRoomState: () => WaitingRoomState
   availableSessions: () => SessionListEntry[]
+  waitingRoomProjects?: () => WaitingRoomProjectSummary[]
   providerCatalogState: () => ProviderCatalog
   waitingRoomCloudNotice: () => string | null
   waitingRoomInventoryStatus: () => "loading" | "ready" | "error"
@@ -78,6 +81,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
   const waitingRoomState = deps.waitingRoomState()
   const shellEntries = deps.workspaceShellEntries()
   const agentRuntimeDisplayStates = sessionAgentRuntimeDisplayStateByAgent(session)
+  const waitingRoomProjects = waitingRoomProjectsForNavigation(deps.waitingRoomProjects?.() ?? [])
   return {
     attachmentId: deps.attachmentId?.() ?? null,
     screen: deps.workspaceScreenMode(),
@@ -151,6 +155,20 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
     waitingRoom: !deps.isAttached()
       ? {
         state: waitingRoomState,
+        selectedProjectId: waitingRoomState.focus === "project-entry"
+          ? waitingRoomProjects[waitingRoomState.projectIndex ?? 0]?.id ?? null
+          : null,
+        projects: waitingRoomProjects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          kind: project.kind,
+          status: project.status,
+          workspaceId: project.workspace_id,
+          sessionCount: project.session_count,
+          joinedCollaboratorCount: project.joined_collaborator_count,
+          pendingCollaborationInviteCount: project.pending_collaboration_invite_count,
+          lastSessionActivityAtMs: project.last_session_activity_at_ms ?? null,
+        })),
         rows: waitingRoomRows(waitingRoomState, deps.availableSessions(), deps.providerCatalogState(), {
           cloudNotice: deps.waitingRoomCloudNotice(),
           inventoryStatus: deps.waitingRoomInventoryStatus(),
@@ -163,6 +181,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
           externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
           slices: deps.slicesState(),
+          projects: deps.waitingRoomProjects?.() ?? [],
         }, deps.waitingRoomTargets(), deps.themeRegistryState()).map((row) => ({
           id: row.id,
           externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,

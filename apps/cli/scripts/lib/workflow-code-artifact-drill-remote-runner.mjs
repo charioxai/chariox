@@ -248,7 +248,7 @@ export function parseWorkflowOutputMessage(output) {
 
 export function validateTopologyRuntimeResult(exampleName, run) {
   assert(run?.status === 'Completed', 'topology ' + exampleName + ' should complete', run)
-  assert(run.final_output_valid !== false, 'topology ' + exampleName + ' final output should be schema-valid', run)
+  assert(run.final_output_valid === true, 'topology ' + exampleName + ' final output should be schema-valid', run)
   const finalOutput = parseWorkflowOutputMessage(run.final_output)
   assert(finalOutput && typeof finalOutput === 'object', 'topology ' + exampleName + ' should produce structured final output', run.final_output)
   const expectations = {
@@ -259,8 +259,9 @@ export function validateTopologyRuntimeResult(exampleName, run) {
     'loop-until-done.js': { iterations: 2 },
     'orchestrator-workers.js': { delegated: true },
     'parallelization.js': { reviewer_count: 2 },
+    'planner-worker-reviewer.js': { completed: true },
     'prompt-chaining.js': { answer: 'refined draft accepted' },
-    'routing.js': { specialist: 'code' },
+    'routing.js': { specialist: 1 },
     'tournament.js': { winner: 'a' },
   }[exampleName]
   assert(expectations, 'missing topology runtime expectation for ' + exampleName)

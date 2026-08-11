@@ -294,10 +294,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .into_iter()
         .find(|agent| agent.id() == agent_id)
         .expect("agent should still exist");
-    assert!(
-        completed_agent.is_metaagent(),
-        "a queued replacement task keeps the agent in Meta mode"
-    );
+    assert!(completed_agent.is_metaagent());
     assert_eq!(
         completed_agent.operating_mode(),
         crate::agent::AgentOperatingMode::Meta
@@ -312,10 +309,10 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     );
     let retained_specs = runtime_state.runtime_tool_specs_for_auth_token(&auth_token);
     assert!(
-        retained_specs
-            .iter()
-            .any(|spec| spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL),
-        "the active Meta provider keeps its tools for the queued replacement task"
+        retained_specs.iter().any(|spec| {
+            spec.name == crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+        }),
+        "Meta tools must remain available while another Meta task is queued"
     );
     let session_after_completion = runtime_state
         .session_snapshot(&session_id)

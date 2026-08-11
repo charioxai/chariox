@@ -97,8 +97,24 @@ test("kernel event dispatch applies waiting-room row patches without refreshing 
     activity_revision: "activity-v2",
     schema_version: 1,
     generated_at_ms: 2,
+    projects: [{
+      id: "project-1",
+      owner_user_id: "owner-1",
+      workspace_id: "/workspace",
+      name: "Workspace",
+      kind: "default",
+      status: "active",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 1,
+      last_session_activity_at_ms: 2,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }],
+    removed_project_ids: ["project-2"],
     sessions: [{
       id: "session-1",
+      project_id: "project-1",
       workspace_id: "/workspace",
       worktree_id: "/workspace/tree",
       status: "Created",
@@ -109,7 +125,7 @@ test("kernel event dispatch applies waiting-room row patches without refreshing 
   })
 
   assert.deepEqual(harness.calls, [
-    "apply-waiting-room-rows:v2:session-1:session-2",
+    "apply-waiting-room-rows:v2:session-1:session-2:project-1:project-2",
   ])
 })
 
@@ -453,7 +469,7 @@ function createHarness() {
       calls.push("refresh-waiting-room")
     },
     applyWaitingRoomRowsChanged: (patch) => {
-      calls.push(`apply-waiting-room-rows:${patch.inventoryVersion}:${patch.sessions.map((session) => session.id).join(",")}:${patch.removedSessionIds.join(",")}`)
+      calls.push(`apply-waiting-room-rows:${patch.inventoryVersion}:${patch.sessions.map((session) => session.id).join(",")}:${patch.removedSessionIds.join(",")}:${patch.projects.map((project) => project.id).join(",")}:${patch.removedProjectIds.join(",")}`)
     },
     applyRelayStatusChanged: (status) => {
       calls.push(`apply-relay-status:${status.daemon_id}:${status.connected ? "connected" : "disconnected"}`)
@@ -498,6 +514,7 @@ function createHarness() {
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,

@@ -56,15 +56,16 @@ export async function kernelSample({ client, sessionId, agentId, provider, marke
     ?? sessionState.agent_activity?.[String(agentId)]
     ?? null
   const outline = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [agentId], 1)), "SessionHistoryOutline")
-  const text = await historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline })
+  const { text, markerText } = await historyOutlineTextsWithBlobContent({ client, sessionId, agentId, outline })
   return {
     at: new Date().toISOString(),
     surface: "kernel",
     status: agentStatus(agent, agentActivity),
     text,
-    assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
-    toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
-    finalSeen: text.includes(finalMarker),
+    markerText,
+    assistantMarkers: requiredAssistantMarkers.filter((entry) => markerText.includes(entry)),
+    toolMarkers: requiredToolMarkers.filter((entry) => markerText.includes(entry)),
+    finalSeen: markerText.includes(finalMarker),
     promptOccurrences: countPromptMarkerInHistoryOutline(outline, promptMarker),
     provider,
   }
@@ -81,10 +82,15 @@ export function countPromptMarkerInHistoryOutline(outline, promptMarker) {
 }
 
 export async function historyOutlineTextWithBlobContent({ client, sessionId, agentId, outline }) {
-  const chunks = []
+  return (await historyOutlineTextsWithBlobContent({ client, sessionId, agentId, outline })).text
+}
+
+export async function historyOutlineTextsWithBlobContent({ client, sessionId, agentId, outline }) {
+  const textChunks = []
+  const markerChunks = []
   for (const agent of outline.agents ?? []) {
     for (const turn of agent.turns ?? []) {
-      if (turn.user_prompt?.entry?.text) chunks.push(turn.user_prompt.entry.text)
+      appendHistoryEntryText(textChunks, markerChunks, turn.user_prompt)
       const items = [
         ...(turn.entries ?? []).map((entry) => ({ sequence: entry.entry_index ?? 0, entry })),
         ...(turn.blobs ?? []).map((blob) => ({ sequence: blob.sequence_start ?? 0, blob })),
@@ -92,31 +98,57 @@ export async function historyOutlineTextWithBlobContent({ client, sessionId, age
       ].sort((left, right) => left.sequence - right.sequence)
       for (const item of items) {
         if ("entry" in item) {
-          if (item.entry?.entry?.text) chunks.push(item.entry.entry.text)
+          appendHistoryEntryText(textChunks, markerChunks, item.entry)
           continue
         }
         const blob = item.blob
         if (!blob?.blob_id) {
-          if (blob?.summary) chunks.push(blob.summary)
+          if (blob?.summary) {
+            textChunks.push(blob.summary)
+            if (historyKindIsMarkerOutput(blob.kind)) markerChunks.push(blob.summary)
+          }
           continue
         }
-        const blobText = await loadHistoryBlobText(client, sessionId, agent.agent_id ?? agentId, blob.blob_id)
-          .catch(() => blob.summary ?? "")
-        if (blobText) chunks.push(blobText)
+        const blobEntries = await loadHistoryBlobEntries(client, sessionId, agent.agent_id ?? agentId, blob.blob_id)
+          .catch(() => [])
+        if (blobEntries.length === 0 && blob.summary) {
+          textChunks.push(blob.summary)
+          if (historyKindIsMarkerOutput(blob.kind)) markerChunks.push(blob.summary)
+        } else {
+          for (const entry of blobEntries) appendHistoryEntryText(textChunks, markerChunks, entry)
+        }
       }
     }
   }
-  return chunks.join("\n")
+  return {
+    text: textChunks.join("\n"),
+    markerText: markerChunks.join("\n"),
+  }
+}
+
+function historyKindIsMarkerOutput(kind) {
+  return kind === "provider_output" || kind === "provider_tool"
+}
+
+function appendHistoryEntryText(textChunks, markerChunks, pageEntry) {
+  const text = pageEntry?.entry?.text
+  if (!text) return
+  textChunks.push(text)
+  if (historyKindIsMarkerOutput(pageEntry.entry.kind)) markerChunks.push(text)
 }
 
 export async function loadHistoryBlobText(client, sessionId, agentId, blobId) {
+  return (await loadHistoryBlobEntries(client, sessionId, agentId, blobId))
+    .map((entry) => entry.entry?.text ?? "")
+    .join("\n")
+}
+
+async function loadHistoryBlobEntries(client, sessionId, agentId, blobId) {
   const response = unwrap(
     await client.send(getSessionHistoryBlobContentRequest(sessionId, agentId, blobId)),
     "SessionHistoryBlobContent",
   )
-  return (response.entries ?? [])
-    .map((entry) => entry.entry?.text ?? "")
-    .join("\n")
+  return response.entries ?? []
 }
 
 export async function waitForKernelFinalIdle({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
@@ -132,7 +164,7 @@ export async function waitForKernelFinalIdle({ client, sessionId, agentId, provi
     }
     await sleep(options.pollMs)
   }
-  throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(lastSample)}`)
+  throw new Error(`external turn did not settle to final idle in kernel history; last=${JSON.stringify(sampleDiagnostic(lastSample))}`)
 }
 
 export async function waitForSurfaceFinalIdle({ surface, sample, options }) {
@@ -155,7 +187,21 @@ export async function waitForSurfaceFinalIdle({ surface, sample, options }) {
     }
     await sleep(options.pollMs)
   }
-  throw new Error(`${surface} did not observe final idle; last=${JSON.stringify(lastSample)}`)
+  throw new Error(`${surface} did not observe final idle; last=${JSON.stringify(sampleDiagnostic(lastSample))}`)
+}
+
+export function sampleDiagnostic(sample) {
+  if (!sample) return null
+  return {
+    at: sample.at ?? null,
+    surface: sample.surface ?? null,
+    status: sample.status ?? null,
+    error: sample.error ?? null,
+    assistantMarkerCount: sample.assistantMarkers?.length ?? 0,
+    toolMarkerCount: sample.toolMarkers?.length ?? 0,
+    finalSeen: sample.finalSeen === true,
+    promptOccurrences: sample.promptOccurrences ?? 0,
+  }
 }
 
 export function agentStatus(agent, agentActivity = null) {
@@ -230,31 +276,46 @@ export async function tuiSample(socketPath, provider, marker, finalMarker, promp
   const paneEntries = Object.values(snapshot.agentPanes ?? {})
     .flat()
     .filter(Boolean)
-  const transcriptText = transcriptEntries
-    .map((entry) => entry.text ?? "")
-    .join("\n")
-  const paneText = paneEntries
-    .map((entry) => entry.text ?? "")
-    .join("\n")
-  const text = [transcriptText, paneText].filter(Boolean).join("\n")
   const badge = snapshot.session?.agents?.[0]?.badge ?? null
   const entries = [...transcriptEntries, ...paneEntries]
+  const text = entries.map((entry) => entry.text ?? entry.entry?.text ?? "").filter(Boolean).join("\n")
+  const markerText = transcriptMarkerOutputText(entries)
   const promptPresent = entries.some((entry) =>
-    String(entry.text ?? entry.entry?.text ?? "").includes(promptMarker),
-  ) || text.includes(promptMarker)
+    entry?.role === "user" && String(entry.text ?? entry.entry?.text ?? "").includes(promptMarker),
+  )
   return {
     at: new Date().toISOString(),
     surface: "tui",
     status: badge?.label ?? badge?.tone ?? "UNKNOWN",
     text,
-    assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
-    toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
-    finalSeen: text.includes(finalMarker),
+    markerText,
+    assistantMarkers: requiredAssistantMarkers.filter((entry) => markerText.includes(entry)),
+    toolMarkers: requiredToolMarkers.filter((entry) => markerText.includes(entry)),
+    finalSeen: markerText.includes(finalMarker),
     promptOccurrences: promptPresent ? 1 : 0,
     collapsedEntries: entries.filter((entry) => entry.blobCollapsed === true).length,
     expandedEntries: entries.filter((entry) => entry.blobCollapsed === false).length,
     provider,
   }
+}
+
+export function transcriptMarkerOutputText(entries) {
+  return entries
+    .filter((entry) => entry?.role === "assistant" || entry?.role === "tool")
+    .flatMap((entry) => {
+      const chunks = [entry.text ?? entry.entry?.text ?? ""]
+      const blobCollapsible = entry.blobCollapsible ?? entry.entry?.blobCollapsible
+      const blobCollapsed = entry.blobCollapsed ?? entry.entry?.blobCollapsed
+      if (blobCollapsible === true && blobCollapsed !== false) {
+        chunks.push(
+          entry.blobTitle ?? entry.entry?.blobTitle ?? "",
+          entry.blobSummary ?? entry.entry?.blobSummary ?? "",
+        )
+      }
+      return chunks
+    })
+    .filter(Boolean)
+    .join("\n")
 }
 
 export async function startWebObserver({ sessionId, webUrl, providerRoot }) {
@@ -470,6 +531,12 @@ export async function webSample(page, provider, marker, finalMarker, promptMarke
   return await page.evaluate(({ provider, marker, promptMarker, requiredAssistantMarkers, requiredToolMarkers, finalMarker }) => {
     const output = document.querySelector("[data-terminal-output]") ?? document.body
     const text = output.textContent ?? ""
+    const markerText = [...output.querySelectorAll(
+      ".freeform-message.freeform-agent-output:not(.freeform-reasoning-output):not(.freeform-status-output):not(.freeform-error-output):not(.freeform-activity-group)",
+    )]
+      .map((element) => element.textContent ?? "")
+      .filter(Boolean)
+      .join("\n")
     const scrollElement = output instanceof HTMLElement ? output : document.scrollingElement
     const bottomDistance = scrollElement
       ? Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight - scrollElement.scrollTop)
@@ -485,10 +552,11 @@ export async function webSample(page, provider, marker, finalMarker, promptMarke
       surface: "web",
       status: badges.includes("WORKING") ? "WORKING" : badges.includes("IDLE") ? "IDLE" : "UNKNOWN",
       text,
-      assistantMarkers: requiredAssistantMarkers.filter((entry) => text.includes(entry)),
-      toolMarkers: requiredToolMarkers.filter((entry) => text.includes(entry)),
-      finalSeen: text.includes(finalMarker),
-      promptOccurrences: promptOccurrences || text.split(promptMarker).length - 1,
+      markerText,
+      assistantMarkers: requiredAssistantMarkers.filter((entry) => markerText.includes(entry)),
+      toolMarkers: requiredToolMarkers.filter((entry) => markerText.includes(entry)),
+      finalSeen: markerText.includes(finalMarker),
+      promptOccurrences,
       bottomDistance,
       turnExpandedCount: turnButtons.filter((value) => value === "true").length,
       turnCollapsedCount: turnButtons.filter((value) => value === "false").length,
@@ -501,19 +569,20 @@ export async function webSample(page, provider, marker, finalMarker, promptMarke
 
 export function summarizeSamples(surface, samples, finalMarker) {
   const valid = samples.filter((sample) => !sample.error)
-  const text = valid.map((sample) => sample.text ?? "").join("\n")
   const firstFinalSampleIndex = valid.findIndex((sample) => sample.finalSeen)
   const preFinalSamples = firstFinalSampleIndex >= 0 ? valid.slice(0, firstFinalSampleIndex) : valid
   const finalAndLaterSamples = firstFinalSampleIndex >= 0 ? valid.slice(firstFinalSampleIndex) : []
+  const authoritativeSamples = firstFinalSampleIndex >= 0 ? finalAndLaterSamples : valid
+  const markerText = authoritativeSamples.map((sample) => sample.markerText ?? sample.text ?? "").join("\n")
   const countMax = (entries, key) => Math.max(0, ...entries.map((sample) => Number(sample[key] ?? 0)).filter(Number.isFinite))
   return {
     surface,
     sampleCount: samples.length,
     errorCount: samples.length - valid.length,
     samples,
-    assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => text.includes(marker)),
-    toolMarkersSeen: requiredToolMarkers.filter((marker) => text.includes(marker)),
-    finalSeen: text.includes(finalMarker),
+    assistantMarkersSeen: requiredAssistantMarkers.filter((marker) => markerText.includes(marker)),
+    toolMarkersSeen: requiredToolMarkers.filter((marker) => markerText.includes(marker)),
+    finalSeen: markerText.includes(finalMarker),
     statuses: valid.map((sample) => sample.status).filter(Boolean),
     maxBottomDistance: Math.max(0, ...valid.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),
     preFinalMaxBottomDistance: Math.max(0, ...preFinalSamples.map((sample) => Number(sample.bottomDistance ?? 0)).filter(Number.isFinite)),

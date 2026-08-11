@@ -1219,6 +1219,18 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
         Some("user-echo-2".to_string()),
         Some(2_001),
     );
+    let external_prompt_with_provider_attachment_suffix =
+        SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            Some("run-1"),
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "same prompt from ArrobaAttachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8=",
+            "codex",
+            "thread-1",
+            Some("user-echo-3".to_string()),
+            Some(2_002),
+        );
     let external_tool_call_echo = SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("run-1"),
@@ -1228,7 +1240,7 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
         "opencode",
         "opencode-session-1",
         Some("tool-call-echo".to_string()),
-        Some(2_002),
+        Some(2_003),
     );
     let external_assistant = SessionHistoryEntry::external_provider_observed(
         "session-1",
@@ -1258,12 +1270,19 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
     store
         .append(&HistoryEvent::transcript(
             13,
+            &external_prompt_with_provider_attachment_suffix,
+            context.clone(),
+        ))
+        .expect("external provider attachment prompt should append");
+    store
+        .append(&HistoryEvent::transcript(
+            14,
             &external_tool_call_echo,
             context.clone(),
         ))
         .expect("external tool call echo should append");
     store
-        .append(&HistoryEvent::transcript(14, &external_assistant, context))
+        .append(&HistoryEvent::transcript(15, &external_assistant, context))
         .expect("external assistant should append");
 
     let import =

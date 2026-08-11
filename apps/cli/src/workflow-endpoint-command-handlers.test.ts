@@ -58,6 +58,33 @@ test("workflow endpoint alias and bind support explicit workflow refs", async ()
   ])
 })
 
+test("workflow endpoint rebinds and removes endpoints from the selected workflow", async () => {
+  const harness = createHarness({
+    bindWorkflowEndpoint: async (workflowRef, endpointRef, entryNodeId) => {
+      harness.calls.push(`bind:${workflowRef}:${endpointRef}:${entryNodeId}`)
+      return payload({ workflowId: workflowRef, endpoint: endpoint({ id: endpointRef, entry_node_id: entryNodeId }) })
+    },
+    removeWorkflowEndpoint: async (workflowRef, endpointRef) => {
+      harness.calls.push(`remove:${workflowRef}:${endpointRef}`)
+      return payload({ workflowId: workflowRef, endpoint: endpoint({ id: endpointRef }) })
+    },
+  })
+
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "rebind", "endpoint-1", "node-2"])
+  await handleWorkflowEndpointCommand(harness.deps, harness.context, ["endpoint", "remove", "endpoint-1"])
+
+  assert.deepEqual(harness.calls, [
+    "bind:workflow-1:endpoint-1:node-2",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:workflow endpoint endpoint-1 rebound to node node-2",
+    "remove:workflow-1:endpoint-1",
+    "apply:session-1",
+    "select:workflow-1",
+    "footer:info:removed workflow endpoint endpoint-1",
+  ])
+})
+
 test("workflow endpoint command validates action usage", async () => {
   const harness = createHarness({ selectedWorkflowRef: null })
 
@@ -66,7 +93,7 @@ test("workflow endpoint command validates action usage", async () => {
 
   assert.deepEqual(harness.calls, [
     "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias]",
-    "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>",
+    "footer:error:usage: /workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind|rebind [workflow-ref] <endpoint-ref> <entry-node-id> | remove [workflow-ref] <endpoint-ref>",
   ])
 })
 
@@ -141,6 +168,7 @@ function endpoint(overrides: Partial<WorkflowEndpointDefinition> = {}): Workflow
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",

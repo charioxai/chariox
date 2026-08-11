@@ -532,3 +532,273 @@ async fn full_collaboration_invite_allows_prompting_other_users_agents() {
         "full collaboration should pass prompt ownership checks"
     );
 }
+
+#[test]
+fn workflow_design_ops_preserve_agent_ownership_and_mutation_authority() {
+    run_remote_authorization_large_stack_test(
+        "workflow-design-ops-preserve-agent-ownership-and-mutation-authority",
+        workflow_design_ops_preserve_agent_ownership_and_mutation_authority_inner,
+    );
+}
+
+async fn workflow_design_ops_preserve_agent_ownership_and_mutation_authority_inner() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let session = app
+        .sessions_mut()
+        .create_session(CreateSessionRequest::new(
+            "workspace-design-authz",
+            "worktree-design-authz",
+        ))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let first_local_agent = spawn_test_agent(&mut app, &session_id, "local-a", "dev-stub");
+    let second_local_agent = spawn_test_agent(&mut app, &session_id, "local-b", "dev-stub");
+    let metaagent = spawn_test_agent(&mut app, &session_id, "design-metaagent", "dev-stub");
+    app.agents()
+        .activate_agent_meta_mode(metaagent.id(), None)
+        .expect("agent should enter meta mode");
+    let metaagent_id = metaagent.id().to_string();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("design-authz".to_string()))
+        .expect("workflow should be created");
+    let workflow_id = workflow.id().to_string();
+    for (invite_id, user_id) in [
+        ("invite-design-user-2", "user-2"),
+        ("invite-design-user-3", "user-3"),
+    ] {
+        let (_, invite) = app
+            .sessions_mut()
+            .create_session_invite(
+                &session_id,
+                invite_id.to_string(),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+                None,
+                Some(1),
+                crate::session::CollaborationLevel::Private,
+            )
+            .expect("invite should be created");
+        app.sessions_mut()
+            .join_session_invite(&session_id, invite.invite_id(), user_id.to_string(), 1)
+            .expect("user should join session");
+    }
+
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let design_request = |op_id: &str, op: WorkflowDesignOp| {
+        LocalDaemonRequest::ApplyWorkflowDesignOp(ApplyWorkflowDesignOpRequest {
+            session_id: session_id.clone(),
+            origin_client_id: "web-canvas".to_string(),
+            op_id: op_id.to_string(),
+            op,
+        })
+    };
+
+    let missing_agent = design_request(
+        "missing-agent",
+        WorkflowDesignOp::NodeAdd {
+            workflow_id: workflow_id.clone(),
+            node: WorkflowDesignNode {
+                id: "node-missing".to_string(),
+                agent_id: "agent-missing".to_string(),
+                label: None,
+                instructions: None,
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema_ref: None,
+                max_turns: None,
+            },
+            position: None,
+        },
+    );
+    assert!(matches!(
+        router
+            .dispatch(
+                remote_command_for_request(&missing_agent, Some("user-2")),
+                missing_agent,
+            )
+            .await
+            .expect_err("missing agent should be rejected"),
+        DaemonError::AgentNotFound { .. }
+    ));
+
+    let add_metaagent = design_request(
+        "add-metaagent",
+        WorkflowDesignOp::NodeAdd {
+            workflow_id: workflow_id.clone(),
+            node: WorkflowDesignNode {
+                id: "node-metaagent".to_string(),
+                agent_id: metaagent_id,
+                label: None,
+                instructions: None,
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema_ref: None,
+                max_turns: None,
+            },
+            position: None,
+        },
+    );
+    assert!(matches!(
+        router
+            .dispatch(
+                remote_command_for_request(&add_metaagent, Some("user-2")),
+                add_metaagent,
+            )
+            .await
+            .expect_err("metaagent should not be accepted as workflow node"),
+        DaemonError::LocalTransport {
+            operation: "workflow.node.add",
+            ..
+        }
+    ));
+
+    let add_first = design_request(
+        "add-first",
+        WorkflowDesignOp::NodeAdd {
+            workflow_id: workflow_id.clone(),
+            node: WorkflowDesignNode {
+                id: "node-first".to_string(),
+                agent_id: first_local_agent.id().to_string(),
+                label: Some("First".to_string()),
+                instructions: None,
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema_ref: None,
+                max_turns: None,
+            },
+            position: None,
+        },
+    );
+    let first_node = match router
+        .dispatch(
+            remote_command_for_request(&add_first, Some("user-2")),
+            add_first,
+        )
+        .await
+        .expect("collaborator should insert another user's agent")
+    {
+        LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. } => session
+            .workflow(&workflow_id)
+            .and_then(|workflow| workflow.node("node-first"))
+            .cloned()
+            .expect("inserted node should be projected"),
+        other => panic!("unexpected design-op response: {other:?}"),
+    };
+    assert_eq!(first_node.owner_user_id(), DEFAULT_LOCAL_USER_ID);
+    assert_eq!(first_node.created_by_user_id(), "user-2");
+
+    let add_second = design_request(
+        "add-second",
+        WorkflowDesignOp::NodeAdd {
+            workflow_id: workflow_id.clone(),
+            node: WorkflowDesignNode {
+                id: "node-second".to_string(),
+                agent_id: second_local_agent.id().to_string(),
+                label: None,
+                instructions: None,
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema_ref: None,
+                max_turns: None,
+            },
+            position: None,
+        },
+    );
+    router
+        .dispatch(
+            remote_command_for_request(&add_second, Some("user-2")),
+            add_second,
+        )
+        .await
+        .expect("collaborator should add second node");
+
+    let unauthorized_update = design_request(
+        "unauthorized-update",
+        WorkflowDesignOp::NodeUpdate {
+            workflow_id: workflow_id.clone(),
+            node_id: "node-first".to_string(),
+            patch: WorkflowDesignNodePatch {
+                label: Some("Trespass".to_string()),
+                instructions: None,
+                can_complete_workflow_run: None,
+                can_emit_intermediate_run_output: None,
+                wait_for_all_inputs: None,
+                intermediate_output_schema_ref: None,
+                max_turns: None,
+            },
+        },
+    );
+    assert_ownership_denied(
+        router
+            .dispatch(
+                remote_command_for_request(&unauthorized_update, Some("user-3")),
+                unauthorized_update,
+            )
+            .await
+            .expect_err("unrelated collaborator should not edit a node"),
+        "user-3",
+        "user-2",
+    );
+
+    let unauthorized_edge = design_request(
+        "unauthorized-edge",
+        WorkflowDesignOp::EdgeAdd {
+            workflow_id: workflow_id.clone(),
+            edge: WorkflowDesignEdge {
+                id: "edge-denied".to_string(),
+                from_node_id: "node-first".to_string(),
+                to_node_id: "node-second".to_string(),
+                source_side: None,
+                target_side: None,
+                handoff_schema_ref: None,
+                validation_policy: None,
+            },
+        },
+    );
+    assert_ownership_denied(
+        router
+            .dispatch(
+                remote_command_for_request(&unauthorized_edge, Some("user-3")),
+                unauthorized_edge,
+            )
+            .await
+            .expect_err("edge between other users' nodes should be denied"),
+        "user-3",
+        DEFAULT_LOCAL_USER_ID,
+    );
+
+    let endpoint = design_request(
+        "add-endpoint",
+        WorkflowDesignOp::EndpointAdd {
+            workflow_id: workflow_id.clone(),
+            endpoint: WorkflowDesignEndpoint {
+                id: "endpoint-user-2".to_string(),
+                entry_node_id: "node-first".to_string(),
+                alias: Some("user-two-entry".to_string()),
+            },
+            position: None,
+        },
+    );
+    let response = router
+        .dispatch(
+            remote_command_for_request(&endpoint, Some("user-2")),
+            endpoint,
+        )
+        .await
+        .expect("node creator should create endpoint");
+    let LocalDaemonResponse::WorkflowDesignOpAccepted { session, .. } = response else {
+        panic!("unexpected endpoint design-op response: {response:?}");
+    };
+    assert_eq!(
+        session
+            .workflow(&workflow_id)
+            .and_then(|workflow| workflow.endpoint("endpoint-user-2"))
+            .map(|endpoint| endpoint.owner_user_id()),
+        Some("user-2")
+    );
+}

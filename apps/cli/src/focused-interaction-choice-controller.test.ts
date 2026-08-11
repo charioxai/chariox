@@ -220,6 +220,7 @@ function interactionFixture(options: {
 function runtimeSession(id: string): RuntimeSession {
   return {
     id,
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",
     created_at_ms: 1,

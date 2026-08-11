@@ -401,8 +401,15 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" });
     );
 }
 
-#[tokio::test]
-async fn metaagent_workflow_code_applies_canonical_fan_out_pattern() {
+#[test]
+fn metaagent_workflow_code_applies_canonical_fan_out_pattern() {
+    run_large_stack_async_test(
+        "metaagent-workflow-code-applies-canonical-fan-out-pattern",
+        metaagent_workflow_code_applies_canonical_fan_out_pattern_inner,
+    );
+}
+
+async fn metaagent_workflow_code_applies_canonical_fan_out_pattern_inner() {
     if let Err(error) = crate::workflow_code::discover_workflow_code_node_path() {
         eprintln!(
             "skipping meta workflow-code fan-out pattern test because Node.js is unavailable: {error}"

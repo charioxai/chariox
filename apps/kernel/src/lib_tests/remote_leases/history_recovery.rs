@@ -335,10 +335,18 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
     assert_eq!(
         second_chunks
             .iter()
+            .filter(|chunk| chunk.bytes == b"first remote output")
+            .count(),
+        0,
+        "the first turn output must not replay into the second projection"
+    );
+    assert_eq!(
+        second_chunks
+            .iter()
             .filter(|chunk| chunk.bytes == b"second remote output")
             .count(),
         1,
-        "the second prompt's injected output should project exactly once even if delayed provider output arrives in the same batch"
+        "the second turn output must project exactly once"
     );
     assert_eq!(second_completions.len(), 1);
     assert_ne!(

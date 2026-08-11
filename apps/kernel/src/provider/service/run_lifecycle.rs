@@ -173,6 +173,7 @@ impl ProviderProcessService {
 
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
+            super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);
             return Ok(ProviderRunEndedOutcome {
                 run: run_snapshot,
                 already_ended: true,
@@ -188,6 +189,7 @@ impl ProviderProcessService {
 
         self.run_actor_mailbox
             .spawn_terminate(run_id.to_string(), run.clone());
+        super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);
 
         Ok(ProviderRunEndedOutcome {
             run,
@@ -403,6 +405,7 @@ impl ProviderProcessService {
         }
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
+            super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);
             return Ok(ProviderRunEndedOutcome {
                 run: run_snapshot,
                 already_ended: true,
@@ -414,6 +417,7 @@ impl ProviderProcessService {
         let run = run.clone();
 
         self.clear_runtime(run_id);
+        super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);
 
         Ok(ProviderRunEndedOutcome {
             run,

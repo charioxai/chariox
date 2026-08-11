@@ -1,5 +1,6 @@
 use super::*;
-use crate::session::RuntimeSession;
+use crate::session::{RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionProjectSelection};
+use std::collections::BTreeSet;
 
 #[test]
 fn creates_gets_and_lists_sessions() {
@@ -130,12 +131,56 @@ fn hidden_sessions_do_not_get_default_aliases() {
     let hidden = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
         .expect("hidden session should be created");
+    assert_eq!(hidden.project_id(), "");
+    assert!(service
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+
     let visible = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-2"))
         .expect("visible session should be created");
 
     assert_eq!(hidden.alias(), None);
     assert_eq!(visible.alias(), Some("repo-1"));
+    assert_eq!(service.list_projects(DEFAULT_LOCAL_USER_ID, true).len(), 1);
+}
+
+#[test]
+fn restoring_hidden_session_detaches_it_from_legacy_project() {
+    let mut source = SessionService::new(&test_config());
+    let visible = source
+        .create_session(CreateSessionRequest::new("/repo", "worktree-visible"))
+        .expect("visible session should be created");
+    let project = source
+        .get_project(visible.project_id())
+        .expect("visible project should exist");
+
+    let mut hidden = RuntimeSession::new(
+        "hidden-runtime",
+        None,
+        "/repo",
+        "worktree-hidden",
+        "machine-test",
+        "daemon-test",
+    );
+    hidden.set_hidden(true);
+    assert!(hidden.assign_project_id(project.id()));
+
+    let mut restored = SessionService::new(&test_config());
+    restored.restore_projects(vec![project.clone()]);
+    let hidden = restored.restore_session(hidden);
+    assert_eq!(hidden.project_id(), "");
+    assert!(restored
+        .list_visible_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+
+    assert_eq!(
+        restored.remove_projects_without_visible_sessions(),
+        vec![project]
+    );
+    assert!(restored
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
 }
 
 #[test]
@@ -401,6 +446,7 @@ fn delete_session_removes_it_from_registry() {
     let created = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
+    let project_id = created.project_id().to_string();
 
     let deleted = service
         .delete_session(created.id())
@@ -412,6 +458,33 @@ fn delete_session_removes_it_from_registry() {
         Err(DaemonError::SessionNotFound { .. })
     ));
     assert!(service.list_sessions().is_empty());
+    assert!(service.get_project(&project_id).is_err());
+    assert!(service
+        .list_projects(DEFAULT_LOCAL_USER_ID, true)
+        .is_empty());
+}
+
+#[test]
+fn delete_session_keeps_project_until_last_visible_session_is_deleted() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("first session should be created");
+    let second = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-2"))
+        .expect("second session should be created");
+    assert_eq!(first.project_id(), second.project_id());
+    let project_id = first.project_id().to_string();
+
+    service
+        .delete_session(first.id())
+        .expect("first session should delete");
+    assert!(service.get_project(&project_id).is_ok());
+
+    service
+        .delete_session(second.id())
+        .expect("second session should delete");
+    assert!(service.get_project(&project_id).is_err());
 }
 
 #[test]
@@ -721,4 +794,241 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
     assert_eq!(session.queued_prompts().len(), 1);
     assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
     assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");
+}
+
+#[test]
+fn legacy_session_project_migration_uses_repo_label_hint_and_is_restart_stable() {
+    let legacy = RuntimeSession::new(
+        "legacy-session",
+        Some("legacy".to_string()),
+        "/workspace/arroba",
+        "/workspace/arroba",
+        "machine-test",
+        "daemon-test",
+    );
+    let mut legacy_json = serde_json::to_value(&legacy).expect("legacy session should encode");
+    legacy_json
+        .as_object_mut()
+        .expect("session should encode as an object")
+        .remove("project_id");
+    let legacy: RuntimeSession =
+        serde_json::from_value(legacy_json).expect("legacy session should decode");
+
+    let mut first_service = SessionService::new(&test_config());
+    let migrated = first_service
+        .restore_session_with_default_project_name_hint(legacy, Some("mgutierrez09/arroba"));
+    let project = first_service
+        .get_project(migrated.project_id())
+        .expect("migrated default project should exist");
+    assert_eq!(project.name(), "mgutierrez09/arroba");
+    assert_eq!(project.kind(), RuntimeProjectKind::Default);
+
+    let mut restarted_service = SessionService::new(&test_config());
+    restarted_service.restore_projects(first_service.durable_projects());
+    let restored = restarted_service.restore_session(migrated);
+    let restored_project = restarted_service
+        .get_project(restored.project_id())
+        .expect("default project should survive restart");
+    assert_eq!(restored_project.id(), project.id());
+    assert_eq!(restored_project.name(), "mgutierrez09/arroba");
+}
+
+#[test]
+fn project_names_are_unique_for_an_owner_across_workspaces() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/main", "worktree-main")
+                .with_default_project_name_hint(Some("mgutierrez09/arroba".to_string())),
+        )
+        .expect("first default project should be created");
+    let second = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/codex-worktree", "worktree-codex")
+                .with_default_project_name_hint(Some("mgutierrez09/arroba".to_string())),
+        )
+        .expect("second default project should be created");
+
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .expect("first project should exist")
+            .name(),
+        "mgutierrez09/arroba"
+    );
+    assert_eq!(
+        service
+            .get_project(second.project_id())
+            .expect("second project should exist")
+            .name(),
+        "mgutierrez09/arroba (2)"
+    );
+
+    let first_named = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/main", "worktree-named-1")
+                .with_project_selection(SessionProjectSelection::New),
+        )
+        .expect("first named project should be created");
+    let second_named = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/codex-worktree", "worktree-named-2")
+                .with_project_selection(SessionProjectSelection::New),
+        )
+        .expect("second named project should be created");
+
+    assert_eq!(
+        service
+            .get_project(first_named.project_id())
+            .expect("first named project should exist")
+            .name(),
+        "Project-1"
+    );
+    assert_eq!(
+        service
+            .get_project(second_named.project_id())
+            .expect("second named project should exist")
+            .name(),
+        "Project-2"
+    );
+}
+
+#[test]
+fn default_project_workspace_migration_merges_a_linked_worktree_project() {
+    let mut service = SessionService::new(&test_config());
+    let main = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/main", "/workspace/main")
+                .with_alias("main-session")
+                .with_default_project_name_hint(Some("mgutierrez09/arroba".to_string())),
+        )
+        .expect("main session should be created");
+    let linked = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/linked", "/workspace/linked")
+                .with_alias("event-first-wave-live")
+                .with_default_project_name_hint(Some("mgutierrez09/arroba".to_string())),
+        )
+        .expect("linked-worktree session should be created");
+    assert_ne!(linked.project_id(), main.project_id());
+    let replaced_project_ids = BTreeSet::from([linked.project_id().to_string()]);
+
+    let migrated = service
+        .migrate_default_project_workspace(
+            linked.id(),
+            main.workspace_id(),
+            Some("mgutierrez09/arroba"),
+            &replaced_project_ids,
+        )
+        .expect("migration should succeed")
+        .expect("linked-worktree session should migrate");
+
+    assert_eq!(migrated.workspace_id(), main.workspace_id());
+    assert_eq!(migrated.worktree_id(), linked.worktree_id());
+    assert_eq!(migrated.project_id(), main.project_id());
+    assert_eq!(migrated.alias(), Some("event-first-wave-live"));
+    let removed = service.remove_projects_without_visible_sessions();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].id(), linked.project_id());
+    assert_eq!(service.durable_projects().len(), 1);
+}
+
+#[test]
+fn project_rename_rejects_an_owner_name_collision_case_insensitively() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/main", "worktree-main")
+                .with_default_project_name_hint(Some("mgutierrez09/arroba".to_string())),
+        )
+        .expect("first project should be created");
+    let second = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/worktree", "worktree-second")
+                .with_default_project_name_hint(Some("different".to_string())),
+        )
+        .expect("second project should be created");
+
+    let error = service
+        .rename_project(
+            second.project_id(),
+            " MGUTIERREZ09/ARROBA ".to_string(),
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect_err("duplicate project name should be rejected");
+
+    assert!(
+        error
+            .to_string()
+            .contains("project name `MGUTIERREZ09/ARROBA` already exists"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        service
+            .get_project(first.project_id())
+            .expect("first project should remain")
+            .name(),
+        "mgutierrez09/arroba"
+    );
+}
+
+#[test]
+fn legacy_duplicate_project_names_keep_the_most_populated_project_canonical() {
+    let mut service = SessionService::new(&test_config());
+    let main_project = RuntimeProject::new(
+        "project-main",
+        DEFAULT_LOCAL_USER_ID,
+        "/workspace/main",
+        "mgutierrez09/arroba",
+        RuntimeProjectKind::Default,
+    );
+    let worktree_project = RuntimeProject::new(
+        "project-worktree",
+        DEFAULT_LOCAL_USER_ID,
+        "/workspace/worktree",
+        "mgutierrez09/arroba",
+        RuntimeProjectKind::Default,
+    );
+    service.restore_projects(vec![main_project.clone(), worktree_project.clone()]);
+
+    for (session_id, project) in [
+        ("main-session-1", &main_project),
+        ("main-session-2", &main_project),
+        ("worktree-session", &worktree_project),
+    ] {
+        let mut session = RuntimeSession::new(
+            session_id,
+            Some(session_id.to_string()),
+            project.workspace_id(),
+            project.workspace_id(),
+            "machine-test",
+            "daemon-test",
+        );
+        assert!(session.assign_project_id(project.id()));
+        service.restore_session(session);
+    }
+
+    let renamed = service.reconcile_duplicate_project_names();
+    assert_eq!(renamed.len(), 1);
+    assert_eq!(renamed[0].id(), worktree_project.id());
+    assert_eq!(renamed[0].name(), "mgutierrez09/arroba (2)");
+    assert_eq!(
+        service
+            .get_project(main_project.id())
+            .expect("main project should remain canonical")
+            .name(),
+        "mgutierrez09/arroba"
+    );
+    assert!(service.reconcile_duplicate_project_names().is_empty());
+
+    let mut restarted = SessionService::new(&test_config());
+    restarted.restore_projects(service.durable_projects());
+    assert!(restarted.reconcile_duplicate_project_names().is_empty());
+    assert_eq!(
+        restarted
+            .get_project(worktree_project.id())
+            .expect("disambiguated project should survive restart")
+            .name(),
+        "mgutierrez09/arroba (2)"
+    );
 }

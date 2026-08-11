@@ -56,6 +56,7 @@ test("bootstrapSession attaches, launches, and hydrates history for the visible 
   const launched: Array<{ provider: string; model: string; effort: string }> = []
   const session = {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,
@@ -180,6 +181,7 @@ test("bootstrapSession uses kernel session agent defaults for newly created sess
   const launched: Array<{ provider: string; model: string; effort: string; agentId: string | null | undefined }> = []
   const createdSession = {
     id: "session-created",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,
@@ -256,6 +258,7 @@ test("bootstrapSession reattaches and hydrates missed output from history catch-
   const catalog = fallbackProviderCatalog()
   const session = {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,
@@ -363,6 +366,7 @@ test("bootstrapSession skips attach-time launch when focused agent is stale", as
   const warnings: Array<Record<string, unknown> | undefined> = []
   const session = {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,
@@ -455,6 +459,7 @@ test("bootstrapSession recovers when the launch target moves remote during attac
   }
   const localSession: RuntimeSession = {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,

@@ -27,6 +27,8 @@ export type SlashCommandSubmitControllerDeps = {
   handleProviderCommand: (command: SlashCommand<"provider">) => Promise<unknown> | unknown
   handleModelCommand: (command: SlashCommand<"model">) => Promise<unknown> | unknown
   handleVariantCommand: (command: SlashCommand<"variant">) => Promise<unknown> | unknown
+  handleModeCommand: (command: SlashCommand<"mode">) => Promise<unknown> | unknown
+  handlePermissionsCommand: (command: SlashCommand<"permissions">) => Promise<unknown> | unknown
   handleViewCommand: (command: SlashCommand<"view">) => Promise<unknown> | unknown
   handleUndoCommand: (command: SlashCommand<"undo">) => Promise<unknown> | unknown
   handleForkCommand: (command: SlashCommand<"fork">) => Promise<unknown> | unknown
@@ -51,6 +53,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleCredentialCommand: (command: SlashCommand<"credential">) => Promise<unknown> | unknown
   handleConnectorCommand: (command: SlashCommand<"connector">) => Promise<unknown> | unknown
   handleExtensionCommand: (command: SlashCommand<"extension">) => Promise<unknown> | unknown
+  handleSharedShellCommand?: (rawCommand: string) => Promise<boolean>
 }
 
 export type SlashCommandSubmitController = {
@@ -95,12 +98,27 @@ export function createSlashCommandSubmitController(
       if (!options.allowSlashCommandSubmission) {
         return null
       }
+      const trimmed = options.trimmedPrompt ?? rawPrompt.trim()
       const slashCommand = parseSlashCommand(rawPrompt)
       if (slashCommand && deps.isAttached()) {
         deps.recordPromptAreaHistoryEntry(deps.getSessionId(), rawPrompt)
       }
-
-      const trimmed = options.trimmedPrompt ?? rawPrompt.trim()
+      if (slashCommand && deps.handleSharedShellCommand) {
+        try {
+          if (await deps.handleSharedShellCommand(rawPrompt)) {
+            clearHandledCommandUi(slashCommand)
+            return slashCommand
+          }
+        } catch (error) {
+          reportCommandError("shared shell command failed", trimmed, error)
+          clearHandledCommandUi(slashCommand)
+          return slashCommand
+        }
+      }
+      const clearBeforeHandler = slashCommand?.kind === "exit"
+      if (clearBeforeHandler) {
+        clearHandledCommandUi(slashCommand)
+      }
       const handledCommand = await executeSlashCommand(rawPrompt, {
         onExit: deps.onExit,
         onWaiting: deps.onWaiting,
@@ -125,6 +143,8 @@ export function createSlashCommandSubmitController(
         onProvider: (command) => runWithFooterError(deps.handleProviderCommand, command),
         onModel: (command) => runWithFooterError(deps.handleModelCommand, command),
         onVariant: (command) => runWithFooterError(deps.handleVariantCommand, command),
+        onMode: (command) => runWithFooterError(deps.handleModeCommand, command),
+        onPermissions: (command) => runWithFooterError(deps.handlePermissionsCommand, command),
         onView: (command) => runWithFooterError(deps.handleViewCommand, command),
         onUndo: (command) => runWithFooterError(deps.handleUndoCommand, command),
         onFork: (command) => runWithFooterError(deps.handleForkCommand, command),
@@ -153,7 +173,9 @@ export function createSlashCommandSubmitController(
       if (!handledCommand) {
         return null
       }
-      clearHandledCommandUi(handledCommand)
+      if (!clearBeforeHandler) {
+        clearHandledCommandUi(handledCommand)
+      }
       return handledCommand
     },
   }

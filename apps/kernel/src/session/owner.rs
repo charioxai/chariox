@@ -5,7 +5,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptQueueItem, RuntimeSession, SessionConfigState, SessionService,
+    CreateSessionRequest, PromptQueueItem, RuntimeProject, RuntimeSession, SessionConfigState,
+    SessionService,
 };
 
 #[derive(Debug, Clone)]
@@ -68,6 +69,98 @@ impl SessionStateStore {
         self.read().list_all_sessions()
     }
 
+    pub(crate) fn list_projects(
+        &self,
+        owner_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
+        self.read().list_projects(owner_user_id, include_archived)
+    }
+
+    pub(crate) fn list_visible_projects(
+        &self,
+        caller_user_id: &str,
+        include_archived: bool,
+    ) -> Vec<RuntimeProject> {
+        self.read()
+            .list_visible_projects(caller_user_id, include_archived)
+    }
+
+    pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
+        self.read().get_project(project_id)
+    }
+
+    pub(crate) fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
+        self.read().sessions_in_project(project_id)
+    }
+
+    pub(crate) fn durable_projects(&self) -> Vec<RuntimeProject> {
+        self.read().durable_projects()
+    }
+
+    pub(crate) fn restore_projects(&self, projects: Vec<RuntimeProject>) {
+        self.write().restore_projects(projects)
+    }
+
+    pub(crate) fn remove_projects_without_visible_sessions(&self) -> Vec<RuntimeProject> {
+        self.write().remove_projects_without_visible_sessions()
+    }
+
+    pub(crate) fn reconcile_duplicate_project_names(&self) -> Vec<RuntimeProject> {
+        self.write().reconcile_duplicate_project_names()
+    }
+
+    pub(crate) fn migrate_default_project_workspace(
+        &self,
+        session_id: &str,
+        workspace_id: &str,
+        default_project_name_hint: Option<&str>,
+        replaced_project_ids: &std::collections::BTreeSet<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        self.write().migrate_default_project_workspace(
+            session_id,
+            workspace_id,
+            default_project_name_hint,
+            replaced_project_ids,
+        )
+    }
+
+    pub(crate) fn rename_project(
+        &self,
+        project_id: &str,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .rename_project(project_id, name, caller_user_id)
+    }
+
+    pub(crate) fn archive_project(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write().archive_project(project_id, caller_user_id)
+    }
+
+    pub(crate) fn restore_project_status(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .restore_project_status(project_id, caller_user_id)
+    }
+
+    pub(crate) fn delete_project_record(
+        &self,
+        project_id: &str,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write()
+            .delete_project_record(project_id, caller_user_id)
+    }
+
     pub(crate) fn create_session(
         &self,
         request: CreateSessionRequest,
@@ -88,6 +181,23 @@ impl SessionStateStore {
 
     pub(crate) fn restore_session(&self, session: RuntimeSession) -> RuntimeSession {
         self.write().restore_session(session)
+    }
+
+    pub(crate) fn restore_session_with_default_project_name_hint(
+        &self,
+        session: RuntimeSession,
+        default_project_name_hint: Option<&str>,
+    ) -> RuntimeSession {
+        self.write()
+            .restore_session_with_default_project_name_hint(session, default_project_name_hint)
+    }
+
+    pub(crate) fn restore_ended_session(
+        &self,
+        session_id: &str,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write()
+            .transition_session(session_id, super::SessionStatus::Parked)
     }
 
     pub(crate) fn remove_restored_session(&self, session_id: &str) -> Option<RuntimeSession> {
@@ -115,6 +225,13 @@ impl SessionStateStore {
 
     pub(crate) fn delete_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.write().delete_session(session_id)
+    }
+
+    pub(crate) fn delete_session_with_project_cleanup(
+        &self,
+        session_id: &str,
+    ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.write().delete_session_with_project_cleanup(session_id)
     }
 
     pub(crate) fn set_active_provider_run(

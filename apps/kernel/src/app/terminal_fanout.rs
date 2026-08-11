@@ -44,7 +44,7 @@ impl DaemonApp {
             render_prompt_transcript(prompt, attachments),
             attachments,
         );
-        self.spawn_history_append(session, entry);
+        self.spawn_history_append(session.id().to_string(), entry);
         Ok(())
     }
 
@@ -73,7 +73,7 @@ impl DaemonApp {
         .with_prompt_origin(prompt_origin);
         entry.timestamp_ms = prompt_created_at_ms;
         entry.merge_key = Some(format!("prompt:{prompt_id}"));
-        self.spawn_history_append(session, entry);
+        self.spawn_history_append(session.id().to_string(), entry);
         Ok(())
     }
 
@@ -188,32 +188,10 @@ impl DaemonApp {
 
     #[cfg(test)]
     pub(crate) fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        let session = match self.sessions.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        // Make authoritative history visible before readers can import the legacy copy.
-        self.append_operational_history_entry(&entry);
-        if let Err(error) = self.history.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
+        if self.sessions.get_session(session_id).is_err() {
+            return;
         }
+        self.append_operational_history_entry(&entry);
     }
 
     pub(crate) fn replace_history_entry_by_merge_key_or_append(
@@ -222,52 +200,6 @@ impl DaemonApp {
         merge_key: &str,
         entry: SessionHistoryEntry,
     ) {
-        let session = match self.sessions.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping history replacement because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "merge_key": merge_key,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        match self
-            .history
-            .replace_by_merge_key(&session, merge_key, &entry)
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                if let Err(error) = self.history.append(&session, &entry) {
-                    crate::logging::warn_with_fields(
-                        "daemon.history",
-                        "failed to append legacy session history entry after replacement miss",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "merge_key": merge_key,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
-            }
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "failed to replace legacy session history entry",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "merge_key": merge_key,
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
-
         let context = self.history_event_context(&entry);
         match self.operational_history.replace_transcript_by_merge_key(
             session_id,
@@ -357,52 +289,34 @@ impl DaemonApp {
         }
     }
 
-    fn spawn_history_append(
-        &self,
-        session: crate::session::RuntimeSession,
-        entry: SessionHistoryEntry,
-    ) {
-        let history = self.history.clone();
+    fn spawn_history_append(&self, session_id: String, entry: SessionHistoryEntry) {
         let operational_history = self.operational_history.clone();
         let archive_enabled = self.history_archive_enabled();
         let context = self.history_event_context(&entry);
-        let session_id = session.id().to_string();
-        let append = move || {
-            if let Err(error) = history.append(&session, &entry) {
+        let append = move || match operational_history.append_transcript(&entry, context) {
+            Ok(event) => {
+                if archive_enabled {
+                    if let Err(error) = operational_history.enqueue_archive_events(&[event]) {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to enqueue history archive event",
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+            }
+            Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.history",
-                    "failed to append session history",
+                    "failed to append operational history",
                     serde_json::json!({
                         "session_id": session_id,
                         "error": error.to_string(),
                     }),
                 );
-            }
-            match operational_history.append_transcript(&entry, context) {
-                Ok(event) => {
-                    if archive_enabled {
-                        if let Err(error) = operational_history.enqueue_archive_events(&[event]) {
-                            crate::logging::warn_with_fields(
-                                "daemon.history",
-                                "failed to enqueue history archive event",
-                                serde_json::json!({
-                                    "session_id": session_id,
-                                    "error": error.to_string(),
-                                }),
-                            );
-                        }
-                    }
-                }
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.history",
-                        "failed to append operational history",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                }
             }
         };
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -494,6 +408,12 @@ impl DaemonApp {
                 .filter(|prompt| prompt.id() == prompt_id)
                 .map(|prompt| prompt.prompt_origin())
         });
+        let recipient_attachment_ids = ProviderOutputFanout::new(self)
+            .agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id.as_deref(),
+                recipient_attachment_ids,
+            );
         self.terminal.fan_out_prompt_output(
             session_id,
             provider_run_id,
@@ -520,8 +440,6 @@ fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::config::HistoryArchiveMode;
     use crate::session::{CreateSessionRequest, PromptStatus};
@@ -567,10 +485,8 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_history_persists_operational_when_legacy_append_fails() {
-        let config = DaemonConfig::for_tests();
-        let legacy_history_root = config.session_history_root.clone();
-        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    fn user_prompt_history_does_not_write_the_legacy_jsonl_store() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
@@ -582,19 +498,20 @@ mod tests {
             ))
             .expect("attachment should create");
 
-        let _ = fs::remove_dir_all(&legacy_history_root);
-        fs::write(&legacy_history_root, b"not a directory")
-            .expect("fixture should block legacy history writes");
-
         app.append_user_prompt_history(session.id(), attachment.id(), agent.id(), "reload me", &[]);
+        assert!(
+            app.history
+                .load(&session)
+                .expect("legacy migration source should load")
+                .is_empty(),
+            "new prompt history must not be written to the legacy JSONL store"
+        );
 
         let entries = app
             .load_session_history_entries(&session, Some(agent.id()))
             .expect("canonical operational history should load");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].text.trim_end(), "reload me");
-
-        let _ = fs::remove_file(&legacy_history_root);
     }
 
     #[test]
@@ -644,6 +561,13 @@ mod tests {
         assert_eq!(
             entries[0].prompt_origin,
             Some(crate::session::PromptOrigin::Arroba)
+        );
+        assert!(
+            app.history
+                .load(&session)
+                .expect("legacy migration source should remain readable")
+                .is_empty(),
+            "new prompt history must not be written to the legacy JSONL store"
         );
     }
 

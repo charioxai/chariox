@@ -38,11 +38,20 @@ fn resolve_opencode_executable_unlocked() -> Result<PathBuf, DaemonError> {
     }
 
     OPENCODE_EXECUTABLE_RESOLUTION
-        .resolve(|| resolve_candidate(PathBuf::from("opencode"), false))
+        .resolve(|| {
+            resolve_candidate(PathBuf::from("opencode"), false)
+                .or_else(resolve_standard_install_candidate)
+        })
         .ok_or_else(|| DaemonError::ProviderExecutableNotFound {
             adapter_key: "opencode".to_string(),
             executable: "opencode".to_string(),
         })
+}
+
+fn resolve_standard_install_candidate() -> Option<PathBuf> {
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    let executable = format!("opencode{}", env::consts::EXE_SUFFIX);
+    resolve_candidate(home.join(".opencode").join("bin").join(executable), true)
 }
 
 pub fn plan_opencode_launch(
@@ -212,6 +221,49 @@ mod tests {
         std::env::remove_var("ARROBA_OPENCODE_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn resolves_standard_installer_path_when_daemon_path_omits_it() {
+        let _guard = env_guard();
+        let root = std::env::temp_dir().join(format!(
+            "arroba-opencode-standard-install-test-{}",
+            std::process::id()
+        ));
+        let executable = root
+            .join(".opencode")
+            .join("bin")
+            .join(format!("opencode{}", std::env::consts::EXE_SUFFIX));
+        let empty_path = root.join("empty-path");
+        fs::create_dir_all(executable.parent().expect("executable should have parent"))
+            .expect("standard install directory should exist");
+        fs::create_dir_all(&empty_path).expect("empty PATH directory should exist");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("fixture should exist");
+
+        let previous_home = std::env::var_os("HOME");
+        let previous_path = std::env::var_os("PATH");
+        let previous_override = std::env::var_os("ARROBA_OPENCODE_BIN");
+        std::env::set_var("HOME", &root);
+        std::env::set_var("PATH", &empty_path);
+        std::env::remove_var("ARROBA_OPENCODE_BIN");
+
+        let resolved = resolve_opencode_executable().expect("standard install should resolve");
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_path {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+        match previous_override {
+            Some(value) => std::env::set_var("ARROBA_OPENCODE_BIN", value),
+            None => std::env::remove_var("ARROBA_OPENCODE_BIN"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(resolved, executable);
     }
 
     #[test]

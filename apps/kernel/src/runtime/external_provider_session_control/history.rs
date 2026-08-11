@@ -54,6 +54,18 @@ pub(super) fn append_observed_external_turns_for_attached_target(
         ..AttachedExternalObserverAppendOutcome::default()
     };
     if read.turns.is_empty() {
+        let activity_changed = app
+            .session_state_projection_store()
+            .sync_external_observed_active_prompt(
+                &read.target.session_id,
+                &read.target.agent_id,
+                &read.target.external_session_id,
+                None,
+            );
+        if activity_changed {
+            let _ = crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(&read.target.session_id);
+        }
         return Ok(outcome);
     }
     let session = app
@@ -162,7 +174,19 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     let last_cursor = import_state.cursor().clone();
     let cursor_changed = last_cursor != read.target.observed_cursor;
     if changed > 0 || cursor_changed {
-        persist_attached_external_observer_cursor(app, &read.target, last_cursor)?;
+        persist_attached_external_observer_cursor(app, &read.target, last_cursor.clone())?;
+    }
+    let external_active_prompt =
+        projected_external_active_prompt(&read.target, &candidate_turns, &last_cursor);
+    let activity_changed = app
+        .session_state_projection_store()
+        .sync_external_observed_active_prompt(
+            &read.target.session_id,
+            &read.target.agent_id,
+            &read.target.external_session_id,
+            external_active_prompt,
+        );
+    if changed > 0 || cursor_changed || activity_changed {
         let _ = crate::app::KernelSessionReadService::new(app)
             .session_snapshot(&read.target.session_id);
     }
@@ -170,6 +194,39 @@ pub(super) fn append_observed_external_turns_for_attached_target(
         emit_observed_external_history_signal(app, &read.target, provider_run_id.as_deref(), entry);
     }
     Ok(outcome)
+}
+
+fn projected_external_active_prompt(
+    target: &AttachedExternalObserverTarget,
+    turns: &[ObservedExternalProviderTurn],
+    cursor: &ExternalProviderObservedCursor,
+) -> Option<PromptQueueItem> {
+    if !matches!(
+        &target.cursor_source,
+        AttachedExternalObserverCursorSource::Imported(_)
+    ) || ExternalProviderObservationPolicy::for_provider(&target.provider)
+        .latest_effective_turn_settles(turns)
+    {
+        return None;
+    }
+    let user_turn = turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?;
+    let provider_turn_id = user_turn.provider_turn_id_or_fallback();
+    if cursor
+        .arroba_owned_observed_prompt_turn_ids
+        .contains(&provider_turn_id)
+    {
+        return None;
+    }
+    Some(PromptQueueItem::external_observed_running(
+        &target.provider,
+        &target.provider_session_id,
+        provider_turn_id,
+        &target.agent_id,
+        &user_turn.text,
+    ))
 }
 
 struct ObservedExternalTurnImportState {

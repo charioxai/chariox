@@ -1,8 +1,9 @@
 use crate::error::DaemonError;
 use crate::local::{
-    AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, AttachToSessionRequest,
-    CycleAgentFocusRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
-    FocusAgentRequest, LocalDaemonResponse, RespondToInteractionRequest,
+    AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
+    AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
+    DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
+    LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
     UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
@@ -102,6 +103,85 @@ impl SessionRuntimeStore {
             .create_session_response(request.with_owner_user_id(caller_user_id))
             .await;
         self.with_session_projection_action_result(result).await
+    }
+
+    pub(super) async fn list_projects(
+        &self,
+        request: ListProjectsRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let projects = self
+            .state
+            .list_projects(&caller_user_id, request.include_archived)
+            .await;
+        (Ok(LocalDaemonResponse::ProjectsListed { projects }), None)
+    }
+
+    pub(super) async fn rename_project(
+        &self,
+        request: RenameProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .rename_project(&request.project_id, request.name, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectRenamed { project });
+        (result, None)
+    }
+
+    pub(super) async fn archive_project(
+        &self,
+        request: ArchiveProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .archive_project(&request.project_id, &caller_user_id)
+            .await
+            .map(|(project, sessions)| LocalDaemonResponse::ProjectArchived { project, sessions });
+        (result, None)
+    }
+
+    pub(super) async fn delete_project(
+        &self,
+        request: DeleteProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .delete_project(&request.project_id, &caller_user_id)
+            .await
+            .map(|(project, sessions)| LocalDaemonResponse::ProjectDeleted { project, sessions });
+        (result, None)
+    }
+
+    pub(super) async fn restore_project(
+        &self,
+        request: RestoreProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .restore_project(&request.project_id, &caller_user_id)
+            .await
+            .map(|(project, sessions)| LocalDaemonResponse::ProjectRestored { project, sessions });
+        (result, None)
     }
 
     pub(super) async fn attach_to_session(

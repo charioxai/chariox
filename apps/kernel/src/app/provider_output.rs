@@ -36,8 +36,9 @@ pub(crate) struct ProviderOutputPumpRequest<'a> {
 pub(crate) fn should_project_pty_output(
     has_active_prompt: bool,
     terminal_failure: Option<&str>,
+    uses_transient_native_terminal: bool,
 ) -> bool {
-    has_active_prompt || terminal_failure.is_some()
+    has_active_prompt || terminal_failure.is_some() || uses_transient_native_terminal
 }
 
 pub(crate) fn pump_terminal_output_for_attachment(
@@ -205,12 +206,16 @@ impl<'a> ProviderOutputPump<'a> {
         let has_active_prompt = self
             .context
             .provider_run_has_active_prompt(request.session_id, &provider_run)?;
-        if !should_project_pty_output(has_active_prompt, terminal_failure.as_deref()) {
-            chunks.clear();
-        }
         let uses_transient_native_terminal =
             crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
                 && !crate::provider::provider_run_is_claude_headless(&provider_run);
+        if !should_project_pty_output(
+            has_active_prompt,
+            terminal_failure.as_deref(),
+            uses_transient_native_terminal,
+        ) {
+            chunks.clear();
+        }
         if !chunks.is_empty() {
             if crate::provider::provider_run_is_claude_headless(&provider_run)
                 || uses_transient_native_terminal

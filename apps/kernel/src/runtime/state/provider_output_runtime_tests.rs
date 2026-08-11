@@ -4,7 +4,6 @@ use super::provider_output_runtime::{
 };
 use super::*;
 use std::collections::VecDeque;
-use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -19,7 +18,6 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
         slice_store,
         session_projection,
         provider_run_projection,
-        history_store,
         operational_history_store,
         durable_state_store,
         prompt_state_owner,
@@ -43,7 +41,6 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
             app_locked.slices(),
             app_locked.session_state_projection_store(),
             app_locked.provider_run_projection_store(),
-            app_locked.history_store(),
             app_locked.operational_history_store(),
             app_locked.durable_state_store(),
             app_locked.prompt_state_owner(),
@@ -68,7 +65,6 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
         slice_store,
         session_projection,
         provider_run_projection,
-        history_store,
         operational_history_store,
         durable_state_store,
         prompt_state_owner,

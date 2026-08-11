@@ -60,6 +60,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   workspaceShellContext: AnyFn
   waitingRoomState: AnyFn
   availableSessions: AnyFn
+  waitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
@@ -167,6 +168,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
         externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
         slices: deps.slicesState(),
+        projects: deps.waitingRoomProjects(),
       }, deps.waitingRoomTargets(), deps.themeRegistryState()),
     buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       deps.renderer,

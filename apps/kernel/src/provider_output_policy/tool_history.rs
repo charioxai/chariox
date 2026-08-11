@@ -4,6 +4,8 @@ use std::sync::{Mutex, OnceLock};
 use crate::history::{SessionHistoryEntry, SessionHistoryEntryKind};
 use serde_json::Value;
 
+use super::output_bounds::bounded_terminal_output_bytes;
+
 const PROVIDER_TOOL_HISTORY_GATE_LIMIT: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +13,7 @@ struct ProviderToolHistoryState {
     status: String,
 }
 
-pub(super) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) -> bool {
+pub(crate) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) -> bool {
     if entry.kind != SessionHistoryEntryKind::ProviderTool {
         return true;
     }
@@ -35,6 +37,33 @@ pub(super) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) 
         }
     }
     should_persist
+}
+
+pub(crate) fn bounded_history_entry(mut entry: SessionHistoryEntry) -> Option<SessionHistoryEntry> {
+    let kind = match entry.kind {
+        SessionHistoryEntryKind::ProviderOutput => {
+            Some(crate::terminal::TerminalOutputKind::ProviderOutput)
+        }
+        SessionHistoryEntryKind::ProviderReasoning => {
+            Some(crate::terminal::TerminalOutputKind::ProviderReasoning)
+        }
+        SessionHistoryEntryKind::ProviderTool => {
+            Some(crate::terminal::TerminalOutputKind::ProviderTool)
+        }
+        SessionHistoryEntryKind::ProviderError => {
+            Some(crate::terminal::TerminalOutputKind::ProviderError)
+        }
+        SessionHistoryEntryKind::ProviderStatus => {
+            Some(crate::terminal::TerminalOutputKind::ProviderStatus)
+        }
+        SessionHistoryEntryKind::UserPrompt | SessionHistoryEntryKind::Notice => None,
+    };
+    if let Some(kind) = kind {
+        entry.text =
+            String::from_utf8_lossy(&bounded_terminal_output_bytes(&kind, entry.text.as_bytes()))
+                .into_owned();
+    }
+    should_persist_provider_tool_history(&entry).then_some(entry)
 }
 
 fn provider_tool_history_key(entry: &SessionHistoryEntry) -> Option<String> {
@@ -72,7 +101,7 @@ fn provider_tool_history_gate() -> &'static Mutex<BTreeMap<String, ProviderToolH
     GATE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-pub(super) fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
+pub(crate) fn is_unread_output_history_entry(entry: &SessionHistoryEntry) -> bool {
     matches!(
         entry.kind,
         SessionHistoryEntryKind::ProviderOutput

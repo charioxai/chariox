@@ -203,6 +203,33 @@ pub struct AbortMetaagentTaskRequest {
 pub struct ListSessionsRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListProjectsRequest {
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameProjectRequest {
+    pub project_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveProjectRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteProjectRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreProjectRequest {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolveSessionRequest {
     pub session_ref: String,
     pub workspace_id: Option<String>,

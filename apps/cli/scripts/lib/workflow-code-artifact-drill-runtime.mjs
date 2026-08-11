@@ -1,9 +1,12 @@
 import { execFile, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+
+import { createSessionRequest, endSessionRequest } from '@arroba/kernel-client'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 export const cliRoot = path.resolve(scriptDir, '..', '..')
@@ -176,7 +179,39 @@ export function runChecked(command, args, options = {}) {
 
 export function buildKernel() {
   runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const cargoTargetDir = process.env.CARGO_TARGET_DIR?.trim()
+  const targetDir = cargoTargetDir
+    ? path.resolve(repoRoot, cargoTargetDir)
+    : path.join(repoRoot, 'target')
+  return path.join(targetDir, 'debug', 'arroba-kernel')
+}
+
+export function sha256Hex(value) {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+export async function writeSourceDirectoryExport(workspace, exportResult, label) {
+  const files = exportResult.files ?? []
+  assert(files.some((file) => file.path === 'workflow.js'), `${label} source directory should include workflow.js`, exportResult)
+  const manifestFile = files.find((file) => file.path === 'manifest.json')
+  assert(manifestFile, `${label} source directory should include manifest.json`, exportResult)
+  for (const file of files) {
+    assert(sha256Hex(file.contents) === file.sha256, `${label} source directory file hash mismatch for ${file.path}`, file)
+    const target = path.join(workspace, file.path)
+    await mkdir(path.dirname(target), { recursive: true })
+    await writeFile(target, file.contents, 'utf8')
+  }
+  const manifest = JSON.parse(manifestFile.contents)
+  assert(manifest.source_path === 'workflow.js', `${label} manifest source_path should be workflow.js`, manifest)
+  assert(manifest.source_sha256 === exportResult.source_sha256, `${label} manifest source hash should match export`, {
+    manifest,
+    exportResult,
+  })
+  assert(manifest.definition_sha256 === exportResult.definition_sha256, `${label} manifest definition hash should match export`, {
+    manifest,
+    exportResult,
+  })
+  return manifest
 }
 
 export function spawnedKernel(label = 'workflow-code-drill', rootDir = null) {

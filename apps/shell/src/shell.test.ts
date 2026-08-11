@@ -213,6 +213,7 @@ function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance {
 function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-1",
     alias: null,
     workspace_id: "/repo",
     worktree_id: "/repo",

@@ -9,10 +9,11 @@ use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventSnapshot, MetaagentEventSubscription,
 };
-use crate::session::{DurablePromptPrivateState, RuntimeSession};
+use crate::session::{DurablePromptPrivateState, RuntimeProject, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+const DURABLE_EVENT_REPLAY_BATCH_SIZE: usize = 128;
 const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
 
 #[derive(Default)]
@@ -104,6 +105,42 @@ where
             event.event_id, event.kind
         ),
     })
+}
+
+fn durable_payload_entity_belongs_to_other_owner(
+    event: &DurableStateEvent,
+    field: &str,
+    owner_field: &str,
+    current_owner_id: &str,
+) -> bool {
+    event
+        .payload
+        .get(field)
+        .and_then(|entity| entity.get(owner_field))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|owner_id| owner_id != current_owner_id)
+}
+
+fn durable_snapshot_belongs_to_other_kernel(
+    payload: &serde_json::Value,
+    current_daemon_id: &str,
+) -> bool {
+    let session_owners = payload
+        .get("sessions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|session| session.get("host_daemon_id"))
+        .filter_map(serde_json::Value::as_str);
+    let slice_owners = payload
+        .get("slices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|slice| slice.get("owner_kernel_id"))
+        .filter_map(serde_json::Value::as_str);
+    let owners = session_owners.chain(slice_owners).collect::<Vec<_>>();
+    !owners.is_empty() && owners.iter().all(|owner| *owner != current_daemon_id)
 }
 
 #[derive(Default)]
@@ -248,16 +285,167 @@ impl DaemonApp {
             None => 0,
         };
         let mut diagnostics = DurableRestoreDiagnostics::default();
-        for event in self
-            .durable_state
-            .load_events_after(replay_after_sequence)?
-        {
-            self.restore_durable_state_event(event, &mut diagnostics)?;
+        let mut replay_cursor = replay_after_sequence;
+        loop {
+            let events = self
+                .durable_state
+                .load_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                replay_cursor = replay_cursor.max(event.sequence);
+                self.restore_durable_state_event(event, &mut diagnostics)?;
+            }
         }
         diagnostics.log_summary();
+        self.reconcile_restored_default_project_workspaces()?;
+        self.remove_restored_projects_without_visible_sessions()?;
+        self.reconcile_restored_duplicate_project_names()?;
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        Ok(())
+    }
+
+    fn reconcile_restored_default_project_workspaces(&self) -> Result<(), DaemonError> {
+        let projects_before = self
+            .sessions
+            .durable_projects()
+            .into_iter()
+            .map(|project| (project.id().to_string(), project))
+            .collect::<BTreeMap<_, _>>();
+        let mut replacements_by_workspace = BTreeMap::<(String, String), BTreeSet<String>>::new();
+        let mut migrations = Vec::<(RuntimeSession, String)>::new();
+        let mut canonical_workspace_by_legacy_id = BTreeMap::<String, Option<String>>::new();
+        for session in self.sessions.list_all_sessions() {
+            if session.is_hidden() {
+                continue;
+            }
+            let Some(project) = projects_before.get(session.project_id()) else {
+                continue;
+            };
+            if project.kind() != crate::session::RuntimeProjectKind::Default {
+                continue;
+            }
+            let workspace_id = canonical_workspace_by_legacy_id
+                .entry(session.workspace_id().to_string())
+                .or_insert_with(|| {
+                    crate::runtime::workspace_git_common::canonical_workspace_path(
+                        session.workspace_id(),
+                        session.worktree_id(),
+                    )
+                })
+                .clone();
+            let Some(workspace_id) = workspace_id else {
+                continue;
+            };
+            if workspace_id == session.workspace_id() {
+                continue;
+            }
+            replacements_by_workspace
+                .entry((session.owner_user_id().to_string(), workspace_id.clone()))
+                .or_default()
+                .insert(project.id().to_string());
+            migrations.push((session, workspace_id));
+        }
+
+        let mut migrated_sessions = Vec::new();
+        for (session, workspace_id) in migrations {
+            let replaced_project_ids = replacements_by_workspace
+                .get(&(session.owner_user_id().to_string(), workspace_id.clone()))
+                .expect("planned workspace migration should have replacement projects");
+            let project_name =
+                crate::runtime::workspace_git_common::workspace_display_label(&workspace_id);
+            if let Some(migrated) = self.sessions.migrate_default_project_workspace(
+                session.id(),
+                &workspace_id,
+                project_name.as_deref(),
+                replaced_project_ids,
+            )? {
+                migrated_sessions.push((session, migrated));
+            }
+        }
+
+        let projects_after = self
+            .sessions
+            .durable_projects()
+            .into_iter()
+            .map(|project| (project.id().to_string(), project))
+            .collect::<BTreeMap<_, _>>();
+        for (project_id, project) in &projects_after {
+            let kind = match projects_before.get(project_id) {
+                None => "project.created",
+                Some(previous) if previous != project => "project.updated",
+                Some(_) => continue,
+            };
+            self.durable_state.append_event(
+                kind,
+                Some(project_id.clone()),
+                serde_json::json!({ "project": project }),
+            )?;
+        }
+        for (previous, session) in migrated_sessions {
+            self.durable_state.append_event(
+                "session.updated",
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": &session,
+                    "reason": "canonical_workspace_project_migration",
+                }),
+            )?;
+            self.update_session_projection(session.clone());
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "migrated linked-worktree session into canonical workspace project",
+                serde_json::json!({
+                    "session_id": session.id(),
+                    "previous_workspace_id": previous.workspace_id(),
+                    "workspace_id": session.workspace_id(),
+                    "previous_project_id": previous.project_id(),
+                    "project_id": session.project_id(),
+                    "worktree_id": session.worktree_id(),
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    fn remove_restored_projects_without_visible_sessions(&self) -> Result<(), DaemonError> {
+        for project in self.sessions.remove_projects_without_visible_sessions() {
+            self.durable_state.append_event(
+                "project.deleted",
+                Some(project.id().to_string()),
+                serde_json::json!({ "project": &project }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "removed project without visible sessions",
+                serde_json::json!({
+                    "project_id": project.id(),
+                    "project_name": project.name(),
+                }),
+            );
+        }
+        Ok(())
+    }
+
+    fn reconcile_restored_duplicate_project_names(&self) -> Result<(), DaemonError> {
+        for project in self.sessions.reconcile_duplicate_project_names() {
+            self.durable_state.append_event(
+                "project.updated",
+                Some(project.id().to_string()),
+                serde_json::json!({ "project": &project }),
+            )?;
+            crate::logging::info_with_fields(
+                "durable_state.restore",
+                "renamed duplicate project",
+                serde_json::json!({
+                    "project_id": project.id(),
+                    "project_name": project.name(),
+                }),
+            );
+        }
         Ok(())
     }
 
@@ -317,6 +505,9 @@ impl DaemonApp {
         &mut self,
         payload: serde_json::Value,
     ) -> Result<bool, DaemonError> {
+        if durable_snapshot_belongs_to_other_kernel(&payload, &self.config.daemon_id) {
+            return Ok(false);
+        }
         let snapshot: DurableKernelSnapshotPayload =
             serde_json::from_value(payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.restore_snapshot",
@@ -339,6 +530,7 @@ impl DaemonApp {
                 .or_default()
                 .push(state);
         }
+        self.sessions.restore_projects(snapshot.projects);
         for mut session in snapshot.sessions {
             if !restored_session_ids.contains(session.id()) {
                 continue;
@@ -347,7 +539,7 @@ impl DaemonApp {
                 session.restore_durable_prompt_private_states(states);
             }
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session);
+            self.restore_session_with_project_migration(session);
         }
         let restored_slices = snapshot
             .slices
@@ -486,8 +678,17 @@ impl DaemonApp {
             }
             None => 0,
         };
-        for event in store.load_events_after(replay_after_sequence)? {
-            attachment_state.apply_event(&event);
+        let mut replay_cursor = replay_after_sequence;
+        loop {
+            let events =
+                store.load_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                replay_cursor = event.sequence;
+                attachment_state.apply_event(&event);
+            }
         }
         let mut marker_count = 0usize;
         for agent in attachment_state.live_agents.values() {
@@ -523,7 +724,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session.clone());
+            let session = self.restore_session_with_project_migration(session);
             self.update_session_projection(session);
         }
         Ok(())
@@ -537,7 +738,7 @@ impl DaemonApp {
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
         self.prompt_state_owner.restore_session_state(&session);
-        self.sessions.restore_session(session.clone());
+        let session = self.restore_session_with_project_migration(session);
         self.update_session_projection(session);
         Ok(())
     }
@@ -554,7 +755,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            self.sessions.restore_session(session.clone());
+            let session = self.restore_session_with_project_migration(session);
             self.update_session_projection(session.clone());
             crate::logging::info_with_fields(
                 "durable_state.restore",
@@ -596,6 +797,13 @@ impl DaemonApp {
         Ok(())
     }
 
+    fn restore_session_with_project_migration(&self, session: RuntimeSession) -> RuntimeSession {
+        let project_name =
+            crate::runtime::workspace_git_common::workspace_display_label(session.workspace_id());
+        self.sessions
+            .restore_session_with_default_project_name_hint(session, project_name.as_deref())
+    }
+
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
         let sequence = self.durable_state.latest_event_sequence()?;
@@ -633,7 +841,33 @@ impl DaemonApp {
         diagnostics: &mut DurableRestoreDiagnostics,
     ) -> Result<(), DaemonError> {
         match event.kind.as_str() {
+            "project.created" | "project.updated" => {
+                let project: RuntimeProject = decode_durable_payload_field(
+                    &event,
+                    "project",
+                    "durable_state.restore_project",
+                )?;
+                self.sessions.restore_projects(vec![project]);
+            }
+            "project.deleted" => {
+                let project: RuntimeProject = decode_durable_payload_field(
+                    &event,
+                    "project",
+                    "durable_state.restore_project_delete",
+                )?;
+                let _ = self
+                    .sessions
+                    .delete_project_record(project.id(), project.owner_user_id());
+            }
             "session.created" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -649,7 +883,7 @@ impl DaemonApp {
                 )?;
                 self.mark_agent_external_provider_sessions_attached(&default_agent);
                 self.prompt_state_owner.restore_session_state(&session);
-                self.sessions.restore_session(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
@@ -691,6 +925,14 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "session.updated" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -716,7 +958,7 @@ impl DaemonApp {
                     session.restore_durable_prompt_private_states(&private_states);
                 }
                 self.prompt_state_owner.restore_session_state(&session);
-                self.sessions.restore_session(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.update_session_projection(session);
             }
             "sessions.updated" => {
@@ -787,6 +1029,14 @@ impl DaemonApp {
                 self.refresh_restored_agent_session_projection(&session_id)?;
             }
             "session.ended" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -801,10 +1051,18 @@ impl DaemonApp {
                 self.prompt_state_owner.remove_session(session.id());
                 self.agents.remove_session_agents(session.id());
                 session.set_agents(Vec::new());
-                self.sessions.restore_session(session.clone());
+                let session = self.restore_session_with_project_migration(session);
                 self.update_session_projection(session);
             }
             "session.deleted" => {
+                if durable_payload_entity_belongs_to_other_owner(
+                    &event,
+                    "session",
+                    "host_daemon_id",
+                    &self.config.daemon_id,
+                ) {
+                    return Ok(());
+                }
                 let mut session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
@@ -948,6 +1206,200 @@ mod tests {
     use super::*;
 
     #[test]
+    fn durable_restore_merges_linked_worktree_default_project_into_main_workspace() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let repo = temp_git_repo("durable-default-project-workspace");
+        let worktree = repo.with_file_name(format!(
+            "{}-linked",
+            repo.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/durable-default-project-workspace",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let repo_id = std::fs::canonicalize(&repo).unwrap().display().to_string();
+        let worktree_id = std::fs::canonicalize(&worktree)
+            .unwrap()
+            .display()
+            .to_string();
+        let main_project = crate::session::RuntimeProject::new(
+            "project-main",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            &repo_id,
+            "owner/repo",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        let linked_project = crate::session::RuntimeProject::new(
+            "project-linked",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            &worktree_id,
+            "owner/repo",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        let mut main_session = crate::session::RuntimeSession::new(
+            "session-main",
+            Some("main-session".to_string()),
+            &repo_id,
+            &repo_id,
+            config.host_machine_id.clone(),
+            config.daemon_id.clone(),
+        );
+        assert!(main_session.assign_project_id(main_project.id()));
+        let mut linked_session = crate::session::RuntimeSession::new(
+            "session-linked",
+            Some("linked-session".to_string()),
+            &worktree_id,
+            &worktree_id,
+            config.host_machine_id.clone(),
+            config.daemon_id.clone(),
+        );
+        assert!(linked_session.assign_project_id(linked_project.id()));
+        linked_session.set_active_provider_run(Some("legacy-provider-run".to_string()));
+        let main_agent = default_agent_for_session(&main_session, "agent-main");
+        let linked_agent = default_agent_for_session(&linked_session, "agent-linked");
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            for project in [&main_project, &linked_project] {
+                app.durable_state_store()
+                    .append_event(
+                        "project.created",
+                        Some(project.id().to_string()),
+                        serde_json::json!({ "project": project }),
+                    )
+                    .expect("legacy project should persist");
+            }
+            for (session, agent, project) in [
+                (&main_session, &main_agent, &main_project),
+                (&linked_session, &linked_agent, &linked_project),
+            ] {
+                app.durable_state_store()
+                    .append_event(
+                        "session.created",
+                        Some(session.id().to_string()),
+                        serde_json::json!({
+                            "session": session,
+                            "default_agent": agent,
+                            "project": project,
+                        }),
+                    )
+                    .expect("legacy session should persist");
+            }
+        }
+
+        let app = DaemonApp::bootstrap(config.clone()).expect("daemon should migrate");
+        let migrated = app
+            .sessions()
+            .get_session(linked_session.id())
+            .expect("linked session should restore");
+        assert_eq!(migrated.workspace_id(), repo_id);
+        assert_eq!(migrated.worktree_id(), worktree_id);
+        assert_eq!(migrated.project_id(), main_project.id());
+        assert!(app.sessions().get_project(linked_project.id()).is_err());
+        assert_eq!(
+            app.sessions()
+                .list_projects(crate::session::DEFAULT_LOCAL_USER_ID, true)
+                .len(),
+            1
+        );
+        drop(app);
+
+        let app = DaemonApp::bootstrap(config).expect("migration should survive restart");
+        let migrated = app
+            .sessions()
+            .get_session(linked_session.id())
+            .expect("linked session should survive restart");
+        assert_eq!(migrated.workspace_id(), repo_id);
+        assert_eq!(migrated.worktree_id(), worktree_id);
+        assert_eq!(migrated.project_id(), main_project.id());
+        assert!(app.sessions().get_project(linked_project.id()).is_err());
+        drop(app);
+
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn durable_restore_removes_project_without_visible_sessions() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let project = crate::session::RuntimeProject::new(
+            "legacy-empty-project",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "legacy-workspace",
+            "Legacy empty project",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        let mut hidden_session = crate::session::RuntimeSession::new(
+            "legacy-publication-runtime",
+            None,
+            "legacy-workspace",
+            "legacy-worktree",
+            config.host_machine_id.clone(),
+            config.daemon_id.clone(),
+        );
+        hidden_session.set_hidden(true);
+        assert!(hidden_session.assign_project_id(project.id()));
+        let default_agent = crate::agent::AgentInstance::new(
+            "legacy-publication-agent",
+            "legacy-publication-agent-ref",
+            hidden_session.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            app.durable_state_store()
+                .append_event(
+                    "project.created",
+                    Some(project.id().to_string()),
+                    serde_json::json!({ "project": &project }),
+                )
+                .expect("legacy empty project should persist");
+            app.durable_state_store()
+                .append_event(
+                    "session.created",
+                    Some(hidden_session.id().to_string()),
+                    serde_json::json!({
+                        "session": &hidden_session,
+                        "default_agent": &default_agent,
+                        "project": &project,
+                    }),
+                )
+                .expect("legacy hidden publication runtime should persist");
+        }
+
+        let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restore");
+        assert!(app.sessions().get_project(project.id()).is_err());
+        assert_eq!(
+            app.sessions()
+                .get_session(hidden_session.id())
+                .expect("hidden publication runtime should remain")
+                .project_id(),
+            ""
+        );
+        drop(app);
+
+        let app = DaemonApp::bootstrap(config).expect("daemon should restore cleanup event");
+        assert!(app.sessions().get_project(project.id()).is_err());
+        assert_eq!(
+            app.sessions()
+                .get_session(hidden_session.id())
+                .expect("hidden publication runtime should survive cleanup restart")
+                .project_id(),
+            ""
+        );
+    }
+
+    #[test]
     fn restart_reconciliation_restores_missing_slice_agent_ids_from_worker_placement() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon should boot");
@@ -1002,5 +1454,53 @@ mod tests {
             .expect("slice should remain available");
         assert_eq!(restored.session_ids, vec![session.id().to_string()]);
         assert_eq!(restored.agent_ids, vec![agent.id().to_string()]);
+    }
+
+    fn default_agent_for_session(
+        session: &crate::session::RuntimeSession,
+        agent_id: &str,
+    ) -> crate::agent::AgentInstance {
+        crate::agent::AgentInstance::new(
+            agent_id,
+            agent_id,
+            session.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    fn temp_git_repo(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-{label}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+        run_git(&root, &["config", "user.name", "Arroba Tests"]);
+        std::fs::write(root.join("README.md"), "durable workspace migration\n")
+            .expect("fixture should be written");
+        run_git(&root, &["add", "README.md"]);
+        run_git(&root, &["commit", "-m", "initial"]);
+        root
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

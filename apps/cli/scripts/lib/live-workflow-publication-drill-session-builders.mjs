@@ -1,8 +1,10 @@
 import path from 'node:path'
 import { writeFile } from 'node:fs/promises'
-const { addWorkflowEdgeRequest, addWorkflowNodeRequest, attachToSessionRequest, createSessionRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, createWorkflowRequest, getProviderRunRequest, launchProviderRunRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, setWorkflowRunOutputSchemaRequest, spawnAgentRequest, updateWorkflowNodeInstructionsRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
+const { addWorkflowEdgeRequest, addWorkflowNodeRequest, attachToSessionRequest, createSessionRequest, createWorkflowEndpointRequest, createWorkflowPublicationRequest, createWorkflowRequest, createWorkflowScheduleRequest, getProviderRunRequest, launchProviderRunRequest, setWorkflowNodeCanCompleteRunRequest, setWorkflowNodeCanEmitIntermediateOutputRequest, setWorkflowRunOutputSchemaRequest, spawnAgentRequest, updateWorkflowNodeInstructionsRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { variant } from './live-workflow-publication-drill-runtime.mjs'
 import { waitForProviderRunReady } from './live-workflow-publication-drill-waiters.mjs'
+
+export const HUMAN_HTTP_COMPOSER_METHODS = Object.freeze(['GET', 'POST'])
 
 export function publicationRequestTransportOptions(options) {
   const transportKind = options.transportKind
@@ -15,6 +17,37 @@ export function publicationRequestTransportOptions(options) {
     ...(supportsParser ? { parser: { kind: 'json' } } : {}),
     mode: transportKind === 'mcp' ? 'sync' : 'async',
   }
+}
+
+export async function createSchedulePublicationArtifacts(client, {
+  sessionId,
+  workflowId,
+  endpointId,
+}) {
+  const schedule = variant(
+    await client.send(createWorkflowScheduleRequest(
+      sessionId,
+      workflowId,
+      endpointId,
+      { kind: 'interval', every_seconds: 60 },
+      'schedule-publication',
+      'queue',
+      1,
+    )),
+    'WorkflowScheduleCreated',
+  ).schedule
+  const publication = variant(
+    await client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, {
+      alias: 'public_schedule',
+      route: '/schedule',
+      methods: ['POST'],
+      transport: { kind: 'api_sse_json' },
+      parser: { kind: 'json' },
+      mode: 'async',
+    })),
+    'WorkflowPublicationCreated',
+  ).publication
+  return { schedule, publication }
 }
 
 export async function createDeterministicPublicationSession(client, sessionIds, options) {

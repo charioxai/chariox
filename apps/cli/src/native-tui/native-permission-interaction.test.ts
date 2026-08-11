@@ -49,6 +49,7 @@ test("native permission interaction reads session state with projected activity"
 function runtimeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,

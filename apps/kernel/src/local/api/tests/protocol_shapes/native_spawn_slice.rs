@@ -264,7 +264,7 @@ fn local_daemon_protocol_turn_undo_and_agent_fork_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "7987c2f41cee27e298723a4f77cb47f70a9dc7e311c5e660c0747f7369b7ca8b"
+        "d2b82ed473d960af8e53fbd35b4ecb2ed9ebafc67d0d3fecf4e02932d1a85569"
     );
 }
 
@@ -287,7 +287,7 @@ fn local_daemon_protocol_slice_targeted_create_session_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d899a11d56955e8462792fe28e058cc2e4ad7b1588edb31a8ee8ab48e1d77ee0"
+        "eae0e4f3d41fcebc91db7c38d98b03818730a08f3c213d8068f38d8634e6e236"
     );
 }
 
@@ -318,7 +318,7 @@ fn local_daemon_protocol_create_session_worktree_placement_shape_is_versioned() 
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c8f50e8e2a7e469468ef4ee9a01b7093a4d85c3ce1a7401c17ae714aaf3b89a9"
+        "260da39fcac4bf240f45e1627bc729089c7b2f60bab77e577a9948d652923c35"
     );
 }
 
@@ -347,7 +347,7 @@ fn local_daemon_protocol_kernel_targeted_create_session_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "bf39557e7274d3c327ef768b93a1ee1e5d30a15a5ee7afda7bf6b458123a578d"
+        "1f7e945b15c33327efa044e75bb7b92eb0e4a5aefa9f26106019e0cabf113a72"
     );
 }
 

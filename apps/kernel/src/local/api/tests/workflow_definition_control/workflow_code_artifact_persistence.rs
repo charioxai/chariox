@@ -13,6 +13,8 @@ fn local_request_api_persists_workflow_code_artifacts() {
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
     std::fs::create_dir_all(workspace_root.join("schemas"))
         .expect("temporary schema directory should be created");
+    let worktree_root = workspace_root.join("worktree");
+    std::fs::create_dir_all(&worktree_root).expect("temporary worktree should be created");
     let schema_path = workspace_root.join("schemas/final.json");
     std::fs::write(
         &schema_path,
@@ -23,7 +25,10 @@ fn local_request_api_persists_workflow_code_artifacts() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new(workspace_root.display().to_string(), "worktree-artifact"),
+            CreateSessionRequest::new(
+                workspace_root.display().to_string(),
+                worktree_root.display().to_string(),
+            ),
         ))
         .expect("session create should succeed")
     {

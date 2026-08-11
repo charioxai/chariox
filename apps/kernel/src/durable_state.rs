@@ -210,6 +210,59 @@ impl DurableKernelStateStore {
         Ok(events)
     }
 
+    pub fn load_events_after_batch(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        let limit = limit.clamp(1, 4_096);
+        let connection = self.lock_connection("durable_state.load_events_after_batch")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
+                 FROM durable_state_events
+                 WHERE sequence > ?1
+                 ORDER BY sequence ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.load_events_after_batch",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![sequence as i64, limit as i64])
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.load_events_after_batch",
+                message: error.to_string(),
+            })?;
+        let mut events = Vec::with_capacity(limit);
+        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.load_events_after_batch",
+            message: error.to_string(),
+        })? {
+            let payload_json =
+                row.get::<_, String>(5)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.load_events_after_batch",
+                        message: error.to_string(),
+                    })?;
+            events.push(DurableStateEvent {
+                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
+                event_id: row.get::<_, String>(1).unwrap_or_default(),
+                kind: row.get::<_, String>(2).unwrap_or_default(),
+                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
+                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
+                payload: serde_json::from_str(&payload_json).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "durable_state.decode_event_batch",
+                        message: error.to_string(),
+                    }
+                })?,
+            });
+        }
+        Ok(events)
+    }
+
     pub fn load_events_by_kind(&self, kind: &str) -> Result<Vec<DurableStateEvent>, DaemonError> {
         let connection = self.lock_connection("durable_state.load_events_by_kind")?;
         let mut statement = connection
@@ -426,6 +479,24 @@ impl DurableKernelStateStore {
 
     pub fn latest_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
         let checkpoint = self.latest_entity_checkpoint()?;
+        let legacy_snapshot = self.latest_legacy_snapshot()?;
+        Ok(match (checkpoint, legacy_snapshot) {
+            (Some(checkpoint), Some(snapshot)) => {
+                if snapshot.sequence > checkpoint.sequence
+                    || (snapshot.sequence == checkpoint.sequence
+                        && snapshot.timestamp_ms > checkpoint.timestamp_ms)
+                {
+                    Some(snapshot)
+                } else {
+                    Some(checkpoint)
+                }
+            }
+            (Some(checkpoint), None) => Some(checkpoint),
+            (None, snapshot) => snapshot,
+        })
+    }
+
+    fn latest_legacy_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
         let connection = self.lock_connection("durable_state.latest_snapshot")?;
         let mut statement = connection
             .prepare(
@@ -447,7 +518,7 @@ impl DurableKernelStateStore {
         });
         let (sequence, timestamp_ms, payload_json) = match result {
             Ok(value) => value,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(checkpoint),
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
             Err(error) => {
                 return Err(DaemonError::LocalTransport {
                     operation: "durable_state.latest_snapshot",
@@ -465,10 +536,7 @@ impl DurableKernelStateStore {
                 }
             })?,
         };
-        Ok(Some(match checkpoint {
-            Some(checkpoint) if checkpoint.sequence >= legacy.sequence => checkpoint,
-            _ => legacy,
-        }))
+        Ok(Some(legacy))
     }
 
     pub(crate) fn save_entity_checkpoint(
@@ -1063,7 +1131,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_legacy_snapshot_supersedes_an_older_entity_checkpoint() {
+    fn newer_legacy_snapshot_supersedes_older_entity_checkpoint() {
         let path = std::env::temp_dir().join(format!(
             "arroba-durable-state-newer-legacy-snapshot-{}-{}.db",
             std::process::id(),
@@ -1075,24 +1143,24 @@ mod tests {
                 1,
                 vec![DurableCheckpointEntity {
                     kind: "sessions".to_string(),
-                    id: "checkpoint-session".to_string(),
-                    payload_json: serde_json::json!({"id": "checkpoint-session"}).to_string(),
+                    id: "foreign-session".to_string(),
+                    payload_json: serde_json::json!({"id": "foreign-session"}).to_string(),
                 }],
             )
-            .expect("entity checkpoint should save");
+            .expect("older checkpoint should save");
         store
             .save_snapshot(
                 2,
-                serde_json::json!({"sessions": [{"id": "legacy-session"}]}),
+                serde_json::json!({"sessions": [{"id": "current-session"}]}),
             )
-            .expect("newer legacy snapshot should save");
+            .expect("newer snapshot should save");
 
-        let snapshot = store
+        let latest = store
             .latest_snapshot()
-            .expect("snapshot should load")
+            .expect("latest snapshot should load")
             .expect("snapshot should exist");
-        assert_eq!(snapshot.sequence, 2);
-        assert_eq!(snapshot.payload["sessions"][0]["id"], "legacy-session");
+        assert_eq!(latest.sequence, 2);
+        assert_eq!(latest.payload["sessions"][0]["id"], "current-session");
 
         drop(store);
         let _ = std::fs::remove_file(&path);
@@ -1233,6 +1301,40 @@ mod tests {
             second.sequence
         );
 
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn durable_state_store_loads_event_replay_in_bounded_batches() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-batched-replay-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        for index in 0..3 {
+            store
+                .append_event(
+                    "session.updated",
+                    Some(format!("session-{index}")),
+                    serde_json::json!({"index": index}),
+                )
+                .expect("event should append");
+        }
+
+        let first_batch = store
+            .load_events_after_batch(0, 2)
+            .expect("first replay batch should load");
+        assert_eq!(first_batch.len(), 2);
+        let second_batch = store
+            .load_events_after_batch(first_batch[1].sequence, 2)
+            .expect("second replay batch should load");
+        assert_eq!(second_batch.len(), 1);
+        assert!(second_batch[0].sequence > first_batch[1].sequence);
+
+        drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));

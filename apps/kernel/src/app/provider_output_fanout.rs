@@ -2,22 +2,20 @@ use crate::agent::AgentServiceStore;
 use crate::app::ActiveTurnStore;
 use crate::app::DaemonApp;
 use crate::attachment::AttachmentServiceStore;
-use crate::history::{OperationalHistoryStore, SessionHistoryEntry, SessionHistoryStore};
+use crate::history::{OperationalHistoryStore, SessionHistoryEntry};
 use crate::provider::ProviderProcessServiceStore;
+use crate::provider_output_policy::output_bounds::{
+    bounded_terminal_output_bytes, should_log_provider_output_truncation,
+    terminal_output_delta_bytes,
+};
+use crate::provider_output_policy::tool_history::{
+    bounded_history_entry, is_unread_output_history_entry,
+};
 use crate::runtime::prompt_state::PromptStateOwner;
 use crate::session::SessionStateStore;
 use crate::terminal::{
     RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord, TerminalStreamStore,
 };
-pub(super) mod output_bounds;
-pub(super) mod tool_history;
-
-use output_bounds::{
-    bounded_terminal_output_bytes, should_log_provider_output_truncation,
-    terminal_output_delta_bytes,
-};
-use tool_history::{is_unread_output_history_entry, should_persist_provider_tool_history};
-
 pub(crate) struct ProviderOutputFanout {
     provider_store: ProviderProcessServiceStore,
     prompt_state_owner: PromptStateOwner,
@@ -25,7 +23,6 @@ pub(crate) struct ProviderOutputFanout {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     session_store: SessionStateStore,
-    history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
     archive_enabled: bool,
     terminal: TerminalStreamStore,
@@ -47,7 +44,6 @@ impl ProviderOutputFanout {
             agent_store: app.agents.clone(),
             attachment_store: app.attachments.clone(),
             session_store: app.sessions.clone(),
-            history_store: app.history_store(),
             operational_history_store: app.operational_history_store(),
             archive_enabled: app.history_archive_enabled(),
             terminal: app.terminal.clone(),
@@ -141,11 +137,14 @@ impl ProviderOutputFanout {
                 external_observation_metadata: None,
             };
         }
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
         let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
-            recipient_attachment_ids
+            self.agent_owner_recipient_attachment_ids(agent_id, recipient_attachment_ids)
         } else {
+            let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+                session_id,
+                agent_id,
+                recipient_attachment_ids,
+            );
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids)
         };
         let prompt_metadata =
@@ -288,8 +287,11 @@ impl ProviderOutputFanout {
         message: impl Into<String>,
     ) -> RuntimeNoticeRecord {
         let message = message.into();
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         let record = self.terminal.record_notice(
@@ -339,8 +341,11 @@ impl ProviderOutputFanout {
         message_id: &str,
         completed_at_ms: u64,
     ) {
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         self.terminal.record_assistant_message_completion(
@@ -354,7 +359,29 @@ impl ProviderOutputFanout {
         self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 
-    fn private_recipient_attachment_ids(
+    pub(super) fn agent_trace_recipient_attachment_ids(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        recipient_attachment_ids: Vec<String>,
+    ) -> Vec<String> {
+        let Some(agent_id) = agent_id else {
+            return recipient_attachment_ids;
+        };
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Vec::new();
+        };
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return Vec::new();
+        };
+        self.attachment_store.filter_attachment_ids_for_agent_trace(
+            recipient_attachment_ids,
+            &session,
+            agent.owner_user_id(),
+        )
+    }
+
+    fn agent_owner_recipient_attachment_ids(
         &self,
         agent_id: Option<&str>,
         recipient_attachment_ids: Vec<String>,
@@ -400,23 +427,20 @@ impl ProviderOutputFanout {
     }
 
     fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) {
-        if !should_persist_provider_tool_history(&entry) {
+        let Some(entry) = bounded_history_entry(entry) else {
+            return;
+        };
+        if let Err(error) = self.session_store.get_session(session_id) {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "skipping provider-output history append because session lookup failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
             return;
         }
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping provider-output history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
         let context = crate::app::HistoryEventContextResolver::new(
             self.provider_store.clone(),
             self.session_store.clone(),
@@ -424,7 +448,6 @@ impl ProviderOutputFanout {
             self.active_turns.clone(),
         )
         .resolve(&entry);
-        // Make authoritative history visible before readers can import the legacy copy.
         match self
             .operational_history_store
             .append_transcript(&entry, context)
@@ -465,16 +488,6 @@ impl ProviderOutputFanout {
                     }),
                 );
             }
-        }
-        if let Err(error) = self.history_store.append(&session, &entry) {
-            crate::logging::warn_with_fields(
-                "daemon.history",
-                "failed to append provider-output session history",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "error": error.to_string(),
-                }),
-            );
         }
     }
 }

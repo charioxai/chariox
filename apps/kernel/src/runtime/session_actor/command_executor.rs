@@ -152,6 +152,21 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::CreateSession(request) => {
                 self.store.create_session(request, caller_user_id).await
             }
+            LocalDaemonRequest::ListProjects(request) => {
+                self.store.list_projects(request, caller_user_id).await
+            }
+            LocalDaemonRequest::RenameProject(request) => {
+                self.store.rename_project(request, caller_user_id).await
+            }
+            LocalDaemonRequest::ArchiveProject(request) => {
+                self.store.archive_project(request, caller_user_id).await
+            }
+            LocalDaemonRequest::DeleteProject(request) => {
+                self.store.delete_project(request, caller_user_id).await
+            }
+            LocalDaemonRequest::RestoreProject(request) => {
+                self.store.restore_project(request, caller_user_id).await
+            }
             LocalDaemonRequest::AttachToSession(request) => {
                 self.store.attach_to_session(request, caller_user_id).await
             }

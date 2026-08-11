@@ -42,8 +42,11 @@
   {
     "id": "wait-in",
     "label": "/wait-in",
-    "description": "Send a prompt to the focused agent after a delay in minutes",
+    "description": "Usage: /wait-in <minutes> <prompt> · send once after the delay",
     "value": "/wait-in ",
+    "examples": [
+      "/wait-in 15 Check the latest build"
+    ],
     "searchAliases": [
       "remind agent",
       "delayed prompt",
@@ -54,8 +57,11 @@
   {
     "id": "wait-every",
     "label": "/wait-every",
-    "description": "Send a recurring prompt to the focused agent every given number of minutes",
+    "description": "Usage: /wait-every <minutes> <prompt> · repeat until cancelled",
     "value": "/wait-every ",
+    "examples": [
+      "/wait-every 30 Report progress"
+    ],
     "searchAliases": [
       "recurring prompt",
       "repeat reminder",
@@ -68,24 +74,28 @@
     "label": "/session",
     "description": "Create, attach, list, or delete sessions",
     "value": "/session ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "session-new",
         "label": "new",
         "description": "Create and attach a new session, optionally in a directory/worktree",
-        "value": "/session new "
+        "value": "/session new ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "session-attach",
         "label": "attach",
         "description": "Attach to an existing session",
-        "value": "/session attach "
+        "value": "/session attach ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "session-list",
         "label": "list",
         "description": "List available sessions",
         "value": "/session list",
+        "surfaces": ["session", "waiting_room"],
         "searchAliases": [
           "active sessions",
           "join existing session",
@@ -120,7 +130,8 @@
         "id": "session-delete",
         "label": "delete",
         "description": "Delete the current or referenced session",
-        "value": "/session delete "
+        "value": "/session delete ",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -317,24 +328,28 @@
     "label": "/cloud",
     "description": "Open Arroba Cloud and manage collaboration",
     "value": "/cloud ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "cloud-open",
         "label": "open",
         "description": "Open the Arroba Cloud browser terminal",
-        "value": "/cloud open"
+        "value": "/cloud open",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "cloud-link",
         "label": "link",
         "description": "Pair this machine with Arroba Cloud",
-        "value": "/cloud link"
+        "value": "/cloud link",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "cloud-status",
         "label": "status",
         "description": "Show Cloud pairing and relay status",
-        "value": "/cloud status"
+        "value": "/cloud status",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "cloud-invite-create",
@@ -346,7 +361,8 @@
         "id": "cloud-invite-accept",
         "label": "invite accept",
         "description": "Accept a cloud-backed session invite",
-        "value": "/cloud invite accept "
+        "value": "/cloud invite accept ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "cloud-members",
@@ -358,7 +374,8 @@
         "id": "cloud-collaborators",
         "label": "collaborators",
         "description": "List recent cloud collaborators",
-        "value": "/cloud collaborators"
+        "value": "/cloud collaborators",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -367,24 +384,28 @@
     "label": "/relay",
     "description": "Manage relay connection and self-hosted collaboration",
     "value": "/relay ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "relay-status",
         "label": "status",
         "description": "Show relay configuration and connection status",
-        "value": "/relay status"
+        "value": "/relay status",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "relay-use",
         "label": "use",
         "description": "Configure a self-hosted relay URL and token",
-        "value": "/relay use "
+        "value": "/relay use ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "relay-disable",
         "label": "disable",
         "description": "Disable relay configuration",
-        "value": "/relay disable"
+        "value": "/relay disable",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "relay-invite-create",
@@ -396,7 +417,8 @@
         "id": "relay-invite-accept",
         "label": "invite accept",
         "description": "Accept a same-relay session invite",
-        "value": "/relay invite accept "
+        "value": "/relay invite accept ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "relay-members",
@@ -411,6 +433,7 @@
     "label": "/collab",
     "description": "Manage collaboration using the configured backend",
     "value": "/collab ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "collab-invite-create",
@@ -422,7 +445,8 @@
         "id": "collab-invite-accept",
         "label": "invite accept",
         "description": "Accept a collaboration invite",
-        "value": "/collab invite accept "
+        "value": "/collab invite accept ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "collab-members",
@@ -443,18 +467,21 @@
     "label": "/kernel",
     "description": "Inspect kernel runtime health and remote readiness",
     "value": "/kernel ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "kernel-health",
         "label": "health",
         "description": "Open runtime health, remote readiness, and invariants",
-        "value": "/kernel health"
+        "value": "/kernel health",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "kernel-remote-runtime",
         "label": "remote-runtime",
         "description": "Open home authority, worker runs, slices, home-proxy tools, and live sync readiness",
         "value": "/kernel remote-runtime",
+        "surfaces": ["session", "waiting_room"],
         "searchAliases": [
           "remote runtime",
           "remote readiness",
@@ -483,13 +510,15 @@
         "id": "kernel-delete",
         "label": "delete",
         "description": "Delete this kernel and its sessions",
-        "value": "/kernel delete"
+        "value": "/kernel delete",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "kernel-runtime",
         "label": "runtime",
         "description": "Alias for /kernel remote-runtime",
         "value": "/kernel runtime",
+        "surfaces": ["session", "waiting_room"],
         "searchAliases": [
           "remote runtime",
           "remote readiness",
@@ -506,7 +535,8 @@
         "id": "kernel-status",
         "label": "status",
         "description": "Alias for /kernel health",
-        "value": "/kernel status"
+        "value": "/kernel status",
+        "surfaces": ["session", "waiting_room"]
       }
     ]
   },
@@ -515,18 +545,21 @@
     "label": "/machine",
     "description": "Inspect remote worker machines",
     "value": "/machine ",
+    "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "machine-list",
         "label": "list",
         "description": "List remote machines visible through the relay",
-        "value": "/machine list"
+        "value": "/machine list",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "machine-kernels",
         "label": "kernels",
         "description": "List live kernels and worker readiness for a machine",
         "value": "/machine kernels ",
+        "surfaces": ["session", "waiting_room"],
         "searchAliases": [
           "worker readiness",
           "remote readiness",
@@ -542,19 +575,22 @@
         "id": "machine-approve",
         "label": "approve",
         "description": "Approve a pending remote worker machine",
-        "value": "/machine approve "
+        "value": "/machine approve ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "machine-forget",
         "label": "forget",
         "description": "Forget a remote worker machine",
-        "value": "/machine forget "
+        "value": "/machine forget ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "machine-rename",
         "label": "rename",
         "description": "Assign a display alias to a remote worker machine",
-        "value": "/machine rename "
+        "value": "/machine rename ",
+        "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "machine-ls",

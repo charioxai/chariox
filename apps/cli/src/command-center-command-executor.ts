@@ -16,6 +16,8 @@ type CommandCenterCommandExecutorDeps = {
   onProvider: CommandHandler<"provider">
   onModel: CommandHandler<"model">
   onVariant: CommandHandler<"variant">
+  onMode: CommandHandler<"mode">
+  onPermissions: CommandHandler<"permissions">
   onView: CommandHandler<"view">
   onUndo: CommandHandler<"undo">
   onFork: CommandHandler<"fork">
@@ -42,6 +44,7 @@ type CommandCenterCommandExecutorDeps = {
   onExtension: CommandHandler<"extension">
   flashFooter: (message: string, tone: FooterFlash["tone"]) => void
   formatError: (error: unknown) => string
+  handleSharedShellCommand?: (rawCommand: string) => Promise<boolean>
 }
 
 export function createCommandCenterCommandExecutor(
@@ -57,6 +60,16 @@ export function createCommandCenterCommandExecutor(
     }
 
   const execute = async (value: string) => {
+    if (deps.handleSharedShellCommand) {
+      try {
+        if (await deps.handleSharedShellCommand(value)) {
+          return
+        }
+      } catch (error) {
+        deps.flashFooter(deps.formatError(error), "error")
+        return
+      }
+    }
     await executeSlashCommand(value, {
       onExit: deps.onExit,
       onWaiting: deps.onWaiting,
@@ -66,6 +79,8 @@ export function createCommandCenterCommandExecutor(
       onProvider: deps.onProvider,
       onModel: deps.onModel,
       onVariant: deps.onVariant,
+      onMode: deps.onMode,
+      onPermissions: deps.onPermissions,
       onView: deps.onView,
       onUndo: contained(deps.onUndo),
       onFork: contained(deps.onFork),

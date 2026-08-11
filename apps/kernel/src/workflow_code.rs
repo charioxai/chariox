@@ -119,7 +119,7 @@ pub const WORKFLOW_CODE_PATTERN_EXAMPLES: &[WorkflowCodePatternExample] = &[
     WorkflowCodePatternExample {
         slug: "adversarial-verification",
         title: "Adversarial verification",
-        summary: "A proposer, critic, and judge collaborate with a critique loop.",
+        summary: "A proposer, critic, and judge collaborate on adversarial verification.",
         path: "examples/workflow-code/adversarial-verification.js",
         source: include_str!("../../../examples/workflow-code/adversarial-verification.js"),
     },

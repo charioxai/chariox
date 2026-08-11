@@ -755,6 +755,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     let mut next_heartbeat_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
             match router.waiting_room_public_snapshot().await {
                 Ok(snapshot) => {
@@ -895,7 +896,10 @@ async fn run_waiting_room_inventory_subscription_loop(
             next_heartbeat_at
                 .checked_duration_since(Instant::now())
                 .unwrap_or(Duration::ZERO),
-            router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+            wait_for_waiting_room_inventory_change(
+                router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                router.wait_for_session_projection_change_after(session_projection_change_sequence),
+            ),
         )
         .await;
         if wait_result.is_ok() {
@@ -906,4 +910,40 @@ async fn run_waiting_room_inventory_subscription_loop(
             ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
         tick = tick.wrapping_add(elapsed_ticks);
     }
+}
+
+async fn wait_for_waiting_room_inventory_change(
+    waiting_room_change: impl std::future::Future<Output = ()>,
+    session_projection_change: impl std::future::Future<Output = ()>,
+) {
+    tokio::pin!(waiting_room_change);
+    tokio::pin!(session_projection_change);
+    tokio::select! {
+        _ = &mut waiting_room_change => {}
+        _ = &mut session_projection_change => {}
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn waiting_room_inventory_wait_wakes_for_either_projection_source() {
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        wait_for_waiting_room_inventory_change(
+            std::future::ready(()),
+            std::future::pending::<()>(),
+        ),
+    )
+    .await
+    .expect("waiting-room changes should wake inventory projection");
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        wait_for_waiting_room_inventory_change(
+            std::future::pending::<()>(),
+            std::future::ready(()),
+        ),
+    )
+    .await
+    .expect("session activity projection changes should wake waiting-room inventory");
 }

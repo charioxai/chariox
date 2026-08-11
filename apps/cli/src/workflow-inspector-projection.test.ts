@@ -378,6 +378,7 @@ test("workflow inspector resolves endpoint selection to entry node trace", () =>
 function baseSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
     created_at_ms: 1,

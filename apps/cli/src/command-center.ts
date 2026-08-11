@@ -14,6 +14,7 @@ import type { CommandCenterContext } from "./command-center-context.js"
 import { buildCommandCenterRootItems } from "./command-center-root-items.js"
 import { buildScopedCommandCenterItems } from "./command-center-scoped-items.js"
 import { buildWorkflowRegistryItems } from "./command-center-workflow-registry-items.js"
+import type { CommandNode } from "./command-center-tree-projection.js"
 import type { CommandCenterItem } from "./command-center-types.js"
 
 export type { CommandCenterItem } from "./command-center-types.js"
@@ -42,15 +43,15 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
   }
 
   if (normalized.startsWith("/model ")) {
-    return buildModelItems(normalized, context)
+    return commandTreeContains(context.commandTree, "model") ? buildModelItems(normalized, context) : []
   }
 
   if (normalized.startsWith("/variant ")) {
-    return buildVariantItems(normalized, context)
+    return commandTreeContains(context.commandTree, "variant") ? buildVariantItems(normalized, context) : []
   }
 
   if (normalized.startsWith("/view ")) {
-    return buildViewItems(normalized)
+    return commandTreeContains(context.commandTree, "view") ? buildViewItems(normalized) : []
   }
 
   if (context.focusedProvider && providerSupportsNamespaceCommands(context.focusedProvider)) {
@@ -71,6 +72,10 @@ export function buildCommandCenterItems(input: string, context: CommandCenterCon
   }
 
   return filterCommandCenterItems(buildCommandCenterRootItems(context), normalized.slice(1).toLowerCase())
+}
+
+function commandTreeContains(nodes: readonly CommandNode[], id: string): boolean {
+  return nodes.some((node) => node.id === id || commandTreeContains(node.children ?? [], id))
 }
 
 function buildAgentAliasItems(

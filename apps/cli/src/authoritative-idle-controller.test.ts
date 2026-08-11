@@ -146,6 +146,7 @@ function idleHarness(options: { statusLine?: string } = {}) {
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,

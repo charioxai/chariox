@@ -24,6 +24,8 @@ import {
 } from "./provider-command-handlers.js"
 import {
   handleModelSlashCommand,
+  handleModeSlashCommand,
+  handlePermissionsSlashCommand,
   handleVariantSlashCommand,
   handleViewSlashCommand,
   type SelectionCommandHandlerDeps,
@@ -210,6 +212,18 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleVariantSlashCommand(deps, command)
   }
 
+  const handleModeCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "mode" }>,
+  ): Promise<void> => {
+    await handleModeSlashCommand(deps, command)
+  }
+
+  const handlePermissionsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "permissions" }>,
+  ): Promise<void> => {
+    await handlePermissionsSlashCommand(deps, command)
+  }
+
   const handleViewCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "view" }>,
   ): Promise<void> => {
@@ -387,6 +401,8 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleProviderCommand,
     handleModelCommand,
     handleVariantCommand,
+    handleModeCommand,
+    handlePermissionsCommand,
     handleViewCommand,
     handleCycleAgentFocus,
     handleAgentCommand,

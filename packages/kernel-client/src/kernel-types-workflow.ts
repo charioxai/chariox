@@ -5,8 +5,12 @@ import type { AgentInstance } from "./kernel-types-runtime.js"
 export type WorkflowDefinition = {
   id: string
   alias: string | null
+  prompt?: string | null
+  controlled_by_metaagent_id?: string | null
+  created_at_ms?: number
   revision?: number
   flush_agent_context_before_run?: boolean
+  max_concurrent?: number
   run_output_schema_ref?: string | null
   schemas?: WorkflowSchemaDefinition[]
   canvas_layout?: WorkflowCanvasLayout | null
@@ -527,6 +531,7 @@ export type WorkflowDesignNode = {
 }
 
 export type WorkflowDesignNodePatch = {
+  label?: string | null
   instructions?: string | null
   can_complete_workflow_run?: boolean | null
   can_emit_intermediate_run_output?: boolean | null
@@ -590,6 +595,7 @@ export type WorkflowDesignOpForwarded = {
 
 export type WorkflowEndpointDefinition = {
   id: string
+  owner_user_id?: string
   alias: string | null
   entry_node_id: string
 }
@@ -834,6 +840,7 @@ export type WorkflowEdgeDefinition = {
   id: string
   from_node_id: string
   to_node_id: string
+  created_by_user_id?: string
   source_side?: "top" | "right" | "bottom" | "left" | null
   target_side?: "top" | "right" | "bottom" | "left" | null
   handoff_schema_ref?: string | null

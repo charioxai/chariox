@@ -49,6 +49,7 @@ test("resolveSessionAgentReference reports missing focus when the session has no
 function sessionWithAgents(agents: AgentInstance[]): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
     created_at_ms: 1,

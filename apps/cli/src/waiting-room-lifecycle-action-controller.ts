@@ -12,10 +12,16 @@ import {
   deriveWaitingRoomSessionLifecycleDecision,
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 type SessionLifecycleResult = {
   id: string
   alias?: string | null
+}
+
+type ProjectLifecycleResult = {
+  project: { id: string; name: string; status: "active" | "archived" }
+  sessions?: SessionLifecycleResult[]
 }
 
 export type WaitingRoomLifecycleActionControllerDeps = {
@@ -26,6 +32,11 @@ export type WaitingRoomLifecycleActionControllerDeps = {
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
   getProviderCatalog: () => ProviderCatalog
+  getProjects?: () => WaitingRoomProjectSummary[]
+  archiveProject?: (projectId: string) => Promise<ProjectLifecycleResult>
+  deleteProject?: (projectId: string) => Promise<ProjectLifecycleResult>
+  restoreProject?: (projectId: string) => Promise<{ id: string; name: string }>
+  renameProject?: (projectId: string, name: string) => Promise<{ id: string; name: string }>
   getWorkspaceTarget: () => string
   confirmationController: WaitingRoomLifecycleConfirmationController
   archiveSessionById: (sessionId: string) => Promise<SessionLifecycleResult>
@@ -51,6 +62,8 @@ export type WaitingRoomLifecycleActionControllerDeps = {
 
 export type WaitingRoomLifecycleActionController = {
   applyAction(action: WaitingRoomSessionLifecycleAction, stateOverride?: WaitingRoomState): Promise<void>
+  restoreProject(projectId: string): Promise<void>
+  renameProject(projectId: string, name: string): Promise<void>
 }
 
 export function createWaitingRoomLifecycleActionController(
@@ -93,6 +106,7 @@ export function createWaitingRoomLifecycleActionController(
               state: effectiveState,
               sessions: deps.getAvailableSessions(),
               catalog: deps.getProviderCatalog(),
+              remote: deps.getRemoteState(),
             })
         if (decision.action === "error") {
           deps.confirmationController.clear()
@@ -111,6 +125,14 @@ export function createWaitingRoomLifecycleActionController(
           removeSessions(new Set([updated.id]))
           await refreshAfterSessionMutation()
           deps.flashFooter(`archived session ${formatSessionDisplayLabel(updated)}`, "info")
+          return
+        }
+        if (decision.action === "archive-project") {
+          if (!deps.archiveProject) throw new Error("project archive is unavailable in this CLI")
+          const updated = await deps.archiveProject(decision.project.id)
+          await refreshAfterSessionMutation({ ...deps.getWaitingRoomState(), focus: "new", projectIndex: 0 })
+          closeSessionBrowserIfOpen()
+          deps.flashFooter(`archived project ${updated.project.name}`, "info")
           return
         }
         if (decision.action === "archive-all") {
@@ -140,6 +162,14 @@ export function createWaitingRoomLifecycleActionController(
           await refreshAfterSessionMutation({ ...deps.getWaitingRoomState(), focus: "new", sessionIndex: 0 })
           closeSessionBrowserIfOpen()
           deps.flashFooter(`deleted ${deleted.length} session${deleted.length === 1 ? "" : "s"}`, "error")
+          return
+        }
+        if (decision.action === "delete-project") {
+          if (!deps.deleteProject) throw new Error("project delete is unavailable in this CLI")
+          const updated = await deps.deleteProject(decision.project.id)
+          await refreshAfterSessionMutation({ ...deps.getWaitingRoomState(), focus: "new", projectIndex: 0 })
+          closeSessionBrowserIfOpen()
+          deps.flashFooter(`deleted project ${updated.project.name}`, "error")
           return
         }
         if (decision.action === "delete") {
@@ -176,6 +206,33 @@ export function createWaitingRoomLifecycleActionController(
           action,
           error: formatError(error),
         })
+        deps.flashFooter(formatError(error), "error")
+      }
+    },
+    async restoreProject(projectId) {
+      try {
+        if (!deps.isKernelConnected()) await deps.connectDetachedKernel()
+        const project = (deps.getProjects?.() ?? []).find((candidate) => candidate.id === projectId)
+        if (!project) throw new Error(`project ${projectId} is unavailable`)
+        if (project.status !== "archived") throw new Error(`project ${project.name} is not archived`)
+        if (!deps.restoreProject) throw new Error("project restore is unavailable in this CLI")
+        const restored = await deps.restoreProject(projectId)
+        await refreshAfterSessionMutation()
+        deps.flashFooter(`restored project ${restored.name}`, "info")
+      } catch (error) {
+        deps.flashFooter(formatError(error), "error")
+      }
+    },
+    async renameProject(projectId, name) {
+      try {
+        const nextName = name.trim()
+        if (!nextName) throw new Error("project name cannot be empty")
+        if (!deps.isKernelConnected()) await deps.connectDetachedKernel()
+        if (!deps.renameProject) throw new Error("project rename is unavailable in this CLI")
+        const renamed = await deps.renameProject(projectId, nextName)
+        await refreshAfterSessionMutation()
+        deps.flashFooter(`renamed project to ${renamed.name}`, "info")
+      } catch (error) {
         deps.flashFooter(formatError(error), "error")
       }
     },

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::session::{PromptDetachEffect, SessionService};
+use crate::session::{PromptDetachEffect, RuntimeSession, SessionService};
 
 use super::{AttachRequest, AttachmentEvent, ClientCapabilityLevel, RuntimeAttachment};
 
@@ -90,6 +90,29 @@ impl AttachmentServiceStore {
     ) -> Vec<String> {
         self.read()
             .filter_attachment_ids_for_user(attachment_ids, owner_user_id)
+    }
+
+    pub(crate) fn filter_attachment_ids_for_agent_trace(
+        &self,
+        attachment_ids: Vec<String>,
+        session: &RuntimeSession,
+        agent_owner_user_id: &str,
+    ) -> Vec<String> {
+        let attachments = self.read();
+        attachment_ids
+            .into_iter()
+            .filter(|attachment_id| {
+                attachments
+                    .get_attachment(attachment_id)
+                    .ok()
+                    .is_some_and(|attachment| {
+                        attachment.owner_user_id() == agent_owner_user_id
+                            || session
+                                .collaboration_level_for_user(attachment.owner_user_id())
+                                .is_some_and(|level| level.can_view_agent_trace())
+                    })
+            })
+            .collect()
     }
 
     pub fn list_client_attachments(&self, client_id: &str) -> Vec<RuntimeAttachment> {

@@ -34,8 +34,11 @@ impl KernelRuntimeOwnedState {
         message: impl Into<String>,
     ) {
         let message = message.into();
-        let recipient_attachment_ids =
-            self.private_recipient_attachment_ids(agent_id, recipient_attachment_ids);
+        let recipient_attachment_ids = self.agent_trace_recipient_attachment_ids(
+            session_id,
+            agent_id,
+            recipient_attachment_ids,
+        );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
         self.terminal_stream.record_notice(
@@ -46,31 +49,18 @@ impl KernelRuntimeOwnedState {
             message.clone(),
         );
         self.notify_metaagent_trace_activity(session_id, agent_id);
-        let session = match self.session_store.get_session(session_id) {
-            Ok(session) => session,
-            Err(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.history",
-                    "skipping history append because session lookup failed",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "error": error.to_string(),
-                    }),
-                );
-                return;
-            }
-        };
-        let entry = SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message);
-        if let Err(error) = self.history_store.append(&session, &entry) {
+        if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
-                "failed to append session history",
+                "skipping notice history append because session lookup failed",
                 serde_json::json!({
                     "session_id": session_id,
                     "error": error.to_string(),
                 }),
             );
+            return;
         }
+        let entry = SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message);
         self.append_operational_history_entry(&entry, None, None, None);
     }
 }

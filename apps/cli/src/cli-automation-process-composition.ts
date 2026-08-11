@@ -41,6 +41,10 @@ export type CliAutomationProcessCompositionDeps = {
   waitingRoomState: AnyFn
   setWaitingRoomState: AnyFn
   availableSessions: AnyFn
+  waitingRoomProjects: AnyFn
+  applyWaitingRoomSessionLifecycleAction: AnyFn
+  restoreWaitingRoomProject: AnyFn
+  renameWaitingRoomProject: AnyFn
   providerCatalogState: AnyFn
   waitingRoomCloudNotice: AnyFn
   waitingRoomInventoryStatus: AnyFn
@@ -107,6 +111,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     isAttached: deps.isAttached,
     waitingRoomState: deps.waitingRoomState,
     availableSessions: deps.availableSessions,
+    waitingRoomProjects: deps.waitingRoomProjects,
     providerCatalogState: deps.providerCatalogState,
     waitingRoomCloudNotice: deps.waitingRoomCloudNotice,
     waitingRoomInventoryStatus: deps.waitingRoomInventoryStatus,
@@ -158,6 +163,10 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     waitingRoomState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
     externalProviderSessionsState: deps.externalProviderSessionsState,
+    waitingRoomProjects: deps.waitingRoomProjects,
+    applyWaitingRoomSessionLifecycleAction: deps.applyWaitingRoomSessionLifecycleAction,
+    restoreWaitingRoomProject: deps.restoreWaitingRoomProject,
+    renameWaitingRoomProject: deps.renameWaitingRoomProject,
     connectDetachedKernelFromWaitingRoom: deps.connectDetachedKernelFromWaitingRoom,
     refreshWaitingRoomData: deps.refreshWaitingRoomData,
     submitFocusedInteractionChoice: deps.submitFocusedInteractionChoice,

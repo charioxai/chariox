@@ -399,28 +399,31 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|dispatch| dispatch.provider_run_id == provider_run_id);
             if completion.completion.started_next.is_none() && !reuses_provider_run {
-                let mut ended_provider_run_id = None;
                 if let Ok(outcome) = owned
                     .provider_store
                     .terminate_run_provider_only(session_id, provider_run_id)
                 {
-                    ended_provider_run_id = Some(outcome.run().id().to_string());
-                    let _ = owned
-                        .clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+                    let retired_provider_run_id = outcome.run().id().to_string();
+                    let _ = owned.clear_active_provider_run_session_pointer(
+                        session_id,
+                        &retired_provider_run_id,
+                    );
                     owned.provider_run_projection.update(outcome.into_run());
-                }
-                if let Some(ended_provider_run_id) = ended_provider_run_id {
                     let (_, process_key) = self
                         .with_app_side_effect(|app| {
                             crate::app::ProviderLaunchProcessRuntime::new(app)
-                                .remove_run(&ended_provider_run_id)
+                                .remove_run(&retired_provider_run_id)
                         })
                         .await
                         .unwrap_or((false, None));
                     owned.remove_provider_process_tracking_for_run(
-                        &ended_provider_run_id,
+                        &retired_provider_run_id,
                         process_key,
                     );
+                    owned
+                        .connector_adapter_processes
+                        .shutdown_run(&retired_provider_run_id)
+                        .await;
                 }
             }
             self.spawn_workflow_prompt_dispatches(dispatches);

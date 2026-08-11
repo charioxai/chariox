@@ -42,6 +42,43 @@ fn bootstrap_restores_created_session_and_agents_from_durable_state() {
 }
 
 #[test]
+fn bootstrap_ignores_foreign_session_update_before_decoding_newer_schema() {
+    let config = DaemonConfig::for_tests();
+    {
+        let mut app = DaemonApp::bootstrap(config.clone()).expect("first daemon should boot");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should create");
+        let mut foreign_session = serde_json::to_value(&session).expect("session should serialize");
+        foreign_session["host_daemon_id"] = serde_json::json!("newer-foreign-kernel");
+        foreign_session["workflow_queued_prompts"] = serde_json::json!([{
+            "id": "foreign-event-prompt",
+            "queue_id": "foreign-workflow:default",
+            "workflow_id": "foreign-workflow",
+            "endpoint_id": "foreign-endpoint",
+            "prompt": "foreign event prompt",
+            "source": "event",
+            "status": "queued",
+            "created_at_ms": 1,
+            "updated_at_ms": 1
+        }]);
+        app.durable_state_store()
+            .append_event(
+                "session.updated",
+                Some(session.id().to_string()),
+                serde_json::json!({
+                    "session": foreign_session,
+                    "reason": "foreign_kernel_newer_schema",
+                }),
+            )
+            .expect("foreign session event should persist");
+    }
+
+    DaemonApp::bootstrap(config)
+        .expect("foreign session state should be ignored before typed decoding");
+}
+
+#[test]
 fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
     let config = DaemonConfig::for_tests();
     let tunnel_id = "publication-durable-restart";

@@ -5,6 +5,7 @@ import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessi
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { LocalKernelPresence } from "./local-kernel-presence.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
@@ -157,6 +158,27 @@ test("waiting room inventory row patch merges changes and removals", () => {
   })
 })
 
+test("waiting room inventory row patch merges project changes and removals", async () => {
+  const harness = createHarness({
+    snapshots: [inventory("v1", {
+      projects: [project("project-1", "Frontend"), project("project-2", "Docs")],
+    })],
+  })
+
+  await harness.controller.refreshNow()
+  harness.controller.applyRowsChanged({
+    inventoryVersion: "v2",
+    structuralVersion: "structure-v2",
+    activityRevision: "activity-v2",
+    sessions: [],
+    removedSessionIds: [],
+    projects: [{ ...project("project-1", "Web"), updated_at_ms: 5 }],
+    removedProjectIds: ["project-2"],
+  })
+
+  assert.deepEqual(harness.projects().map(({ id, name }) => [id, name]), [["project-1", "Web"]])
+})
+
 test("waiting room refresh still hydrates unattached agents after a row patch set the inventory version", async () => {
   const harness = createHarness({
     snapshots: [inventory("v2", {
@@ -289,6 +311,7 @@ function createHarness(options: {
   let relayStatus: RelayStatusView | null = null
   let remoteMachines: RemoteMachineView[] = []
   let remoteKernels: RemoteKernelView[] = []
+  let projects: WaitingRoomProjectSummary[] = []
   let externalProviderSessions: ExternalProviderSessionRecord[] = []
   let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
   let inventoryCalls = 0
@@ -314,6 +337,10 @@ function createHarness(options: {
     getAvailableSessions: () => availableSessions,
     setAvailableSessions: (sessions) => {
       availableSessions = sessions
+    },
+    getProjects: () => projects,
+    setProjects: (nextProjects) => {
+      projects = nextProjects
     },
     setRelayStatus: (status) => {
       relayStatus = status
@@ -350,6 +377,7 @@ function createHarness(options: {
     relayStatus: () => relayStatus,
     remoteMachines: () => remoteMachines,
     remoteKernels: () => remoteKernels,
+    projects: () => projects,
     externalProviderSessions: () => externalProviderSessions,
     externalProviderSessionsPage: () => externalProviderSessionsPage,
     reconcileCount: () => reconcileCount,
@@ -377,7 +405,7 @@ function inventory(
   overrides: Partial<WaitingRoomInventory> = {},
 ): WaitingRoomInventory {
   return {
-    schemaVersion: 10,
+    schemaVersion: 11,
     inventoryVersion,
     structuralVersion: `structure-${inventoryVersion}`,
     activityRevision: `activity-${inventoryVersion}`,
@@ -396,12 +424,29 @@ function inventory(
 function session(id: string): WaitingRoomPublicSessionSummary {
   return {
     id,
+    project_id: "project-default",
     alias: null,
     workspace_id: "/workspace",
     worktree_id: "/workspace/tree",
     status: "Created",
     created_at_ms: 1,
     connected_cli_count: 0,
+  }
+}
+
+function project(id: string, name: string): WaitingRoomProjectSummary {
+  return {
+    id,
+    owner_user_id: "owner",
+    workspace_id: "/workspace",
+    name,
+    kind: "named",
+    status: "active",
+    created_at_ms: 1,
+    updated_at_ms: 2,
+    session_count: 0,
+    joined_collaborator_count: 0,
+    pending_collaboration_invite_count: 0,
   }
 }
 

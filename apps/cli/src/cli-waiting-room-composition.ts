@@ -1,5 +1,5 @@
 import { mergeExternalProviderSessionsSorted } from "@arroba/kernel-client/external-provider-sessions"
-import { updateAgentProfile } from "./agent-api.js"
+import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
@@ -40,6 +40,12 @@ import { createWaitingRoomInventoryCache } from "./waiting-room-inventory-cache.
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
+import {
+  archiveProject,
+  deleteProject,
+  renameProject,
+  restoreProject,
+} from "./project-api.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -54,6 +60,8 @@ export type CliWaitingRoomCompositionDeps = {
   setWaitingRoomState: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
+  waitingRoomProjects: AnyFn
+  setWaitingRoomProjects: AnyFn
   providerCatalogState: AnyFn
   setProviderCatalogState: AnyFn
   providerCommandCatalogState: AnyFn
@@ -121,6 +129,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
+      workspaceId: deps.pendingWorkspaceTarget(),
       cloudNotice: deps.waitingRoomCloudNotice(),
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
@@ -133,6 +142,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getThemeRegistry: deps.themeRegistryState,
     getCurrentProvider: () => deps.options.provider ?? "opencode",
@@ -174,6 +184,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     isKernelHidden: deps.waitingRoomHiddenKernelController.isKernelHidden,
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
+    getProjects: deps.waitingRoomProjects,
+    setProjects: deps.setWaitingRoomProjects,
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
@@ -260,6 +272,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
+      workspaceId: deps.pendingWorkspaceTarget(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -268,6 +281,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getWorkspaceTarget: deps.pendingWorkspaceTarget,
     getWorktreeTarget: deps.pendingWorktreeTarget,
@@ -289,7 +303,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       account_profile: launch.account_profile,
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
-    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null)),
+    }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection),
     importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
     loadOlderExternalProviderSessions: async () => {
       const pageState = deps.externalProviderSessionsPageState()
@@ -350,6 +364,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     connectDetachedKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
+      workspaceId: deps.pendingWorkspaceTarget(),
       cloudNotice: deps.waitingRoomCloudNotice(),
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
@@ -362,10 +377,16 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       externalProviderSessions: deps.externalProviderSessionsState(),
       externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
       externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
+      projects: deps.waitingRoomProjects(),
     }),
     getAvailableSessions: deps.availableSessions,
     setAvailableSessions: deps.setAvailableSessions,
     getProviderCatalog: deps.providerCatalogState,
+    getProjects: deps.waitingRoomProjects,
+    archiveProject: (projectId) => archiveProject(deps.client, projectId),
+    deleteProject: (projectId) => deleteProject(deps.client, projectId),
+    restoreProject: (projectId) => restoreProject(deps.client, projectId),
+    renameProject: (projectId, name) => renameProject(deps.client, projectId, name),
     getWorkspaceTarget: deps.pendingWorkspaceTarget,
     confirmationController: waitingRoomLifecycleConfirmationController,
     archiveSessionById: (sessionId) => archiveSessionById(deps.client, sessionId),
@@ -389,6 +410,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     formatError: deps.formatError,
   })
   const applyWaitingRoomSessionLifecycleAction = waitingRoomLifecycleActionController.applyAction
+  const restoreWaitingRoomProject = waitingRoomLifecycleActionController.restoreProject
+  const renameWaitingRoomProject = waitingRoomLifecycleActionController.renameProject
 
   const providerPromptProjectionController = createProviderPromptProjectionController({
     getProviderRun: deps.focusedProviderRun,
@@ -426,6 +449,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     providerRunState: deps.providerRunState,
     sessionState: deps.sessionState,
     updateAgentProfile: (sessionId, agentId, profile) => updateAgentProfile(deps.client, sessionId, agentId, profile),
+    updateAgentConfig: (sessionId, agentId, config) => updateAgentConfig(deps.client, sessionId, agentId, config),
     applySessionState: deps.applySessionState,
     clearProviderRunState: () => deps.setProviderRunState(null),
     getProviderAuthStatus: (provider) => getProviderAuthStatus(deps.client, provider),
@@ -443,6 +467,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   return {
     activateWaitingRoom,
     applyModelSelection: providerSelectionController.applyModelSelection,
+    applyModeSelection: providerSelectionController.applyModeSelection,
+    applyPermissionSelection: providerSelectionController.applyPermissionSelection,
     applyProviderSelection: providerSelectionController.applyProviderSelection,
     applyVariantSelection: providerSelectionController.applyVariantSelection,
     applyProviderCatalogChanged,
@@ -450,6 +476,8 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     applyRemoteMachinesChanged,
     applySlicesChanged,
     applyWaitingRoomSessionLifecycleAction,
+    restoreWaitingRoomProject,
+    renameWaitingRoomProject,
     applyWaitingRoomRowsChanged,
     connectDetachedKernelFromWaitingRoom,
     currentModelId: providerPromptProjectionController.currentModelId,

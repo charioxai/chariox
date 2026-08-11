@@ -372,12 +372,33 @@ fn read_u64_path(value: &serde_json::Value, path: &[&str]) -> Option<u64> {
 }
 
 pub(crate) fn normalized_observed_prompt_text(text: &str) -> Option<String> {
-    let without_attachments = strip_observed_attachment_markup(text);
+    let without_provider_attachment_suffix = strip_observed_provider_attachment_suffix(text);
+    let without_attachments = strip_observed_attachment_markup(without_provider_attachment_suffix);
     let normalized = strip_observed_generated_prompt_context(&without_attachments)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
     (!normalized.is_empty()).then_some(normalized)
+}
+
+fn strip_observed_provider_attachment_suffix(text: &str) -> &str {
+    for (start, _) in text.match_indices("Attachment:") {
+        let header = text[start..].lines().next().unwrap_or_default();
+        let Some(description) = header.strip_prefix("Attachment: ") else {
+            continue;
+        };
+        let Some((label_and_mime, url)) = description.rsplit_once(") at ") else {
+            continue;
+        };
+        let Some((label, mime)) = label_and_mime.rsplit_once(" (") else {
+            continue;
+        };
+        if label.trim().is_empty() || mime.trim().is_empty() || url.trim().is_empty() {
+            continue;
+        }
+        return text[..start].trim_end();
+    }
+    text
 }
 
 fn strip_observed_generated_prompt_context(text: &str) -> &str {

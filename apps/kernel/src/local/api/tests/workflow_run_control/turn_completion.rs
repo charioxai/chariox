@@ -29,6 +29,10 @@ fn run_workflow_turn_completion_large_stack_test(name: &str, test: fn()) {
 
 fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_validation_passes_inner(
 ) {
+    const FIRST_PRIVATE_INSTRUCTIONS: &str =
+        "# First node\nProduce a tiny JSON payload.\nUPSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
+    const SECOND_PRIVATE_INSTRUCTIONS: &str =
+        "# Second node\nSummarize the handoff.\nDOWNSTREAM_PRIVATE_INSTRUCTION_TOKEN\n";
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -86,7 +90,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 node_id: first_node.id().to_string(),
-                instructions: Some("# First node\nProduce a tiny JSON payload.\n".to_string()),
+                instructions: Some(FIRST_PRIVATE_INSTRUCTIONS.to_string()),
                 expected_workflow_revision: None,
             },
         ))
@@ -97,7 +101,7 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
                 session_id: session.id().to_string(),
                 workflow_ref: workflow.id().to_string(),
                 node_id: second_node.id().to_string(),
-                instructions: Some("# Second node\nSummarize the handoff.\n".to_string()),
+                instructions: Some(SECOND_PRIVATE_INSTRUCTIONS.to_string()),
                 expected_workflow_revision: None,
             },
         ))
@@ -161,6 +165,11 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     assert!(active_mechanics.contains("<node-instruction-reference>"));
     assert!(active_mechanics.contains("`ack_workflow_turn`"));
     assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
+    assert!(active_mechanics.contains("UPSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
+    assert!(!active_prompt
+        .prompt()
+        .contains("DOWNSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
+    assert!(!active_mechanics.contains("DOWNSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
 
     let first_run_id = workflow_run.node_runs()[0].id().to_string();
     let first_token = "workflow-ack:".to_string() + &first_run_id;
@@ -285,6 +294,18 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
         .prompt()
         .contains("<workflow-handoff-payloads>"));
     assert!(second_mechanics.contains("`ack_workflow_turn`"));
+    assert!(second_mechanics.contains("DOWNSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
+    assert!(!second_active_prompt
+        .prompt()
+        .contains("UPSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
+    assert!(!second_mechanics.contains("UPSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
+    assert!(
+        second_active_prompt
+            .prompt()
+            .contains("\"message_type\":\"handoff\""),
+        "unexpected visible workflow handoff: {:?}",
+        second_active_prompt.prompt()
+    );
     let second_history_prompts = harness.with_app(|app| {
         app.operational_history_store()
             .load_session_history_entries(session.id(), Some(second_agent.id()))

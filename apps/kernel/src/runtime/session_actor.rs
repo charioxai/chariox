@@ -20,6 +20,11 @@ impl SessionActor {
         matches!(
             request,
             LocalDaemonRequest::CreateSession(_)
+                | LocalDaemonRequest::ListProjects(_)
+                | LocalDaemonRequest::RenameProject(_)
+                | LocalDaemonRequest::ArchiveProject(_)
+                | LocalDaemonRequest::DeleteProject(_)
+                | LocalDaemonRequest::RestoreProject(_)
                 | LocalDaemonRequest::AttachToSession(_)
                 | LocalDaemonRequest::DetachFromSession(_)
                 | LocalDaemonRequest::FocusAgent(_)
@@ -122,7 +127,6 @@ mod tests {
             slice_store,
             session_projection,
             provider_run_projection,
-            history_store,
             operational_history_store,
             durable_state_store,
             prompt_state_owner,
@@ -146,7 +150,6 @@ mod tests {
                 app_locked.slices(),
                 app_locked.session_state_projection_store(),
                 app_locked.provider_run_projection_store(),
-                app_locked.history_store(),
                 app_locked.operational_history_store(),
                 app_locked.durable_state_store(),
                 app_locked.prompt_state_owner(),
@@ -171,7 +174,6 @@ mod tests {
             slice_store,
             session_projection,
             provider_run_projection,
-            history_store,
             operational_history_store,
             durable_state_store,
             prompt_state_owner,

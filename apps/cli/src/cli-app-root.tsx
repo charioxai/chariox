@@ -165,6 +165,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setThemeRevision, maxAgentsPerScreen, sessionState, setSessionState,
     attachmentState, setAttachmentState, providerRunState, setProviderRunState,
     createdSessionState, setCreatedSessionState, availableSessions, setAvailableSessions,
+    waitingRoomProjects, setWaitingRoomProjects,
     providerCatalogState, setProviderCatalogState, providerCommandCatalogState, setProviderCommandCatalogState,
     terminalCommandCatalogState, setTerminalCommandCatalogState, themeRegistryState, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
@@ -375,16 +376,19 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
   const {
-    activateWaitingRoom, applyModelSelection, applyProviderCatalogChanged, applyProviderSelection,
+    activateWaitingRoom, applyModelSelection, applyModeSelection, applyPermissionSelection,
+    applyProviderCatalogChanged, applyProviderSelection,
     applyRelayStatusChanged, applyRemoteMachinesChanged, applySlicesChanged, applyVariantSelection,
     applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
+    restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
     reconcileWaitingRoom, refreshWaitingRoomData, refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
     client, options, appLogger, formatError,
     isAttached, kernelConnected, waitingRoomState, setWaitingRoomState,
-    availableSessions, setAvailableSessions, providerCatalogState, setProviderCatalogState,
+    availableSessions, setAvailableSessions, waitingRoomProjects, setWaitingRoomProjects,
+    providerCatalogState, setProviderCatalogState,
     providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
     waitingRoomInventoryStatus, setWaitingRoomInventoryStatus, waitingRoomHiddenKernelController, relayStatusState,
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
@@ -425,7 +429,12 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     client, sessionState, formatError,
   })
   const commandCenterController = createCommandCenterController<BoxRenderable>({
-    getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState()),
+    getCommandTree: () => commandTreeFromTerminalCommandCatalog(terminalCommandCatalogState(), {
+      surface: isAttached() ? "session" : "waiting_room",
+      executionTargets: isAttached()
+        ? ["kernel", "terminal_local", "prompt_prefix"]
+        : ["kernel", "terminal_local"],
+    }),
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
@@ -508,7 +517,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     client, renderer, dimensions, appLogger,
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
-    isAttached, availableSessions, sessionBrowserIndex, setSessionBrowserIndex,
+    isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
     hotkeysOpen, setHotkeysOpen, terminalPairingOpen, setTerminalPairingOpen,
@@ -715,7 +724,7 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     setSelectedWorkflowNodeId, selectedWorkflowComponent, setSelectedWorkflowComponent, setWorkflowInspectorMode,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     workflowInspector, workspaceShellEntries, workspaceShellContext, waitingRoomState,
-    availableSessions, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
+    availableSessions, waitingRoomProjects, providerCatalogState, waitingRoomCloudNotice, waitingRoomInventoryStatus,
     relayStatusState, remoteMachinesState, remoteKernelsState, terminalsState,
     externalProviderSessionsState, externalProviderSessionsPageState, slicesState, waitingRoomTargets,
     themeRegistryState, transcriptScrollboxRefController, primaryTranscriptRuntimeStore, transcriptEntryProjectionController,
@@ -746,7 +755,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
   handleQueuedPromptStripKey = queuedPromptController.handleQueuedPromptStripKey
 
   const workflowActions = createCliAppWorkflowActionComposition({
-    client, bindWorkflowNodeInstructionsEditor, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
+    client, originClientId: options.clientId,
+    bindWorkflowNodeInstructionsEditor, workflowNodeInstructionsEditor, setWorkflowNodeInstructionsEditor,
     workflowScreenShowing, setWorkspaceScreenMode, rebuildTranscript,
     scheduleTimer: startTimeout,
     focusPromptInput: () => {
@@ -822,7 +832,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
     attachBinding, transitionToNoSession, applyProviderSelection, applyModelSelection,
-    applyVariantSelection, refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
+    applyVariantSelection, applyModeSelection, applyPermissionSelection,
+    currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
+    currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",
+    refreshWaitingRoomData, setSlicesState, setMultiAgentResponseLayout,
     applyResponseLayout, applySessionState, refreshAgentPanes, setWorkspaceLiveSyncStatus,
     ...workflowActions,
     rebuildTranscript,
@@ -851,9 +864,10 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     handleQueuedPromptKey: handleQueuedPromptStripKey,
     commandCenterOpen, promptHistoryIndex, promptHistoryDraft, navigatePromptHistoryInput,
     visibleTranscriptEntries, transcriptScrollboxRefController, commandCenterController, waitingRoomState,
-    availableSessions, providerCatalogState, relayStatusState, remoteMachinesState,
+    availableSessions, waitingRoomProjects, waitingRoomTargets, providerCatalogState, relayStatusState, remoteMachinesState,
     setRemoteMachinesState, remoteKernelsState, terminalsState, slicesState,
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
+    restoreWaitingRoomProject, renameWaitingRoomProject,
     activateWaitingRoom, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     cycleWorkflowCanvasNode: workflowActions.cycleWorkflowCanvasNode,
@@ -871,7 +885,8 @@ export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
     workflowScreenActive: workflowActions.workflowScreenActive,
     daemonDisconnected, statusLine, sessionState, focusedAgentId,
     agentActivityLabels, streamingAgentId, agentBusyLatch, isAttached,
-    waitingRoomState, setWaitingRoomState, availableSessions, providerCatalogState,
+    waitingRoomState, setWaitingRoomState, availableSessions, waitingRoomProjects, providerCatalogState,
+    applyWaitingRoomSessionLifecycleAction, restoreWaitingRoomProject, renameWaitingRoomProject,
     waitingRoomCloudNotice, waitingRoomInventoryStatus, relayStatusState, remoteMachinesState,
     remoteKernelsState, terminalsState, externalProviderSessionsState, externalProviderSessionsPageState,
     slicesState, waitingRoomTargets, themeRegistryState, selectedWorkflowId,

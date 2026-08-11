@@ -224,11 +224,16 @@ impl KernelRuntimeState {
     ) -> Option<(crate::agent::RemoteAgentBinding, String)> {
         let owned = &self.owned;
         let session = owned.session_store.get_session(session_id).ok()?;
-        if owned
+        let active_prompt = owned
             .prompt_state_owner
-            .active_prompt_for_agent(&session, agent_id)
-            .is_none()
-        {
+            .active_prompt_for_agent(&session, agent_id)?;
+        if matches!(
+            active_prompt.durable_delivery_phase(),
+            Some(
+                crate::session::DurablePromptDeliveryPhase::Accepted
+                    | crate::session::DurablePromptDeliveryPhase::Dispatching
+            )
+        ) {
             return None;
         }
         let remote_execution = owned
@@ -813,7 +818,6 @@ impl KernelRuntimeState {
                                 kind: crate::terminal::TerminalOutputKind::ProviderError,
                                 merge_key: merge_key.clone(),
                                 bytes: message.as_bytes().to_vec(),
-                                history_text: None,
                             },
                         ],
                     );
@@ -1015,7 +1019,6 @@ mod tests {
             slice_store,
             session_projection,
             provider_run_projection,
-            history_store,
             operational_history_store,
             durable_state_store,
             prompt_state_owner,
@@ -1039,7 +1042,6 @@ mod tests {
                 app_locked.slices(),
                 app_locked.session_state_projection_store(),
                 app_locked.provider_run_projection_store(),
-                app_locked.history_store(),
                 app_locked.operational_history_store(),
                 app_locked.durable_state_store(),
                 app_locked.prompt_state_owner(),
@@ -1064,7 +1066,6 @@ mod tests {
             slice_store,
             session_projection,
             provider_run_projection,
-            history_store,
             operational_history_store,
             durable_state_store,
             prompt_state_owner,
@@ -1080,7 +1081,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn active_remote_prompt_projection_drain_does_not_require_queued_prompt() {
+    async fn remote_prompt_projection_drain_respects_durable_delivery_phase() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1120,10 +1121,9 @@ mod tests {
         let outcome = app
             .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
             .expect("remote prompt should start locally");
-        assert!(matches!(
-            outcome,
-            crate::session::PromptSubmissionOutcome::Started { .. }
-        ));
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome else {
+            panic!("remote prompt should start locally");
+        };
         assert_eq!(
             app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
                 .expect("queue count should load"),
@@ -1132,12 +1132,46 @@ mod tests {
 
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
-        let drain_target = runtime
-            .remote_prompt_projection_drain_target(session.id(), agent.id())
-            .expect("active remote prompt should have a projection drain target");
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(
+                &runtime
+                    .owned
+                    .session_store
+                    .get_session(session.id())
+                    .expect("session should remain available"),
+                agent.id(),
+            )
+            .expect("remote prompt should remain active");
+        assert_eq!(
+            active.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+        assert!(
+            runtime
+                .remote_prompt_projection_drain_target(session.id(), agent.id())
+                .is_none(),
+            "an accepted prompt must not drain the prior worker run"
+        );
 
-        assert_eq!(drain_target.0.leased_agent_id, "leased-agent-1");
-        assert_eq!(drain_target.1, "provider-run-worker-1");
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("provider-run-worker-1".to_string()),
+                None,
+            )
+            .expect("delivered phase should persist");
+        assert!(
+            runtime
+                .remote_prompt_projection_drain_target(session.id(), agent.id())
+                .is_some(),
+            "a delivered prompt should drain its worker run"
+        );
     }
 
     #[tokio::test]

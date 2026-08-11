@@ -66,6 +66,7 @@ test("attachBinding reattaches and hydrates the attached session before restorin
   const events: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -221,6 +222,7 @@ test("attachBinding patches the waiting-room session row without listing every s
   const appliedSessions: SessionListEntry[][] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
+    project_id: "project-default",
     alias: "updated",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -282,6 +284,7 @@ test("attachBinding launches a provider run with provider and effort in the corr
   }> = []
   const attachedSession: RuntimeSession = {
     id: "session-3",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -390,6 +393,7 @@ test("attachBinding launches a provider run with provider and effort in the corr
 test("attachBinding recovers when its launch target moves remote", async () => {
   const localSession: RuntimeSession = {
     id: "session-moving",
+    project_id: "project-default",
     alias: "moving",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -474,6 +478,7 @@ test("attachBinding recovers when its launch target moves remote", async () => {
 test("attachBinding does not mask unrelated provider launch failures", async () => {
   const attachedSession: RuntimeSession = {
     id: "session-launch-failure",
+    project_id: "project-default",
     alias: "failure",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -523,6 +528,7 @@ test("attachBinding does not mask unrelated provider launch failures", async () 
 test("attachBinding skips provider launch when existing session exposes no visible agents", async () => {
   const attachedSession: RuntimeSession = {
     id: "session-hidden-focus",
+    project_id: "project-default",
     alias: "shared",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -587,6 +593,7 @@ test("attachBinding skips provider launch when focused agent is stale", async ()
   const providerRuns: Array<RuntimeProviderRun | null> = []
   const attachedSession: RuntimeSession = {
     id: "session-stale-focus",
+    project_id: "project-default",
     alias: "shared",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -653,6 +660,7 @@ test("attachBinding restores the focused agent runtime profile for existing sess
   }> = []
   const attachedSession: RuntimeSession = {
     id: "session-4",
+    project_id: "project-default",
     alias: "parked",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -760,6 +768,7 @@ test("attachBinding syncs CLI provider selection from an existing active provide
   }> = []
   const attachedSession: RuntimeSession = {
     id: "session-4b",
+    project_id: "project-default",
     alias: "parked",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -858,6 +867,7 @@ test("attachBinding keeps the CLI attached when post-attach refresh steps fail",
   const warnings: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -934,6 +944,7 @@ test("attachBinding synchronizes kernel event subscription immediately after app
   const events: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",
@@ -1020,6 +1031,7 @@ test("attachBinding adopts the attached session response layout immediately", as
   const repaintCalls: string[] = []
   const attachedSession: RuntimeSession = {
     id: "session-2",
+    project_id: "project-default",
     alias: "feature",
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",

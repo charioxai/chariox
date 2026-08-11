@@ -190,6 +190,13 @@ impl ProviderRunLivenessSessionEffects {
                 false
             }
         };
+        if app
+            .agents
+            .mark_unexpected_provider_exit_error(&outcome.agent_id, had_active_prompt)?
+        {
+            let _ = crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(&outcome.session_id)?;
+        }
 
         Ok(ProviderRunExitSessionOutcome {
             had_active_prompt,
@@ -303,5 +310,78 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
             agent_id,
             transition: ProviderRunLivenessTransition::UnexpectedExit,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::KernelSessionService;
+    use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+    use crate::provider::LaunchProviderRequest;
+    use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn app_unexpected_provider_exit_marks_active_agent_error() {
+        let mut app =
+            DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-app-unexpected-exit",
+                "worktree-app-unexpected-exit",
+            ))
+            .expect("session should create");
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "client-app-unexpected-exit",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let run = app
+            .launch_provider(
+                LaunchProviderRequest::new(session.id(), "dev-stub", "codex", "default", "gpt-5")
+                    .with_agent_id(agent.id()),
+            )
+            .expect("provider should launch");
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "do work\n",
+            Vec::new(),
+        )
+        .expect("prompt should start");
+        let ended_run = app
+            .providers_mut()
+            .mark_run_ended_provider_only(session.id(), run.id())
+            .expect("provider should end")
+            .into_run();
+        let outcome = ProviderRunLivenessOutcome {
+            ended_run,
+            session_id: session.id().to_string(),
+            provider_run_id: run.id().to_string(),
+            agent_id: agent.id().to_string(),
+            transition: ProviderRunLivenessTransition::UnexpectedExit,
+        };
+
+        let session_outcome =
+            ProviderRunLivenessSessionEffects::apply_provider_exit(&mut app, &outcome)
+                .expect("unexpected exit effects should apply");
+
+        assert!(session_outcome.had_active_prompt);
+        assert!(app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_prompt_for_agent(agent.id())
+            .is_none());
+        assert_eq!(
+            app.agents
+                .get_agent(agent.id())
+                .expect("agent should remain available")
+                .state(),
+            crate::agent::AgentState::Error,
+        );
     }
 }

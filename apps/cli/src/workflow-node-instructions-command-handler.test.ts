@@ -189,6 +189,7 @@ function node(overrides: Partial<WorkflowNodeDefinition> = {}): WorkflowNodeDefi
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",

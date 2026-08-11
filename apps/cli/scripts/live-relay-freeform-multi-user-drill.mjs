@@ -1,13 +1,31 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { createHmac } from 'node:crypto'
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
+import { mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
-import { resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
-import { remoteEnvCommand, shellQuote, sshArgs } from './lib/native-tui-remote-execution.mjs'
+import { writeIsolatedKernelConfig } from './lib/drill-kernel-storage.mjs'
+import {
+  makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
+  resolveBuiltBinary,
+} from './lib/drill-runtime-helpers.mjs'
+import {
+  assertHetznerTcpPortAvailable,
+  remoteEnvCommand,
+  seedLocalOpenCodeRuntimeProfile,
+  shellQuote,
+  sshArgs,
+} from './lib/native-tui-remote-execution.mjs'
+import {
+  assertCollaborationAgentSelections,
+  collaborationAgentSelectionEvidence,
+  collaborationProviderModel,
+  collaborationSessionAgentDefaults,
+} from './lib/live-relay-freeform-multi-user-options.mjs'
+import { providerHistoryTextForPrompt } from './lib/live-relay-freeform-multi-user-history.mjs'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
@@ -32,6 +50,7 @@ function parseArgs(argv = process.argv.slice(2)) {
     hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
     provider: process.env.ARROBA_COLLAB_PROVIDER ?? DEFAULT_PROVIDER,
     model: process.env.ARROBA_COLLAB_MODEL ?? DEFAULT_MODEL,
+    variant: process.env.ARROBA_COLLAB_VARIANT ?? 'low',
     timeoutMs: Number.parseInt(process.env.ARROBA_COLLAB_TIMEOUT_MS ?? '300000', 10),
     pollMs: Number.parseInt(process.env.ARROBA_COLLAB_POLL_MS ?? '1000', 10),
   }
@@ -49,6 +68,8 @@ function parseArgs(argv = process.argv.slice(2)) {
       options.provider = argv[++index]
     } else if (arg === '--model') {
       options.model = argv[++index]
+    } else if (arg === '--variant') {
+      options.variant = argv[++index]
     } else if (arg === '--timeout-ms') {
       options.timeoutMs = Number.parseInt(argv[++index], 10)
     } else if (arg === '--poll-ms') {
@@ -64,6 +85,7 @@ function parseArgs(argv = process.argv.slice(2)) {
         '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
         `  --provider PROVIDER   Provider for live model prompts (default ${DEFAULT_PROVIDER})`,
         `  --model MODEL         Model for live model prompts (default ${DEFAULT_MODEL})`,
+        '  --variant VARIANT     Provider effort/variant for all drill agents (default low)',
         '  --timeout-ms MS       Prompt completion timeout',
         '  --poll-ms MS          Prompt completion poll interval',
       ].join('\n'))
@@ -84,18 +106,6 @@ function assert(condition, message, details = null) {
   if (!condition) {
     throw new Error(`${message}${details == null ? '' : `\n${JSON.stringify(details, null, 2)}`}`)
   }
-}
-
-function modelForProvider(provider, model) {
-  if (provider === 'opencode' && !model.includes('/')) return `opencode/${model}`
-  if (provider === 'codex' && !model.includes('/')) return opencodeCodexModel(model)
-  return model
-}
-
-function opencodeCodexModel(model) {
-  if (model.endsWith('-codex')) return model
-  if (/^gpt-5\.[23]$/.test(model)) return `${model}-codex`
-  return model
 }
 
 function base64url(input) {
@@ -139,18 +149,7 @@ function clientToken(userId) {
   }))
 }
 
-function makePorts() {
-  const base = 50000 + Math.floor(Math.random() * 1000)
-  return {
-    relayPort: base,
-    kernelPort: base + 1000,
-    mcpPort: base + 2000,
-    opencodePort: base + 3000,
-    codexPort: base + 3001,
-  }
-}
-
-function makeEnv(ports, rootDir) {
+function makeEnv(ports, rootDir, daemonRuntimeEnv) {
   const daemonId = `relay-freeform-multi-user-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `relay-freeform-multi-user-${process.pid}`
   const daemonRelayToken = signRelayToken(relayClaims({
@@ -171,10 +170,10 @@ function makeEnv(ports, rootDir) {
       ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     },
     daemonEnv: {
-      ...process.env,
+      ...daemonRuntimeEnv,
       ARROBA_KERNEL_PORT: String(ports.kernelPort),
       ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
+      ARROBA_OPENCODE_PORT: String(ports.openCodePort),
       ARROBA_CODEX_PORT: String(ports.codexPort),
       ARROBA_RELAY_URL: relayUrl,
       ARROBA_RELAY_TOKEN: daemonRelayToken,
@@ -183,6 +182,16 @@ function makeEnv(ports, rootDir) {
       ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
       ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
     },
+  }
+}
+
+async function hetznerRelayPortIsAvailable(options, ports) {
+  try {
+    await assertHetznerTcpPortAvailable(options, ports.relayPort, 'Hetzner collaboration relay port')
+    return true
+  } catch (error) {
+    if (error instanceof Error && /is already in use by pid\(s\)/.test(error.message)) return false
+    throw error
   }
 }
 
@@ -322,19 +331,34 @@ async function waitForCompletion(client, sessionId, attachmentId, events, previo
   throw new Error(`${label} did not complete after ${timeoutMs}ms`)
 }
 
-async function waitForHistoryMarker(rootDir, sessionId, marker, timeoutMs, pollMs, label) {
-  const historyDir = path.join(rootDir, 'session-history')
+async function waitForHistoryMarker(client, requests, sessionId, attachmentId, agentId, promptId, marker, timeoutMs, pollMs, label) {
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
-    const entries = await readdir(historyDir).catch(() => [])
-    const sessionHistory = entries.filter((entry) => entry.startsWith(`${sessionId}-`) && entry.endsWith('.jsonl'))
-    for (const entry of sessionHistory) {
-      const text = await readFile(path.join(historyDir, entry), 'utf8').catch(() => '')
-      if (text.includes(marker)) return true
-    }
+    await client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+    const text = await providerHistoryTextForPrompt(client, requests, sessionId, agentId, promptId)
+    if (text.includes(marker)) return text
     await sleep(pollMs)
   }
-  throw new Error(`${label} did not write expected marker ${marker} after ${timeoutMs}ms`)
+  throw new Error(`${label} did not project expected provider-output marker ${marker} after ${timeoutMs}ms`)
+}
+
+function startAttachmentHeartbeats(bindings, intervalMs = 5_000) {
+  let pumping = false
+  const pump = async () => {
+    if (pumping) return
+    pumping = true
+    try {
+      await Promise.all(bindings.map(({ client, sessionId, attachmentId }) => (
+        client.send({ PumpTerminalOutput: { session_id: sessionId, attachment_id: attachmentId } }).catch(() => {})
+      )))
+    } finally {
+      pumping = false
+    }
+  }
+  void pump()
+  const timer = setInterval(() => { void pump() }, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 async function main() {
@@ -344,8 +368,29 @@ async function main() {
   await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
 
-  const ports = makePorts()
-  const envs = makeEnv(ports, rootDir)
+  const ports = await makeAvailablePorts({
+    candidateFactory: options.hetznerRelay ? makeNonEphemeralDrillPorts : undefined,
+    additionalAvailability: options.hetznerRelay
+      ? (candidate) => hetznerRelayPortIsAvailable(options, candidate)
+      : undefined,
+  })
+  const realHomeDir = os.homedir()
+  const xdgConfigHome = path.join(rootDir, 'xdg-config')
+  const xdgStateHome = path.join(rootDir, 'xdg-state')
+  const xdgDataHome = path.join(rootDir, 'xdg-data')
+  const xdgCacheHome = path.join(rootDir, 'xdg-cache')
+  const envs = makeEnv(ports, rootDir, {
+    ...process.env,
+    HOME: realHomeDir,
+    XDG_CONFIG_HOME: xdgConfigHome,
+    XDG_STATE_HOME: xdgStateHome,
+    XDG_DATA_HOME: xdgDataHome,
+    XDG_CACHE_HOME: xdgCacheHome,
+    CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, '.codex'),
+    OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
+    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
+    ARROBA_CAPABILITY_ISOLATION_ROOT: path.join(rootDir, 'capabilities'),
+  })
   let requests = null
   let relay = null
   let relayTunnel = null
@@ -360,9 +405,12 @@ async function main() {
   let providerModel = null
   let agent1 = null
   let agent2 = null
+  let agentSelections = []
   let user1CompletionCount = 0
   let user2CompletionCount = 0
   let user3CompletionCount = 0
+  let user4CompletionCount = 0
+  let fullPromptCompletionEvidence = null
   let state1 = null
   let state2 = null
   let state3 = null
@@ -370,7 +418,30 @@ async function main() {
   let events1 = []
   let events2 = []
   let events3 = []
+  let events4 = []
+  let stopAttachmentHeartbeats = null
+  let openCodeCredentialPath = null
   try {
+    await Promise.all([
+      mkdir(xdgStateHome, { recursive: true }),
+      mkdir(xdgDataHome, { recursive: true }),
+      mkdir(xdgCacheHome, { recursive: true }),
+    ])
+    await writeIsolatedKernelConfig({
+      xdgConfigHome,
+      storageRoot: path.join(rootDir, 'kernel-storage'),
+    })
+    if (options.provider === 'opencode') {
+      const sourceXdgDataHome = process.env.XDG_DATA_HOME?.trim() || path.join(realHomeDir, '.local', 'share')
+      const sourceOpenCodeDataHome = process.env.OPENCODE_DATA_HOME?.trim() || path.join(sourceXdgDataHome, 'opencode')
+      const sourceXdgCacheHome = process.env.XDG_CACHE_HOME?.trim() || path.join(realHomeDir, '.cache')
+      openCodeCredentialPath = await seedLocalOpenCodeRuntimeProfile({
+        sourceDataHome: sourceOpenCodeDataHome,
+        sourceCacheHome: path.join(sourceXdgCacheHome, 'opencode'),
+        destinationXdgDataHome: xdgDataHome,
+        destinationXdgCacheHome: xdgCacheHome,
+      })
+    }
     const [{ LocalIpcClient }, ipcRequests] = await Promise.all([
       import('../../../packages/kernel-client/dist/ipc.js'),
       import('../../../packages/kernel-client/dist/ipc-requests.js'),
@@ -425,11 +496,18 @@ async function main() {
     const user4 = clientFor(LocalIpcClient, envs.relayUrl, envs.daemonAlias, 'user-4')
     clients.push(user1, user2, user3, user4)
 
+    providerModel = collaborationProviderModel(options.provider, options.model)
     const created = unwrap(
-      await user1.send(requests.createSessionRequest(workspace, workspace)),
+      await user1.send(requests.createSessionRequest(
+        workspace,
+        workspace,
+        undefined,
+        collaborationSessionAgentDefaults(options.provider, options.model, options.variant),
+      )),
       'SessionCreated',
     )
     const session = created.session
+    agent1 = created.agent
     sessionId = session.id
     assert(session.owner_user_id === 'user-1', 'relay-created freeform session should be owned by user-1', session)
     const privateInvite = unwrap(
@@ -464,20 +542,28 @@ async function main() {
       await user4.send(requests.attachToSessionRequest(session.id, `freeform-user-4-${process.pid}`)),
       'SessionAttached',
     ).attachment
+    stopAttachmentHeartbeats = startAttachmentHeartbeats([
+      { client: user1, sessionId: session.id, attachmentId: attachment1.id },
+      { client: user2, sessionId: session.id, attachmentId: attachment2.id },
+      { client: user3, sessionId: session.id, attachmentId: attachment3.id },
+      { client: user4, sessionId: session.id, attachmentId: attachment4.id },
+    ])
 
-    providerModel = modelForProvider(options.provider, options.model)
     events1 = await subscribeForCompletions(user1, session.id, attachment1.id)
     events2 = await subscribeForCompletions(user2, session.id, attachment2.id)
     events3 = await subscribeForCompletions(user3, session.id, attachment3.id)
+    events4 = await subscribeForCompletions(user4, session.id, attachment4.id)
 
-    agent1 = unwrap(
-      await user1.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-one', providerModel, workspace, 'low')),
-      'AgentSpawned',
-    ).agent
     agent2 = unwrap(
-      await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, 'low')),
+      await user2.send(requests.spawnAgentRequest(session.id, options.provider, 'freeform-user-two', providerModel, workspace, options.variant)),
       'AgentSpawned',
     ).agent
+    agentSelections = assertCollaborationAgentSelections(
+      options.provider,
+      options.model,
+      options.variant,
+      [agent1, agent2],
+    )
     assert(agent1.owner_user_id === 'user-1', 'user-1 freeform agent owner mismatch', agent1)
     assert(agent2.owner_user_id === 'user-2', 'user-2 freeform agent owner mismatch', agent2)
 
@@ -500,13 +586,18 @@ async function main() {
       user4Agents,
     )
 
+    const user1CompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
+    const user3OwnerPromptCompletionBaseline = events3.filter((event) => event.event === 'assistant_message_completed').length
+    const user4OwnerPromptCompletionBaseline = events4.filter((event) => event.event === 'assistant_message_completed').length
     const user1Prompt = unwrap(
       await user1.send(requests.submitPromptRequest(session.id, attachment1.id, agent1.id, 'Reply with exactly USER1_FREEFORM_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user1Prompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'user-1 prompt should start for own agent', user1Prompt)
-    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, 0, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
-    await waitForHistoryMarker(rootDir, session.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1CompletionBaseline, options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    await waitForHistoryMarker(user1, requests, session.id, attachment1.id, agent1.id, user1Prompt.outcome.Started.prompt.id, 'USER1_FREEFORM_OK', options.timeoutMs, options.pollMs, 'user-1 owned prompt')
+    await waitForCompletion(user3, session.id, attachment3.id, events3, user3OwnerPromptCompletionBaseline, options.timeoutMs, options.pollMs, 'full collaborator observing owner prompt')
+    await waitForCompletion(user4, session.id, attachment4.id, events4, user4OwnerPromptCompletionBaseline, options.timeoutMs, options.pollMs, 'transparent collaborator observing owner prompt')
     await expectReject(
       user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent1.id, 'Cross-user freeform prompt should fail.', [])),
       'private user-2 submitting to user-1 freeform agent',
@@ -518,23 +609,48 @@ async function main() {
       'owned by `user-1`',
     )
 
+    const user1FullCompletionBaseline = events1.filter((event) => event.event === 'assistant_message_completed').length
+    const user3FullCompletionBaseline = events3.filter((event) => event.event === 'assistant_message_completed').length
+    const user4FullCompletionBaseline = events4.filter((event) => event.event === 'assistant_message_completed').length
     const fullPrompt = unwrap(
       await user3.send(requests.submitPromptRequest(session.id, attachment3.id, agent1.id, 'Reply with exactly FULL_USER3_CAN_PROMPT_OWNER_AGENT and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(fullPrompt.outcome?.Started?.prompt?.target_agent_id === agent1.id, 'full collaborator should start prompt for owner agent', fullPrompt)
-    user3CompletionCount = await waitForCompletion(user3, session.id, attachment3.id, events3, 0, 30_000, options.pollMs, 'full collaborator cross-owner prompt')
-      .catch(() => events3.filter((event) => event.event === 'assistant_message_completed').length)
-    await waitForHistoryMarker(rootDir, session.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
-    user1CompletionCount = Math.max(user1CompletionCount, events1.filter((event) => event.event === 'assistant_message_completed').length)
+    await waitForHistoryMarker(user3, requests, session.id, attachment3.id, agent1.id, fullPrompt.outcome.Started.prompt.id, 'FULL_USER3_CAN_PROMPT_OWNER_AGENT', options.timeoutMs, options.pollMs, 'full collaborator cross-owner prompt')
+    user1CompletionCount = await waitForCompletion(user1, session.id, attachment1.id, events1, user1FullCompletionBaseline, 30_000, options.pollMs, 'owner observing full collaborator prompt')
+    await waitForCompletion(user3, session.id, attachment3.id, events3, user3FullCompletionBaseline, 30_000, options.pollMs, 'full collaborator observing own cross-owner prompt')
+    await waitForCompletion(user4, session.id, attachment4.id, events4, user4FullCompletionBaseline, 30_000, options.pollMs, 'transparent collaborator observing full cross-owner prompt')
+    user3CompletionCount = events3.filter((event) => event.event === 'assistant_message_completed').length
+    user4CompletionCount = events4.filter((event) => event.event === 'assistant_message_completed').length
+    fullPromptCompletionEvidence = {
+      promptId: fullPrompt.outcome.Started.prompt.id,
+      user3: {
+        access: 'full',
+        baseline: user3FullCompletionBaseline,
+        observed: user3CompletionCount,
+        delta: user3CompletionCount - user3FullCompletionBaseline,
+      },
+      user4: {
+        access: 'transparent',
+        baseline: user4FullCompletionBaseline,
+        observed: user4CompletionCount,
+        delta: user4CompletionCount - user4FullCompletionBaseline,
+      },
+    }
+    assert(fullPromptCompletionEvidence.user3.delta === 1, 'full collaborator should receive exactly one new completion for its cross-owner prompt', fullPromptCompletionEvidence)
+    assert(fullPromptCompletionEvidence.user4.delta === 1, 'transparent collaborator should receive exactly one new completion for the full cross-owner prompt', fullPromptCompletionEvidence)
 
+    const user2CompletionBaseline = events2.filter((event) => event.event === 'assistant_message_completed').length
     const user2Prompt = unwrap(
       await user2.send(requests.submitPromptRequest(session.id, attachment2.id, agent2.id, 'Reply with exactly USER2_PRIVATE_OWN_AGENT_OK and nothing else.', [])),
       'PromptSubmitted',
     )
     assert(user2Prompt.outcome?.Started?.prompt?.target_agent_id === agent2.id, 'user-2 prompt should start for own agent', user2Prompt)
-    user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, 0, options.timeoutMs, options.pollMs, 'private user own prompt')
-    await waitForHistoryMarker(rootDir, session.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
+    user2CompletionCount = await waitForCompletion(user2, session.id, attachment2.id, events2, user2CompletionBaseline, options.timeoutMs, options.pollMs, 'private user own prompt')
+    await waitForHistoryMarker(user2, requests, session.id, attachment2.id, agent2.id, user2Prompt.outcome.Started.prompt.id, 'USER2_PRIVATE_OWN_AGENT_OK', options.timeoutMs, options.pollMs, 'private user own prompt')
+    assert(user1CompletionCount === 2, 'owner should receive exactly one completion for each prompt on its agent', { user1CompletionCount, events: eventCounts(events1) })
+    assert(user2CompletionCount === 1, 'private user should receive exactly one completion for its owned prompt', { user2CompletionCount, events: eventCounts(events2) })
 
     state1 = unwrap(await user1.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
     state2 = unwrap(await user2.send(requests.getSessionStateRequest(session.id)), 'SessionStateLoaded', 'SessionState').session
@@ -550,14 +666,14 @@ async function main() {
     )
 
     for (const [label, state, ownedCount, otherCount] of [
-      ['user-1', state1, 2, 1],
-      ['user-2', state2, 1, 2],
-      ['user-3', state3, 0, 3],
-      ['user-4', state4, 0, 3],
+      ['user-1', state1, 1, 1],
+      ['user-2', state2, 1, 1],
+      ['user-3', state3, 0, 2],
+      ['user-4', state4, 0, 2],
     ]) {
       assert(state.collaboration_agent_counts?.owned_agent_count === ownedCount, `${label} owned agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.other_user_agent_count === otherCount, `${label} collaborator agent count mismatch`, state.collaboration_agent_counts)
-      assert(state.collaboration_agent_counts?.total_agent_count === 3, `${label} total agent count mismatch`, state.collaboration_agent_counts)
+      assert(state.collaboration_agent_counts?.total_agent_count === 2, `${label} total agent count mismatch`, state.collaboration_agent_counts)
       assert(state.collaboration_agent_counts?.collaborator_count === 3, `${label} collaborator count mismatch`, state.collaboration_agent_counts)
     }
 
@@ -569,15 +685,15 @@ async function main() {
       sessionId: session.id,
       provider: options.provider,
       model: providerModel,
-      agents: [
-        { id: agent1.id, ownerUserId: agent1.owner_user_id },
-        { id: agent2.id, ownerUserId: agent2.owner_user_id },
-      ],
+      variant: options.variant,
+      agents: agentSelections,
       completionCounts: {
         user1: user1CompletionCount,
         user2: user2CompletionCount,
         user3: user3CompletionCount,
+        user4: user4CompletionCount,
       },
+      fullPromptCompletionEvidence,
       assertions: [
         'four users share one scoped-relay freeform session',
         'private invite sees redacted collaborator agent handles',
@@ -585,9 +701,11 @@ async function main() {
         'full invite sees collaborator agent details',
         'collaboration agent counts report aggregate other-user agents without identities',
         'actual-model freeform prompt submit succeeds for owned agent',
+        'each owned prompt emits exactly one assistant completion',
         'private freeform prompt submit rejects another user agent',
         'transparent freeform prompt submit rejects another user agent',
         'full freeform prompt submit can prompt another user agent',
+        'full and transparent collaborators each observe exactly one completion for the full cross-owner prompt',
         'session state projection redacts other-user agent details for private invitees',
       ],
     }, null, 2))
@@ -596,12 +714,14 @@ async function main() {
     failure = error
     throw error
   } finally {
+    stopAttachmentHeartbeats?.()
     if (sessionId && clients[0] && requests) await clients[0].send(requests.endSessionRequest(sessionId)).catch(() => {})
     await Promise.all(clients.map((client) => client.close().catch(() => {})))
     await terminateChild(daemon)
     await stopHetznerRelay(options, remoteRelayRoot)
     await terminateChild(relay)
     await terminateChild(relayTunnel)
+    if (openCodeCredentialPath) await rm(openCodeCredentialPath, { force: true })
     await finalizeDrillArtifacts({
       rootDir,
       passed,
@@ -614,22 +734,25 @@ async function main() {
         daemonAlias: envs.daemonAlias,
         sessionId,
         provider: options.provider,
-        model: providerModel ?? modelForProvider(options.provider, options.model),
+        model: providerModel ?? collaborationProviderModel(options.provider, options.model),
+        variant: options.variant,
         timeoutMs: options.timeoutMs,
         pollMs: options.pollMs,
-        agents: [
-          agent1 ? { id: agent1.id, ownerUserId: agent1.owner_user_id } : null,
-          agent2 ? { id: agent2.id, ownerUserId: agent2.owner_user_id } : null,
-        ].filter(Boolean),
+        agents: agentSelections.length > 0
+          ? agentSelections
+          : collaborationAgentSelectionEvidence([agent1, agent2].filter(Boolean)),
         completionCounts: {
           user1: user1CompletionCount,
           user2: user2CompletionCount,
           user3: user3CompletionCount,
+          user4: user4CompletionCount,
         },
+        fullPromptCompletionEvidence,
         eventCounts: {
           user1: eventCounts(events1),
           user2: eventCounts(events2),
           user3: eventCounts(events3),
+          user4: eventCounts(events4),
         },
         collaborationAgentCounts: {
           user1: state1?.collaboration_agent_counts ?? null,

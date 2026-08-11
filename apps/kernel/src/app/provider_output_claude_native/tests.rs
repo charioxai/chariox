@@ -323,6 +323,8 @@ fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() 
 }
 
 fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
+    use std::io::Write as _;
+
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -349,7 +351,19 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
     let events_file = root.join("events.jsonl");
     let transcript_file = root.join("session.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
-    fs::write(&transcript_file, "").expect("transcript file should be created");
+    let transcript_record = serde_json::json!({
+        "type": "assistant",
+        "uuid": "assistant-late",
+        "message": {
+            "id": "message-late",
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "late final response" }]
+        }
+    })
+    .to_string();
+    let transcript_split_at = transcript_record.len() / 2;
+    fs::write(&transcript_file, &transcript_record[..transcript_split_at])
+        .expect("partial transcript output should be written");
     fs::write(
         &events_file,
         serde_json::json!({
@@ -428,20 +442,12 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .as_deref()
         .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
-    fs::write(
-        &transcript_file,
-        serde_json::json!({
-            "type": "assistant",
-            "uuid": "assistant-late",
-            "message": {
-                "id": "message-late",
-                "role": "assistant",
-                "content": [{ "type": "text", "text": "late final response" }]
-            }
-        })
-        .to_string(),
-    )
-    .expect("late transcript output should be written");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript_file)
+        .expect("partial transcript should reopen")
+        .write_all(transcript_record[transcript_split_at..].as_bytes())
+        .expect("late transcript output should finish writing");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
         .finish_deferred_stop(session.id(), run.id(), &run)
@@ -706,7 +712,7 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
 }
 
 #[test]
-fn claude_headless_user_prompt_submit_only_acknowledges_matching_steering_marker() {
+fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -842,6 +848,42 @@ fn claude_headless_user_prompt_submit_only_acknowledges_matching_steering_marker
     assert!(projected
         .queued_prompts_for_agent(agent.id())
         .is_none_or(|queue| queue.is_empty()));
+
+    app.prompt_owner_cancel_active_prompt_only(session.id(), agent.id())
+        .expect("managed prompt should cancel before its late hook acknowledgement");
+    write_claude_native_marker(&context_file, &format!("injected:{}", active_prompt.id()));
+    write_claude_headless_submit_retry(
+        &context_file,
+        active_prompt.id(),
+        0,
+        unix_epoch_ms(),
+        "Run the web tests and summarize them.",
+    );
+    let terminal_input_count = app.terminal().input_records().len();
+    fs::write(
+        &events_file,
+        serde_json::json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "Run the web tests and summarize them.",
+        })
+        .to_string(),
+    )
+    .expect("late matching UserPromptSubmit event should be written");
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process(session.id(), run.id(), &run, None)
+        .expect("late managed UserPromptSubmit should be consumed");
+
+    assert_eq!(
+        claude_native_marker(&context_file).as_deref(),
+        Some(format!("accepted:{}", active_prompt.id()).as_str())
+    );
+    assert_eq!(app.terminal().input_records().len(), terminal_input_count);
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should remain available")
+        .active_prompt_for_agent(agent.id())
+        .is_none());
 
     let _ = fs::remove_dir_all(root);
 }

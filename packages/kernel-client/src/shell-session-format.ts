@@ -83,8 +83,17 @@ export function formatSessionMembers(members: SessionMember[], invites: SessionI
       lines.push(`- ${member.user_id}${inviter}`)
     }
   }
-  lines.push("Session invites")
-  const activeInvites = invites.filter((invite) => !invite.revoked_at_ms)
+  lines.push(formatSessionInvites(invites))
+  return lines.join("\n")
+}
+
+export function formatSessionInvites(invites: SessionInvite[], nowMs = Date.now()): string {
+  const lines = ["Session invites"]
+  const activeInvites = invites.filter((invite) => (
+    invite.revoked_at_ms == null
+    && (invite.expires_at_ms == null || invite.expires_at_ms > nowMs)
+    && (invite.max_uses == null || invite.used_count < invite.max_uses)
+  ))
   if (activeInvites.length === 0) {
     lines.push("- none")
   } else {

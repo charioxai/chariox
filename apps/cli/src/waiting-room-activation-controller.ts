@@ -19,11 +19,16 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+import {
+  waitingRoomExecutionMode,
+  waitingRoomPermissionLevel,
+} from "./waiting-room-state.js"
 
 export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   account_profile: string | null
-  execution_mode: "build"
-  permission_level: "yolo"
+  execution_mode: "build" | "plan"
+  permission_level: "required" | "yolo"
+  projectSelection?: WaitingRoomLaunchConfig["projectSelection"]
 }
 
 export type WaitingRoomActivationControllerDeps = {
@@ -67,7 +72,7 @@ export type WaitingRoomActivationControllerDeps = {
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
   prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
-    session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+    session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
     launch: WaitingRoomLaunchConfig,
   ) => Promise<void>
@@ -251,9 +256,10 @@ export function createWaitingRoomActivationController(
         model: launch.model,
         effort: launch.effort,
         account_profile: deps.getAccountProfile() ?? null,
-        execution_mode: "build",
-        permission_level: "yolo",
+        execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
+        permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
         workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
+        ...(launch.projectSelection ? { projectSelection: launch.projectSelection } : {}),
         ...(sliceRef ? { sliceRef } : {}),
       },
     )

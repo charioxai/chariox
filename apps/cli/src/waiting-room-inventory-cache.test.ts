@@ -78,7 +78,7 @@ function inventory(
   activityRevision: string,
 ): WaitingRoomInventory {
   return {
-    schemaVersion: 10,
+    schemaVersion: 11,
     inventoryVersion: `${structuralVersion}:${activityRevision}`,
     structuralVersion,
     activityRevision,
@@ -86,6 +86,7 @@ function inventory(
     machineId: "machine-a",
     sessions: [{
       id: "session-a",
+      project_id: "project-default",
       kernel_id: kernelId,
       machine_id: "machine-a",
       workspace_id: "workspace-a",

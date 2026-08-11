@@ -14,12 +14,9 @@ import {
   type TerminalPairingLinkView,
 } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import {
-  sessionBrowserStatus,
-  sessionBrowserTimestamp,
-  sessionBrowserTitle,
-} from "./sessions.js"
+import { sessionBrowserCardLines } from "./session-browser-card.js"
 import { theme } from "./theme.js"
+import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
@@ -33,6 +30,7 @@ type CliDialogOverlayOptions = {
   onDismiss: () => void
   sessions: SessionListEntry[]
   normalizeSessionBrowserIndex: () => number
+  sessionBrowserProject?: WaitingRoomProjectSummary | null
   terminalPairing: TerminalPairingLinkView | null
   terminalPairingQrLines: string[]
   hotkeySections: HotkeySection[]
@@ -78,7 +76,11 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
 function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRenderable {
   const { renderer, dimensions, sessions } = options
   const panel = dialogPanel(renderer, Math.min(112, Math.max(78, Math.floor(dimensions.width * 0.78))), dimensions.width)
-  panel.add(dialogHeader(renderer, "All Sessions", "Enter opens • A/D confirm • Esc closes"))
+  panel.add(dialogHeader(
+    renderer,
+    options.sessionBrowserProject ? `${options.sessionBrowserProject.name} Sessions` : "All Sessions",
+    "Enter opens • A/D confirm • Esc returns",
+  ))
   if (sessions.length === 0) {
     panel.add(new TextRenderable(renderer, {
       content: "No sessions available.",
@@ -88,27 +90,43 @@ function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRendera
   }
 
   const index = options.normalizeSessionBrowserIndex()
-  const statusWidth = Math.max("Status".length, ...sessions.map((session) => sessionBrowserStatus(session).length))
-  const lastUsedWidth = Math.max("Last used".length, "0000-00-00 00:00 UTC".length)
-  const createdAtWidth = Math.max("Created at".length, "0000-00-00 00:00 UTC".length)
-  panel.add(new TextRenderable(renderer, {
-    content: `  ${"Session".padEnd(30, " ")} ${"Status".padEnd(statusWidth, " ")}  ${"Last used".padEnd(lastUsedWidth, " ")}  ${"Created at".padEnd(createdAtWidth, " ")}`,
-    fg: theme.textMuted,
-    wrapMode: "none",
-  }))
-  const maxRows = Math.max(4, Math.min(14, dimensions.height - 12))
+  const availablePanelHeight = dimensions.height - Math.max(1, Math.floor(dimensions.height / 5))
+  const maxRows = Math.max(1, Math.min(5, Math.floor((availablePanelHeight - 5) / 6)))
   const start = Math.min(Math.max(0, index - maxRows + 1), Math.max(0, sessions.length - maxRows))
   for (const [offset, session] of sessions.slice(start, start + maxRows).entries()) {
     const rowIndex = start + offset
     const selected = rowIndex === index
-    const title = sessionBrowserTitle(session)
-    const content = `${selected ? ">" : " "} ${title.padEnd(30, " ")} ${sessionBrowserStatus(session).padEnd(statusWidth, " ")}  ${sessionBrowserTimestamp(session.last_used_at_ms ?? null).padEnd(lastUsedWidth, " ")}  ${sessionBrowserTimestamp(session.created_at_ms ?? null).padEnd(createdAtWidth, " ")}`
-    panel.add(new TextRenderable(renderer, {
-      content,
+    const lines = sessionBrowserCardLines(session, selected)
+    const card = new BoxRenderable(renderer, {
+      flexDirection: "column",
+    })
+    card.add(new TextRenderable(renderer, {
+      content: lines.title,
       fg: selected ? theme.primary : theme.text,
       ...(selected ? { attributes: TextAttributes.BOLD } : {}),
       wrapMode: "none",
     }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.timestamps,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.agents,
+      fg: selected ? theme.text : theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.workflows,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    card.add(new TextRenderable(renderer, {
+      content: lines.collaborations,
+      fg: theme.textMuted,
+      wrapMode: "none",
+    }))
+    panel.add(card)
   }
   if (sessions.length > maxRows) {
     panel.add(new TextRenderable(renderer, {

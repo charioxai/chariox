@@ -36,6 +36,7 @@ const detachedState: DetachedCliTransitionState = {
   createdSession: false,
   session: {
     id: "no-session",
+    project_id: "project-default",
     alias: null,
     workspace_id: "/tmp/workspace",
     worktree_id: "/tmp/workspace",

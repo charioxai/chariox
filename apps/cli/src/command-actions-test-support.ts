@@ -31,6 +31,7 @@ export function makeAgent(overrides: Partial<AgentInstance> = {}): AgentInstance
 export function makeSession(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",
+    project_id: "project-default",
     alias: null,
     workspace_id: "workspace-1",
     worktree_id: "worktree-1",
@@ -82,6 +83,8 @@ export function makeCommandDeps(overrides: Record<string, unknown> = {}) {
     transitionToNoSession: () => {},
     applyModelSelection: async () => {},
     applyVariantSelection: async () => {},
+    applyModeSelection: async () => {},
+    applyPermissionSelection: async () => {},
     setMultiAgentResponseLayout: () => {},
     applyResponseLayout: () => {},
     updateSessionResponseLayout: async () => ({ session: currentSession, config: currentSession.config_state }),

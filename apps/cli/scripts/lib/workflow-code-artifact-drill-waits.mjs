@@ -1,6 +1,6 @@
 import { getProviderRunRequest, getSessionStateRequest } from '@arroba/kernel-client'
 import { compactWorkflowRunSummary } from './workflow-code-artifact-drill-topology.mjs'
-import { sleep, stage, unwrap } from './workflow-code-artifact-drill-runtime.mjs'
+import { sleep, stage, unwrap, withTimeout } from './workflow-code-artifact-drill-runtime.mjs'
 
 export async function waitForCompletedWorkflowRun(client, sessionId, workflowRunId, timeoutMs, progressLabel = null) {
   const deadline = Date.now() + timeoutMs

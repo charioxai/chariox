@@ -38,7 +38,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invite\|join\|mode\|permissions/)
+  assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invites\|invite\|join\|revoke-invite\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /agent list\|spawn \[--count <n>\]\|focus\|inspect\|cycle\|mode\|permissions\|substitute/)
   assert.match(result.message ?? "", /config show\|path\|keys\|schema\|set\|unset\|workspace-live-sync off\|managed\|tracked/)

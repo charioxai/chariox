@@ -215,6 +215,60 @@ fn session_snapshot_projection_preserves_projected_active_run_with_active_prompt
 }
 
 #[test]
+fn session_snapshot_projection_preserves_active_provider_launch_in_progress() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-starting",
+            "worktree-starting",
+        ))
+        .expect("session should be created");
+    let downstream_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("downstream"))
+        .expect("downstream agent should be created");
+    app.sessions_mut()
+        .set_focused_agent(session.id(), Some(focused_agent.id().to_string()))
+        .expect("first agent should remain focused");
+    let focused_run = launch_dev_stub_provider(&mut app, session.id(), focused_agent.id());
+    let downstream_run = app
+        .providers()
+        .start_run_provider_only(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(downstream_agent.id()),
+        )
+        .expect("downstream provider launch should start")
+        .into_run();
+    app.update_provider_run_projection(focused_run);
+    app.update_provider_run_projection(downstream_run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(downstream_run.id().to_string()))
+        .expect("downstream provider launch should be active");
+
+    let projection = SessionSnapshotProjection::from_daemon_app(&mut app, session.id(), 42)
+        .expect("projection should build");
+
+    assert_eq!(
+        projection.session.active_provider_run_id(),
+        Some(downstream_run.id()),
+        "an active provider launch must not be replaced by the focused idle run",
+    );
+    assert_eq!(
+        projection
+            .provider_run
+            .as_ref()
+            .expect("starting provider run should project")
+            .id(),
+        downstream_run.id(),
+    );
+}
+
+#[test]
 fn session_snapshot_projection_marks_settling_prompt_as_working() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

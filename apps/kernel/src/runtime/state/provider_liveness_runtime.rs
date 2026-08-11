@@ -83,8 +83,14 @@ impl KernelRuntimeState {
             return Ok(true);
         }
 
+        let agent_id =
+            exit.ended_run
+                .agent_instance_id()
+                .ok_or_else(|| DaemonError::AgentNotFound {
+                    agent_id: "provider run has no agent".to_string(),
+                })?;
         let session_outcome = self
-            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+            .settle_unexpected_provider_run_exit(session_id, provider_run_id, agent_id)
             .await?;
         let recipients = owned
             .attachment_store
@@ -109,5 +115,24 @@ impl KernelRuntimeState {
             ),
         );
         Ok(true)
+    }
+
+    pub(super) async fn settle_unexpected_provider_run_exit(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+    ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let session_outcome = self
+            .settle_owned_provider_prompt(session_id, provider_run_id, false, false, true)
+            .await?;
+        if self
+            .owned
+            .agent_store
+            .mark_unexpected_provider_exit_error(agent_id, session_outcome.had_active_prompt)?
+        {
+            let _ = self.owned.session_snapshot(session_id)?;
+        }
+        Ok(session_outcome)
     }
 }

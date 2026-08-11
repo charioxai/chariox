@@ -2,7 +2,7 @@ import path from 'node:path'
 import { readFile, writeFile } from 'node:fs/promises'
 const { createDefaultShellContext, parseShellCommand } = await import('../../../../packages/kernel-client/dist/shell-core.js')
 const { executeShellCommand } = await import('../../../../packages/kernel-client/dist/shell-executor.js')
-const { createWorkflowScheduleRequest, endSessionRequest, getSessionStateRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
+const { endSessionRequest, getSessionStateRequest } = await import('../../../../packages/kernel-client/dist/ipc-requests.js')
 import { hasAcceptedRunMetadata, logStep, publicationStatusWatchdogCount, publicationStatusWatchdogs, repoRoot, run, startProcess, startServeWithProviderPrompt, stopProcess, variant, waitForProcessExit } from './live-workflow-publication-drill-runtime.mjs'
 import { assertGatewayDoesNotListen, assertPackageDoesNotContain, assertPublicationRuntimeSessionHidden, createUnavailableProviderPackage, waitForGateway, waitForPublicationStatusLatestOutput, waitForScheduledWorkflowRun } from './live-workflow-publication-drill-waiters.mjs'
 import { runContainerPublicationValidation } from './live-workflow-publication-drill-containers.mjs'
@@ -43,7 +43,7 @@ export async function runPublicationPackageValidation({
   scheduleWorkspace,
   scheduleSession,
   scheduleWorkflow,
-  scheduleEndpoint,
+  schedule,
 }) {
   let gateway = null
   try {
@@ -171,18 +171,6 @@ export async function runPublicationPackageValidation({
     await client.send(endSessionRequest(session.id)).catch(() => {})
 
     logStep('schedule_publication_export')
-    const schedule = variant(
-      await client.send(createWorkflowScheduleRequest(
-        scheduleSession.id,
-        scheduleWorkflow.id,
-        scheduleEndpoint.id,
-        { kind: 'interval', every_seconds: 60 },
-        'schedule-publication',
-        'queue',
-        1,
-      )),
-      'WorkflowScheduleCreated',
-    ).schedule
     const scheduleExportDir = path.join(root, 'exported-schedule-publication')
     const scheduleExportResult = await executeShellCommand(
       parseShellCommand(`workflow publication export ${schedulePublication.id} ${scheduleExportDir} --kernel-url ${kernelUrl}`),

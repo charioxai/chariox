@@ -674,7 +674,7 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
 }
 
 #[test]
-fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
+fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     let _guard = crate::env_lock::lock();
     let home = std::env::temp_dir().join(format!(
         "arroba-workflow-routing-prompt-test-{}",
@@ -830,11 +830,16 @@ fn workflow_node_prompt_lists_allocated_multi_edge_routing_contracts() {
 
     assert!(prompt.contains("<outgoing-edge-contracts>"));
     assert!(prompt.contains(&format!(
-        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), target_instructions: \"Analyze quantitative evidence and route only analysis tasks here.\", handoff_schema_ref: schema:analysis, validation_policy: halt"
+        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
     )));
     assert!(prompt.contains(&format!(
-        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), target_instructions: \"Review wording, risks, and acceptance criteria for routed review tasks.\", handoff_schema_ref: schema:review, validation_policy: warn"
+        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
     )));
+    assert!(!prompt.contains("Analyze quantitative evidence and route only analysis tasks here."));
+    assert!(
+        !prompt.contains("Review wording, risks, and acceptance criteria for routed review tasks.")
+    );
+    assert!(!prompt.contains("target_instructions"));
     assert!(prompt.contains("workflow_handoffs"));
     assert!(prompt.contains("edge_id"));
     assert!(prompt.contains("to_node_id"));

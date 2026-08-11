@@ -558,6 +558,19 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
     isAttached: () => false,
     waitingRoomState: () => createWaitingRoomState([], catalog, "opencode", "default", "", "opencode", DEFAULT_THEME_REGISTRY),
     availableSessions: () => [],
+    waitingRoomProjects: () => [{
+      id: "project-1",
+      owner_user_id: "owner",
+      workspace_id: "/repo",
+      name: "Frontend",
+      kind: "named",
+      status: "active",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 0,
+      joined_collaborator_count: 1,
+      pending_collaboration_invite_count: 2,
+    }],
     providerCatalogState: () => catalog,
     waitingRoomCloudNotice: () => null,
     waitingRoomInventoryStatus: () => "ready",
@@ -591,6 +604,19 @@ test("buildCliAutomationSnapshot exposes waiting room unattached agent rows", ()
   })
 
   const rows = (snapshot.waitingRoom as { rows: Array<Record<string, unknown>> }).rows
+  const projects = (snapshot.waitingRoom as { projects: Array<Record<string, unknown>> }).projects
+  assert.deepEqual(projects, [{
+    id: "project-1",
+    name: "Frontend",
+    kind: "named",
+    status: "active",
+    workspaceId: "/repo",
+    sessionCount: 0,
+    joinedCollaboratorCount: 1,
+    pendingCollaborationInviteCount: 2,
+    lastSessionActivityAtMs: null,
+  }])
+  assert.equal(rows.some((row) => row.id === "project-entry:project-1"), true)
   assert.deepEqual(rows.find((row) => row.id === "external-session:opencode:thread-1"), {
     id: "external-session:opencode:thread-1",
     externalSessionId: "opencode:thread-1",

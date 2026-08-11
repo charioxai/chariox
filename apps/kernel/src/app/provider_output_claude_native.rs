@@ -277,30 +277,36 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     .app
                     .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?;
                 let marker = claude_native_marker(context_file);
-                if let (Some(active_prompt), Some(dispatch_prompt_id)) = (
-                    active_prompt.as_ref(),
-                    marker.as_deref().and_then(claude_native_dispatch_prompt_id),
-                ) {
+                if let Some(dispatch_prompt_id) =
+                    marker.as_deref().and_then(claude_native_dispatch_prompt_id)
+                {
                     // Idle submissions acknowledge through UserPromptSubmit.
                     // A busy Claude run records steering as a native queue
                     // enqueue instead, but some versions also emit this hook;
                     // only accept that steering hook when its prompt matches
                     // the exact text Arroba injected. Consume mismatched/stale
-                    // hook events while a dispatch marker is active so they
-                    // cannot create duplicate native prompt history.
-                    if dispatch_prompt_id == active_prompt.id()
+                    // hook events while an Arroba prompt is active, and also
+                    // consume an exact late acknowledgement after cancellation
+                    // so it cannot resurrect the cancelled managed turn as an
+                    // external prompt.
+                    let matches_managed_dispatch = active_prompt
+                        .as_ref()
+                        .is_some_and(|active_prompt| dispatch_prompt_id == active_prompt.id())
                         || claude_headless_dispatch_matches_prompt(
                             context_file,
                             dispatch_prompt_id,
                             prompt,
-                        )
-                    {
+                        );
+                    if matches_managed_dispatch {
                         write_claude_native_marker(
                             context_file,
                             &format!("accepted:{dispatch_prompt_id}"),
                         );
+                        continue;
                     }
-                    continue;
+                    if active_prompt.is_some() {
+                        continue;
+                    }
                 }
                 if let Some(request_id) =
                     event.get("hook_context_request_id").and_then(Value::as_str)

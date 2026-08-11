@@ -6,6 +6,7 @@ mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
 mod runtime_interactions;
+mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
 mod service;
@@ -32,6 +33,9 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use runtime_project::{
+    RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
+};
 pub(crate) use service::prompt_id_number;
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,

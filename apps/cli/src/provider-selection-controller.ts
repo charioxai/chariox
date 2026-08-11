@@ -57,6 +57,14 @@ type ProviderSelectionControllerDeps = {
     agentId: string,
     profile: ProviderSelectionDefaults,
   ) => Promise<{ session: RuntimeSession; agent?: AgentInstance }>
+  updateAgentConfig: (
+    sessionId: string,
+    agentId: string,
+    options: {
+      executionMode?: "build" | "plan"
+      permissionLevel?: "required" | "yolo"
+    },
+  ) => Promise<{ session: RuntimeSession; agent?: AgentInstance }>
   applySessionState: (session: RuntimeSession) => void
   clearProviderRunState: () => void
   getProviderAuthStatus: (provider: BackendProviderId) => Promise<ProviderAuthStatus>
@@ -70,6 +78,8 @@ export type ProviderSelectionController = {
   applyModelSelection(modelId: string): Promise<void>
   applyVariantSelection(variant: string): Promise<void>
   applyProviderSelection(providerId: string): Promise<void>
+  applyModeSelection(mode: string): Promise<void>
+  applyPermissionSelection(permission: string): Promise<void>
 }
 
 export function createProviderSelectionController(
@@ -94,6 +104,19 @@ export function createProviderSelectionController(
     const payload = await deps.updateAgentProfile(deps.sessionState().id, agentId, selection)
     deps.applySessionState(payload.session)
     deps.clearProviderRunState()
+    return true
+  }
+
+  const updateFocusedAgentConfig = async (
+    options: Parameters<ProviderSelectionControllerDeps["updateAgentConfig"]>[2],
+  ): Promise<boolean> => {
+    const agentId = deps.focusedAgentId()
+    if (!agentId) {
+      deps.flashFooter("no focused agent to update", "error")
+      return false
+    }
+    const payload = await deps.updateAgentConfig(deps.sessionState().id, agentId, options)
+    deps.applySessionState(payload.session)
     return true
   }
 
@@ -214,7 +237,53 @@ export function createProviderSelectionController(
       }
       deps.flashFooter(selectionMessage(`${backendProviderLabel(providerId)} selected`, localFallback), "info")
     },
+    async applyModeSelection(rawMode) {
+      const mode = parseExecutionMode(rawMode)
+      if (!mode) {
+        deps.flashFooter("usage: /mode <build|plan>", "error")
+        return
+      }
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        executionMode: mode,
+      })
+      if (!deps.isAttached()) {
+        deps.flashFooter(`mode default set to ${mode}`, "info")
+        return
+      }
+      if (await updateFocusedAgentConfig({ executionMode: mode })) {
+        deps.flashFooter(`mode set to ${mode}`, "info")
+      }
+    },
+    async applyPermissionSelection(rawPermission) {
+      const permission = parsePermissionLevel(rawPermission)
+      if (!permission) {
+        deps.flashFooter("usage: /permissions <required|yolo>", "error")
+        return
+      }
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        permissionLevel: permission,
+      })
+      if (!deps.isAttached()) {
+        deps.flashFooter(`permissions default set to ${permission}`, "info")
+        return
+      }
+      if (await updateFocusedAgentConfig({ permissionLevel: permission })) {
+        deps.flashFooter(`permissions set to ${permission}`, "info")
+      }
+    },
   }
+}
+
+function parseExecutionMode(value: string): "build" | "plan" | null {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "build" || normalized === "plan" ? normalized : null
+}
+
+function parsePermissionLevel(value: string): "required" | "yolo" | null {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "required" || normalized === "yolo" ? normalized : null
 }
 
 function selectionMessage(message: string, localFallback: boolean) {

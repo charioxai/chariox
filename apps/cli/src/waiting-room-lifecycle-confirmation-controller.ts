@@ -10,7 +10,7 @@ const DEFAULT_CONFIRMATION_WINDOW_MS = 4_000
 type WaitingRoomLifecycleDecision = WaitingRoomSessionLifecycleDecision | WaitingRoomDeleteDecision
 
 type WaitingRoomLifecycleTarget = {
-  kind: "session" | "sessions" | "machine" | "kernel" | "slice"
+  kind: "session" | "sessions" | "project" | "machine" | "kernel" | "slice"
   id: string
   label: string
   verb: "archive" | "delete"
@@ -106,6 +106,14 @@ function waitingRoomLifecycleTarget(
       verb: "archive",
     }
   }
+  if (decision.action === "archive-project") {
+    return {
+      kind: "project",
+      id: decision.project.id,
+      label: `project ${decision.project.name}`,
+      verb: "archive",
+    }
+  }
   if (decision.action === "delete-session" || decision.action === "delete") {
     return {
       kind: "session",
@@ -119,6 +127,14 @@ function waitingRoomLifecycleTarget(
       kind: "sessions",
       id: "all",
       label: `${decision.sessions.length} session${decision.sessions.length === 1 ? "" : "s"}`,
+      verb: "delete",
+    }
+  }
+  if (decision.action === "delete-project") {
+    return {
+      kind: "project",
+      id: decision.project.id,
+      label: `project ${decision.project.name}`,
       verb: "delete",
     }
   }

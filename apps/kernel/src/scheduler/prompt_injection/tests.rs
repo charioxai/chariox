@@ -398,7 +398,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
 }
 
 #[test]
-fn workflow_outgoing_edge_contract_line_includes_target_label_and_policy() {
+fn workflow_outgoing_edge_contract_line_excludes_private_target_instructions() {
     let mut workflow = WorkflowDefinition::new("workflow-1", Some("routing".to_string()));
     workflow.add_node(crate::session::WorkflowNodeDefinition::new(
         "node-1", "agent-1",
@@ -421,8 +421,10 @@ fn workflow_outgoing_edge_contract_line_includes_target_label_and_policy() {
 
     assert_eq!(
         line,
-        "- edge edge-1 -> node-2 (Reviewer), target_instructions: \"Review legal and policy risk before accepting a candidate.\", handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
+        "- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
     );
+    assert!(!line.contains("Review legal and policy risk"));
+    assert!(!line.contains("target_instructions"));
 }
 
 #[test]

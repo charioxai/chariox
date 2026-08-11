@@ -15,6 +15,8 @@ export type ParsedSlashCommand =
   | { kind: "provider"; raw: string; value: string }
   | { kind: "model"; raw: string; value: string }
   | { kind: "variant"; raw: string; value: string }
+  | { kind: "mode"; raw: string; value: string }
+  | { kind: "permissions"; raw: string; value: string }
   | { kind: "view"; raw: string; value: string }
   | { kind: "undo"; raw: string; args: string[] }
   | { kind: "fork"; raw: string; args: string[] }
@@ -56,6 +58,8 @@ export type SlashCommandHandlers = {
   onProvider: (command: Extract<ParsedSlashCommand, { kind: "provider" }>) => Promise<unknown> | unknown
   onModel: (command: Extract<ParsedSlashCommand, { kind: "model" }>) => Promise<unknown> | unknown
   onVariant: (command: Extract<ParsedSlashCommand, { kind: "variant" }>) => Promise<unknown> | unknown
+  onMode: (command: Extract<ParsedSlashCommand, { kind: "mode" }>) => Promise<unknown> | unknown
+  onPermissions: (command: Extract<ParsedSlashCommand, { kind: "permissions" }>) => Promise<unknown> | unknown
   onView: (command: Extract<ParsedSlashCommand, { kind: "view" }>) => Promise<unknown> | unknown
   onUndo: (command: Extract<ParsedSlashCommand, { kind: "undo" }>) => Promise<unknown> | unknown
   onFork: (command: Extract<ParsedSlashCommand, { kind: "fork" }>) => Promise<unknown> | unknown
@@ -128,6 +132,20 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "variant",
       raw: trimmed,
       value: trimmed.replace(/^\/variant\s*/, "").trim(),
+    }
+  }
+  if (trimmed === "/mode" || trimmed.startsWith("/mode ")) {
+    return {
+      kind: "mode",
+      raw: trimmed,
+      value: trimmed.replace(/^\/mode\s*/, "").trim(),
+    }
+  }
+  if (trimmed === "/permissions" || trimmed.startsWith("/permissions ")) {
+    return {
+      kind: "permissions",
+      raw: trimmed,
+      value: trimmed.replace(/^\/permissions\s*/, "").trim(),
     }
   }
   if (trimmed.startsWith("/view")) {
@@ -301,6 +319,32 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   return null
 }
 
+export function sharedShellCommandForSlashCommand(input: string): string | null {
+  const command = input.trim()
+  if (command === "/collab invites" || command === "/collab invites list") {
+    return "session invites"
+  }
+  if (
+    command === "/workflow code"
+    || command.startsWith("/workflow code ")
+    || command === "/workflow publication"
+    || command.startsWith("/workflow publication ")
+    || command === "/workflow registry"
+    || command.startsWith("/workflow registry ")
+    || command === "/workflow load"
+    || command.startsWith("/workflow load ")
+    || command === "/workflow schedule preview"
+    || command.startsWith("/workflow schedule preview ")
+    || (
+      /^\/workflow\s+run\s+\S+\s+/.test(command)
+      && /(?:^|\s)--(?:endpoint|prompt|provider-rebinding|provider-rebind)(?:\s|$)/.test(command)
+    )
+  ) {
+    return command.slice(1)
+  }
+  return null
+}
+
 function parseAgentWaitCommand(
   command: string,
   prefix: "/wait-in" | "/wait-every",
@@ -361,6 +405,12 @@ export async function executeSlashCommand(
       break
     case "variant":
       await handlers.onVariant(command)
+      break
+    case "mode":
+      await handlers.onMode(command)
+      break
+    case "permissions":
+      await handlers.onPermissions(command)
       break
     case "view":
       await handlers.onView(command)
@@ -443,6 +493,8 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "provider":
     case "model":
     case "variant":
+    case "mode":
+    case "permissions":
     case "view":
     case "undo":
     case "fork":

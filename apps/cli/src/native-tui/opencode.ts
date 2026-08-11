@@ -62,6 +62,7 @@ type NativeOpenCodeOptions = {
   sliceRef?: string
   alias?: string
   agentAlias?: string
+  model: string
   mode: "build" | "plan"
   permissions: "required" | "yolo"
   serverInKernel: boolean
@@ -93,7 +94,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       ? null
       : await createNativeSession(client, workspace, worktree, options.alias, {
         provider: "opencode",
-        model: "default",
+        model: options.model,
         effort: null,
         execution_mode: options.mode,
         permission_level: options.permissions,
@@ -106,7 +107,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
     const attachment = await attachNativeSession(client, session.id, options.clientId)
     const agent = created?.agent
       ? await prepareCreatedNativeAgent(client, session.id, created.agent, options.agentAlias, options.machineRef)
-      : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, "default", undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
+      : await spawnNativeAgent(client, session.id, "opencode", options.agentAlias, options.model, undefined, null, options.mode, options.permissions, options.machineRef, options.sliceRef)
     await grantNativeCapabilities(client, workspace, agent.id, options.grantMcps, options.grantSkills)
     let upstreamBaseUrl: string
     let run: RuntimeProviderRun | null = null
@@ -114,7 +115,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: "default",
+        model: options.model,
         effort: "",
         agentId: agent.id,
       })
@@ -150,7 +151,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
       const launched = await requestNativeProviderRunLaunch(client, {
         sessionId: session.id,
         provider: "opencode",
-        model: "default",
+        model: options.model,
         effort: "",
         agentId: agent.id,
         native: { structuredEndpoint: proxyUrl },
@@ -215,9 +216,10 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
   }
 }
 
-function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
+export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   const options: NativeOpenCodeOptions = {
     clientId: `arroba-opencode-native-${process.pid}`,
+    model: "default",
     mode: "build",
     permissions: "yolo",
     serverInKernel: false,
@@ -281,6 +283,10 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
         break
       case "--agent-alias":
         options.agentAlias = next()
+        break
+      case "--model":
+      case "-m":
+        options.model = next()
         break
       case "--mode":
         options.mode = parseMode(next())
@@ -347,7 +353,7 @@ function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 
 function printNativeOpenCodeUsage() {
   process.stdout.write([
-    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
+    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--model MODEL] [--mode build|plan] [--permissions required|yolo]",
     "       arroba opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
@@ -355,6 +361,7 @@ function printNativeOpenCodeUsage() {
     "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
     "",
     "behavior:",
+    "  --model <model>                OpenCode model argument (default default)",
     "  --grant-mcp NAME                Grant an installed Arroba MCP to the native agent before provider launch",
     "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
     "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",

@@ -10,48 +10,31 @@ import type {
 } from "./cli-types.js"
 import { createWorkflowTopologyController } from "./workflow-topology-controller.js"
 
-test("workflow topology controller creates endpoints through the kernel request path", async () => {
+test("workflow topology controller creates endpoints through design ops", async () => {
+  const current = workflow()
+  const updated = { ...current, endpoints: [endpoint("endpoint-test", "node-1")] }
   const harness = createHarness({
-    CreateWorkflowEndpoint: {
-      WorkflowEndpointCreated: {
-        endpoint: endpoint("endpoint-1", "node-1"),
-        workflow: workflow(),
-        session: session(),
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: { ...session(), workflows: [updated] } } },
   })
 
   const payload = await harness.controller.createWorkflowEndpoint("workflow-1", "node-1", "start")
 
-  assert.equal(payload.endpoint.id, "endpoint-1")
-  assert.deepEqual(harness.requests, [
-    {
-      CreateWorkflowEndpoint: {
-        session_id: "session-1",
-        workflow_ref: "workflow-1",
-        entry_node_id: "node-1",
-        alias: "start",
-      },
-    },
-  ])
+  assert.equal(payload.endpoint.id, "endpoint-test")
+  assert.deepEqual(harness.designOps, [{
+    kind: "endpoint_add",
+    workflow_id: "workflow-1",
+    endpoint: { id: "endpoint-test", entry_node_id: "node-1", alias: "start" },
+  }])
 })
 
 test("workflow topology controller updates node runtime settings", async () => {
+  const current = workflow()
+  const updatedNode = { ...node("node-1"), max_turns: 5, wait_for_all_inputs: true }
+  const updated = { ...current, nodes: [updatedNode, node("node-2")] }
   const harness = createHarness({
-    SetWorkflowNodeMaxTurns: {
-      WorkflowNodeMaxTurnsUpdated: {
-        node: node("node-1"),
-        workflow: workflow(),
-        session: session(),
-      },
-    },
-    SetWorkflowNodeWaitForAllInputs: {
-      WorkflowNodeWaitForAllInputsUpdated: {
-        node: node("node-1"),
-        workflow: workflow(),
-        session: session(),
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: { ...session(), workflows: [updated] } } },
   })
 
   const payload = await harness.controller.setWorkflowNodeMaxTurns("workflow-1", "node-1", 5)
@@ -59,59 +42,80 @@ test("workflow topology controller updates node runtime settings", async () => {
 
   assert.equal(payload.node.id, "node-1")
   assert.equal(waitPayload.node.id, "node-1")
-  assert.deepEqual(harness.requests.at(-1), {
-    SetWorkflowNodeWaitForAllInputs: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      node_id: "node-1",
-      wait_for_all_inputs: true,
-    },
-  })
-  assert.deepEqual(harness.requests.at(-2), {
-    SetWorkflowNodeMaxTurns: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      node_id: "node-1",
-      max_turns: 5,
-    },
-  })
+  assert.deepEqual(harness.designOps, [{
+    kind: "node_update",
+    workflow_id: "workflow-1",
+    node_id: "node-1",
+    patch: { max_turns: 5 },
+  }, {
+    kind: "node_update",
+    workflow_id: "workflow-1",
+    node_id: "node-1",
+    patch: { wait_for_all_inputs: true },
+  }])
 })
 
 test("workflow topology controller adds graph edges", async () => {
+  const current = workflow()
+  const updated = { ...current, edges: [edge("edge-test")] }
   const harness = createHarness({
-    AddWorkflowEdge: {
-      WorkflowEdgeAdded: {
-        edge: edge("edge-1"),
-        workflow: workflow(),
-        session: session(),
-      },
-    },
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: { ...session(), workflows: [updated] } } },
   })
 
   const payload = await harness.controller.addWorkflowEdge("workflow-1", "node-1", "node-2")
 
-  assert.equal(payload.edge.id, "edge-1")
-  assert.deepEqual(harness.requests.at(-1), {
-    AddWorkflowEdge: {
-      session_id: "session-1",
-      workflow_ref: "workflow-1",
-      from_node_id: "node-1",
-      to_node_id: "node-2",
-    },
+  assert.equal(payload.edge.id, "edge-test")
+  assert.deepEqual(harness.designOps, [{
+    kind: "edge_add",
+    workflow_id: "workflow-1",
+    edge: { id: "edge-test", from_node_id: "node-1", to_node_id: "node-2" },
+  }])
+})
+
+test("workflow topology controller resolves and removes endpoint aliases through design ops", async () => {
+  const current = {
+    ...workflow(),
+    endpoints: [endpoint("endpoint-1", "node-1")],
+  }
+  current.endpoints[0]!.alias = "start"
+  const next = { ...current, endpoints: [] }
+  const nextSession = { ...session(), workflows: [next] }
+  const harness = createHarness({
+    ResolveWorkflow: { WorkflowResolved: { workflow: current } },
+    ApplyWorkflowDesignOp: { WorkflowDesignOpAccepted: { session: nextSession } },
   })
+
+  const payload = await harness.controller.removeWorkflowEndpoint("workflow-1", "start")
+
+  assert.equal(payload.endpoint.id, "endpoint-1")
+  assert.deepEqual(payload.workflow.endpoints, [])
+  assert.deepEqual(harness.designOps, [{
+    kind: "endpoint_remove",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+  }])
 })
 
 function createHarness(responses: Record<string, Record<string, unknown>>) {
   const requests: Record<string, unknown>[] = []
+  const designOps: unknown[] = []
   const controller = createWorkflowTopologyController({
     sessionId: () => "session-1",
+    createWorkflowDesignId: (prefix) => `${prefix}-test`,
     sendRequest: async (request) => {
       requests.push(request)
       const variant = Object.keys(request)[0] ?? ""
       return responses[variant] ?? {}
     },
+    applyWorkflowDesignOp: async (op) => {
+      designOps.push(op)
+      const payload = responses.ApplyWorkflowDesignOp?.WorkflowDesignOpAccepted as { session: RuntimeSession } | undefined
+      if (!payload) throw new Error("missing ApplyWorkflowDesignOp response")
+      return payload
+    },
   })
-  return { controller, requests }
+  return { controller, requests, designOps }
 }
 
 function session(): RuntimeSession {
@@ -122,7 +126,7 @@ function workflow(): WorkflowDefinition {
   return {
     id: "workflow-1",
     alias: "Workflow",
-    nodes: [],
+    nodes: [node("node-1"), node("node-2")],
   }
 }
 

@@ -94,6 +94,12 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
+                "attachments": [{
+                    "url": "data:image/png;base64,aGVsbG8=",
+                    "mime": "image/png",
+                    "filename": "diagram.png",
+                    "contents_base64": "aGVsbG8="
+                }],
                 "idempotency_key": "review-package-name"
             }),
         )
@@ -102,6 +108,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
     assert!(first.ok, "{:?}", first.payload);
     assert_eq!(first.payload["status"], "started");
     assert_eq!(first.payload["target_agent_id"], reviewer.id());
+    assert_eq!(first.payload["attachment_count"], 1);
 
     let retried = router
         .runtime_state
@@ -111,6 +118,12 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
+                "attachments": [{
+                    "url": "data:image/png;base64,aGVsbG8=",
+                    "mime": "image/png",
+                    "filename": "diagram.png",
+                    "contents_base64": "aGVsbG8="
+                }],
                 "idempotency_key": "review-package-name"
             }),
         )
@@ -182,7 +195,17 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         .expect("reviewer should have an active agent message");
     assert_eq!(
         reviewer_prompt.prompt(),
-        "Message from @router:\n\nInspect package.json and report the package name."
+        "agent router message:\n\nInspect package.json and report the package name."
+    );
+    assert_eq!(reviewer_prompt.attachments().len(), 1);
+    assert_eq!(reviewer_prompt.attachments()[0].mime(), "image/png");
+    assert_eq!(
+        reviewer_prompt.attachments()[0].filename(),
+        Some("diagram.png")
+    );
+    assert_eq!(
+        reviewer_prompt.attachments()[0].contents_base64(),
+        Some("aGVsbG8=")
     );
     assert!(reviewer_prompt
         .hidden_system_context()
@@ -193,7 +216,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
             .expect("reviewer queue should exist")
             .front()
             .map(|prompt| prompt.prompt()),
-        Some("Message from @router:\n\nThen report whether the package is private.")
+        Some("agent router message:\n\nThen report whether the package is private.")
     );
     assert_eq!(
         snapshot
@@ -206,7 +229,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         snapshot
             .active_prompt_for_agent(sender.id())
             .map(|prompt| prompt.prompt()),
-        Some("Message from @reviewer:\n\nThe review has started.")
+        Some("agent reviewer message:\n\nThe review has started.")
     );
 }
 
