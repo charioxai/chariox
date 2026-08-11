@@ -152,11 +152,16 @@ impl SessionService {
             );
             debug_assert!(session.assign_project_id(project_id));
         } else if !self.projects.contains_key(session.project_id()) {
+            let name = self.unique_project_name(
+                session.owner_user_id(),
+                &default_project_name(session.workspace_id()),
+                None,
+            );
             let project = RuntimeProject::new(
                 session.project_id().to_string(),
                 session.owner_user_id().to_string(),
                 session.workspace_id().to_string(),
-                default_project_name(session.workspace_id()),
+                name,
                 RuntimeProjectKind::Default,
             );
             self.projects.insert(project.id().to_string(), project);
@@ -224,6 +229,152 @@ impl SessionService {
             .collect()
     }
 
+    pub(crate) fn reconcile_duplicate_project_names(&mut self) -> Vec<RuntimeProject> {
+        let visible_session_counts = self
+            .store
+            .list()
+            .into_iter()
+            .filter(|session| !session.is_hidden() && !session.project_id().is_empty())
+            .fold(BTreeMap::<String, usize>::new(), |mut counts, session| {
+                *counts.entry(session.project_id().to_string()).or_default() += 1;
+                counts
+            });
+        let mut project_groups = BTreeMap::<(String, String), Vec<String>>::new();
+        let mut occupied_names = BTreeMap::<String, BTreeSet<String>>::new();
+        for project in self.projects.values() {
+            let owner_user_id = project.owner_user_id().to_string();
+            let name_key = project_name_key(project.name());
+            project_groups
+                .entry((owner_user_id.clone(), name_key.clone()))
+                .or_default()
+                .push(project.id().to_string());
+            occupied_names
+                .entry(owner_user_id)
+                .or_default()
+                .insert(name_key);
+        }
+
+        let mut renames = Vec::new();
+        for ((owner_user_id, _), mut project_ids) in project_groups {
+            if project_ids.len() < 2 {
+                continue;
+            }
+            project_ids.sort_by(|left_id, right_id| {
+                let left = self
+                    .projects
+                    .get(left_id)
+                    .expect("grouped project should exist");
+                let right = self
+                    .projects
+                    .get(right_id)
+                    .expect("grouped project should exist");
+                visible_session_counts
+                    .get(right_id)
+                    .copied()
+                    .unwrap_or_default()
+                    .cmp(
+                        &visible_session_counts
+                            .get(left_id)
+                            .copied()
+                            .unwrap_or_default(),
+                    )
+                    .then_with(|| left.created_at_ms().cmp(&right.created_at_ms()))
+                    .then_with(|| left_id.cmp(right_id))
+            });
+            let base_name = self
+                .projects
+                .get(&project_ids[0])
+                .expect("canonical project should exist")
+                .name()
+                .to_string();
+            let occupied = occupied_names.entry(owner_user_id).or_default();
+            for project_id in project_ids.into_iter().skip(1) {
+                let name = unique_project_name_from_keys(&base_name, occupied);
+                occupied.insert(project_name_key(&name));
+                renames.push((project_id, name));
+            }
+        }
+
+        renames
+            .into_iter()
+            .filter_map(|(project_id, name)| {
+                let project = self.projects.get_mut(&project_id)?;
+                project.rename(name);
+                Some(project.clone())
+            })
+            .collect()
+    }
+
+    pub(crate) fn migrate_default_project_workspace(
+        &mut self,
+        session_id: &str,
+        workspace_id: &str,
+        default_project_name_hint: Option<&str>,
+        replaced_project_ids: &BTreeSet<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        let current = self.get_session(session_id)?;
+        if current.is_hidden() || current.workspace_id() == workspace_id {
+            return Ok(None);
+        }
+        let source_project = self.get_project(current.project_id())?;
+        if source_project.kind() != RuntimeProjectKind::Default {
+            return Ok(None);
+        }
+
+        let target_project_id = if let Some(project_id) = self
+            .projects
+            .values()
+            .find(|project| {
+                project.owner_user_id() == current.owner_user_id()
+                    && project.workspace_id() == workspace_id
+                    && project.kind() == RuntimeProjectKind::Default
+            })
+            .map(|project| project.id().to_string())
+        {
+            if self
+                .projects
+                .get(&project_id)
+                .is_some_and(|project| project.status() == RuntimeProjectStatus::Archived)
+            {
+                self.projects
+                    .get_mut(&project_id)
+                    .expect("selected default project should exist")
+                    .restore();
+            }
+            project_id
+        } else {
+            let project_id = default_project_id(current.owner_user_id(), workspace_id);
+            let desired_name = default_project_name_hint
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| default_project_name(workspace_id));
+            let name = self.unique_project_name_excluding(
+                current.owner_user_id(),
+                &desired_name,
+                replaced_project_ids,
+            );
+            let project = RuntimeProject::new(
+                project_id.clone(),
+                current.owner_user_id().to_string(),
+                workspace_id.to_string(),
+                name,
+                RuntimeProjectKind::Default,
+            );
+            self.projects.insert(project_id.clone(), project);
+            project_id
+        };
+        let alias = self.migrated_session_alias(&current, workspace_id);
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.migrate_default_project_scope(workspace_id, target_project_id, alias);
+        Ok(Some(session.clone()))
+    }
+
     pub fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {
         self.projects.get(project_id).cloned().ok_or_else(|| {
             project_error(
@@ -248,6 +399,13 @@ impl SessionService {
         caller_user_id: &str,
     ) -> Result<RuntimeProject, DaemonError> {
         let name = normalize_project_name(&name)?;
+        self.ensure_project_owner(project_id, caller_user_id, "project.rename")?;
+        self.ensure_project_name_available(
+            caller_user_id,
+            &name,
+            Some(project_id),
+            "project.rename",
+        )?;
         let project = self.project_mut_for_owner(project_id, caller_user_id, "project.rename")?;
         project.rename(name);
         Ok(project.clone())
@@ -367,8 +525,7 @@ impl SessionService {
                 Ok(project_id.clone())
             }
             SessionProjectSelection::New => {
-                let number =
-                    self.next_named_project_number(&request.owner_user_id, &request.workspace_id);
+                let number = self.next_named_project_number(&request.owner_user_id);
                 let id = self.next_named_project_id(
                     &request.owner_user_id,
                     &request.workspace_id,
@@ -406,6 +563,7 @@ impl SessionService {
             .filter(|name| !name.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| default_project_name(workspace_id));
+        let name = self.unique_project_name(owner_user_id, &name, None);
         let project = RuntimeProject::new(
             id.clone(),
             owner_user_id.to_string(),
@@ -417,17 +575,95 @@ impl SessionService {
         id
     }
 
-    fn next_named_project_number(&self, owner_user_id: &str, workspace_id: &str) -> u64 {
+    fn next_named_project_number(&self, owner_user_id: &str) -> u64 {
         self.projects
             .values()
-            .filter(|project| {
-                project.owner_user_id() == owner_user_id && project.workspace_id() == workspace_id
-            })
+            .filter(|project| project.owner_user_id() == owner_user_id)
             .filter_map(|project| project.name().strip_prefix("Project-"))
             .filter_map(|number| number.parse::<u64>().ok())
             .max()
             .unwrap_or(0)
             .saturating_add(1)
+    }
+
+    fn unique_project_name(
+        &self,
+        owner_user_id: &str,
+        desired_name: &str,
+        excluding_project_id: Option<&str>,
+    ) -> String {
+        let excluded_project_ids = excluding_project_id
+            .map(str::to_string)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        self.unique_project_name_excluding(owner_user_id, desired_name, &excluded_project_ids)
+    }
+
+    fn unique_project_name_excluding(
+        &self,
+        owner_user_id: &str,
+        desired_name: &str,
+        excluded_project_ids: &BTreeSet<String>,
+    ) -> String {
+        let occupied = self
+            .projects
+            .values()
+            .filter(|project| project.owner_user_id() == owner_user_id)
+            .filter(|project| !excluded_project_ids.contains(project.id()))
+            .map(|project| project_name_key(project.name()))
+            .collect::<BTreeSet<_>>();
+        unique_project_name_from_keys(desired_name, &occupied)
+    }
+
+    fn migrated_session_alias(
+        &self,
+        session: &RuntimeSession,
+        workspace_id: &str,
+    ) -> Option<String> {
+        let alias = session.alias()?.to_string();
+        if session.status() == SessionStatus::Ended
+            || self.store.visible_non_ended_sessions().all(|candidate| {
+                candidate.id() == session.id()
+                    || candidate.workspace_id() != workspace_id
+                    || candidate.alias() != Some(alias.as_str())
+            })
+        {
+            return Some(alias);
+        }
+        let mut suffix = 2_u64;
+        loop {
+            let candidate_alias = format!("{alias}-{suffix}");
+            if self.store.visible_non_ended_sessions().all(|candidate| {
+                candidate.id() == session.id()
+                    || candidate.workspace_id() != workspace_id
+                    || candidate.alias() != Some(candidate_alias.as_str())
+            }) {
+                return Some(candidate_alias);
+            }
+            suffix = suffix.saturating_add(1);
+        }
+    }
+
+    fn ensure_project_name_available(
+        &self,
+        owner_user_id: &str,
+        name: &str,
+        excluding_project_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let name_key = project_name_key(name);
+        let conflict = self.projects.values().any(|project| {
+            project.owner_user_id() == owner_user_id
+                && Some(project.id()) != excluding_project_id
+                && project_name_key(project.name()) == name_key
+        });
+        if conflict {
+            return Err(project_error(
+                operation,
+                format!("project name `{name}` already exists"),
+            ));
+        }
+        Ok(())
     }
 
     fn next_named_project_id(
@@ -1344,6 +1580,8 @@ fn resolve_workspace_link_ref_in_session<'a>(
     }
 }
 
+const MAX_PROJECT_NAME_CHARS: usize = 120;
+
 fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
     let normalized = name.trim();
     if normalized.is_empty() {
@@ -1352,13 +1590,46 @@ fn normalize_project_name(name: &str) -> Result<String, DaemonError> {
             "project name cannot be empty".to_string(),
         ));
     }
-    if normalized.chars().count() > 120 {
+    if normalized.chars().count() > MAX_PROJECT_NAME_CHARS {
         return Err(project_error(
             "project.rename",
             "project name cannot exceed 120 characters".to_string(),
         ));
     }
     Ok(normalized.to_string())
+}
+
+fn project_name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn unique_project_name_from_keys(desired_name: &str, occupied: &BTreeSet<String>) -> String {
+    let base = truncate_project_name(desired_name.trim(), MAX_PROJECT_NAME_CHARS);
+    let base = if base.is_empty() {
+        "Project".to_string()
+    } else {
+        base
+    };
+    if !occupied.contains(&project_name_key(&base)) {
+        return base;
+    }
+    let mut suffix_number = 2_u64;
+    loop {
+        let suffix = format!(" ({suffix_number})");
+        let prefix = truncate_project_name(
+            &base,
+            MAX_PROJECT_NAME_CHARS.saturating_sub(suffix.chars().count()),
+        );
+        let candidate = format!("{prefix}{suffix}");
+        if !occupied.contains(&project_name_key(&candidate)) {
+            return candidate;
+        }
+        suffix_number = suffix_number.saturating_add(1);
+    }
+}
+
+fn truncate_project_name(name: &str, max_chars: usize) -> String {
+    name.chars().take(max_chars).collect()
 }
 
 fn project_error(operation: &'static str, message: String) -> DaemonError {

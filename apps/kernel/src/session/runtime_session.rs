@@ -230,6 +230,18 @@ impl RuntimeSession {
         self.project_id.clear();
     }
 
+    pub(crate) fn migrate_default_project_scope(
+        &mut self,
+        workspace_id: impl Into<String>,
+        project_id: impl Into<String>,
+        alias: Option<String>,
+    ) {
+        debug_assert!(!self.hidden);
+        self.workspace_id = workspace_id.into();
+        self.project_id = project_id.into();
+        self.alias = alias;
+    }
+
     pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {
         &self.agent_prompt_schedules
     }

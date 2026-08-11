@@ -106,6 +106,25 @@ impl SessionStateStore {
         self.write().remove_projects_without_visible_sessions()
     }
 
+    pub(crate) fn reconcile_duplicate_project_names(&self) -> Vec<RuntimeProject> {
+        self.write().reconcile_duplicate_project_names()
+    }
+
+    pub(crate) fn migrate_default_project_workspace(
+        &self,
+        session_id: &str,
+        workspace_id: &str,
+        default_project_name_hint: Option<&str>,
+        replaced_project_ids: &std::collections::BTreeSet<String>,
+    ) -> Result<Option<RuntimeSession>, DaemonError> {
+        self.write().migrate_default_project_workspace(
+            session_id,
+            workspace_id,
+            default_project_name_hint,
+            replaced_project_ids,
+        )
+    }
+
     pub(crate) fn rename_project(
         &self,
         project_id: &str,

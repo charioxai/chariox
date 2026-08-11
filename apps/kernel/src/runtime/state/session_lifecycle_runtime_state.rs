@@ -8,26 +8,8 @@ pub(crate) struct AgentOutputSeenAck {
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
-        request: crate::session::CreateSessionRequest,
+        mut request: crate::session::CreateSessionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let existing_project_ids = self
-            .owned
-            .session_store
-            .durable_projects()
-            .into_iter()
-            .map(|project| project.id().to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        let request = if matches!(
-            request.project_selection,
-            crate::session::SessionProjectSelection::Default
-        ) {
-            let name = crate::runtime::workspace_git_common::workspace_display_label(
-                &request.workspace_id,
-            );
-            request.with_default_project_name_hint(name)
-        } else {
-            request
-        };
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
         if slice_ref.is_some() && kernel_ref.is_some() {
@@ -42,9 +24,25 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let mut request = request;
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
+        }
+        request = canonicalize_session_workspace(request);
+        let existing_project_ids = self
+            .owned
+            .session_store
+            .durable_projects()
+            .into_iter()
+            .map(|project| project.id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        if matches!(
+            request.project_selection,
+            crate::session::SessionProjectSelection::Default
+        ) {
+            let name = crate::runtime::workspace_git_common::workspace_display_label(
+                &request.workspace_id,
+            );
+            request = request.with_default_project_name_hint(name);
         }
         if let Some(slice_ref) = slice_ref.as_deref() {
             let slice = self
@@ -781,6 +779,30 @@ fn prepare_local_session_worktree_placement(
     Ok(request)
 }
 
+fn canonicalize_session_workspace(
+    mut request: crate::session::CreateSessionRequest,
+) -> crate::session::CreateSessionRequest {
+    let Some(workspace_id) = crate::runtime::workspace_git_common::canonical_workspace_path(
+        &request.workspace_id,
+        &request.worktree_id,
+    ) else {
+        return request;
+    };
+    if workspace_id != request.workspace_id {
+        crate::logging::info_with_fields(
+            "daemon.kernel_session",
+            "canonicalized session workspace from linked worktree",
+            serde_json::json!({
+                "requested_workspace_id": request.workspace_id,
+                "worktree_id": request.worktree_id,
+                "workspace_id": workspace_id,
+            }),
+        );
+        request.workspace_id = workspace_id;
+    }
+    request
+}
+
 fn codex_linux_slice_live_sync_request(
     request: crate::session::CreateSessionRequest,
     slice: &crate::slice::SliceRecord,
@@ -866,6 +888,39 @@ mod tests {
             "feature/session-placement"
         );
         let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn linked_worktree_workspace_is_canonicalized_to_the_main_repository() {
+        let repo = temp_git_repo("session-workspace-canonicalization");
+        let worktree = repo.with_file_name(format!(
+            "{}-linked",
+            repo.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/session-workspace-canonicalization",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let request = crate::session::CreateSessionRequest::new(
+            worktree.display().to_string(),
+            worktree.display().to_string(),
+        );
+
+        let adjusted = canonicalize_session_workspace(request);
+
+        assert_eq!(
+            adjusted.workspace_id,
+            std::fs::canonicalize(&repo).unwrap().display().to_string()
+        );
+        assert_eq!(adjusted.worktree_id, worktree.display().to_string());
+        let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&repo);
     }
 

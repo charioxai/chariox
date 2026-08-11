@@ -135,6 +135,34 @@ pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
         })
 }
 
+pub(crate) fn canonical_workspace_path(
+    workspace_path: &str,
+    worktree_path: &str,
+) -> Option<String> {
+    [workspace_path, worktree_path]
+        .into_iter()
+        .filter(|path| !path.trim().is_empty() && Path::new(path).is_dir())
+        .find_map(|git_path| {
+            let git_dir = PathBuf::from(git_command_output(
+                git_path,
+                &["rev-parse", "--path-format=absolute", "--git-dir"],
+            )?);
+            let common_dir = PathBuf::from(git_command_output(
+                git_path,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )?);
+            if same_fs_path_buf(&git_dir, &common_dir) {
+                return (git_path == workspace_path).then(|| workspace_path.to_string());
+            }
+            let workspace = common_dir.parent()?.to_path_buf();
+            Some(workspace.display().to_string())
+        })
+}
+
+fn same_fs_path_buf(left: &Path, right: &Path) -> bool {
+    std::fs::canonicalize(left).ok() == std::fs::canonicalize(right).ok() || left == right
+}
+
 pub(crate) fn worktree_display_label(
     path: &str,
     workspace_path: &str,
@@ -208,11 +236,12 @@ fn repo_label_from_remote_url(url: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        repo_label_from_remote_url, same_fs_path, workspace_default_compare_ref,
-        worktree_display_label,
+        canonical_workspace_path, repo_label_from_remote_url, same_fs_path,
+        workspace_default_compare_ref, worktree_display_label,
     };
 
     #[test]
@@ -226,6 +255,71 @@ mod tests {
             Some("owner/repo")
         );
         assert_eq!(repo_label_from_remote_url("not-a-git-url"), None);
+    }
+
+    #[test]
+    fn canonical_workspace_uses_the_main_checkout_for_a_linked_worktree() {
+        let root = std::env::temp_dir().join(format!(
+            "arroba-canonical-workspace-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let worktree = root.with_file_name(format!(
+            "{}-worktree",
+            root.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        std::fs::create_dir_all(&root).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+        run_git(&root, &["config", "user.name", "Arroba Tests"]);
+        std::fs::write(root.join("README.md"), "workspace\n").expect("fixture should be written");
+        run_git(&root, &["add", "README.md"]);
+        run_git(&root, &["commit", "-m", "initial"]);
+        run_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/canonical-workspace",
+                worktree.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(
+            canonical_workspace_path(worktree.to_str().unwrap(), worktree.to_str().unwrap()),
+            Some(std::fs::canonicalize(&root).unwrap().display().to_string())
+        );
+        let non_git_workspace = root.with_file_name(format!(
+            "{}-not-git",
+            root.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        std::fs::create_dir_all(&non_git_workspace).expect("non-git workspace should be created");
+        assert_eq!(
+            canonical_workspace_path(
+                non_git_workspace.to_str().unwrap(),
+                worktree.to_str().unwrap()
+            ),
+            Some(std::fs::canonicalize(&root).unwrap().display().to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&non_git_workspace);
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
