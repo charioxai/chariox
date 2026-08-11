@@ -13,6 +13,7 @@ const options = {
   preflight: "/tmp/preflight.json",
   runId: "event-acceptance-001",
   component: "github",
+  expectedAegs: [],
   aedsHost: "root@aeds.example",
   aegsHost: "root@aegs.example",
   relayHost: "root@relay.example",
@@ -67,6 +68,14 @@ test("arguments require exact hosts, TLS origins, and a first-wave component", (
   )
   assert.doesNotThrow(() => validateOptions({
     ...options,
+    expectedAegs: ["github", "jira", "slack"],
+  }))
+  assert.throws(
+    () => validateOptions({ ...options, expectedAegs: ["jira"] }),
+    /must include --component/,
+  )
+  assert.doesNotThrow(() => validateOptions({
+    ...options,
     sshKey: "",
     aedsSshKey: "/tmp/aeds-key",
     aegsSshKey: "/tmp/aegs-key",
@@ -92,10 +101,11 @@ test("acceptance is bound to clean separated preflight evidence", () => {
   )
 })
 
-test("remote commands fence machine and role and never perform broad cleanup", () => {
+test("remote commands fence machine, role, and the exact concurrent AEGS set", () => {
   const readOnly = remoteAcceptanceCommand({
     role: "aegs",
     component: "github",
+    activeComponents: ["github", "jira", "slack"],
     machineId: "machine-b",
     url: options.aegsUrl,
     restart: false,
@@ -104,6 +114,9 @@ test("remote commands fence machine and role and never perform broad cleanup", (
   assert.match(readOnly, /host-role/)
   assert.match(readOnly, /arroba-aegs-github\.service/)
   assert.match(readOnly, /active_units/)
+  assert.match(readOnly, /arroba-aegs-jira\.service/)
+  assert.match(readOnly, /arroba-aegs-slack\.service/)
+  assert.match(readOnly, /sort/)
   assert.doesNotMatch(readOnly, /systemctl restart/)
   assert.doesNotMatch(readOnly, /\brm\b|docker system prune|docker compose down/)
 
@@ -119,7 +132,7 @@ test("remote commands fence machine and role and never perform broad cleanup", (
   assert.doesNotMatch(restart, /\breboot\b|\brm\b|docker system prune/)
 })
 
-test("acceptance checks AEDS then exactly one AEGS and retains bounded evidence", async () => {
+test("acceptance checks AEDS then the expected AEGS set and retains bounded evidence", async () => {
   const calls = []
   let written = ""
   const result = await runAcceptance(options, {
@@ -136,6 +149,7 @@ test("acceptance checks AEDS then exactly one AEGS and retains bounded evidence"
   assert.deepEqual(calls.map((call) => call.host), [options.aedsHost, options.aegsHost])
   assert.equal(result.record.restartMode, "read-only")
   assert.equal(result.record.component, "github")
+  assert.deepEqual(result.record.expectedAegs, ["github"])
   assert.match(written, /arroba-event-publication-hetzner-acceptance/)
   assert.doesNotMatch(written, /sshKey/)
 })

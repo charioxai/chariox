@@ -550,9 +550,9 @@
           <a href="#acceptance">Acceptance</a>
         </nav>
         <p class="aside-meta">
-          Status: OVH AEGS staging active; separate AEDS host gate pending<br />
+          Status: OVH AEDS plus concurrent dummy/GitHub AEGS staging active; real GitHub webhook validated<br />
           Scope: first-wave integrations<br />
-          Updated: 2026-08-10
+          Updated: 2026-08-11
         </p>
       </aside>
 
@@ -1335,8 +1335,9 @@ arroba-cloud
               runner. Its current filenames retain the original <code>hetzner</code> label, but
               the implementation accepts exact SSH targets from any provider. It consumes the
               exact clean host-separation evidence, rechecks machine identities
-              and role markers, requires public HTTPS health, rejects concurrent first-wave AEGSs,
-              and handles AEDS then one selected AEGS sequentially. Its default mode is read-only;
+              and role markers, requires public HTTPS health, verifies the exact expected set of
+              concurrently active first-wave AEGSs, and handles AEDS then each selected AEGS
+              sequentially. Its default mode is read-only;
               service restarts require an explicit flag and can affect only the two exact systemd
               units. It never performs host reboot, firewall mutation, container removal, or
               Docker pruning. The preflight and acceptance harnesses accept distinct per-host SSH
@@ -1378,6 +1379,14 @@ arroba-cloud
               kernel regressions pass, and a post-restart PTY test started and completed the
               workflow with the expected prompt.
             </p>
+            <p>
+              On 2026-08-11 the production GitHub AEGS delivered a real
+              <code>pull_request.opened</code> webhook for
+              <code>mgutierrez09/arroba-event-publication-drill</code> PR #1 through
+              <code>GitHub → GitHub AEGS → remote AEDS → local kernel → workflow queue → agent</code>.
+              The agent verified the payload and recorded the delivery evidence as a comment on the
+              PR, closing the end-to-end loop with the staged GitHub App installation.
+            </p>
           </div>
 
           <div class="callout good">
@@ -1387,17 +1396,26 @@ arroba-cloud
               <code>vps-95adeb93.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
               was rebuilt as Debian 12 and fenced with the exact <code>aegs</code> host role. It
               runs Docker, Compose, Caddy, a deny-by-default firewall, SSH key-only access, bounded
-              container logging, and 2 GiB of swap. The public dummy AEGS is the only active event
-              container and is available over TLS at
-              <code>https://dummy.51.38.80.192.sslip.io</code>. It is pinned to OSS revision
+              container logging, and 2 GiB of swap. The public dummy AEGS remains active over TLS at
+              <code>https://dummy.51.38.80.192.sslip.io</code> while the independently packaged
+              GitHub AEGS runs concurrently at
+              <code>https://github.51.38.80.192.sslip.io</code>. The dummy is pinned to OSS revision
               <code>fe5b8595016eda7dcf943fd728e90ac0dabe239f</code>, limited to 0.5 CPU and
               128 MiB, and restored successfully after a full host reboot with its durable test
-              subscription intact. The GitHub AEGS was built and label-verified for <code>amd64</code>
-              at revision <code>894ba86f5737843de8fc06f1afbdd65d1e33c46a</code>; its successful
-              release digest is
-              <code>sha256:0256ecb9e753740b58bd61bb25da6afe28a09aca029d027695b2d4d2914457ad</code>.
-              AEDS now exists on its separate host, so the remaining promotion gate is creating and
-              installing the staging GitHub App before the dummy service is stopped and replaced.
+              subscription intact. The GitHub AEGS is pinned to revision
+              <code>a5cd9ea2117e4cf9d5e0e3a7b20f8a2da3c9a959</code> and immutable image digest
+              <code>sha256:e4e8670d21233d69abd40a37015c4d5c8b737a8b95e928c5c83b44180a2d8396</code>;
+              its release passed provenance, SBOM, and high/critical vulnerability gates before an
+              in-place remote upgrade retained the authorized connection and active subscription.
+              The service is capped at 0.5 CPU and 256 MiB; with both generators active the host
+              retains about 3.3 GiB of available memory and 34 GiB of free disk. The GitHub App
+              <code>Arroba Event Staging Runtime</code> is installed only on the private
+              <code>mgutierrez09/arroba-event-publication-drill</code> repository. A real
+              <code>pull_request.opened</code> webhook for PR #1 reconciled one GitHub subscription,
+              increased AEDS acknowledgements, injected the canonical prompt into the workflow
+              queue, and started a workflow agent which independently queried that pull request.
+              This proves concurrent multi-generator routing through one AEDS while preserving
+              isolated credentials, state, ports, limits, and service lifecycles.
               The Linux rehearsal also exposed that file-backed Compose secrets preserve host
               ownership. The AEDS and all first-wave AEGS deployment validators and runbooks now
               require each root-only secret directory to contain UID/GID
@@ -1436,10 +1454,12 @@ arroba-cloud
               </tr>
               <tr>
                 <td>AEGS host</td>
-                <td>Dummy AEGS initially; GitHub and later first-wave AEGSs as isolated services</td>
+                <td>Dummy, GitHub, and later first-wave AEGSs as concurrently runnable isolated services</td>
                 <td>
-                  Separate container, identity, secrets, limits, state, and logs per AEGS. No
-                  access to AEDS storage or another AEGS's provider credentials.
+                  Separate container, identity, secrets, limits, state, logs, loopback port, and TLS
+                  hostname per AEGS. Install and validate integrations sequentially, then keep the
+                  resource-bounded healthy set active together to exercise AEDS multi-producer
+                  routing. No access to AEDS storage or another AEGS's provider credentials.
                 </td>
               </tr>
               <tr>
@@ -1606,6 +1626,11 @@ arroba-cloud
                   <li>
                     Add event publication and binding persistence, environment claims, and
                     idempotent queue insertion.
+                  </li>
+                  <li>
+                    Keep durable-journal recovery bounded and quiet: aggregate stale-record
+                    diagnostics and regression-test startup time so reboot/reconnect does not emit
+                    one warning per obsolete prompt.
                   </li>
                   <li>
                     Extend the existing queued prompt source metadata without introducing a
@@ -1919,8 +1944,9 @@ arroba-cloud
               durable state.
             </li>
             <li>
-              The AEGS host restarts, reconnects to its providers and AEDS, and reconciles logical
-              subscriptions without creating duplicate environment routes.
+              The AEGS host restarts, restores provider authorization and webhook state, resumes
+              authenticated publications to AEDS, and reconciles logical subscriptions without
+              creating duplicate environment routes.
             </li>
             <li>
               A cross-host partition recovers without lost accepted events or duplicate workflow

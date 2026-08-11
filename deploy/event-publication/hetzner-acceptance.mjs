@@ -15,6 +15,7 @@ export function parseArgs(argv) {
     preflight: "",
     runId: "",
     component: "",
+    expectedAegs: [],
     aedsHost: "",
     aegsHost: "",
     relayHost: "",
@@ -36,6 +37,9 @@ export function parseArgs(argv) {
     if (value === "--preflight") options.preflight = next()
     else if (value === "--run-id") options.runId = next()
     else if (value === "--component") options.component = next()
+    else if (value === "--expected-aegs") {
+      options.expectedAegs = next().split(",").map((item) => item.trim()).filter(Boolean)
+    }
     else if (value === "--aeds-host") options.aedsHost = next()
     else if (value === "--aegs-host") options.aegsHost = next()
     else if (value === "--relay-host") options.relayHost = next()
@@ -72,6 +76,16 @@ export function validateOptions(options) {
   }
   if (!components.has(options.component)) {
     throw new Error("--component must be one of github, jira, linear, gitlab, sentry, or slack")
+  }
+  const expectedAegs = options.expectedAegs.length ? options.expectedAegs : [options.component]
+  if (expectedAegs.some((component) => !components.has(component))) {
+    throw new Error("--expected-aegs contains an unsupported first-wave component")
+  }
+  if (!expectedAegs.includes(options.component)) {
+    throw new Error("--expected-aegs must include --component")
+  }
+  if (new Set(expectedAegs).size !== expectedAegs.length) {
+    throw new Error("--expected-aegs must not contain duplicates")
   }
   if (options.aedsHost === options.aegsHost) {
     throw new Error("AEDS and AEGS hosts must be different")
@@ -131,7 +145,14 @@ export function validatePreflightEvidence(evidence, options) {
   return evidence
 }
 
-export function remoteAcceptanceCommand({ role, component, machineId, url, restart }) {
+export function remoteAcceptanceCommand({
+  role,
+  component,
+  activeComponents = [component],
+  machineId,
+  url,
+  restart,
+}) {
   if (!["aeds", "aegs"].includes(role)) throw new Error(`unsupported role: ${role}`)
   const unit = role === "aeds" ? "arroba-aeds.service" : `arroba-aegs-${component}.service`
   const markerRole = role
@@ -148,13 +169,14 @@ export function remoteAcceptanceCommand({ role, component, machineId, url, resta
   ]
   if (role === "aegs") {
     const units = [...components].map((name) => `arroba-aegs-${name}.service`)
+    const expectedUnits = activeComponents.map((name) => `arroba-aegs-${name}.service`)
     lines.push(
       "active_units=",
+      `expected_units=${shellQuote(`${expectedUnits.join("\n")}\n`)}`,
       `for candidate in ${units.map(shellQuote).join(" ")}; do`,
       "  if systemctl is-active --quiet \"$candidate\"; then active_units=\"${active_units}${candidate}\\n\"; fi",
       "done",
-      "test \"$(printf '%b' \"$active_units\" | sed '/^$/d' | wc -l | tr -d ' ')\" -eq 1",
-      "test \"$(printf '%b' \"$active_units\" | sed '/^$/d')\" = \"$unit\"",
+      "test \"$(printf '%b' \"$active_units\" | sed '/^$/d' | sort)\" = \"$(printf '%b' \"$expected_units\" | sed '/^$/d' | sort)\"",
     )
   }
   lines.push("systemctl is-active --quiet \"$unit\"")
@@ -207,6 +229,7 @@ export async function runAcceptance(options, dependencies = {}) {
     const command = remoteAcceptanceCommand({
       role,
       component: options.component,
+      activeComponents: options.expectedAegs.length ? options.expectedAegs : [options.component],
       machineId: hostEvidence.machineId,
       url,
       restart: options.executeRestarts,
@@ -223,6 +246,7 @@ export async function runAcceptance(options, dependencies = {}) {
     runId: options.runId,
     capturedAt: new Date().toISOString(),
     component: options.component,
+    expectedAegs: options.expectedAegs.length ? options.expectedAegs : [options.component],
     preflight: path.resolve(options.preflight),
     restartMode: options.executeRestarts ? "executed" : "read-only",
     hosts: {
@@ -292,13 +316,15 @@ function usage() {
     "Usage:",
     "  node deploy/event-publication/hetzner-acceptance.mjs \\",
     "    --preflight PATH --run-id RUN_ID --component COMPONENT \\",
+    "    [--expected-aegs github,jira,linear,gitlab,sentry,slack] \\",
     "    --aeds-host USER@HOST --aegs-host USER@HOST [--relay-host USER@HOST] \\",
     "    [--ssh-key PATH | --aeds-ssh-key PATH --aegs-ssh-key PATH] \\",
     "    --aeds-url https://HOST --aegs-url https://HOST \\",
     "    [--evidence-dir PATH] [--execute-restarts]",
     "",
-    "The default run is read-only. --execute-restarts restarts only the exact AEDS",
-    "and selected AEGS systemd units after machine IDs and role markers are verified.",
+    "The default run is read-only. --expected-aegs verifies the exact concurrently active",
+    "first-wave AEGS set. --execute-restarts restarts only the exact AEDS and selected",
+    "AEGS systemd units after machine IDs and role markers are verified.",
   ].join("\n")
 }
 

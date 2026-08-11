@@ -89,7 +89,8 @@ AEDS, AEGS, and the existing relay resolve to distinct machines. After the
 private component runbooks install pinned services,
 `hetzner-acceptance.mjs` binds acceptance to that exact clean preflight
 evidence, rechecks machine IDs and role markers, requires public HTTPS health,
-and proves that only the selected first-wave AEGS is active. Its default mode
+and proves the exact expected set of concurrently active first-wave AEGSs. Pass
+that set with `--expected-aegs github,jira,linear,gitlab,sentry,slack`. Its default mode
 is read-only. `--execute-restarts` restarts only the exact AEDS and selected
 AEGS systemd units and retains bounded, secret-free evidence. It never reboots
 a host, changes firewall policy, removes containers, or prunes Docker.
