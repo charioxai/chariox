@@ -1776,6 +1776,29 @@ arroba-cloud
               matrix passed again after all restores. AEDS ended with zero pending deliveries.
             </p>
             <p>
+              On 2026-08-12 the connection-registry rollout was promoted sequentially across the
+              complete production AEGS set. Every image was built from the clean repository
+              <code>main</code>, scanned for high and critical vulnerabilities, and verified for
+              provenance and SBOM attestations before deployment. The live revisions are
+              GitHub <code>12b6cd23ebcd30c63c347aa206c564de939932d5</code>, GitLab
+              <code>8b278524093dd47b1f5d982186daa59be0ed088a</code>, Jira
+              <code>a0c06dad1198b30ab4d447207d3aefead9d45c21</code>, Linear
+              <code>9bd769f312a6eaa4a17c07d1c694bb694adbf446</code>, Sentry
+              <code>340b91ffd7e7273eb7b8b88472873f02c9eb407a</code>, and Slack
+              <code>ca838ffd385bc83a9c0c9f3939ca0090ebc1df9f</code>. Each service retained its
+              durable volume and authorization configuration, and each prior pinned environment
+              was preserved as the immediate rollback target. Public <code>/version</code>
+              checks reported the exact expected revision, protocol version 1, and configured
+              authorization for all six services. AEDS remained current at private revision
+              <code>3ee73b1d1df0a0ac21d7ca6822d6c935e83bca15</code> throughout the rollout.
+            </p>
+            <p>
+              The post-rollout host audit found the dummy plus all six production AEGS containers
+              healthy concurrently. The 4 GiB AEGS host retained 3.1 GiB available memory, used no
+              swap, and had 33 GiB free disk. All nine implementation repositories were clean and
+              synchronized with their upstream branches after the deployment checkpoint.
+            </p>
+            <p>
               The guarded read-only acceptance run <code>ovh-final-20260811</code>, bound to clean
               OSS revision <code>7b35367bf</code>, independently rechecked distinct machine IDs,
               exact host-role markers, the active AEDS and GitHub systemd units, public readiness,
