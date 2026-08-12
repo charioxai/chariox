@@ -92,6 +92,45 @@ pub(crate) async fn execute_event_catalog_request(
     })?
 }
 
+pub(crate) async fn validate_event_connection_binding(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    caller_user_id: &str,
+    request: &crate::local::CreateWorkflowEventBindingRequest,
+) -> Result<(), DaemonError> {
+    let config = config_projection.snapshot();
+    let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
+    let targets = config.event_generator_management_targets;
+    let generator_id = request.generator_id.clone();
+    let connection_id = request.connection_id.clone();
+    let page = blocking_aegs(move || {
+        query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
+    })
+    .await?;
+    let summary = page
+        .connections
+        .into_iter()
+        .find(|connection| {
+            connection.connection_id == request.connection_id
+                && connection.generator_id == request.generator_id
+        })
+        .ok_or_else(|| {
+            connection_error(
+                "the selected event connection is not installed for this kernel user".to_string(),
+            )
+        })?;
+    let connection = runtime_state
+        .event_connection_registry()
+        .upsert(caller_user_id, summary)?;
+    if connection.status != crate::local::EventConnectionStatus::Ready {
+        return Err(connection_error(format!(
+            "event connection `{}` is {:?}; reconnect it before attaching",
+            connection.connection_id, connection.status
+        )));
+    }
+    Ok(())
+}
+
 async fn execute_event_connection_request(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,

@@ -4,10 +4,109 @@ use crate::local::{
     SetWorkflowEventBindingStatusRequest,
 };
 use crate::session::WorkflowEventBindingStatus;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+struct ReadyConnectionServer {
+    address: std::net::SocketAddr,
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ReadyConnectionServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => serve_ready_connection(&mut stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("event connection test server failed: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            stop,
+            thread: Some(thread),
+        }
+    }
+
+    fn target(&self) -> crate::config::EventGeneratorManagementTarget {
+        crate::config::EventGeneratorManagementTarget {
+            url: format!("http://{}", self.address),
+            token: "test-management-token".to_string(),
+        }
+    }
+}
+
+impl Drop for ReadyConnectionServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+fn serve_ready_connection(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = stream.read(&mut buffer).unwrap();
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let request = String::from_utf8_lossy(&request);
+    assert!(request.starts_with("POST /v1/connections/query HTTP/1.1"));
+    assert!(request
+        .to_ascii_lowercase()
+        .contains("authorization: bearer test-management-token"));
+    let body = serde_json::json!({
+        "connections": [{
+            "generator_id": "dev.arroba.dummy",
+            "connection_id": "connection-local",
+            "status": "ready",
+            "metadata": {"account": "local"},
+            "updated_at_ms": 1
+        }]
+    })
+    .to_string();
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .unwrap();
+}
 
 #[test]
 fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() {
-    let harness = LocalRouterTestHarness::new();
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.arroba.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
     let graph = create_publication_test_graph(&harness, "event-publication");
     let create_publication = |alias: &str| match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowPublication(

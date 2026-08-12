@@ -6,7 +6,9 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
-use crate::runtime::event_catalog_control::execute_event_catalog_request;
+use crate::runtime::event_catalog_control::{
+    execute_event_catalog_request, validate_event_connection_binding,
+};
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::projected_provider_run_response;
@@ -215,6 +217,15 @@ impl CommandRouter {
             return self
                 .redact_result_for_user(Ok(response), caller_user_id)
                 .map(Some);
+        }
+        if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
+            validate_event_connection_binding(
+                &self.runtime_state,
+                &self.config_projection,
+                caller_user_id,
+                request,
+            )
+            .await?;
         }
         if is_workflow_command(request) {
             let response = self
