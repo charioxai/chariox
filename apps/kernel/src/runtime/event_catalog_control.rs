@@ -28,6 +28,7 @@ static CATALOG_CACHE: OnceLock<Mutex<BTreeMap<String, CatalogCacheEntry>>> = Onc
 pub(crate) async fn execute_event_catalog_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
@@ -45,12 +46,15 @@ pub(crate) async fn execute_event_catalog_request(
             | LocalDaemonRequest::ListEventGeneratorResources(_)
     ) {
         let targets = config.event_generator_management_targets.clone();
-        return tokio::task::spawn_blocking(move || aegs_management_request(&targets, &request))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "query event generator management service",
-                message: error.to_string(),
-            })?;
+        let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
+        return tokio::task::spawn_blocking(move || {
+            aegs_management_request(&targets, &owner_id, &request)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "query event generator management service",
+            message: error.to_string(),
+        })?;
     }
     let registry_url = config.event_registry_url.clone();
     tokio::task::spawn_blocking(move || {
@@ -69,6 +73,7 @@ pub(crate) async fn execute_event_catalog_request(
 
 fn aegs_management_request(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    owner_id: &str,
     request: &LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let (generator_id, path, body) = match request {
@@ -77,6 +82,7 @@ fn aegs_management_request(
             "/v1/authorizations",
             serde_json::to_string(&arroba_event_protocol::AegsAuthorizationStartRequest {
                 generator_id: request.generator_id.clone(),
+                owner_id: owner_id.to_string(),
                 return_url: request.return_url.clone(),
             })
             .map_err(|error| catalog_error(error.to_string()))?,
@@ -86,6 +92,7 @@ fn aegs_management_request(
             "/v1/resources/query",
             serde_json::to_string(&arroba_event_protocol::AegsProviderResourceQuery {
                 generator_id: request.generator_id.clone(),
+                owner_id: owner_id.to_string(),
                 connection_id: request.connection_id.clone(),
                 query: request.query.clone(),
                 cursor: request.cursor.clone(),
@@ -132,6 +139,13 @@ fn aegs_management_request(
         }
         _ => unreachable!("event generator management request was matched above"),
     }
+}
+
+fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());
+    format!("kernel-user-{digest:x}")
 }
 
 fn cached_remote_catalog_request(

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arroba_event_protocol::{
-    AegsAuthorizationStartRequest, AegsProviderResourceQuery, PublishEventRequest,
+    AegsAuthorizationStartRequest, AegsConnectionPage, AegsConnectionQuery,
+    AegsConnectionRevokeRequest, AegsConnectionStatus, AegsConnectionSummary,
+    AegsProviderResourceQuery, PublishEventRequest,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -298,16 +300,185 @@ impl AegsServer {
                         "provider authorization credentials are not configured for this AEGS",
                     );
                 }
-                match self
-                    .provider
-                    .start_authorization(authorization.return_url.as_deref())
-                {
-                    Ok(flow) => json(StatusCode::OK, serde_json::json!(flow)),
+                match self.provider.start_authorization(
+                    &authorization.owner_id,
+                    authorization.return_url.as_deref(),
+                ) {
+                    Ok(flow) => {
+                        if flow.status == "ready" {
+                            if let Some(connection_id) = flow.connection_id.as_deref() {
+                                if let Err(message) = self.store.upsert_ready_connection(
+                                    connection_id,
+                                    &authorization.owner_id,
+                                    self.provider.provider_slug(),
+                                    &serde_json::json!({}),
+                                    now_ms(),
+                                ) {
+                                    return error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "connection_store_failed",
+                                        message,
+                                    );
+                                }
+                            }
+                        }
+                        json(StatusCode::OK, serde_json::json!(flow))
+                    }
                     Err(message) => error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "authorization_start_failed",
                         message,
                     ),
+                }
+            }
+            (Method::POST, "/v1/connections/query") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let query: AegsConnectionQuery = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = query.validate() {
+                    return error(StatusCode::BAD_REQUEST, "invalid_connection_query", message);
+                }
+                if query.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, query.generator_id
+                        ),
+                    );
+                }
+                let page_number = match crate::decode_page(query.cursor.as_deref()) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_connection_cursor",
+                            message,
+                        )
+                    }
+                };
+                let connections = if let Some(connection_id) = query.connection_id.as_deref() {
+                    match self
+                        .store
+                        .claim_connection_owner(connection_id, &query.owner_id)
+                    {
+                        Ok(connection) => vec![connection],
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    match self.store.connections_for_owner(&query.owner_id) {
+                        Ok(values) => values,
+                        Err(message) => {
+                            return error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "store_failed",
+                                message,
+                            )
+                        }
+                    }
+                };
+                let limit = query.limit as usize;
+                let start = (page_number.saturating_sub(1) as usize).saturating_mul(limit);
+                let has_more = connections.len() > start.saturating_add(limit);
+                let summaries = connections
+                    .into_iter()
+                    .skip(start)
+                    .take(limit)
+                    .map(|connection| AegsConnectionSummary {
+                        generator_id: self.producer_id.clone(),
+                        connection_id: connection.connection_id,
+                        status: connection_status(&connection.status, connection.expires_at_ms),
+                        metadata: connection.metadata,
+                        expires_at_ms: connection.expires_at_ms,
+                        updated_at_ms: connection.updated_at_ms,
+                    })
+                    .collect();
+                json(
+                    StatusCode::OK,
+                    serde_json::json!(AegsConnectionPage {
+                        connections: summaries,
+                        next_cursor: has_more.then(|| format!("page:{}", page_number + 1)),
+                    }),
+                )
+            }
+            (Method::POST, "/v1/connections/revoke") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let revoke: AegsConnectionRevokeRequest = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = revoke.validate() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_connection_revoke",
+                        message,
+                    );
+                }
+                if revoke.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, revoke.generator_id
+                        ),
+                    );
+                }
+                if self
+                    .store
+                    .claim_connection_owner(&revoke.connection_id, &revoke.owner_id)
+                    .is_err()
+                {
+                    return error(
+                        StatusCode::NOT_FOUND,
+                        "connection_not_found",
+                        "the owned connection was not found",
+                    );
+                }
+                if let Err(message) = self.provider.revoke_connection(&revoke.connection_id) {
+                    return error(StatusCode::BAD_GATEWAY, "provider_revoke_failed", message);
+                }
+                match self.store.revoke_connection(
+                    &revoke.connection_id,
+                    &revoke.owner_id,
+                    now_ms(),
+                ) {
+                    Ok(true) => json(StatusCode::OK, serde_json::json!({"revoked": true})),
+                    Ok(false) => error(
+                        StatusCode::CONFLICT,
+                        "connection_already_revoked",
+                        "the connection is already revoked",
+                    ),
+                    Err(message) => {
+                        error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
+                    }
                 }
             }
             (Method::POST, "/v1/resources/query") => {
@@ -346,6 +517,17 @@ impl AegsServer {
                         StatusCode::SERVICE_UNAVAILABLE,
                         "authorization_unavailable",
                         "provider authorization credentials are not configured for this AEGS",
+                    );
+                }
+                if self
+                    .store
+                    .claim_connection_owner(&query.connection_id, &query.owner_id)
+                    .is_err()
+                {
+                    return error(
+                        StatusCode::NOT_FOUND,
+                        "connection_not_found",
+                        "the owned connection was not found",
                     );
                 }
                 let provider = Arc::clone(&self.provider);
@@ -548,6 +730,20 @@ impl AegsServer {
             )));
         }
         Ok(())
+    }
+}
+
+fn connection_status(status: &str, expires_at_ms: Option<u64>) -> AegsConnectionStatus {
+    if status == "ready" && expires_at_ms.is_some_and(|expires_at_ms| expires_at_ms <= now_ms()) {
+        return AegsConnectionStatus::Expired;
+    }
+    match status {
+        "pending" => AegsConnectionStatus::Pending,
+        "ready" => AegsConnectionStatus::Ready,
+        "expired" => AegsConnectionStatus::Expired,
+        "revoked" => AegsConnectionStatus::Revoked,
+        "unavailable" => AegsConnectionStatus::Unavailable,
+        _ => AegsConnectionStatus::Error,
     }
 }
 

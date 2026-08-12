@@ -152,7 +152,11 @@ impl OAuthAuthorization {
         &self.store
     }
 
-    pub fn start(&self, return_url: Option<&str>) -> Result<AegsAuthorizationFlow, String> {
+    pub fn start(
+        &self,
+        owner_id: &str,
+        return_url: Option<&str>,
+    ) -> Result<AegsAuthorizationFlow, String> {
         let now = now_ms();
         let expires_at_ms = now.saturating_add(AUTHORIZATION_TTL_MS);
         let state = random_opaque("state");
@@ -160,6 +164,7 @@ impl OAuthAuthorization {
         self.store.create_authorization(
             &digest(&state),
             &connection_id,
+            owner_id,
             self.provider_slug,
             return_url,
             expires_at_ms,

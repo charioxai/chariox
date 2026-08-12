@@ -20,11 +20,13 @@ pub struct AuthorizationRecord {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionRecord {
     pub connection_id: String,
+    pub owner_id: String,
     pub provider: String,
     pub status: String,
     pub encrypted_credential: Option<Vec<u8>>,
     pub metadata: Value,
     pub expires_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +75,7 @@ impl AegsStore {
                 ON subscriptions(generator_id, event_type, connection_scope, active);
             CREATE TABLE IF NOT EXISTS connections (
                 connection_id TEXT PRIMARY KEY NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT 'legacy',
                 provider TEXT NOT NULL,
                 status TEXT NOT NULL,
                 encrypted_credential BLOB,
@@ -104,6 +107,7 @@ impl AegsStore {
             ",
         )?;
         migrate_subscription_owner(&connection)?;
+        migrate_connection_owner(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -377,6 +381,7 @@ impl AegsStore {
         &self,
         state_digest: &str,
         connection_id: &str,
+        owner_id: &str,
         provider: &str,
         return_url: Option<&str>,
         expires_at_ms: u64,
@@ -399,11 +404,11 @@ impl AegsStore {
             .execute(
                 "
                 INSERT INTO connections (
-                    connection_id, provider, status, encrypted_credential,
+                    connection_id, owner_id, provider, status, encrypted_credential,
                     metadata_json, expires_at_ms, updated_at_ms
-                ) VALUES (?1, ?2, 'pending', NULL, '{}', NULL, ?3)
+                ) VALUES (?1, ?2, ?3, 'pending', NULL, '{}', NULL, ?4)
                 ",
-                params![connection_id, provider, now_ms as i64],
+                params![connection_id, owner_id, provider, now_ms as i64],
             )
             .map_err(|error| error.to_string())?;
         transaction
@@ -424,6 +429,46 @@ impl AegsStore {
             )
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_ready_connection(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        provider: &str,
+        metadata: &Value,
+        now_ms: u64,
+    ) -> Result<ConnectionRecord, String> {
+        let metadata_json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "INSERT INTO connections (
+                    connection_id, owner_id, provider, status, encrypted_credential,
+                    metadata_json, expires_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 'ready', NULL, ?4, NULL, ?5)
+                 ON CONFLICT(connection_id) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    provider = excluded.provider,
+                    status = 'ready',
+                    metadata_json = excluded.metadata_json,
+                    updated_at_ms = excluded.updated_at_ms
+                 WHERE connections.owner_id = excluded.owner_id
+                    OR connections.owner_id = 'legacy'",
+                params![
+                    connection_id,
+                    owner_id,
+                    provider,
+                    metadata_json,
+                    now_ms as i64
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        drop(connection);
+        self.claim_connection_owner(connection_id, owner_id)
     }
 
     pub fn authorization(
@@ -527,24 +572,110 @@ impl AegsStore {
         connection
             .query_row(
                 "
-                SELECT connection_id, provider, status, encrypted_credential,
-                       metadata_json, expires_at_ms
+                SELECT connection_id, owner_id, provider, status, encrypted_credential,
+                       metadata_json, expires_at_ms, updated_at_ms
                 FROM connections WHERE connection_id = ?1
                 ",
                 params![connection_id],
                 |row| {
-                    let metadata_json: String = row.get(4)?;
+                    let metadata_json: String = row.get(5)?;
                     Ok(ConnectionRecord {
                         connection_id: row.get(0)?,
-                        provider: row.get(1)?,
-                        status: row.get(2)?,
-                        encrypted_credential: row.get(3)?,
+                        owner_id: row.get(1)?,
+                        provider: row.get(2)?,
+                        status: row.get(3)?,
+                        encrypted_credential: row.get(4)?,
                         metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
-                        expires_at_ms: row.get::<_, Option<i64>>(5)?.map(|value| value as u64),
+                        expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+                        updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
                     })
                 },
             )
             .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn claim_connection_owner(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+    ) -> Result<ConnectionRecord, String> {
+        let connection = self
+            .connection(connection_id)?
+            .ok_or_else(|| "the authorized connection was not found".to_string())?;
+        if connection.owner_id == owner_id {
+            return Ok(connection);
+        }
+        if connection.owner_id != "legacy" {
+            return Err("the authorized connection belongs to another owner".to_string());
+        }
+        let database = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = database
+            .execute(
+                "UPDATE connections SET owner_id = ?2 WHERE connection_id = ?1 AND owner_id = 'legacy'",
+                params![connection_id, owner_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("the authorized connection belongs to another owner".to_string());
+        }
+        drop(database);
+        self.connection(connection_id)?
+            .ok_or_else(|| "the authorized connection was not found".to_string())
+    }
+
+    pub fn connections_for_owner(&self, owner_id: &str) -> Result<Vec<ConnectionRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT connection_id, owner_id, provider, status, encrypted_credential,
+                        metadata_json, expires_at_ms, updated_at_ms
+                 FROM connections WHERE owner_id = ?1 ORDER BY updated_at_ms DESC, connection_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![owner_id], |row| {
+                let metadata_json: String = row.get(5)?;
+                Ok(ConnectionRecord {
+                    connection_id: row.get(0)?,
+                    owner_id: row.get(1)?,
+                    provider: row.get(2)?,
+                    status: row.get(3)?,
+                    encrypted_credential: row.get(4)?,
+                    metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
+                    expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+                    updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn revoke_connection(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "UPDATE connections SET status = 'revoked', encrypted_credential = NULL,
+                        updated_at_ms = ?3
+                 WHERE connection_id = ?1 AND owner_id = ?2 AND status != 'revoked'",
+                params![connection_id, owner_id, now_ms as i64],
+            )
+            .map(|changed| changed > 0)
             .map_err(|error| error.to_string())
     }
 
@@ -680,6 +811,23 @@ fn migrate_subscription_owner(connection: &Connection) -> Result<(), rusqlite::E
             "ALTER TABLE subscriptions
              ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'",
             [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_connection_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
+    let has_owner = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "owner_id");
+    drop(columns);
+    if !has_owner {
+        connection.execute_batch(
+            "ALTER TABLE connections
+             ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy';",
         )?;
     }
     Ok(())
@@ -823,6 +971,7 @@ mod tests {
             .create_authorization(
                 "state-digest",
                 "connection-1",
+                "owner-kernel-user",
                 "github",
                 Some("https://terminal.example/workflows"),
                 2_000,
@@ -831,6 +980,7 @@ mod tests {
             .unwrap();
         let pending = store.connection("connection-1").unwrap().unwrap();
         assert_eq!(pending.status, "pending");
+        assert_eq!(pending.owner_id, "owner-kernel-user");
 
         let ready = store
             .complete_authorization(
@@ -850,5 +1000,48 @@ mod tests {
             .complete_authorization("state-digest", b"replacement", &Value::Null, None, 1_600,)
             .unwrap_err()
             .contains("already used"));
+    }
+
+    #[test]
+    fn connections_are_owner_scoped_and_legacy_connections_are_claimed_once() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(
+                "state-owner-a",
+                "connection-owner-a",
+                "owner-a",
+                "github",
+                None,
+                2_000,
+                1_000,
+            )
+            .unwrap();
+        assert_eq!(store.connections_for_owner("owner-a").unwrap().len(), 1);
+        assert!(store.connections_for_owner("owner-b").unwrap().is_empty());
+        assert!(store
+            .claim_connection_owner("connection-owner-a", "owner-b")
+            .unwrap_err()
+            .contains("another owner"));
+
+        {
+            let database = store.connection.lock().unwrap();
+            database
+                .execute(
+                    "UPDATE connections SET owner_id = 'legacy' WHERE connection_id = ?1",
+                    params!["connection-owner-a"],
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .claim_connection_owner("connection-owner-a", "owner-b")
+                .unwrap()
+                .owner_id,
+            "owner-b"
+        );
+        assert!(store
+            .claim_connection_owner("connection-owner-a", "owner-a")
+            .unwrap_err()
+            .contains("another owner"));
     }
 }

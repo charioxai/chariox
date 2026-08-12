@@ -28,12 +28,13 @@ impl AegsProvider for DummyProvider {
 
     fn start_authorization(
         &self,
+        owner_id: &str,
         _return_url: Option<&str>,
     ) -> Result<AegsAuthorizationFlow, String> {
         Ok(AegsAuthorizationFlow {
             generator_id: GENERATOR_ID.to_string(),
             status: "ready".to_string(),
-            connection_id: Some("local-dummy".to_string()),
+            connection_id: Some(format!("local-dummy-{owner_id}")),
             authorization_url: None,
             user_code: None,
             expires_at_ms: None,
@@ -51,7 +52,9 @@ impl AegsProvider for DummyProvider {
         &self,
         query: &AegsProviderResourceQuery,
     ) -> Result<AegsProviderResourcePage, String> {
-        if query.cursor.is_some() || query.connection_id != "local-dummy" {
+        if query.cursor.is_some()
+            || query.connection_id != format!("local-dummy-{}", query.owner_id)
+        {
             return Err("the authorized connection was not found".to_string());
         }
         let matches = query.query.as_deref().is_none_or(|value| {
@@ -94,7 +97,8 @@ mod tests {
         let page = DummyProvider
             .query_resources(&AegsProviderResourceQuery {
                 generator_id: GENERATOR_ID.to_string(),
-                connection_id: "local-dummy".to_string(),
+                owner_id: "owner-local-user".to_string(),
+                connection_id: "local-dummy-owner-local-user".to_string(),
                 query: None,
                 cursor: None,
                 limit: 20,

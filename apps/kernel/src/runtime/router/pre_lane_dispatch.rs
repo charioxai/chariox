@@ -132,6 +132,7 @@ impl CommandRouter {
                 return execute_event_catalog_request(
                     &self.runtime_state,
                     &self.config_projection,
+                    caller_user_id,
                     request.clone(),
                 )
                 .await
