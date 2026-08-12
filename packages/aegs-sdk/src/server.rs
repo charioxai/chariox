@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use arroba_event_protocol::{
     AegsAuthorizationStartRequest, AegsConnectionPage, AegsConnectionQuery,
-    AegsConnectionReconnectRequest, AegsConnectionRevokeRequest, AegsConnectionStatus,
-    AegsConnectionSummary, AegsProviderResourceQuery, PublishEventRequest,
+    AegsConnectionReconnectRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
+    AegsConnectionStatus, AegsConnectionSummary, AegsProviderResourceQuery, PublishEventRequest,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -451,15 +451,23 @@ impl AegsServer {
                         ),
                     );
                 }
-                if self
+                let connection = match self
                     .store
                     .claim_connection_owner(&revoke.connection_id, &revoke.owner_id)
-                    .is_err()
                 {
-                    return error(
-                        StatusCode::NOT_FOUND,
-                        "connection_not_found",
-                        "the owned connection was not found",
+                    Ok(connection) => connection,
+                    Err(_) => {
+                        return error(
+                            StatusCode::NOT_FOUND,
+                            "connection_not_found",
+                            "the owned connection was not found",
+                        )
+                    }
+                };
+                if connection.status == "revoked" {
+                    return json(
+                        StatusCode::OK,
+                        AegsConnectionRevokeResponse { revoked: true },
                     );
                 }
                 if let Err(message) = self.provider.revoke_connection(&revoke.connection_id) {
@@ -470,11 +478,13 @@ impl AegsServer {
                     &revoke.owner_id,
                     now_ms(),
                 ) {
-                    Ok(true) => json(StatusCode::OK, serde_json::json!({"revoked": true})),
-                    Ok(false) => error(
-                        StatusCode::CONFLICT,
-                        "connection_already_revoked",
-                        "the connection is already revoked",
+                    Ok(true) => json(
+                        StatusCode::OK,
+                        AegsConnectionRevokeResponse { revoked: true },
+                    ),
+                    Ok(false) => json(
+                        StatusCode::OK,
+                        AegsConnectionRevokeResponse { revoked: true },
                     ),
                     Err(message) => {
                         error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
@@ -939,11 +949,12 @@ fn html_escape(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn json(status: StatusCode, body: serde_json::Value) -> Response<Full<Bytes>> {
+fn json(status: StatusCode, body: impl serde::Serialize) -> Response<Full<Bytes>> {
+    let body = serde_json::to_string(&body).expect("AEGS JSON response should serialize");
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(Full::new(Bytes::from(body)))
         .expect("valid response")
 }
 

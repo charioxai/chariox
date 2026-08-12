@@ -93,17 +93,20 @@ pub(crate) async fn execute_event_catalog_request(
     })?
 }
 
-pub(crate) async fn validate_event_connection_binding(
+pub(crate) async fn validate_event_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     caller_user_id: &str,
-    request: &crate::local::CreateWorkflowEventBindingRequest,
+    generator_id: &str,
+    connection_id: &str,
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
     let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
     let targets = config.event_generator_management_targets;
-    let generator_id = request.generator_id.clone();
-    let connection_id = request.connection_id.clone();
+    let generator_id = generator_id.to_string();
+    let connection_id = connection_id.to_string();
+    let expected_generator_id = generator_id.clone();
+    let expected_connection_id = connection_id.clone();
     let page = blocking_aegs(move || {
         query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
     })
@@ -112,8 +115,8 @@ pub(crate) async fn validate_event_connection_binding(
         .connections
         .into_iter()
         .find(|connection| {
-            connection.connection_id == request.connection_id
-                && connection.generator_id == request.generator_id
+            connection.connection_id == expected_connection_id
+                && connection.generator_id == expected_generator_id
         })
         .ok_or_else(|| {
             connection_error(
@@ -130,6 +133,32 @@ pub(crate) async fn validate_event_connection_binding(
         )));
     }
     Ok(())
+}
+
+pub(crate) async fn validate_registered_event_connection(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    caller_user_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+) -> Result<(), DaemonError> {
+    let connection = runtime_state
+        .event_connection_registry()
+        .get(caller_user_id, connection_id)?
+        .ok_or_else(|| connection_error("event connection was removed or is not installed"))?;
+    if connection.generator_id != generator_id {
+        return Err(connection_error(
+            "event connection does not belong to the requested generator",
+        ));
+    }
+    validate_event_connection(
+        runtime_state,
+        config_projection,
+        caller_user_id,
+        generator_id,
+        connection_id,
+    )
+    .await
 }
 
 async fn execute_event_connection_request(
@@ -273,7 +302,11 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::ListEventConnectionDependencies(request) => {
             require_connection(registry, caller_user_id, &request.connection_id)?;
-            let dependencies = event_connection_dependencies(runtime_state, &request.connection_id);
+            let dependencies = event_connection_dependencies(
+                runtime_state,
+                caller_user_id,
+                &request.connection_id,
+            );
             Ok(LocalDaemonResponse::EventConnectionDependencies {
                 connection_id: request.connection_id,
                 dependencies,
@@ -281,14 +314,24 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::RemoveEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
-            let dependencies = event_connection_dependencies(runtime_state, &request.connection_id);
+            let dependencies = event_connection_dependencies(
+                runtime_state,
+                caller_user_id,
+                &request.connection_id,
+            );
+            let active_dependency_count = dependencies
+                .iter()
+                .filter(|dependency| {
+                    dependency.status != crate::session::WorkflowEventBindingStatus::Tombstoned
+                })
+                .count();
             if !request.confirm {
                 return Err(connection_error(format!(
                     "removing this connection requires confirm=true and will deactivate {} workflow binding(s)",
-                    dependencies.len()
+                    active_dependency_count
                 )));
             }
-            if !dependencies.is_empty() {
+            if active_dependency_count != 0 {
                 return Err(connection_error(
                     "dependent workflow bindings must be deactivated before connection removal"
                         .to_string(),
@@ -298,14 +341,21 @@ async fn execute_event_connection_request(
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
             let connection_id = connection.connection_id.clone();
-            blocking_aegs(move || {
+            let revoked = blocking_aegs(move || {
                 revoke_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
             })
             .await?;
+            if !revoked.revoked {
+                return Err(connection_error(
+                    "event generator did not confirm connection revocation",
+                ));
+            }
+            registry
+                .remove_authorizations_for_connection(caller_user_id, &connection.connection_id)?;
             registry.remove(caller_user_id, &connection.connection_id)?;
             Ok(LocalDaemonResponse::EventConnectionRemoved {
                 connection,
-                deactivated_bindings: Vec::new(),
+                deactivated_bindings: dependencies,
             })
         }
         _ => Err(connection_error(
@@ -336,6 +386,7 @@ fn require_connection(
 
 fn event_connection_dependencies(
     runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
     connection_id: &str,
 ) -> Vec<WorkflowEventBindingDependency> {
     runtime_state
@@ -343,10 +394,19 @@ fn event_connection_dependencies(
         .into_iter()
         .flat_map(|session| {
             let session_id = session.id().to_string();
+            let owned_publication_ids = session
+                .workflow_publications()
+                .iter()
+                .filter(|publication| publication.created_by_user_id() == caller_user_id)
+                .map(|publication| publication.id().to_string())
+                .collect::<std::collections::BTreeSet<_>>();
             session
                 .workflow_event_bindings()
                 .iter()
-                .filter(|binding| binding.connection_id == connection_id)
+                .filter(|binding| {
+                    binding.connection_id == connection_id
+                        && owned_publication_ids.contains(&binding.publication_id)
+                })
                 .map(move |binding| WorkflowEventBindingDependency {
                     session_id: session_id.clone(),
                     publication_id: binding.publication_id.clone(),
@@ -356,6 +416,24 @@ fn event_connection_dependencies(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+pub(crate) fn workflow_event_binding_connection(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    binding_id: &str,
+) -> Option<(String, String)> {
+    runtime_state
+        .list_session_snapshots()
+        .into_iter()
+        .find(|session| session.id() == session_id)
+        .and_then(|session| {
+            session
+                .workflow_event_bindings()
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .map(|binding| (binding.generator_id.clone(), binding.connection_id.clone()))
+        })
 }
 
 fn decode_offset(cursor: Option<&str>) -> Result<usize, DaemonError> {
@@ -495,13 +573,18 @@ fn revoke_aegs_connection(
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
-) -> Result<arroba_event_protocol::AegsConnectionSummary, DaemonError> {
+) -> Result<arroba_event_protocol::AegsConnectionRevokeResponse, DaemonError> {
     let request = arroba_event_protocol::AegsConnectionRevokeRequest {
         generator_id: generator_id.to_string(),
         owner_id: owner_id.to_string(),
         connection_id: connection_id.to_string(),
     };
-    post_aegs_json(targets, generator_id, "/v1/connections/revoke", &request)
+    post_aegs_json::<_, arroba_event_protocol::AegsConnectionRevokeResponse>(
+        targets,
+        generator_id,
+        "/v1/connections/revoke",
+        &request,
+    )
 }
 
 fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(

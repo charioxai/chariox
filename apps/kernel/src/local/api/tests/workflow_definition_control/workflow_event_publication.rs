@@ -1,7 +1,9 @@
 use super::*;
 use crate::local::{
-    DisableWorkflowPublicationRequest, GetEventDeliveryStatusRequest,
-    SetWorkflowEventBindingStatusRequest,
+    DisableWorkflowPublicationRequest, GetEventConnectionRequest, GetEventDeliveryStatusRequest,
+    ListEventConnectionDependenciesRequest, ListWorkflowEventBindingsRequest,
+    ObserveEventConnectionAuthorizationRequest, ReconnectEventConnectionRequest,
+    RemoveEventConnectionRequest, SetWorkflowEventBindingStatusRequest,
 };
 use crate::session::WorkflowEventBindingStatus;
 use std::io::{Read, Write};
@@ -13,6 +15,7 @@ use std::time::Duration;
 struct ReadyConnectionServer {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
+    revoked: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -22,11 +25,13 @@ impl ReadyConnectionServer {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
+        let revoked = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let thread_revoked = Arc::clone(&revoked);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => serve_ready_connection(&mut stream),
+                    Ok((mut stream, _)) => serve_ready_connection(&mut stream, &thread_revoked),
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -37,6 +42,7 @@ impl ReadyConnectionServer {
         Self {
             address,
             stop,
+            revoked,
             thread: Some(thread),
         }
     }
@@ -59,7 +65,7 @@ impl Drop for ReadyConnectionServer {
     }
 }
 
-fn serve_ready_connection(stream: &mut TcpStream) {
+fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
@@ -76,20 +82,35 @@ fn serve_ready_connection(stream: &mut TcpStream) {
         }
     }
     let request = String::from_utf8_lossy(&request);
-    assert!(request.starts_with("POST /v1/connections/query HTTP/1.1"));
     assert!(request
         .to_ascii_lowercase()
         .contains("authorization: bearer test-management-token"));
-    let body = serde_json::json!({
-        "connections": [{
+    let body = if request.starts_with("POST /v1/connections/query HTTP/1.1") {
+        serde_json::json!({
+            "connections": [{
+                "generator_id": "dev.arroba.dummy",
+                "connection_id": "connection-local",
+                "status": if revoked.load(Ordering::Relaxed) { "revoked" } else { "ready" },
+                "metadata": {"account": "local"},
+                "updated_at_ms": 1
+            }]
+        })
+        .to_string()
+    } else if request.starts_with("POST /v1/connections/revoke HTTP/1.1") {
+        revoked.store(true, Ordering::Relaxed);
+        serde_json::json!({"revoked": true}).to_string()
+    } else if request.starts_with("POST /v1/connections/reconnect HTTP/1.1") {
+        serde_json::json!({
             "generator_id": "dev.arroba.dummy",
+            "status": "pending",
             "connection_id": "connection-local",
-            "status": "ready",
-            "metadata": {"account": "local"},
-            "updated_at_ms": 1
-        }]
-    })
-    .to_string();
+            "authorization_url": "https://example.test/reconnect",
+            "expires_at_ms": 4_000_000_000_000_u64
+        })
+        .to_string()
+    } else {
+        panic!("unexpected event connection request: {request}");
+    };
     write!(
         stream,
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -342,4 +363,176 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
             .contains("workflow event binding is tombstoned"),
         "unexpected test error: {test_error}"
     );
+}
+
+#[test]
+fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revocation() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.arroba.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    let graph = create_publication_test_graph(&harness, "event-connection-removal");
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(
+            CreateWorkflowPublicationRequest {
+                session_id: graph.session_id.clone(),
+                workflow_ref: graph.workflow_id.clone(),
+                endpoint_ref: graph.endpoint_id.clone(),
+                expected_workflow_revision: None,
+                operation_key: Some("publish-removal".to_string()),
+                queue_ref: Some("default".to_string()),
+                alias: Some("event-removal".to_string()),
+                kind: Some("event_based".to_string()),
+                route: None,
+                methods: Vec::new(),
+                transport: None,
+                parser: None,
+                input_schema: None,
+                trace_exposure: None,
+                mode: None,
+                sync_timeout_ms: None,
+                poll_ms: None,
+            },
+        ))
+        .expect("event publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let binding = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
+            CreateWorkflowEventBindingRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                generator_id: "dev.arroba.dummy".to_string(),
+                generator_version: "1.0.0".to_string(),
+                manifest_digest: format!("sha256:{}", "a".repeat(64)),
+                connection_id: "connection-local".to_string(),
+                connection_scope: "tenant:local".to_string(),
+                event_type: "dummy.test".to_string(),
+                event_type_version: 1,
+                filter: serde_json::json!({"channel": "removal"}),
+                environment_id: Some("environment-removal".to_string()),
+                queue_ref: Some("default".to_string()),
+            },
+        ))
+        .expect("event binding should be created")
+    {
+        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
+        response => panic!("unexpected response: {response:?}"),
+    };
+
+    let dependencies = match harness
+        .dispatch(LocalDaemonRequest::ListEventConnectionDependencies(
+            ListEventConnectionDependenciesRequest {
+                connection_id: binding.connection_id.clone(),
+            },
+        ))
+        .expect("connection dependencies should resolve")
+    {
+        LocalDaemonResponse::EventConnectionDependencies { dependencies, .. } => dependencies,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(dependencies.len(), 1);
+    assert_eq!(dependencies[0].binding_id, binding.id);
+    assert_eq!(dependencies[0].status, WorkflowEventBindingStatus::Active);
+
+    let pending_authorization = match harness
+        .dispatch(LocalDaemonRequest::ReconnectEventConnection(
+            ReconnectEventConnectionRequest {
+                connection_id: binding.connection_id.clone(),
+                return_url: Some("http://127.0.0.1:4321/notifications".to_string()),
+            },
+        ))
+        .expect("reconnect should create a connection-scoped authorization")
+    {
+        LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } => authorization,
+        response => panic!("unexpected response: {response:?}"),
+    };
+
+    let confirmation_error = harness
+        .dispatch(LocalDaemonRequest::RemoveEventConnection(
+            RemoveEventConnectionRequest {
+                connection_id: binding.connection_id.clone(),
+                confirm: false,
+            },
+        ))
+        .expect_err("connection removal must require explicit confirmation");
+    assert!(confirmation_error
+        .to_string()
+        .contains("will deactivate 1 workflow binding(s)"));
+    assert!(!server.revoked.load(Ordering::Relaxed));
+
+    let removed = harness
+        .dispatch(LocalDaemonRequest::RemoveEventConnection(
+            RemoveEventConnectionRequest {
+                connection_id: binding.connection_id.clone(),
+                confirm: true,
+            },
+        ))
+        .expect("confirmed connection removal should succeed");
+    let LocalDaemonResponse::EventConnectionRemoved {
+        connection,
+        deactivated_bindings,
+    } = removed
+    else {
+        panic!("unexpected response: {removed:?}");
+    };
+    assert_eq!(connection.connection_id, binding.connection_id);
+    assert_eq!(deactivated_bindings.len(), 1);
+    assert_eq!(
+        deactivated_bindings[0].status,
+        WorkflowEventBindingStatus::Tombstoned
+    );
+    assert!(server.revoked.load(Ordering::Relaxed));
+
+    let bindings = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowEventBindings(
+            ListWorkflowEventBindingsRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: Some(publication.id().to_string()),
+            },
+        ))
+        .expect("workflow bindings should remain as reconciliation tombstones")
+    {
+        LocalDaemonResponse::WorkflowEventBindingsListed { bindings } => bindings,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].status, WorkflowEventBindingStatus::Tombstoned);
+
+    let missing_connection = harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: binding.connection_id.clone(),
+            },
+        ))
+        .expect_err("removed connection must leave the kernel registry");
+    assert!(missing_connection.to_string().contains("was not found"));
+
+    let missing_authorization = harness
+        .dispatch(LocalDaemonRequest::ObserveEventConnectionAuthorization(
+            ObserveEventConnectionAuthorizationRequest {
+                authorization_id: pending_authorization.authorization_id,
+            },
+        ))
+        .expect_err("removal must cancel reconnect attempts for the same connection");
+    assert!(missing_authorization
+        .to_string()
+        .contains("authorization was not found"));
+
+    let reactivate_error = harness
+        .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
+            SetWorkflowEventBindingStatusRequest {
+                session_id: graph.session_id,
+                binding_id: binding.id,
+                status: WorkflowEventBindingStatus::Active,
+            },
+        ))
+        .expect_err("a removed connection must not allow a binding to reactivate");
+    assert!(reactivate_error
+        .to_string()
+        .contains("removed or is not installed"));
 }

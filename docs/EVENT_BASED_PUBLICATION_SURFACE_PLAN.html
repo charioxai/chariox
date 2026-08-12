@@ -1025,6 +1025,14 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               publications before revocation.
             </li>
             <li>
+              Confirmed removal is ordered and failure-safe: the kernel serializes attachment,
+              reactivation, transfer, and removal by owner plus connection ID; durably tombstones
+              every non-tombstoned dependent binding through its normal workflow lane; then asks
+              the AEGS to revoke credentials and subscriptions; and only afterward removes the
+              durable kernel record. A failed remote revoke leaves inactive bindings and a
+              reconnectable kernel record, so retry cannot produce active orphan routes.
+            </li>
+            <li>
               A deployment to another kernel resolves a compatible connection already installed on
               the target. Opaque handles and credentials are never copied between kernels; if none
               exists, the target kernel requests authorization.

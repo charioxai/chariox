@@ -335,6 +335,11 @@ pub struct AegsConnectionRevokeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionRevokeResponse {
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AegsConnectionReconnectRequest {
     pub generator_id: String,
     pub owner_id: String,

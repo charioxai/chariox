@@ -163,6 +163,37 @@ impl EventConnectionRegistry {
         Ok(true)
     }
 
+    pub(crate) fn remove_authorizations_for_connection(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<usize, DaemonError> {
+        let mut state = self.lock_state()?;
+        let authorization_ids = state
+            .authorizations
+            .values()
+            .filter(|record| {
+                record.owner_user_id == owner_user_id
+                    && record.authorization.connection_id.as_deref() == Some(connection_id)
+            })
+            .map(|record| record.authorization.authorization_id.clone())
+            .collect::<Vec<_>>();
+        for authorization_id in &authorization_ids {
+            self.append(
+                AUTHORIZATION_REMOVED,
+                authorization_id,
+                &RemovedRecord {
+                    owner_user_id: owner_user_id.to_string(),
+                    id: authorization_id.clone(),
+                },
+            )?;
+            state
+                .authorizations
+                .remove(&(owner_user_id.to_string(), authorization_id.clone()));
+        }
+        Ok(authorization_ids.len())
+    }
+
     pub(crate) fn start_authorization(
         &self,
         owner_user_id: &str,
@@ -385,10 +416,43 @@ mod tests {
         assert!(registry.list("user-b", None).unwrap().is_empty());
         drop(registry);
 
-        let restored = EventConnectionRegistry::new(DurableKernelStateStore::open(path).unwrap());
+        let restored =
+            EventConnectionRegistry::new(DurableKernelStateStore::open(path.clone()).unwrap());
         assert_eq!(restored.list("user-a", None).unwrap().len(), 1);
         assert!(restored
             .get("user-b", "github-connection-1")
+            .unwrap()
+            .is_none());
+        let authorization = restored
+            .start_authorization(
+                "user-a",
+                arroba_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.arroba.github".to_string(),
+                    status: "pending".to_string(),
+                    connection_id: Some("github-connection-1".to_string()),
+                    authorization_url: Some("https://example.test/authorize".to_string()),
+                    user_code: None,
+                    expires_at_ms: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            restored
+                .remove_authorizations_for_connection("user-a", "github-connection-1")
+                .unwrap(),
+            1
+        );
+        assert!(restored
+            .authorization("user-a", &authorization.authorization_id)
+            .unwrap()
+            .is_none());
+        assert!(restored.remove("user-a", "github-connection-1").unwrap());
+        drop(restored);
+
+        let removed = EventConnectionRegistry::new(DurableKernelStateStore::open(path).unwrap());
+        assert!(removed.list("user-a", None).unwrap().is_empty());
+        assert!(removed
+            .authorization("user-a", &authorization.authorization_id)
             .unwrap()
             .is_none());
         std::fs::remove_dir_all(root).unwrap();
