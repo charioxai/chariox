@@ -3,7 +3,8 @@ use crate::local::{
     DisableWorkflowPublicationRequest, GetEventConnectionRequest, GetEventDeliveryStatusRequest,
     ListEventConnectionDependenciesRequest, ListWorkflowEventBindingsRequest,
     ObserveEventConnectionAuthorizationRequest, ReconnectEventConnectionRequest,
-    RemoveEventConnectionRequest, SetWorkflowEventBindingStatusRequest,
+    RefreshEventConnectionRequest, RemoveEventConnectionRequest,
+    SetWorkflowEventBindingStatusRequest,
 };
 use crate::session::WorkflowEventBindingStatus;
 use std::io::{Read, Write};
@@ -16,6 +17,7 @@ struct ReadyConnectionServer {
     address: std::net::SocketAddr,
     stop: Arc<AtomicBool>,
     revoked: Arc<AtomicBool>,
+    unavailable: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -26,12 +28,16 @@ impl ReadyConnectionServer {
         let address = listener.local_addr().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let revoked = Arc::new(AtomicBool::new(false));
+        let unavailable = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_revoked = Arc::clone(&revoked);
+        let thread_unavailable = Arc::clone(&unavailable);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => serve_ready_connection(&mut stream, &thread_revoked),
+                    Ok((mut stream, _)) => {
+                        serve_ready_connection(&mut stream, &thread_revoked, &thread_unavailable)
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -43,6 +49,7 @@ impl ReadyConnectionServer {
             address,
             stop,
             revoked,
+            unavailable,
             thread: Some(thread),
         }
     }
@@ -65,14 +72,25 @@ impl Drop for ReadyConnectionServer {
     }
 }
 
-fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool) {
+fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavailable: &AtomicBool) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
-        let read = stream.read(&mut buffer).unwrap();
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return;
+            }
+            Err(error) => panic!("event connection test request read failed: {error}"),
+        };
         if read == 0 {
             break;
         }
@@ -81,10 +99,27 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool) {
             break;
         }
     }
+    if request.is_empty() {
+        return;
+    }
     let request = String::from_utf8_lossy(&request);
     assert!(request
         .to_ascii_lowercase()
         .contains("authorization: bearer test-management-token"));
+    if unavailable.load(Ordering::Relaxed) {
+        let body = serde_json::json!({
+            "error": {"code": "temporarily_unavailable", "message": "test outage"}
+        })
+        .to_string();
+        write!(
+            stream,
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        return;
+    }
     let body = if request.starts_with("POST /v1/connections/query HTTP/1.1") {
         serde_json::json!({
             "connections": [{
@@ -429,6 +464,71 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
             .status,
         "ready"
     );
+}
+
+#[test]
+fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.arroba.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .upsert(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            arroba_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.arroba.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: arroba_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({"account": "local"}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+
+    server.unavailable.store(true, Ordering::Relaxed);
+    let refresh_error = harness
+        .dispatch(LocalDaemonRequest::RefreshEventConnection(
+            RefreshEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .expect_err("AEGS outage should fail validation");
+    assert!(refresh_error.to_string().contains("503"));
+    let unavailable = match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        unavailable.status,
+        crate::local::EventConnectionStatus::Unavailable
+    );
+
+    server.unavailable.store(false, Ordering::Relaxed);
+    let recovered = match harness
+        .dispatch(LocalDaemonRequest::RefreshEventConnection(
+            RefreshEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .expect("connection should recover without changing identity")
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(recovered.connection_id, unavailable.connection_id);
+    assert_eq!(recovered.status, crate::local::EventConnectionStatus::Ready);
 }
 
 #[test]

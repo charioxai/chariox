@@ -107,22 +107,35 @@ pub(crate) async fn validate_event_connection(
     let connection_id = connection_id.to_string();
     let expected_generator_id = generator_id.clone();
     let expected_connection_id = connection_id.clone();
-    let page = blocking_aegs(move || {
+    let page = match blocking_aegs(move || {
         query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
     })
-    .await?;
-    let summary = page
-        .connections
-        .into_iter()
-        .find(|connection| {
-            connection.connection_id == expected_connection_id
-                && connection.generator_id == expected_generator_id
-        })
-        .ok_or_else(|| {
-            connection_error(
-                "the selected event connection is not installed for this kernel user".to_string(),
-            )
-        })?;
+    .await
+    {
+        Ok(page) => page,
+        Err(error) => {
+            mark_connection_unavailable_if_registered(
+                runtime_state,
+                caller_user_id,
+                &expected_connection_id,
+            )?;
+            return Err(error);
+        }
+    };
+    let summary = page.connections.into_iter().find(|connection| {
+        connection.connection_id == expected_connection_id
+            && connection.generator_id == expected_generator_id
+    });
+    let Some(summary) = summary else {
+        mark_connection_unavailable_if_registered(
+            runtime_state,
+            caller_user_id,
+            &expected_connection_id,
+        )?;
+        return Err(connection_error(
+            "the selected event connection is not installed for this kernel user".to_string(),
+        ));
+    };
     let connection = runtime_state
         .event_connection_registry()
         .upsert(caller_user_id, summary)?;
@@ -228,15 +241,35 @@ async fn execute_event_connection_request(
             let owner_id = owner_id.clone();
             let generator_id = current.generator_id.clone();
             let connection_id = current.connection_id.clone();
-            let page = blocking_aegs(move || {
+            let page = match blocking_aegs(move || {
                 query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
             })
-            .await?;
+            .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    registry.mark_status(
+                        caller_user_id,
+                        &current.connection_id,
+                        crate::local::EventConnectionStatus::Unavailable,
+                    )?;
+                    return Err(error);
+                }
+            };
             let summary = page
                 .connections
                 .into_iter()
-                .find(|connection| connection.connection_id == current.connection_id)
-                .ok_or_else(|| connection_error("AEGS no longer recognizes this connection"))?;
+                .find(|connection| connection.connection_id == current.connection_id);
+            let Some(summary) = summary else {
+                registry.mark_status(
+                    caller_user_id,
+                    &current.connection_id,
+                    crate::local::EventConnectionStatus::Unavailable,
+                )?;
+                return Err(connection_error(
+                    "AEGS no longer recognizes this connection",
+                ));
+            };
             let connection = registry.upsert(caller_user_id, summary)?;
             Ok(LocalDaemonResponse::EventConnection { connection })
         }
@@ -251,7 +284,7 @@ async fn execute_event_connection_request(
                 return_url: request.return_url,
             };
             let generator_id = reconnect.generator_id.clone();
-            let flow = blocking_aegs(move || {
+            let flow = match blocking_aegs(move || {
                 post_aegs_json(
                     &targets,
                     &generator_id,
@@ -259,7 +292,18 @@ async fn execute_event_connection_request(
                     &reconnect,
                 )
             })
-            .await?;
+            .await
+            {
+                Ok(flow) => flow,
+                Err(error) => {
+                    registry.mark_status(
+                        caller_user_id,
+                        &request.connection_id,
+                        crate::local::EventConnectionStatus::Unavailable,
+                    )?;
+                    return Err(error);
+                }
+            };
             let authorization = registry.start_authorization(caller_user_id, flow)?;
             Ok(LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization })
         }
@@ -269,7 +313,7 @@ async fn execute_event_connection_request(
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
             let connection_id = connection.connection_id.clone();
-            let page = blocking_aegs(move || {
+            let page = match blocking_aegs(move || {
                 query_aegs_resources(
                     &targets,
                     &owner_id,
@@ -280,7 +324,18 @@ async fn execute_event_connection_request(
                     request.limit,
                 )
             })
-            .await?;
+            .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    registry.mark_status(
+                        caller_user_id,
+                        &request.connection_id,
+                        crate::local::EventConnectionStatus::Unavailable,
+                    )?;
+                    return Err(error);
+                }
+            };
             Ok(LocalDaemonResponse::EventConnectionResourcesPage { page })
         }
         LocalDaemonRequest::ListEventConnectionDependencies(request) => {
@@ -324,11 +379,27 @@ async fn execute_event_connection_request(
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
             let connection_id = connection.connection_id.clone();
-            let revoked = blocking_aegs(move || {
+            let revoked = match blocking_aegs(move || {
                 revoke_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
             })
-            .await?;
+            .await
+            {
+                Ok(revoked) => revoked,
+                Err(error) => {
+                    registry.mark_status(
+                        caller_user_id,
+                        &request.connection_id,
+                        crate::local::EventConnectionStatus::Unavailable,
+                    )?;
+                    return Err(error);
+                }
+            };
             if !revoked.revoked {
+                registry.mark_status(
+                    caller_user_id,
+                    &request.connection_id,
+                    crate::local::EventConnectionStatus::Unavailable,
+                )?;
                 return Err(connection_error(
                     "event generator did not confirm connection revocation",
                 ));
@@ -405,6 +476,22 @@ fn require_connection(
     registry
         .get(caller_user_id, connection_id)?
         .ok_or_else(|| connection_error("event connection was not found".to_string()))
+}
+
+fn mark_connection_unavailable_if_registered(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    connection_id: &str,
+) -> Result<(), DaemonError> {
+    let registry = runtime_state.event_connection_registry();
+    if registry.get(caller_user_id, connection_id)?.is_some() {
+        registry.mark_status(
+            caller_user_id,
+            connection_id,
+            crate::local::EventConnectionStatus::Unavailable,
+        )?;
+    }
+    Ok(())
 }
 
 fn event_connection_dependencies(

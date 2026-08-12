@@ -1027,6 +1027,12 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               authority. Expired attempts are durably discarded.
             </li>
             <li>
+              Failed AEGS validation, resource inspection, reconnect, or revoke calls persist the
+              installed connection as <code>unavailable</code> instead of leaving a stale ready
+              badge. A later successful validation restores the AEGS-reported state on the same
+              opaque connection ID; transient outages never create replacement connections.
+            </li>
+            <li>
               Deleting a workflow removes its bindings, not the installed connection. Removing a
               connection is a separate notification-center action that lists and confirms affected
               publications before revocation.

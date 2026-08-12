@@ -141,6 +141,28 @@ impl EventConnectionRegistry {
         Ok(connection)
     }
 
+    pub(crate) fn mark_status(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        status: crate::local::EventConnectionStatus,
+    ) -> Result<EventConnection, DaemonError> {
+        let current = self
+            .get(owner_user_id, connection_id)?
+            .ok_or_else(|| registry_error("connection was not found".to_string()))?;
+        self.upsert(
+            owner_user_id,
+            arroba_event_protocol::AegsConnectionSummary {
+                generator_id: current.generator_id,
+                connection_id: current.connection_id,
+                status,
+                metadata: current.metadata,
+                expires_at_ms: current.expires_at_ms,
+                updated_at_ms: unix_epoch_ms(),
+            },
+        )
+    }
+
     pub(crate) fn remove(
         &self,
         owner_user_id: &str,
