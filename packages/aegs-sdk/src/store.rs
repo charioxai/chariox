@@ -431,6 +431,65 @@ impl AegsStore {
         transaction.commit().map_err(|error| error.to_string())
     }
 
+    pub fn create_reauthorization(
+        &self,
+        state_digest: &str,
+        connection_id: &str,
+        owner_id: &str,
+        provider: &str,
+        return_url: Option<&str>,
+        expires_at_ms: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let owned = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM connections
+                 WHERE connection_id = ?1 AND owner_id = ?2 AND provider = ?3",
+                params![connection_id, owner_id, provider],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if owned != 1 {
+            return Err("the owned connection was not found".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM authorizations WHERE connection_id = ?1 OR expires_at_ms < ?2",
+                params![connection_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE connections SET status = 'pending', updated_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO authorizations (
+                    state_digest, connection_id, provider, return_url,
+                    expires_at_ms, completed
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![
+                    state_digest,
+                    connection_id,
+                    provider,
+                    return_url,
+                    expires_at_ms as i64
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
     pub fn upsert_ready_connection(
         &self,
         connection_id: &str,
@@ -1043,5 +1102,68 @@ mod tests {
             .claim_connection_owner("connection-owner-a", "owner-a")
             .unwrap_err()
             .contains("another owner"));
+    }
+
+    #[test]
+    fn reauthorization_retains_connection_identity_and_owner() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(
+                "initial-state",
+                "connection-owner-a",
+                "owner-a",
+                "github",
+                None,
+                2_000,
+                1_000,
+            )
+            .unwrap();
+        store
+            .complete_authorization(
+                "initial-state",
+                b"old-encrypted-credential",
+                &serde_json::json!({"account": "arroba"}),
+                None,
+                1_100,
+            )
+            .unwrap();
+        store
+            .create_reauthorization(
+                "replacement-state",
+                "connection-owner-a",
+                "owner-a",
+                "github",
+                Some("https://terminal.arroba.dev/notifications/callback"),
+                3_000,
+                2_000,
+            )
+            .unwrap();
+        let pending = store.connection("connection-owner-a").unwrap().unwrap();
+        assert_eq!(pending.owner_id, "owner-a");
+        assert_eq!(pending.status, "pending");
+        assert!(store
+            .create_reauthorization(
+                "foreign-state",
+                "connection-owner-a",
+                "owner-b",
+                "github",
+                None,
+                3_000,
+                2_100,
+            )
+            .unwrap_err()
+            .contains("owned connection"));
+        let ready = store
+            .complete_authorization(
+                "replacement-state",
+                b"new-encrypted-credential",
+                &serde_json::json!({"account": "arroba"}),
+                None,
+                2_200,
+            )
+            .unwrap();
+        assert_eq!(ready.connection_id, "connection-owner-a");
+        assert_eq!(ready.owner_id, "owner-a");
+        assert_eq!(ready.status, "ready");
     }
 }

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 251);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -116,6 +116,12 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonRequest::RefreshEventConnection(crate::local::RefreshEventConnectionRequest {
             connection_id: "connection-1".to_string(),
         }),
+        LocalDaemonRequest::ReconnectEventConnection(
+            crate::local::ReconnectEventConnectionRequest {
+                connection_id: "connection-1".to_string(),
+                return_url: Some("https://terminal.arroba.dev/notifications/callback".to_string()),
+            },
+        ),
         LocalDaemonRequest::ListEventConnectionResources(
             crate::local::ListEventConnectionResourcesRequest {
                 connection_id: "connection-1".to_string(),
@@ -290,6 +296,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "23256a686f6480421b2b597cdf0c464e493a8c4e8ae5a37212af3d4baa752b84"
+        "16bbea57289d582a26febfea83ee31663fdef56ee45a08db65effb6df675c68d"
     );
 }

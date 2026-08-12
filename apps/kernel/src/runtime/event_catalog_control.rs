@@ -48,6 +48,7 @@ pub(crate) async fn execute_event_catalog_request(
             | LocalDaemonRequest::InstallEventConnection(_)
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
+            | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
@@ -226,6 +227,29 @@ async fn execute_event_connection_request(
                 .ok_or_else(|| connection_error("AEGS no longer recognizes this connection"))?;
             let connection = registry.upsert(caller_user_id, summary)?;
             Ok(LocalDaemonResponse::EventConnection { connection })
+        }
+        LocalDaemonRequest::ReconnectEventConnection(request) => {
+            let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
+            let targets = targets.clone();
+            let owner_id = owner_id.clone();
+            let reconnect = arroba_event_protocol::AegsConnectionReconnectRequest {
+                generator_id: connection.generator_id.clone(),
+                owner_id,
+                connection_id: connection.connection_id,
+                return_url: request.return_url,
+            };
+            let generator_id = reconnect.generator_id.clone();
+            let flow = blocking_aegs(move || {
+                post_aegs_json(
+                    &targets,
+                    &generator_id,
+                    "/v1/connections/reconnect",
+                    &reconnect,
+                )
+            })
+            .await?;
+            let authorization = registry.start_authorization(caller_user_id, flow)?;
+            Ok(LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization })
         }
         LocalDaemonRequest::ListEventConnectionResources(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;

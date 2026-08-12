@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use arroba_event_protocol::{
     AegsAuthorizationStartRequest, AegsConnectionPage, AegsConnectionQuery,
-    AegsConnectionRevokeRequest, AegsConnectionStatus, AegsConnectionSummary,
-    AegsProviderResourceQuery, PublishEventRequest,
+    AegsConnectionReconnectRequest, AegsConnectionRevokeRequest, AegsConnectionStatus,
+    AegsConnectionSummary, AegsProviderResourceQuery, PublishEventRequest,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -479,6 +479,90 @@ impl AegsServer {
                     Err(message) => {
                         error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
                     }
+                }
+            }
+            (Method::POST, "/v1/connections/reconnect") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let reconnect: AegsConnectionReconnectRequest = match serde_json::from_slice(&body)
+                {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = reconnect.validate() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_connection_reconnect",
+                        message,
+                    );
+                }
+                if reconnect.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, reconnect.generator_id
+                        ),
+                    );
+                }
+                let existing = match self
+                    .store
+                    .claim_connection_owner(&reconnect.connection_id, &reconnect.owner_id)
+                {
+                    Ok(connection) => connection,
+                    Err(_) => {
+                        return error(
+                            StatusCode::NOT_FOUND,
+                            "connection_not_found",
+                            "the owned connection was not found",
+                        )
+                    }
+                };
+                match self.provider.reconnect_authorization(
+                    &reconnect.owner_id,
+                    &reconnect.connection_id,
+                    reconnect.return_url.as_deref(),
+                ) {
+                    Ok(flow) if flow.connection_id.as_deref() == Some(&reconnect.connection_id) => {
+                        if flow.status == "ready" {
+                            if let Err(message) = self.store.upsert_ready_connection(
+                                &reconnect.connection_id,
+                                &reconnect.owner_id,
+                                self.provider.provider_slug(),
+                                &existing.metadata,
+                                now_ms(),
+                            ) {
+                                return error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "connection_store_failed",
+                                    message,
+                                );
+                            }
+                        }
+                        json(StatusCode::OK, serde_json::json!(flow))
+                    }
+                    Ok(_) => error(
+                        StatusCode::BAD_GATEWAY,
+                        "connection_identity_changed",
+                        "provider reconnection must retain the existing connection ID",
+                    ),
+                    Err(message) => error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "authorization_reconnect_failed",
+                        message,
+                    ),
                 }
             }
             (Method::POST, "/v1/resources/query") => {

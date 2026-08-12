@@ -48,6 +48,25 @@ impl AegsProvider for DummyProvider {
         Err("the dummy generator does not use an authorization callback".to_string())
     }
 
+    fn reconnect_authorization(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        _return_url: Option<&str>,
+    ) -> Result<AegsAuthorizationFlow, String> {
+        if connection_id != format!("local-dummy-{owner_id}") {
+            return Err("the authorized connection was not found".to_string());
+        }
+        Ok(AegsAuthorizationFlow {
+            generator_id: GENERATOR_ID.to_string(),
+            status: "ready".to_string(),
+            connection_id: Some(connection_id.to_string()),
+            authorization_url: None,
+            user_code: None,
+            expires_at_ms: None,
+        })
+    }
+
     fn query_resources(
         &self,
         query: &AegsProviderResourceQuery,

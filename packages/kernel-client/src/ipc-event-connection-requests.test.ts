@@ -9,12 +9,13 @@ import {
   listEventConnectionsRequest,
   observeEventConnectionAuthorizationRequest,
   refreshEventConnectionRequest,
+  reconnectEventConnectionRequest,
   removeEventConnectionRequest,
 } from "./ipc-event-publication-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("event connection lifecycle requests match protocol 251", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 251)
+test("event connection lifecycle requests match protocol 252", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 252)
   assert.deepEqual(listEventConnectionsRequest({ generatorId: "dev.arroba.github" }), {
     ListEventConnections: {
       generator_id: "dev.arroba.github",
@@ -36,6 +37,12 @@ test("event connection lifecycle requests match protocol 251", () => {
   })
   assert.deepEqual(refreshEventConnectionRequest("connection-1"), {
     RefreshEventConnection: { connection_id: "connection-1" },
+  })
+  assert.deepEqual(reconnectEventConnectionRequest("connection-1", "https://example.test"), {
+    ReconnectEventConnection: {
+      connection_id: "connection-1",
+      return_url: "https://example.test",
+    },
   })
   assert.deepEqual(listEventConnectionResourcesRequest("connection-1", { query: "arroba" }), {
     ListEventConnectionResources: {

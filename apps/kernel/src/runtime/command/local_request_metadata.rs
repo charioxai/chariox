@@ -660,6 +660,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "event_connection.authorization.observe"
         }
         LocalDaemonRequest::RefreshEventConnection(_) => "event_connection.refresh",
+        LocalDaemonRequest::ReconnectEventConnection(_) => "event_connection.reconnect",
         LocalDaemonRequest::ListEventConnectionResources(_) => "event_connection.resources.list",
         LocalDaemonRequest::ListEventConnectionDependencies(_) => {
             "event_connection.dependencies.list"

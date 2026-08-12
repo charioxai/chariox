@@ -157,19 +157,49 @@ impl OAuthAuthorization {
         owner_id: &str,
         return_url: Option<&str>,
     ) -> Result<AegsAuthorizationFlow, String> {
+        self.start_for_connection(owner_id, random_opaque("connection"), return_url, false)
+    }
+
+    pub fn reconnect(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        return_url: Option<&str>,
+    ) -> Result<AegsAuthorizationFlow, String> {
+        self.start_for_connection(owner_id, connection_id.to_string(), return_url, true)
+    }
+
+    fn start_for_connection(
+        &self,
+        owner_id: &str,
+        connection_id: String,
+        return_url: Option<&str>,
+        reconnect: bool,
+    ) -> Result<AegsAuthorizationFlow, String> {
         let now = now_ms();
         let expires_at_ms = now.saturating_add(AUTHORIZATION_TTL_MS);
         let state = random_opaque("state");
-        let connection_id = random_opaque("connection");
-        self.store.create_authorization(
-            &digest(&state),
-            &connection_id,
-            owner_id,
-            self.provider_slug,
-            return_url,
-            expires_at_ms,
-            now,
-        )?;
+        if reconnect {
+            self.store.create_reauthorization(
+                &digest(&state),
+                &connection_id,
+                owner_id,
+                self.provider_slug,
+                return_url,
+                expires_at_ms,
+                now,
+            )?;
+        } else {
+            self.store.create_authorization(
+                &digest(&state),
+                &connection_id,
+                owner_id,
+                self.provider_slug,
+                return_url,
+                expires_at_ms,
+                now,
+            )?;
+        }
         let callback_url = self.callback_url()?;
         let mut authorization_url = self.config.authorization_url.clone();
         {

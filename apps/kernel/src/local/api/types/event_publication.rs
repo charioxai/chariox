@@ -86,6 +86,13 @@ pub struct RefreshEventConnectionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconnectEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListEventConnectionResourcesRequest {
     pub connection_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -193,16 +193,20 @@ impl AegsAuthorizationStartRequest {
     pub fn validate(&self) -> Result<(), String> {
         require_opaque_id("generator_id", &self.generator_id)?;
         require_opaque_id("owner_id", &self.owner_id)?;
-        if self.return_url.as_deref().is_some_and(|value| {
-            value.len() > 2048
-                || !(value.starts_with("https://")
-                    || value.starts_with("http://127.0.0.1:")
-                    || value.starts_with("http://localhost:"))
-        }) {
-            return Err("return_url must use HTTPS or loopback HTTP".to_string());
-        }
-        Ok(())
+        validate_return_url(self.return_url.as_deref())
     }
+}
+
+fn validate_return_url(return_url: Option<&str>) -> Result<(), String> {
+    if return_url.is_some_and(|value| {
+        value.len() > 2048
+            || !(value.starts_with("https://")
+                || value.starts_with("http://127.0.0.1:")
+                || value.starts_with("http://localhost:"))
+    }) {
+        return Err("return_url must use HTTPS or loopback HTTP".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +332,24 @@ pub struct AegsConnectionRevokeRequest {
     pub generator_id: String,
     pub owner_id: String,
     pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionReconnectRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+impl AegsConnectionReconnectRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        require_opaque_id("connection_id", &self.connection_id)?;
+        validate_return_url(self.return_url.as_deref())
+    }
 }
 
 impl AegsConnectionRevokeRequest {
