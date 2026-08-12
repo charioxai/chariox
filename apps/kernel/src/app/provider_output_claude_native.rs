@@ -124,7 +124,9 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
-    matches!(prompt.trim(), "[Request interrupted by user]")
+    let prompt = prompt.trim();
+    prompt == "[Request interrupted by user]"
+        || (prompt.starts_with("<task-notification>") && prompt.ends_with("</task-notification>"))
 }
 
 fn claude_headless_dispatch_matches_prompt(

@@ -518,6 +518,16 @@ fn native_interrupt_control_prompt_is_not_user_history() {
     assert!(!claude_native_prompt_is_internal_control(
         "Please explain why the request was interrupted by the user."
     ));
+    assert!(claude_native_prompt_is_internal_control(
+        "<task-notification><task-id>build-1</task-id><status>completed</status></task-notification>"
+    ));
+    assert!(claude_native_prompt_is_internal_control(
+        "<task-notification><task-id>build-1</task-id></task-notification>\n\
+         <task-notification><task-id>test-1</task-id></task-notification>"
+    ));
+    assert!(!claude_native_prompt_is_internal_control(
+        "Review this <task-notification> example for correctness."
+    ));
 }
 
 #[test]
