@@ -3,9 +3,40 @@ use serde_json::Value;
 
 pub use arroba_event_protocol::{
     AegsAuthorizationFlow as EventGeneratorAuthorizationFlow,
-    AegsProviderResource as EventGeneratorResource,
+    AegsConnectionStatus as EventConnectionStatus, AegsProviderResource as EventGeneratorResource,
     AegsProviderResourcePage as EventGeneratorResourcePage,
 };
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnection {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub status: EventConnectionStatus,
+    #[serde(default, skip_serializing_if = "is_json_null")]
+    pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_validated_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventConnectionAuthorization {
+    pub authorization_id: String,
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorParty {

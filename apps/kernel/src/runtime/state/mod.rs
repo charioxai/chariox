@@ -70,6 +70,7 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
     prompt_activity: PromptActivityStore,
@@ -282,6 +283,12 @@ mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
 
 impl KernelRuntimeState {
+    pub(crate) fn event_connection_registry(
+        &self,
+    ) -> &crate::event_connection::EventConnectionRegistry {
+        &self.owned.event_connection_registry
+    }
+
     #[allow(dead_code)]
     pub(crate) fn new_with_owned_state(
         app: Arc<Mutex<DaemonApp>>,
@@ -433,6 +440,10 @@ impl KernelRuntimeState {
                 provider_process_projection,
                 operational_history_store,
                 transcript_history_append_lock: Arc::new(std::sync::Mutex::new(())),
+                event_connection_registry:
+                    crate::event_connection::EventConnectionRegistry::new(
+                        durable_state_store.clone(),
+                    ),
                 durable_state_store,
                 prompt_state_owner,
                 active_turns,
