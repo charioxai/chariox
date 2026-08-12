@@ -391,7 +391,17 @@ impl EventConnectionRegistry {
 
     fn restore(&self) -> Result<RegistryState, DaemonError> {
         let mut state = RegistryState::default();
-        for event in self.durable_state.load_events_after(0)? {
+        let mut events = Vec::new();
+        for kind in [
+            CONNECTION_UPSERTED,
+            CONNECTION_REMOVED,
+            AUTHORIZATION_UPSERTED,
+            AUTHORIZATION_REMOVED,
+        ] {
+            events.extend(self.durable_state.load_events_by_kind(kind)?);
+        }
+        events.sort_unstable_by_key(|event| event.sequence);
+        for event in events {
             match event.kind.as_str() {
                 CONNECTION_UPSERTED => {
                     let record: StoredConnection = decode(event.payload)?;
@@ -580,5 +590,32 @@ mod tests {
             .unwrap()
             .is_none());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn registry_restore_does_not_decode_unrelated_durable_events() {
+        let root = std::env::temp_dir().join(opaque_id("arroba-event-connection-indexed-test"));
+        let path = root.join("state.sqlite3");
+        drop(DurableKernelStateStore::open(path.clone()).expect("store should initialize"));
+        let connection = rusqlite::Connection::open(&path).expect("database should open");
+        connection
+            .execute(
+                "INSERT INTO durable_state_events (
+                    event_id, kind, subject_id, timestamp_ms, payload_json
+                 ) VALUES ('unrelated-event', 'session.updated', 'session-1', 1, 'not-json')",
+                [],
+            )
+            .expect("unrelated event should insert");
+        drop(connection);
+
+        let registry = EventConnectionRegistry::new(
+            DurableKernelStateStore::open(path.clone()).expect("store should reopen"),
+        );
+        assert!(registry
+            .list("user-a", None)
+            .expect("indexed restore should ignore unrelated events")
+            .is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

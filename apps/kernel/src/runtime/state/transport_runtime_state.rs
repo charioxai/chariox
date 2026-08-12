@@ -29,6 +29,7 @@ impl KernelRuntimeState {
             .state
             .snapshot_interval_events? as u64;
         Some(crate::durable_snapshot::DurableSnapshotScheduler::new(
+            self.owned.config_projection.snapshot().daemon_id,
             self.owned.durable_state_store.clone(),
             self.owned.session_store.clone(),
             self.owned.agent_store.clone(),

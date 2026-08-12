@@ -12,6 +12,7 @@ use crate::runtime::metaagent_event::{
 use crate::session::{DurablePromptPrivateState, RuntimeProject, RuntimeSession};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 const DURABLE_EVENT_REPLAY_BATCH_SIZE: usize = 128;
 const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
@@ -266,7 +267,12 @@ impl RestoredExternalProviderAttachmentState {
 
 impl DaemonApp {
     pub(super) fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
-        let replay_after_sequence = match self.durable_state.latest_snapshot()? {
+        let restore_started = Instant::now();
+        let snapshot_started = Instant::now();
+        let replay_after_sequence = match self
+            .durable_state
+            .latest_snapshot_for_owner(&self.config.daemon_id)?
+        {
             Some(snapshot) => {
                 if self.restore_durable_state_snapshot(snapshot.payload)? {
                     snapshot.sequence
@@ -284,8 +290,11 @@ impl DaemonApp {
             }
             None => 0,
         };
+        let snapshot_restore_ms = snapshot_started.elapsed().as_millis();
+        let replay_started = Instant::now();
         let mut diagnostics = DurableRestoreDiagnostics::default();
         let mut replay_cursor = replay_after_sequence;
+        let mut replayed_event_count = 0usize;
         loop {
             let events = self
                 .durable_state
@@ -296,15 +305,30 @@ impl DaemonApp {
             for event in events {
                 replay_cursor = replay_cursor.max(event.sequence);
                 self.restore_durable_state_event(event, &mut diagnostics)?;
+                replayed_event_count += 1;
             }
         }
+        let replay_ms = replay_started.elapsed().as_millis();
         diagnostics.log_summary();
+        let reconciliation_started = Instant::now();
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
         self.reconcile_restored_duplicate_project_names()?;
         self.restore_local_kernel_external_provider_attachments();
         self.reconcile_restored_slice_agent_attachments()?;
         self.reconcile_restored_runtime_state_after_restart()?;
+        crate::logging::info_with_fields(
+            "durable_state.restore",
+            "restored durable kernel state",
+            serde_json::json!({
+                "snapshot_sequence": replay_after_sequence,
+                "snapshot_restore_ms": snapshot_restore_ms,
+                "replayed_event_count": replayed_event_count,
+                "replay_ms": replay_ms,
+                "reconciliation_ms": reconciliation_started.elapsed().as_millis(),
+                "total_ms": restore_started.elapsed().as_millis(),
+            }),
+        );
         Ok(())
     }
 
@@ -826,6 +850,7 @@ impl DaemonApp {
     pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
         let interval_events = self.config.user_config.state.snapshot_interval_events? as u64;
         Some(DurableSnapshotScheduler::new(
+            self.config.daemon_id.clone(),
             self.durable_state_store(),
             self.session_state_store(),
             self.agents.clone(),
