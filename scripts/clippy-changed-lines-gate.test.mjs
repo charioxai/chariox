@@ -1,35 +1,46 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { lineIsChanged, parseChangedRanges } from "./clippy-changed-lines-gate.mjs"
+import {
+  findWarningRegressions,
+  warningFromCompilerEvent,
+  warningIdentity,
+} from "./clippy-changed-lines-gate.mjs"
 
-test("parses added and modified Rust line ranges", () => {
-  const ranges = parseChangedRanges(`diff --git a/src/one.rs b/src/one.rs
---- a/src/one.rs
-+++ b/src/one.rs
-@@ -4,0 +5,2 @@
-+first
-+second
-@@ -10 +12 @@
--old
-+new
-`)
+function warning(file, line, code, message) {
+  return { file, line, column: 1, code, message }
+}
 
-  assert.deepEqual(ranges.get("src/one.rs"), [[5, 6], [12, 12]])
-  assert.equal(lineIsChanged(ranges, "src/one.rs", 5), true)
-  assert.equal(lineIsChanged(ranges, "src/one.rs", 6), true)
-  assert.equal(lineIsChanged(ranges, "src/one.rs", 7), false)
+test("normalizes a compiler warning without tying identity to its line", () => {
+  const diagnostic = warningFromCompilerEvent({
+    reason: "compiler-message",
+    message: {
+      level: "warning",
+      code: { code: "dead_code" },
+      message: "function `unused` is never used",
+      spans: [{ file_name: "src/lib.rs", line_start: 12, column_start: 4, is_primary: true }],
+    },
+  })
+
+  assert.deepEqual(diagnostic, {
+    ...warning("src/lib.rs", 12, "dead_code", "function `unused` is never used"),
+    column: 4,
+  })
+  assert.equal(
+    warningIdentity(diagnostic),
+    warningIdentity(warning("src/lib.rs", 99, "dead_code", "function `unused` is never used")),
+  )
 })
 
-test("ignores deleted-only hunks and unrelated files", () => {
-  const ranges = parseChangedRanges(`diff --git a/src/one.rs b/src/one.rs
---- a/src/one.rs
-+++ b/src/one.rs
-@@ -4,2 +4,0 @@
--first
--second
-`)
+test("detects a deletion-induced warning whose span is on an unchanged line", () => {
+  const regression = warning("src/lib.rs", 4, "dead_code", "function `now_unused` is never used")
+  assert.deepEqual(findWarningRegressions([], [regression]), [regression])
+})
 
-  assert.equal(ranges.has("src/one.rs"), false)
-  assert.equal(lineIsChanged(ranges, "src/two.rs", 4), false)
+test("compares duplicate diagnostics as a multiset", () => {
+  const existing = warning("src/lib.rs", 4, "dead_code", "function `unused` is never used")
+  const duplicate = warning("src/lib.rs", 40, "dead_code", "function `unused` is never used")
+
+  assert.deepEqual(findWarningRegressions([existing], [existing, duplicate]), [duplicate])
+  assert.deepEqual(findWarningRegressions([existing], [duplicate]), [])
 })
