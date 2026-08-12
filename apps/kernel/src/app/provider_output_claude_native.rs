@@ -74,6 +74,8 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
     AwaitingInjection,
 }
 
+const CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT: u8 = 10;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ClaudeNativeProcessOutcome {
     /// A managed Claude run reported Stop/SessionEnd this pass. The caller
@@ -1152,7 +1154,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else {
                 claude_headless_prompt_input(prompt, context_file)
             };
-            if count < 3
+            if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_prompt_waiting_in_composer(
                     &recent,
@@ -1173,7 +1175,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     now,
                     &visible_prompt,
                 );
-            } else if count < 3
+            } else if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_composer_visible(&recent)
             {

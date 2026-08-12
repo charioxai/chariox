@@ -5,6 +5,8 @@
 
 use super::*;
 
+const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn claude_native_dispatch_terminal_failure(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> Option<String> {
@@ -143,6 +145,11 @@ mod tests {
 
         assert_eq!(claude_native_dispatch_terminal_failure(&run), None);
         let _ = std::fs::remove_dir_all(fixture_root);
+    }
+
+    #[test]
+    fn claude_headless_dispatch_allows_slow_cold_start_acknowledgement() {
+        assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -1323,7 +1330,12 @@ impl KernelRuntimeState {
             // Claude-headless confirms injection asynchronously via the
             // context-file marker; retry with the app lock released between
             // attempts so a slow provider cannot stall the whole daemon.
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(12_000);
+            // Claude's first interactive composer can take longer than the
+            // normal warm-start path while it restores local state. Keep the
+            // dispatch pending until UserPromptSubmit proves the provider
+            // accepted it; the retry loop releases the app lock between
+            // attempts, so this grace period does not block other sessions.
+            let deadline = tokio::time::Instant::now() + CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT;
             loop {
                 let attempt = self
                     .with_app_side_effect(|app| {
