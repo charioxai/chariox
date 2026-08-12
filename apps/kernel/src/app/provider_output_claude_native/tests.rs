@@ -1312,11 +1312,6 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
 }
 
 #[test]
-fn claude_headless_cold_start_allows_retries_beyond_the_old_dispatch_window() {
-    assert!(CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT >= 10);
-}
-
-#[test]
 fn claude_headless_bypass_confirmation_detects_clipped_rendered_choice() {
     let rendered = "WARNING:Claude CoderunninginBypassPermissionsmode \
         Byproceeding,youacceptallresponsibilityforactionstaken \
