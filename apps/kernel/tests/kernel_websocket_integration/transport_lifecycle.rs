@@ -458,12 +458,30 @@ fn kernel_websocket_rejects_requests_when_inbound_admission_is_full() {
         );
 
         let mut health_socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let health = send_request(
-            &mut health_socket,
-            "daemon-health-after-inbound-overload",
-            LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
-        )
-        .await;
+        let health = timeout(Duration::from_secs(5), async {
+            let mut attempt = 0_u64;
+            loop {
+                let request_id = format!("daemon-health-after-inbound-overload-{attempt}");
+                attempt += 1;
+                send_frame(
+                    &mut health_socket,
+                    json!({
+                        "type": "request",
+                        "request_id": request_id,
+                        "request": LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest),
+                    }),
+                )
+                .await;
+                let response = wait_for_request_completion(&mut health_socket, &request_id).await;
+                match response["error"]["code"].as_str() {
+                    Some("kernel_request_overloaded") => sleep(Duration::from_millis(25)).await,
+                    Some(code) => panic!("health recovery probe failed with `{code}`: {response}"),
+                    None => break response,
+                }
+            }
+        })
+        .await
+        .expect("kernel admission should recover after slow requests complete");
         let transport = &response_variant(&health, "DaemonHealth")["projection"]["transport"];
         assert!(
             transport["inbound_overload_rejections"]
