@@ -140,6 +140,27 @@ mod tests {
     }
 
     #[test]
+    fn claude_native_dispatch_detects_compact_model_credit_dialog() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "arroba-claude-native-dispatch-credit-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
+        std::fs::write(
+            fixture_root.join("permission-recent.txt"),
+            "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
+        )
+        .expect("credit dialog fixture should write");
+        let run = claude_native_run_with_context(&fixture_root.join("context.json"));
+
+        let failure = claude_native_dispatch_terminal_failure(&run)
+            .expect("compact model credit dialog should be classified");
+
+        assert!(failure.contains("resource limit"), "{failure}");
+        let _ = std::fs::remove_dir_all(fixture_root);
+    }
+
+    #[test]
     fn claude_headless_dispatch_allows_slow_cold_start_acknowledgement() {
         assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
     }
