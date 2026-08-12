@@ -217,7 +217,10 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         LocalDaemonResponse::WorkflowEventBindingCreated {
             binding, session, ..
         } => {
-            assert_eq!(session.workflow_event_bindings(), [binding.clone()]);
+            assert_eq!(
+                session.workflow_event_bindings(),
+                std::slice::from_ref(&binding)
+            );
             binding
         }
         response => panic!("unexpected response: {response:?}"),

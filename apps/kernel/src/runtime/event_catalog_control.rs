@@ -1186,6 +1186,63 @@ fn fetch_page(url: url::Url) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(LocalDaemonResponse::EventGeneratorCatalogPage { page })
 }
 
+fn fetch_json<T: serde::de::DeserializeOwned>(url: url::Url) -> Result<T, DaemonError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(3))
+        .timeout_read(Duration::from_secs(5))
+        .timeout_write(Duration::from_secs(5))
+        .build();
+    let response = agent
+        .get(url.as_str())
+        .set(
+            "x-arroba-event-protocol-version",
+            &arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION.to_string(),
+        )
+        .call()
+        .map_err(|error| catalog_error(format!("registry request failed: {error}")))?;
+    let mut body = String::new();
+    response
+        .into_reader()
+        .take(CATALOG_RESPONSE_MAX_BYTES + 1)
+        .read_to_string(&mut body)
+        .map_err(|error| catalog_error(error.to_string()))?;
+    if body.len() as u64 > CATALOG_RESPONSE_MAX_BYTES {
+        return Err(catalog_error(
+            "registry response exceeded 2 MiB".to_string(),
+        ));
+    }
+    serde_json::from_str(&body).map_err(|error| catalog_error(error.to_string()))
+}
+
+fn bounded_limit(limit: u32) -> u32 {
+    limit.clamp(1, 50)
+}
+
+fn bounded_event_limit(limit: u32) -> u32 {
+    limit.clamp(1, 100)
+}
+
+fn decode_cursor(cursor: Option<&str>) -> Result<usize, DaemonError> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    cursor
+        .strip_prefix("offset:")
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or_else(|| catalog_error("invalid event catalog cursor".to_string()))
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn catalog_error(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "query event generator catalog",
+        message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,62 +1309,5 @@ mod tests {
         )
         .expect_err("mismatched catalog identity must be rejected");
         assert!(error.to_string().contains("event catalog returned"));
-    }
-}
-
-fn fetch_json<T: serde::de::DeserializeOwned>(url: url::Url) -> Result<T, DaemonError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(3))
-        .timeout_read(Duration::from_secs(5))
-        .timeout_write(Duration::from_secs(5))
-        .build();
-    let response = agent
-        .get(url.as_str())
-        .set(
-            "x-arroba-event-protocol-version",
-            &arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION.to_string(),
-        )
-        .call()
-        .map_err(|error| catalog_error(format!("registry request failed: {error}")))?;
-    let mut body = String::new();
-    response
-        .into_reader()
-        .take(CATALOG_RESPONSE_MAX_BYTES + 1)
-        .read_to_string(&mut body)
-        .map_err(|error| catalog_error(error.to_string()))?;
-    if body.len() as u64 > CATALOG_RESPONSE_MAX_BYTES {
-        return Err(catalog_error(
-            "registry response exceeded 2 MiB".to_string(),
-        ));
-    }
-    serde_json::from_str(&body).map_err(|error| catalog_error(error.to_string()))
-}
-
-fn bounded_limit(limit: u32) -> u32 {
-    limit.clamp(1, 50)
-}
-
-fn bounded_event_limit(limit: u32) -> u32 {
-    limit.clamp(1, 100)
-}
-
-fn decode_cursor(cursor: Option<&str>) -> Result<usize, DaemonError> {
-    let Some(cursor) = cursor else {
-        return Ok(0);
-    };
-    cursor
-        .strip_prefix("offset:")
-        .and_then(|value| value.parse::<usize>().ok())
-        .ok_or_else(|| catalog_error("invalid event catalog cursor".to_string()))
-}
-
-fn percent_encode_path_segment(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
-
-fn catalog_error(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "query event generator catalog",
-        message,
     }
 }

@@ -20,6 +20,9 @@ const AUTHORIZATION_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(2);
 const AUTHORIZATION_RECONCILIATION_BATCH_SIZE: usize = 64;
 const AUTHORIZATION_RECONCILIATION_CONCURRENCY: usize = 8;
 
+type ConnectionLaneKey = (String, String);
+type ConnectionLane = Weak<Mutex<()>>;
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EventConnectionReconciliationSummary {
     pub attempted: usize,
@@ -37,7 +40,7 @@ struct AuthorizationReconciliationOutcome {
 
 #[derive(Clone, Default)]
 pub(super) struct EventConnectionOperationLanes {
-    lanes: Arc<StdMutex<HashMap<(String, String), Weak<Mutex<()>>>>>,
+    lanes: Arc<StdMutex<HashMap<ConnectionLaneKey, ConnectionLane>>>,
 }
 
 impl EventConnectionOperationLanes {

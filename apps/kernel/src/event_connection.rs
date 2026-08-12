@@ -45,6 +45,9 @@ struct RemovedRecord {
     id: String,
 }
 
+// The registry uses the kernel-wide `DaemonError` contract at its runtime boundary. Boxing only
+// these results would make every caller unwrap a one-off error representation.
+#[allow(clippy::result_large_err)]
 impl EventConnectionRegistry {
     pub(crate) fn new(durable_state: DurableKernelStateStore) -> Self {
         let registry = Self {
