@@ -128,6 +128,14 @@ impl CommandRouter {
             | LocalDaemonRequest::BrowseEventGeneratorEvents(_)
             | LocalDaemonRequest::StartEventGeneratorAuthorization(_)
             | LocalDaemonRequest::ListEventGeneratorResources(_)
+            | LocalDaemonRequest::ListEventConnections(_)
+            | LocalDaemonRequest::GetEventConnection(_)
+            | LocalDaemonRequest::InstallEventConnection(_)
+            | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
+            | LocalDaemonRequest::RefreshEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionResources(_)
+            | LocalDaemonRequest::ListEventConnectionDependencies(_)
+            | LocalDaemonRequest::RemoveEventConnection(_)
             | LocalDaemonRequest::GetEventDeliveryStatus(_)) => {
                 return execute_event_catalog_request(
                     &self.runtime_state,

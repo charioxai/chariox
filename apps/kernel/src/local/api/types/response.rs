@@ -344,6 +344,17 @@ pub enum LocalDaemonResponse {
     EventGeneratorEventsPage { page: EventGeneratorEventPage, },
     EventGeneratorAuthorizationStarted { flow: EventGeneratorAuthorizationFlow, },
     EventGeneratorResourcesPage { page: EventGeneratorResourcePage, },
+    EventConnectionsPage { page: EventConnectionPage, },
+    EventConnection { connection: EventConnection, },
+    EventConnectionAuthorizationStarted { authorization: EventConnectionAuthorization, },
+    EventConnectionAuthorizationObserved {
+        authorization: EventConnectionAuthorization,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection: Option<EventConnection>,
+    },
+    EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
+    EventConnectionDependencies { connection_id: String, dependencies: Vec<WorkflowEventBindingDependency>, },
+    EventConnectionRemoved { connection: EventConnection, deactivated_bindings: Vec<WorkflowEventBindingDependency>, },
     WorkflowEventBindingCreated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },
     WorkflowEventBindingsListed { bindings: Vec<crate::session::WorkflowEventBinding>, },
     WorkflowEventBindingUpdated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },

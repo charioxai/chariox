@@ -653,6 +653,18 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "event_generator.authorization.start"
         }
         LocalDaemonRequest::ListEventGeneratorResources(_) => "event_generator.resources.list",
+        LocalDaemonRequest::ListEventConnections(_) => "event_connection.list",
+        LocalDaemonRequest::GetEventConnection(_) => "event_connection.get",
+        LocalDaemonRequest::InstallEventConnection(_) => "event_connection.install",
+        LocalDaemonRequest::ObserveEventConnectionAuthorization(_) => {
+            "event_connection.authorization.observe"
+        }
+        LocalDaemonRequest::RefreshEventConnection(_) => "event_connection.refresh",
+        LocalDaemonRequest::ListEventConnectionResources(_) => "event_connection.resources.list",
+        LocalDaemonRequest::ListEventConnectionDependencies(_) => {
+            "event_connection.dependencies.list"
+        }
+        LocalDaemonRequest::RemoveEventConnection(_) => "event_connection.remove",
         LocalDaemonRequest::CreateWorkflowEventBinding(_) => "workflow_event_binding.create",
         LocalDaemonRequest::ListWorkflowEventBindings(_) => "workflow_event_binding.list",
         LocalDaemonRequest::SetWorkflowEventBindingStatus(_) => "workflow_event_binding.status.set",

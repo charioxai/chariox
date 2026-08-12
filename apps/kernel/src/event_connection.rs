@@ -227,6 +227,33 @@ impl EventConnectionRegistry {
         Ok(Some(record.authorization))
     }
 
+    pub(crate) fn update_authorization(
+        &self,
+        owner_user_id: &str,
+        authorization: EventConnectionAuthorization,
+    ) -> Result<EventConnectionAuthorization, DaemonError> {
+        let key = (
+            owner_user_id.to_string(),
+            authorization.authorization_id.clone(),
+        );
+        let mut state = self.lock_state()?;
+        if !state.authorizations.contains_key(&key) {
+            return Err(registry_error("authorization was not found".to_string()));
+        }
+        let record = StoredAuthorization {
+            owner_user_id: owner_user_id.to_string(),
+            authorization,
+        };
+        self.append(
+            AUTHORIZATION_UPSERTED,
+            &record.authorization.authorization_id,
+            &record,
+        )?;
+        let authorization = record.authorization.clone();
+        state.authorizations.insert(key, record);
+        Ok(authorization)
+    }
+
     fn lock_state(&self) -> Result<MutexGuard<'_, RegistryState>, DaemonError> {
         if let Some(error) = self
             .restore_error

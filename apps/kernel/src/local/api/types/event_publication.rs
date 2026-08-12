@@ -38,6 +38,76 @@ pub struct EventConnectionAuthorization {
     pub created_at_ms: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnectionPage {
+    pub connections: Vec<EventConnection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEventBindingDependency {
+    pub session_id: String,
+    pub publication_id: String,
+    pub binding_id: String,
+    pub status: crate::session::WorkflowEventBindingStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallEventConnectionRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObserveEventConnectionAuthorizationRequest {
+    pub authorization_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionResourcesRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionDependenciesRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorParty {
     pub id: String,

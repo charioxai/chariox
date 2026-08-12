@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 250);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 251);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -96,6 +96,43 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 limit: 20,
             },
         ),
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some("dev.arroba.github".to_string()),
+            cursor: Some("offset-20".to_string()),
+            limit: 20,
+        }),
+        LocalDaemonRequest::GetEventConnection(crate::local::GetEventConnectionRequest {
+            connection_id: "connection-1".to_string(),
+        }),
+        LocalDaemonRequest::InstallEventConnection(crate::local::InstallEventConnectionRequest {
+            generator_id: "dev.arroba.github".to_string(),
+            return_url: Some("https://terminal.arroba.dev/notifications/callback".to_string()),
+        }),
+        LocalDaemonRequest::ObserveEventConnectionAuthorization(
+            crate::local::ObserveEventConnectionAuthorizationRequest {
+                authorization_id: "event-authorization-1".to_string(),
+            },
+        ),
+        LocalDaemonRequest::RefreshEventConnection(crate::local::RefreshEventConnectionRequest {
+            connection_id: "connection-1".to_string(),
+        }),
+        LocalDaemonRequest::ListEventConnectionResources(
+            crate::local::ListEventConnectionResourcesRequest {
+                connection_id: "connection-1".to_string(),
+                query: Some("arroba".to_string()),
+                cursor: None,
+                limit: 20,
+            },
+        ),
+        LocalDaemonRequest::ListEventConnectionDependencies(
+            crate::local::ListEventConnectionDependenciesRequest {
+                connection_id: "connection-1".to_string(),
+            },
+        ),
+        LocalDaemonRequest::RemoveEventConnection(crate::local::RemoveEventConnectionRequest {
+            connection_id: "connection-1".to_string(),
+            confirm: true,
+        }),
     ];
     let responses = vec![
         LocalDaemonResponse::EventGeneratorEventsPage {
@@ -167,6 +204,44 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 next_cursor: Some("opaque-next-resource-cursor".to_string()),
             },
         },
+        LocalDaemonResponse::EventConnectionsPage {
+            page: crate::local::EventConnectionPage {
+                connections: vec![crate::local::EventConnection {
+                    generator_id: "dev.arroba.github".to_string(),
+                    connection_id: "connection-1".to_string(),
+                    status: crate::local::EventConnectionStatus::Ready,
+                    metadata: serde_json::json!({"account": "arroba"}),
+                    expires_at_ms: None,
+                    created_at_ms: 1_700_000,
+                    updated_at_ms: 1_800_000,
+                    last_validated_at_ms: Some(1_800_000),
+                }],
+                next_cursor: None,
+            },
+        },
+        LocalDaemonResponse::EventConnectionAuthorizationStarted {
+            authorization: crate::local::EventConnectionAuthorization {
+                authorization_id: "event-authorization-1".to_string(),
+                generator_id: "dev.arroba.github".to_string(),
+                connection_id: Some("connection-1".to_string()),
+                status: "user_action_required".to_string(),
+                authorization_url: Some(
+                    "https://github.com/apps/arroba/installations/new".to_string(),
+                ),
+                user_code: None,
+                expires_at_ms: Some(1_900_000),
+                created_at_ms: 1_800_000,
+            },
+        },
+        LocalDaemonResponse::EventConnectionDependencies {
+            connection_id: "connection-1".to_string(),
+            dependencies: vec![crate::local::WorkflowEventBindingDependency {
+                session_id: "session-1".to_string(),
+                publication_id: "publication-1".to_string(),
+                binding_id: "binding-1".to_string(),
+                status: crate::session::WorkflowEventBindingStatus::Active,
+            }],
+        },
     ];
     let snapshot = serde_json::json!({
         "requests": requests,
@@ -215,6 +290,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8d0bcbb2e5f675e28180ef6a2e298284bc2869d9a403538e6183e3f885c1189c"
+        "23256a686f6480421b2b597cdf0c464e493a8c4e8ae5a37212af3d4baa752b84"
     );
 }
