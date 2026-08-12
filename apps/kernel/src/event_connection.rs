@@ -199,6 +199,15 @@ impl EventConnectionRegistry {
         owner_user_id: &str,
         flow: arroba_event_protocol::AegsAuthorizationFlow,
     ) -> Result<EventConnectionAuthorization, DaemonError> {
+        if flow
+            .connection_id
+            .as_deref()
+            .is_none_or(|connection_id| connection_id.trim().is_empty())
+        {
+            return Err(registry_error(
+                "AEGS authorization must issue an opaque connection ID".to_string(),
+            ));
+        }
         let authorization = EventConnectionAuthorization {
             authorization_id: opaque_id("event-authorization"),
             generator_id: flow.generator_id,
@@ -227,6 +236,60 @@ impl EventConnectionRegistry {
             record,
         );
         Ok(authorization)
+    }
+
+    pub(crate) fn reconcilable_authorizations(
+        &self,
+    ) -> Result<Vec<(String, EventConnectionAuthorization)>, DaemonError> {
+        let mut state = self.lock_state()?;
+        let now_ms = unix_epoch_ms();
+        let expired = state
+            .authorizations
+            .iter()
+            .filter(|(_, record)| {
+                record
+                    .authorization
+                    .expires_at_ms
+                    .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for (owner_user_id, authorization_id) in expired {
+            self.append(
+                AUTHORIZATION_REMOVED,
+                &authorization_id,
+                &RemovedRecord {
+                    owner_user_id: owner_user_id.clone(),
+                    id: authorization_id.clone(),
+                },
+            )?;
+            state
+                .authorizations
+                .remove(&(owner_user_id, authorization_id));
+        }
+        let mut authorizations = state
+            .authorizations
+            .values()
+            .filter(|record| {
+                let Some(connection_id) = record.authorization.connection_id.as_deref() else {
+                    return true;
+                };
+                state
+                    .connections
+                    .get(&(record.owner_user_id.clone(), connection_id.to_string()))
+                    .is_none_or(|connection| {
+                        connection.connection.status == crate::local::EventConnectionStatus::Pending
+                    })
+            })
+            .map(|record| (record.owner_user_id.clone(), record.authorization.clone()))
+            .collect::<Vec<_>>();
+        authorizations.sort_by(|left, right| {
+            left.1
+                .created_at_ms
+                .cmp(&right.1.created_at_ms)
+                .then_with(|| left.1.authorization_id.cmp(&right.1.authorization_id))
+        });
+        Ok(authorizations)
     }
 
     pub(crate) fn authorization(
@@ -399,6 +462,40 @@ mod tests {
         let path = root.join("state.sqlite3");
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
         let registry = EventConnectionRegistry::new(store);
+        let missing_connection_id = registry
+            .start_authorization(
+                "user-a",
+                arroba_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.arroba.github".to_string(),
+                    status: "user_action_required".to_string(),
+                    connection_id: None,
+                    authorization_url: Some("https://example.test/authorize".to_string()),
+                    user_code: None,
+                    expires_at_ms: None,
+                },
+            )
+            .expect_err("kernel reconciliation requires an opaque connection ID");
+        assert!(missing_connection_id
+            .to_string()
+            .contains("must issue an opaque connection ID"));
+        let expired = registry
+            .start_authorization(
+                "user-a",
+                arroba_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.arroba.github".to_string(),
+                    status: "user_action_required".to_string(),
+                    connection_id: Some("expired-connection".to_string()),
+                    authorization_url: Some("https://example.test/authorize".to_string()),
+                    user_code: None,
+                    expires_at_ms: Some(1),
+                },
+            )
+            .unwrap();
+        assert!(registry.reconcilable_authorizations().unwrap().is_empty());
+        assert!(registry
+            .authorization("user-a", &expired.authorization_id)
+            .unwrap()
+            .is_none());
         registry
             .upsert(
                 "user-a",

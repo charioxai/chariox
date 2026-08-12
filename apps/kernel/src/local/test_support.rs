@@ -130,6 +130,15 @@ impl LocalRouterTestHarness {
         self.runtime.block_on(self.router.pump_transport_runtime());
     }
 
+    pub(crate) fn reconcile_pending_event_connections(
+        &self,
+    ) -> crate::runtime::router::event_connection_lifecycle::EventConnectionReconciliationSummary
+    {
+        self.runtime
+            .block_on(self.router.reconcile_pending_event_connections())
+            .expect("event connection reconciliation should succeed")
+    }
+
     pub(crate) fn transport_runtime_pump_interval_ms(
         &self,
         active_interval_ms: u64,

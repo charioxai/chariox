@@ -366,6 +366,72 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
 }
 
 #[test]
+fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.arroba.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    let authorization = harness
+        .runtime_state()
+        .event_connection_registry()
+        .start_authorization(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            arroba_event_protocol::AegsAuthorizationFlow {
+                generator_id: "dev.arroba.dummy".to_string(),
+                status: "user_action_required".to_string(),
+                connection_id: Some("connection-local".to_string()),
+                authorization_url: Some("https://example.test/authorize".to_string()),
+                user_code: None,
+                expires_at_ms: Some(4_000_000_000_000_u64),
+            },
+        )
+        .expect("pending authorization should be durable");
+
+    let reconciliation = harness.reconcile_pending_event_connections();
+    assert_eq!(reconciliation.attempted, 1);
+    assert_eq!(reconciliation.observed, 1);
+    assert_eq!(reconciliation.completed, 1);
+    assert_eq!(reconciliation.failed, 0);
+
+    let connection = match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .expect("background reconciliation must durably register the connection")
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        connection.status,
+        crate::local::EventConnectionStatus::Ready
+    );
+    assert!(harness
+        .runtime_state()
+        .event_connection_registry()
+        .reconcilable_authorizations()
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        harness
+            .runtime_state()
+            .event_connection_registry()
+            .authorization(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &authorization.authorization_id,
+            )
+            .unwrap()
+            .expect("completed authorization remains observable")
+            .status,
+        "ready"
+    );
+}
+
+#[test]
 fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revocation() {
     let server = ReadyConnectionServer::start();
     let mut config = crate::DaemonConfig::for_tests();

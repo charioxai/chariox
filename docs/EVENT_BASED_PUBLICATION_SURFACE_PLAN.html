@@ -1020,6 +1020,13 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               connection</strong> action.
             </li>
             <li>
+              Authorization attempts are durable kernel records bound to their opaque owner and
+              AEGS connection IDs. A bounded kernel poller resumes them after restart and registers
+              terminal AEGS state even when the initiating browser tab or workflow panel has
+              closed; client observation is a projection of that state, not the completion
+              authority. Expired attempts are durably discarded.
+            </li>
+            <li>
               Deleting a workflow removes its bindings, not the installed connection. Removing a
               connection is a separate notification-center action that lists and confirms affected
               publications before revocation.

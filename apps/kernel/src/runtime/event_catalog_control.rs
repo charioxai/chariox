@@ -209,31 +209,14 @@ async fn execute_event_connection_request(
             Ok(LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization })
         }
         LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => {
-            let mut authorization = registry
-                .authorization(caller_user_id, &request.authorization_id)?
-                .ok_or_else(|| connection_error("event connection authorization was not found"))?;
-            let targets = targets.clone();
-            let owner_id = owner_id.clone();
-            let generator_id = authorization.generator_id.clone();
-            let connection_id = authorization.connection_id.clone();
-            let page = blocking_aegs(move || {
-                query_aegs_connections(&targets, &owner_id, &generator_id, connection_id.as_deref())
-            })
+            let (authorization, observed) = observe_event_connection_authorization(
+                runtime_state,
+                targets,
+                &owner_id,
+                caller_user_id,
+                &request.authorization_id,
+            )
             .await?;
-            let mut observed = None;
-            for summary in page.connections {
-                let connection = registry.upsert(caller_user_id, summary)?;
-                if authorization.connection_id.as_deref() == Some(&connection.connection_id)
-                    || authorization.connection_id.is_none()
-                {
-                    observed = Some(connection);
-                }
-            }
-            if let Some(connection) = &observed {
-                authorization.connection_id = Some(connection.connection_id.clone());
-                authorization.status = format!("{:?}", connection.status).to_ascii_lowercase();
-                authorization = registry.update_authorization(caller_user_id, authorization)?;
-            }
             Ok(LocalDaemonResponse::EventConnectionAuthorizationObserved {
                 authorization,
                 connection: observed,
@@ -362,6 +345,46 @@ async fn execute_event_connection_request(
             "request is not an event connection request".to_string(),
         )),
     }
+}
+
+async fn observe_event_connection_authorization(
+    runtime_state: &KernelRuntimeState,
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    owner_id: &str,
+    caller_user_id: &str,
+    authorization_id: &str,
+) -> Result<
+    (
+        crate::local::EventConnectionAuthorization,
+        Option<crate::local::EventConnection>,
+    ),
+    DaemonError,
+> {
+    let registry = runtime_state.event_connection_registry();
+    let mut authorization = registry
+        .authorization(caller_user_id, authorization_id)?
+        .ok_or_else(|| connection_error("event connection authorization was not found"))?;
+    let targets = targets.clone();
+    let owner_id = owner_id.to_string();
+    let generator_id = authorization.generator_id.clone();
+    let connection_id = authorization.connection_id.clone();
+    let page = blocking_aegs(move || {
+        query_aegs_connections(&targets, &owner_id, &generator_id, connection_id.as_deref())
+    })
+    .await?;
+    let mut observed = None;
+    for summary in page.connections {
+        if authorization.connection_id.as_deref() != Some(summary.connection_id.as_str()) {
+            continue;
+        }
+        let connection = registry.upsert(caller_user_id, summary)?;
+        observed = Some(connection);
+    }
+    if let Some(connection) = &observed {
+        authorization.status = format!("{:?}", connection.status).to_ascii_lowercase();
+        authorization = registry.update_authorization(caller_user_id, authorization)?;
+    }
+    Ok((authorization, observed))
 }
 
 async fn blocking_aegs<T, F>(operation: F) -> Result<T, DaemonError>
