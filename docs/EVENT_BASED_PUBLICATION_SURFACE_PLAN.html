@@ -995,6 +995,42 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             browser inside the TUI.
           </p>
 
+          <h3>Installed notification-service connections</h3>
+          <div class="callout success">
+            <strong>Authorize once per kernel, then attach to workflows.</strong>
+            <p>
+              Provider authorization installs an <code>EventConnection</code> in the kernel's
+              notification center; it is not owned by the workflow that first requested it. Every
+              workflow publication on that kernel may select a compatible installed connection,
+              enumerate its provider resources, and create bindings without authorizing again.
+            </p>
+          </div>
+          <ul>
+            <li>
+              This lifecycle is provider-independent and applies to every AEGS, including GitHub,
+              Jira, Slack, Gmail, and third-party implementations.
+            </li>
+            <li>
+              The AEGS retains provider credentials. The kernel persists only the opaque connection
+              handle, generator/operator identity, non-secret display metadata, health, and usage.
+            </li>
+            <li>
+              Selecting a service reuses a compatible ready connection by default. Creating another
+              provider-account or tenant connection requires an explicit <strong>Add another
+              connection</strong> action.
+            </li>
+            <li>
+              Deleting a workflow removes its bindings, not the installed connection. Removing a
+              connection is a separate notification-center action that lists and confirms affected
+              publications before revocation.
+            </li>
+            <li>
+              A deployment to another kernel resolves a compatible connection already installed on
+              the target. Opaque handles and credentials are never copied between kernels; if none
+              exists, the target kernel requests authorization.
+            </li>
+          </ul>
+
           <h3>Duplicate conflict UX</h3>
           <div class="callout warning">
             <strong>Already routed in this environment.</strong>
