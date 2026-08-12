@@ -23,6 +23,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) remote_reconciliations_started: usize,
     pub(crate) uncertain_local_prompts_preserved: usize,
     pub(crate) transcript_recovery_pending: usize,
+    pub(crate) queued_local_prompts_started: usize,
     pub(crate) failed_reconciliations: usize,
 }
 
@@ -41,13 +42,25 @@ impl KernelRuntimeState {
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
         let recovery_targets = self.durable_restart_recovery_targets();
+        let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        crate::logging::info_with_fields(
+            "durable_state.recovery",
+            "captured durable restart recovery targets",
+            serde_json::json!({
+                "active_prompt_targets": recovery_targets.len(),
+                "queued_publication_targets": queued_recovery_targets.len(),
+            }),
+        );
         let state = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
             let summary = loop {
                 let summary = state
-                    .recover_durable_runtime_after_restart_targets(&recovery_targets)
+                    .recover_durable_runtime_after_restart_targets(
+                        &recovery_targets,
+                        &queued_recovery_targets,
+                    )
                     .await;
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
@@ -68,6 +81,7 @@ impl KernelRuntimeState {
                     "remote_reconciliations_started": summary.remote_reconciliations_started,
                     "uncertain_local_prompts_preserved": summary.uncertain_local_prompts_preserved,
                     "transcript_recovery_pending": summary.transcript_recovery_pending,
+                    "queued_local_prompts_started": summary.queued_local_prompts_started,
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
@@ -78,8 +92,12 @@ impl KernelRuntimeState {
         &self,
     ) -> DurableRestartRecoverySummary {
         let recovery_targets = self.durable_restart_recovery_targets();
-        self.recover_durable_runtime_after_restart_targets(&recovery_targets)
-            .await
+        let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        self.recover_durable_runtime_after_restart_targets(
+            &recovery_targets,
+            &queued_recovery_targets,
+        )
+        .await
     }
 
     fn durable_restart_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
@@ -105,12 +123,54 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    fn durable_restart_queued_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .filter(|(_, prompt_state)| prompt_state.active_prompt().is_none())
+                    .filter_map(|(agent_id, prompt_state)| {
+                        let prompt = prompt_state.queued_prompts().front()?;
+                        recoverable_queued_publication_prompt(&session, prompt).then(|| {
+                            (
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     async fn recover_durable_runtime_after_restart_targets(
         &self,
         recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
     ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
         let sessions = self.owned.session_store.list_all_sessions();
+        // Publication work is autonomous and already durably admitted. Resume it before
+        // transcript reconciliation for unrelated interactive sessions, which may require slow
+        // provider scans or retries.
+        for (session_id, agent_id, prompt_id) in queued_recovery_targets {
+            match self.recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id) {
+                Ok(Some(dispatches)) => {
+                    summary.queued_local_prompts_started += 1;
+                    self.spawn_workflow_prompt_dispatches(dispatches);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    summary.failed_reconciliations += 1;
+                    log_restart_recovery_failure(session_id, agent_id, prompt_id, &error);
+                }
+            }
+        }
         for session in &sessions {
             for (agent_id, prompt_state) in session.prompt_states() {
                 let Some(prompt) = prompt_state.active_prompt().cloned() else {
@@ -235,6 +295,77 @@ impl KernelRuntimeState {
             );
         }
         summary
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn recover_queued_local_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+    ) -> Result<Option<WorkflowPromptDispatches>, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent_id)
+            .1
+            .front()
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if prompt.id() != expected_prompt_id {
+            return Ok(None);
+        }
+        if !recoverable_queued_publication_prompt(&session, &prompt) {
+            return Ok(None);
+        }
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+
+        let provider_run_id = self
+            .owned
+            .workflow_ensure_provider_run(session_id, agent_id)?;
+        let provider_run = self
+            .owned
+            .ensure_provider_run_in_session(session_id, &provider_run_id)?;
+        let mut dispatches = WorkflowPromptDispatches::default();
+        match provider_run.state() {
+            crate::provider::ProviderRunState::Starting => {
+                dispatches.starting_provider_runs.push(provider_run_id);
+            }
+            crate::provider::ProviderRunState::Running => {
+                if let Some(dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+                    session_id,
+                    agent_id,
+                    &provider_run_id,
+                )? {
+                    dispatches.local.push(dispatch);
+                } else {
+                    return Ok(None);
+                }
+            }
+            crate::provider::ProviderRunState::Parked
+            | crate::provider::ProviderRunState::Ended => {
+                return Err(DaemonError::InvalidProviderRunState {
+                    provider_run_id,
+                    state: provider_run.state(),
+                    operation: "recover queued prompt after restart",
+                });
+            }
+        }
+        Ok(Some(dispatches))
     }
 
     async fn finalize_cancelled_local_prompt_after_restart(
@@ -525,6 +656,47 @@ impl KernelRuntimeState {
     }
 }
 
+fn recoverable_queued_publication_prompt(
+    session: &crate::session::RuntimeSession,
+    prompt: &crate::session::PromptQueueItem,
+) -> bool {
+    if !std::path::Path::new(session.worktree_id()).exists() {
+        return false;
+    }
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+    else {
+        return false;
+    };
+    session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == workflow_run_id)
+        .is_some_and(|run| {
+            run.publication_invocation().is_some_and(|invocation| {
+                session.workflow_publications().iter().any(|publication| {
+                    publication.id() == invocation.publication_id && publication.enabled()
+                })
+            }) && matches!(
+                run.status(),
+                crate::session::WorkflowRunStatus::Created
+                    | crate::session::WorkflowRunStatus::Running
+                    | crate::session::WorkflowRunStatus::Waiting
+            ) && run
+                .node_runs()
+                .iter()
+                .find(|node_run| node_run.id() == workflow_node_run_id)
+                .is_some_and(|node_run| {
+                    !matches!(
+                        node_run.status(),
+                        crate::session::WorkflowNodeRunStatus::Completed
+                            | crate::session::WorkflowNodeRunStatus::Failed
+                            | crate::session::WorkflowNodeRunStatus::Stopped
+                    )
+                })
+        })
+}
+
 fn provider_restart_continuation_prompt(operation_id: &str) -> String {
     format!(
         "[Arroba recovery operation {operation_id}] Continue the active task from the current provider session state. Do not repeat completed tool calls or external side effects. If the task already completed, return its final response from the existing results."
@@ -680,6 +852,122 @@ mod tests {
         (router.runtime_state(), session_id, agent_id)
     }
 
+    fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let workspace = std::env::current_dir().expect("test workspace should resolve");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .expect("session should create");
+        let mut session_with_agents = session.clone();
+        session_with_agents.set_agents(vec![agent.clone()]);
+        app.sessions_mut().restore_session(session_with_agents);
+        let _attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-restart-prompt-queue",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("attachment should attach");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("restart-publication".to_string()))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should create");
+        let publication = app
+            .sessions_mut()
+            .create_workflow_publication(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("default".to_string()),
+                Some("restart-publication".to_string()),
+                Some(crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()),
+                Some("/restart".to_string()),
+                vec!["POST".to_string()],
+                None,
+                None,
+                None,
+                None,
+                Some("async".to_string()),
+                None,
+                None,
+                "local".to_string(),
+            )
+            .expect("workflow publication should create");
+        let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+            publication_id: publication.id().to_string(),
+            hook_id: None,
+            invocation_id: "invocation-restart".to_string(),
+            transport: "event".to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            queue_ref: Some("default".to_string()),
+            input: serde_json::json!({"prompt": "resume queued work"}),
+            artifacts: Vec::new(),
+            mode: None,
+            caller: serde_json::json!({"type": "event"}),
+        };
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint_with_publication_invocation(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("resume queued work".to_string()),
+                Some(publication_invocation),
+            )
+            .expect("published workflow run should create");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "resume queued work".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+        let prompt = PromptQueueItem::new(
+            "pending-restart-prompt-queue",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "resume queued work",
+            PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run.id(), &node_run_id);
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
+            .expect("prompt should queue");
+        assert!(matches!(
+            outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            app,
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        (router.runtime_state(), session_id, agent_id)
+    }
+
     #[tokio::test]
     async fn queued_metaagent_task_starts_after_restart_without_an_active_prompt() {
         let (runtime, session_id, agent_id) = runtime_with_queued_metaagent_task();
@@ -706,6 +994,26 @@ mod tests {
         })
         .await
         .expect("queued Meta task should restart");
+    }
+
+    #[tokio::test]
+    async fn queued_local_prompt_starts_provider_after_restart() {
+        let (runtime, session_id, agent_id) = runtime_with_queued_prompt();
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.queued_local_prompts_started, 1);
+        assert_eq!(summary.failed_reconciliations, 0);
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("queued prompt recovery should launch its provider");
+        assert!(matches!(
+            run.state(),
+            crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+        ));
     }
 
     #[tokio::test]
@@ -740,7 +1048,7 @@ mod tests {
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
 
         let summary = runtime
-            .recover_durable_runtime_after_restart_targets(&BTreeSet::new())
+            .recover_durable_runtime_after_restart_targets(&BTreeSet::new(), &BTreeSet::new())
             .await;
 
         assert_eq!(summary, DurableRestartRecoverySummary::default());
