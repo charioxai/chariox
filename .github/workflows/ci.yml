@@ -80,6 +80,12 @@ jobs:
           node --test scripts/clippy-changed-lines-gate.test.mjs
           node scripts/clippy-changed-lines-gate.mjs
 
+      - name: Install official provider test harnesses
+        run: |
+          npm install --global @openai/codex@0.144.0 opencode-ai@1.4.1
+          test "$(codex --version)" = "codex-cli 0.144.0"
+          test "$(opencode --version)" = "1.4.1"
+
       - name: Test
         run: cargo test --workspace
         env:
