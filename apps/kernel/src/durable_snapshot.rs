@@ -83,6 +83,7 @@ pub(crate) struct DurableSnapshotTickOutcome {
 
 #[derive(Clone)]
 pub(crate) struct DurableSnapshotScheduler {
+    owner_id: String,
     durable_state: DurableKernelStateStore,
     sessions: SessionStateStore,
     agents: AgentServiceStore,
@@ -93,6 +94,7 @@ pub(crate) struct DurableSnapshotScheduler {
 
 impl DurableSnapshotScheduler {
     pub(crate) fn new(
+        owner_id: impl Into<String>,
         durable_state: DurableKernelStateStore,
         sessions: SessionStateStore,
         agents: AgentServiceStore,
@@ -101,6 +103,7 @@ impl DurableSnapshotScheduler {
         interval_events: u64,
     ) -> Self {
         Self {
+            owner_id: owner_id.into(),
             durable_state,
             sessions,
             agents,
@@ -112,7 +115,9 @@ impl DurableSnapshotScheduler {
 
     pub(crate) fn tick_once(&self) -> Result<DurableSnapshotTickOutcome, DaemonError> {
         let latest_event_sequence = self.durable_state.latest_event_sequence()?;
-        let latest_snapshot_sequence = self.durable_state.latest_snapshot_sequence()?;
+        let latest_snapshot_sequence = self
+            .durable_state
+            .latest_snapshot_sequence_for_owner(&self.owner_id)?;
         if latest_event_sequence.saturating_sub(latest_snapshot_sequence) < self.interval_events {
             return Ok(DurableSnapshotTickOutcome {
                 latest_event_sequence,
@@ -127,8 +132,11 @@ impl DurableSnapshotScheduler {
             &self.slices,
             &self.metaagent_events,
         );
-        self.durable_state
-            .save_entity_checkpoint(latest_event_sequence, checkpoint_entities(&payload)?)?;
+        self.durable_state.save_entity_checkpoint(
+            &self.owner_id,
+            latest_event_sequence,
+            checkpoint_entities(&payload)?,
+        )?;
 
         Ok(DurableSnapshotTickOutcome {
             latest_event_sequence,
@@ -292,6 +300,7 @@ mod tests {
             .expect("session should be created");
 
         let scheduler = DurableSnapshotScheduler::new(
+            app.config().daemon_id.clone(),
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),
@@ -340,6 +349,7 @@ mod tests {
             .expect("slice should create");
 
         let scheduler = DurableSnapshotScheduler::new(
+            app.config().daemon_id.clone(),
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),
@@ -368,6 +378,7 @@ mod tests {
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should be created");
         let scheduler = DurableSnapshotScheduler::new(
+            app.config().daemon_id.clone(),
             app.durable_state_store(),
             app.session_state_store(),
             app.agents().clone(),

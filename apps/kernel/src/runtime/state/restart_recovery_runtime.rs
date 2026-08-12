@@ -101,26 +101,31 @@ impl KernelRuntimeState {
     }
 
     fn durable_restart_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
-        self.owned
-            .session_store
-            .list_all_sessions()
-            .into_iter()
-            .flat_map(|session| {
-                session
-                    .prompt_states()
-                    .iter()
-                    .filter_map(|(agent_id, prompt_state)| {
-                        prompt_state.active_prompt().map(|prompt| {
-                            (
-                                session.id().to_string(),
-                                agent_id.to_string(),
-                                prompt.id().to_string(),
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        let mut targets = BTreeSet::new();
+        for session in self.owned.session_store.list_all_sessions() {
+            for (agent_id, prompt_state) in session.prompt_states() {
+                let Some(prompt) = prompt_state.active_prompt() else {
+                    continue;
+                };
+                let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
+                    continue;
+                };
+                let local_workspace_available = agent.remote_execution().is_some()
+                    || std::path::Path::new(
+                        agent.worktree_id().unwrap_or_else(|| session.worktree_id()),
+                    )
+                    .exists();
+                if !local_workspace_available {
+                    continue;
+                }
+                targets.insert((
+                    session.id().to_string(),
+                    agent_id.to_string(),
+                    prompt.id().to_string(),
+                ));
+            }
+        }
+        targets
     }
 
     fn durable_restart_queued_recovery_targets(&self) -> BTreeSet<DurableRestartRecoveryTarget> {
@@ -736,18 +741,28 @@ mod tests {
     fn runtime_with_active_prompt(
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
     ) -> (KernelRuntimeState, String, String, String) {
+        runtime_with_active_prompt_in_worktree(
+            delivery_phase,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+        )
+    }
+
+    fn runtime_with_active_prompt_in_worktree(
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        worktree: &str,
+    ) -> (KernelRuntimeState, String, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new(
                 "workspace-restart-recovery",
-                "worktree-restart-recovery",
+                worktree,
             ))
             .expect("session should create");
         let agent = KernelSessionService::new(&mut app)
-            .spawn_agent(
-                CreateAgentRequest::new(session.id(), "dev-stub")
-                    .with_worktree("worktree-restart-recovery"),
-            )
+            .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_worktree(worktree))
             .expect("agent should create");
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -1067,6 +1082,33 @@ mod tests {
             prompt.durable_delivery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
         );
+    }
+
+    #[tokio::test]
+    async fn restart_recovery_skips_local_prompt_when_its_workspace_is_gone() {
+        let missing_worktree = std::env::temp_dir().join(format!(
+            "arroba-missing-restart-recovery-{}",
+            std::process::id()
+        ));
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_in_worktree(
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            missing_worktree.to_string_lossy().as_ref(),
+        );
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary, DurableRestartRecoverySummary::default());
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("unrecoverable prompt should remain preserved");
+        assert_eq!(prompt.id(), prompt_id);
     }
 
     #[tokio::test]

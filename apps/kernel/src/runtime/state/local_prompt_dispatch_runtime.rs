@@ -10,15 +10,7 @@ const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Durat
 fn claude_native_dispatch_terminal_failure(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> Option<String> {
-    let context_file = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT")?;
-    let recent_failure_file = std::path::Path::new(context_file)
-        .parent()?
-        .join("permission-recent.txt");
-    let recent_failure = std::fs::read_to_string(recent_failure_file).ok()?;
-    crate::provider::classify_provider_terminal_failure_text(
-        provider_run.adapter_key(),
-        &recent_failure,
-    )
+    crate::app::claude_native_recent_terminal_failure(provider_run)
 }
 
 impl KernelRuntimeOwnedState {
@@ -144,6 +136,27 @@ mod tests {
         let run = claude_native_run_with_context(&fixture_root.join("context.json"));
 
         assert_eq!(claude_native_dispatch_terminal_failure(&run), None);
+        let _ = std::fs::remove_dir_all(fixture_root);
+    }
+
+    #[test]
+    fn claude_native_dispatch_detects_compact_model_credit_dialog() {
+        let fixture_root = std::env::temp_dir().join(format!(
+            "arroba-claude-native-dispatch-credit-{}",
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
+        std::fs::write(
+            fixture_root.join("permission-recent.txt"),
+            "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
+        )
+        .expect("credit dialog fixture should write");
+        let run = claude_native_run_with_context(&fixture_root.join("context.json"));
+
+        let failure = claude_native_dispatch_terminal_failure(&run)
+            .expect("compact model credit dialog should be classified");
+
+        assert!(failure.contains("resource limit"), "{failure}");
         let _ = std::fs::remove_dir_all(fixture_root);
     }
 

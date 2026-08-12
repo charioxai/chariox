@@ -8,7 +8,9 @@ use crate::pty::PtyOutputChunk;
 use crate::runtime::projection::AgentRuntimeProjectionStore;
 use crate::terminal::{TerminalOutputKind, TerminalOutputRecord};
 
-use super::provider_output_claude_native::ProviderOutputClaudeNativeBridge;
+use super::provider_output_claude_native::{
+    claude_native_recent_terminal_failure, ProviderOutputClaudeNativeBridge,
+};
 use super::provider_output_fanout::ProviderOutputFanout;
 use super::provider_output_prompt_settlement::ProviderOutputPromptSettlement;
 use super::provider_output_trace::ProviderOutputTrace;
@@ -202,7 +204,14 @@ impl<'a> ProviderOutputPump<'a> {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>(),
-        );
+        )
+        .or_else(|| {
+            if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
+                claude_native_recent_terminal_failure(&provider_run)
+            } else {
+                None
+            }
+        });
         let has_active_prompt = self
             .context
             .provider_run_has_active_prompt(request.session_id, &provider_run)?;
