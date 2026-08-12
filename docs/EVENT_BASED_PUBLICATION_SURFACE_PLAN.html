@@ -1799,6 +1799,35 @@ arroba-cloud
               synchronized with their upstream branches after the deployment checkpoint.
             </p>
             <p>
+              Install-once Notification Center acceptance completed on 2026-08-12 through the
+              real product frontend and PTY. Kernel-owned connections for GitHub, GitLab, Jira,
+              Linear, Sentry, and Slack reached <code>ready</code>, survived kernel restart, and
+              were reused by workflow publications without repeating provider authorization.
+              GitHub additionally proved that two workflows can reuse one installed connection,
+              deleting one publication does not revoke the connection or the other binding, and a
+              real pull request event still starts the surviving workflow. Real provider events
+              completed workflow runs for GitHub PR #6, GitLab issue #1, Jira
+              <code>KAN-2</code>, Linear <code>ARR-8</code>, Slack
+              <code>app.mentioned</code>, and Sentry <code>issue.created</code>. The PTY observed
+              the same connection registry, bindings, and completed runs through the shared kernel
+              protocol. The web catalog's featured-services region was corrected to scroll through
+              all seven entries, including Sentry and Slack.
+            </p>
+            <p>
+              This acceptance also closed two boundary defects. Workflow event binding creation
+              now fetches the selected catalog manifest and rejects generator identity, manifest
+              digest, event type, or event version values that the installed implementation did
+              not declare; a live <code>issue.created_typo@1</code> probe was rejected before any
+              binding persisted. For Sentry, a real issue proved that the provider accepted event
+              ingestion while its Integration Platform webhook was suppressed on the dynamic-DNS
+              staging hostname. Moving only the Sentry webhook boundary to the VPS's stable OVH
+              hostname produced HTTP <code>202 Accepted</code>, one matched interest, one AEDS
+              route, and completed workflow run <code>0000019ff625c6ad</code>. The temporary
+              diagnostic tunnel was removed, and the private Sentry AEGS operations guide now
+              requires a stable provider-owned hostname plus a real <code>issue.created</code>
+              acceptance event before rollout completion.
+            </p>
+            <p>
               The guarded read-only acceptance run <code>ovh-final-20260811</code>, bound to clean
               OSS revision <code>7b35367bf</code>, independently rechecked distinct machine IDs,
               exact host-role markers, the active AEDS and GitHub systemd units, public readiness,

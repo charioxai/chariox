@@ -198,7 +198,8 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         publication_ref: publication_ref.to_string(),
         generator_id: "dev.arroba.dummy".to_string(),
         generator_version: "1.0.0".to_string(),
-        manifest_digest: format!("sha256:{}", "a".repeat(64)),
+        manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+            .to_string(),
         connection_id: "connection-local".to_string(),
         connection_scope: "tenant:local".to_string(),
         event_type: "dummy.test".to_string(),
@@ -595,28 +596,31 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
         LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
         response => panic!("unexpected response: {response:?}"),
     };
-    let binding = match harness
-        .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
-            CreateWorkflowEventBindingRequest {
-                session_id: graph.session_id.clone(),
-                publication_ref: publication.id().to_string(),
-                generator_id: "dev.arroba.dummy".to_string(),
-                generator_version: "1.0.0".to_string(),
-                manifest_digest: format!("sha256:{}", "a".repeat(64)),
-                connection_id: "connection-local".to_string(),
-                connection_scope: "tenant:local".to_string(),
-                event_type: "dummy.test".to_string(),
-                event_type_version: 1,
-                filter: serde_json::json!({"channel": "removal"}),
-                environment_id: Some("environment-removal".to_string()),
-                queue_ref: Some("default".to_string()),
-            },
-        ))
-        .expect("event binding should be created")
-    {
-        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
-        response => panic!("unexpected response: {response:?}"),
-    };
+    let binding =
+        match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
+                CreateWorkflowEventBindingRequest {
+                    session_id: graph.session_id.clone(),
+                    publication_ref: publication.id().to_string(),
+                    generator_id: "dev.arroba.dummy".to_string(),
+                    generator_version: "1.0.0".to_string(),
+                    manifest_digest:
+                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+                            .to_string(),
+                    connection_id: "connection-local".to_string(),
+                    connection_scope: "tenant:local".to_string(),
+                    event_type: "dummy.test".to_string(),
+                    event_type_version: 1,
+                    filter: serde_json::json!({"channel": "removal"}),
+                    environment_id: Some("environment-removal".to_string()),
+                    queue_ref: Some("default".to_string()),
+                },
+            ))
+            .expect("event binding should be created")
+        {
+            LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
+            response => panic!("unexpected response: {response:?}"),
+        };
 
     let dependencies = match harness
         .dispatch(LocalDaemonRequest::ListEventConnectionDependencies(

@@ -17,6 +17,8 @@ const CATALOG_CACHE_FRESH_TTL: Duration = Duration::from_secs(60);
 const CATALOG_CACHE_STALE_TTL: Duration = Duration::from_secs(5 * 60);
 const CATALOG_CACHE_MAX_ENTRIES: usize = 128;
 const CATALOG_RESPONSE_MAX_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const BUILTIN_DUMMY_MANIFEST_DIGEST: &str =
+    "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718";
 
 #[derive(Clone)]
 struct CatalogCacheEntry {
@@ -143,6 +145,76 @@ pub(crate) async fn validate_event_connection(
         return Err(connection_error(format!(
             "event connection `{}` is {:?}; reconnect it before attaching",
             connection.connection_id, connection.status
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) async fn validate_event_binding_contract(
+    config_projection: &DaemonConfigProjectionStore,
+    generator_id: &str,
+    generator_version: &str,
+    manifest_digest: &str,
+    event_type: &str,
+    event_type_version: u32,
+) -> Result<(), DaemonError> {
+    let registry_url = config_projection.snapshot().event_registry_url;
+    let request =
+        LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
+            generator_id: generator_id.to_string(),
+            version: Some(generator_version.to_string()),
+        });
+    let response = tokio::task::spawn_blocking(move || {
+        if let Some(registry_url) = registry_url {
+            cached_remote_catalog_request(&registry_url, &request)
+        } else {
+            builtin_catalog_request(&request)
+        }
+    })
+    .await
+    .map_err(|error| catalog_error(error.to_string()))??;
+    let LocalDaemonResponse::EventGeneratorDetail { detail } = response else {
+        return Err(catalog_error(
+            "event catalog returned an unexpected detail response".to_string(),
+        ));
+    };
+    validate_event_binding_detail(
+        &detail,
+        generator_id,
+        generator_version,
+        manifest_digest,
+        event_type,
+        event_type_version,
+    )
+}
+
+fn validate_event_binding_detail(
+    detail: &EventGeneratorCatalogDetail,
+    generator_id: &str,
+    generator_version: &str,
+    manifest_digest: &str,
+    event_type: &str,
+    event_type_version: u32,
+) -> Result<(), DaemonError> {
+    if detail.summary.generator_id != generator_id || detail.summary.version != generator_version {
+        return Err(connection_error(format!(
+            "event catalog returned `{}`@`{}` for requested `{generator_id}@{generator_version}`",
+            detail.summary.generator_id, detail.summary.version
+        )));
+    }
+    if detail.summary.manifest_digest != manifest_digest {
+        return Err(connection_error(format!(
+            "event generator manifest changed; expected `{manifest_digest}`, catalog has `{}`",
+            detail.summary.manifest_digest
+        )));
+    }
+    if !detail
+        .events
+        .iter()
+        .any(|event| event.event_type == event_type && event.version == event_type_version)
+    {
+        return Err(connection_error(format!(
+            "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
         )));
     }
     Ok(())
@@ -1042,8 +1114,7 @@ fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
             url: None,
         },
         verification: "arroba".to_string(),
-        manifest_digest: "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718"
-            .to_string(),
+        manifest_digest: BUILTIN_DUMMY_MANIFEST_DIGEST.to_string(),
         protocol_version: arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
         categories: vec!["Developer tools".to_string(), "Testing".to_string()],
         installed_count: 0,
@@ -1080,7 +1151,7 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
         signature: serde_json::json!({
             "key_id": "dev.arroba.fixture.2026-07-v2",
             "algorithm": "ed25519",
-            "digest": "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718",
+            "digest": BUILTIN_DUMMY_MANIFEST_DIGEST,
             "value": "gsy1flHq1+l4uYdal/3/B1z4r16ETwukdeLdPAMZ4aMNHMwWiY9gCJEHZMm2rPCUky0z9DjFP1oTL/9JK0dSDw=="
         }),
         deprecation: None,
@@ -1128,6 +1199,50 @@ mod tests {
         assert_eq!(detail.signature, manifest["signature"]);
         assert!(manifest.get("operator").is_none());
         assert!(manifest.get("verification").is_none());
+    }
+
+    #[test]
+    fn event_binding_contract_rejects_undeclared_event_type() {
+        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let error = validate_event_binding_detail(
+            &detail,
+            &detail.summary.generator_id,
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            "dummy_typo",
+            1,
+        )
+        .expect_err("undeclared event type must be rejected");
+        assert!(error.to_string().contains("is not declared"));
+    }
+
+    #[test]
+    fn event_binding_contract_accepts_declared_event_type() {
+        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        validate_event_binding_detail(
+            &detail,
+            &detail.summary.generator_id,
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            "dummy.test",
+            1,
+        )
+        .expect("declared event type should be accepted");
+    }
+
+    #[test]
+    fn event_binding_contract_rejects_mismatched_generator_identity() {
+        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let error = validate_event_binding_detail(
+            &detail,
+            "dev.arroba.other",
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            "dummy.test",
+            1,
+        )
+        .expect_err("mismatched catalog identity must be rejected");
+        assert!(error.to_string().contains("event catalog returned"));
     }
 }
 

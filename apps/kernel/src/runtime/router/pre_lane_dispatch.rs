@@ -7,8 +7,8 @@ use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::event_catalog_control::{
-    execute_event_catalog_request, validate_event_connection, validate_registered_event_connection,
-    workflow_event_binding_connection,
+    execute_event_catalog_request, validate_event_binding_contract, validate_event_connection,
+    validate_registered_event_connection, workflow_event_binding_connection,
 };
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
@@ -286,6 +286,17 @@ impl CommandRouter {
         if let Some((generator_id, connection_id, requires_registered_connection)) =
             connection_mutation
         {
+            if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
+                validate_event_binding_contract(
+                    &self.config_projection,
+                    &request.generator_id,
+                    &request.generator_version,
+                    &request.manifest_digest,
+                    &request.event_type,
+                    request.event_type_version,
+                )
+                .await?;
+            }
             let _connection_guard = self
                 .event_connection_lanes
                 .lock(caller_user_id, &connection_id)
