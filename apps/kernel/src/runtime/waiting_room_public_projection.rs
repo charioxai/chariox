@@ -973,6 +973,20 @@ fn enrich_waiting_room_agent_slice_placements(
             agent.runtime_placement.slice_id = Some(slice.id.clone());
             agent.runtime_placement.slice_name = Some(slice.name.clone());
             agent.runtime_placement.slice_display_endpoint = slice.display_endpoint.clone();
+            if !matches!(
+                slice.status,
+                crate::slice::SliceStatus::Starting | crate::slice::SliceStatus::Running
+            ) && !agent.activity.error
+            {
+                agent.activity.error = true;
+                if agent.activity.working {
+                    agent.activity.working = false;
+                    session.activity.working_agent_count =
+                        session.activity.working_agent_count.saturating_sub(1);
+                }
+                session.activity.error_agent_count =
+                    session.activity.error_agent_count.saturating_add(1);
+            }
         }
     }
 }
@@ -1168,18 +1182,59 @@ mod tests {
 
     use arroba_relay::protocol::RelayKernelPresence;
 
-    use crate::agent::{AgentInstance, GridPosition};
+    use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};
     use crate::runtime::metaagent_event::{MetaagentEventStore, NewMetaagentEvent};
     use crate::runtime::waiting_room_public_projection::{
         build_waiting_room_public_snapshot, build_waiting_room_public_snapshot_from_cached_shared,
-        waiting_room_activity_revision, waiting_room_session_summaries,
-        waiting_room_structural_version, WaitingRoomSessionSummaryProjectionStore,
+        enrich_waiting_room_agent_slice_placements, waiting_room_activity_revision,
+        waiting_room_session_summaries, waiting_room_structural_version,
+        WaitingRoomSessionSummaryProjectionStore,
     };
     use crate::session::{
         RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionStatus, WorkflowDefinition,
         WorkflowRun, WorkflowRunStatus,
     };
+
+    fn slice_with_agent(
+        id: &str,
+        agent_id: &str,
+        status: crate::slice::SliceStatus,
+    ) -> crate::slice::SliceRecord {
+        crate::slice::SliceRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            owner_kernel_id: "daemon".to_string(),
+            owner_machine_id: "machine".to_string(),
+            session_id: Some("session-slice".to_string()),
+            session_ids: vec!["session-slice".to_string()],
+            agent_ids: vec![agent_id.to_string()],
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headless,
+            status,
+            last_operation: None,
+            last_operation_status: None,
+            last_error: None,
+            last_operation_at_ms: None,
+            workspace_id: Some("workspace".to_string()),
+            worktree_id: Some("worktree".to_string()),
+            workspace_mount: Some("workspace".to_string()),
+            worker_kernel_ref: format!("slice:{id}"),
+            worker_kernel_id: Some("worker-kernel".to_string()),
+            worker_machine_id: Some("worker-machine".to_string()),
+            relay_endpoint: None,
+            local_docker_ports: None,
+            providers: Vec::new(),
+            provider_auth: Vec::new(),
+            saved_state_ref: None,
+            saved_state_status: None,
+            saved_state_updated_at_ms: None,
+            display_endpoint: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
 
     fn disconnected_relay_status() -> RelayStatus {
         RelayStatus {
@@ -1191,6 +1246,117 @@ mod tests {
             daemon_alias: None,
             machine_id: "machine".to_string(),
             machine_alias: None,
+        }
+    }
+
+    #[test]
+    fn stopped_slice_agents_project_error_consistently_in_waiting_room() {
+        let mut session = RuntimeSession::new(
+            "session-slice",
+            Some("slice session".to_string()),
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        let mut agent = AgentInstance::new(
+            "agent-slice",
+            "A1",
+            "session-slice",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease-slice".to_string(),
+            leased_agent_id: "leased-slice".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+        }));
+        session.set_agents(vec![agent]);
+        let metaagent_events = MetaagentEventStore::default();
+        let mut summaries = waiting_room_session_summaries(
+            vec![session],
+            &metaagent_events,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+        );
+
+        assert_eq!(summaries[0].activity.error_agent_count, 0);
+        assert!(!summaries[0].agents[0].activity.error);
+
+        enrich_waiting_room_agent_slice_placements(
+            &mut summaries,
+            &[slice_with_agent(
+                "slice-stopped",
+                "agent-slice",
+                crate::slice::SliceStatus::Stopped,
+            )],
+        );
+
+        assert_eq!(summaries[0].activity.error_agent_count, 1);
+        assert_eq!(summaries[0].activity.working_agent_count, 0);
+        assert!(summaries[0].agents[0].activity.error);
+        assert!(!summaries[0].agents[0].activity.working);
+        assert_eq!(
+            summaries[0].agents[0].runtime_placement.slice_id.as_deref(),
+            Some("slice-stopped")
+        );
+    }
+
+    #[test]
+    fn running_and_starting_slice_agents_do_not_project_false_errors() {
+        for status in [
+            crate::slice::SliceStatus::Starting,
+            crate::slice::SliceStatus::Running,
+        ] {
+            let mut session = RuntimeSession::new(
+                "session-slice",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "daemon",
+            );
+            let mut agent = AgentInstance::new(
+                "agent-slice",
+                "A1",
+                "session-slice",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                GridPosition::new(0, 0, 1, 1),
+            );
+            agent.set_remote_execution(Some(RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".to_string(),
+                worker_machine_id: "worker-machine".to_string(),
+                execution_lease_id: "lease-slice".to_string(),
+                leased_agent_id: "leased-slice".to_string(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+            }));
+            session.set_agents(vec![agent]);
+            let mut summaries = waiting_room_session_summaries(
+                vec![session],
+                &MetaagentEventStore::default(),
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            );
+
+            enrich_waiting_room_agent_slice_placements(
+                &mut summaries,
+                &[slice_with_agent("slice-live", "agent-slice", status)],
+            );
+
+            assert_eq!(summaries[0].activity.error_agent_count, 0);
+            assert!(!summaries[0].agents[0].activity.error);
         }
     }
 
