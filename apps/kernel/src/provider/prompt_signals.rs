@@ -106,6 +106,9 @@ fn provider_text_reports_resource_limit(normalized: &str) -> bool {
         || normalized.contains("monthly limit")
         || normalized.contains("no credits")
         || normalized.contains("not enough credits")
+        || normalized.contains("don't have usage credits")
+        || normalized.contains("do not have usage credits")
+        || normalized.contains("don’t have usage credits")
         || normalized.contains("credits exhausted")
         || normalized.contains("credit balance")
         || normalized.contains("out of credits");
@@ -209,6 +212,20 @@ mod tests {
             "You've hit your usage limit."
         )
         .is_none());
+    }
+
+    #[test]
+    fn terminal_classifier_detects_claude_model_credit_dialog() {
+        let failure = classify_provider_terminal_failure_text(
+            "claude",
+            "Fable 5 now uses usage credits. You don't have usage credits yet.\n\
+             1. Set up usage credits on claude.ai\n\
+             2. Switch to Sonnet 5 and continue",
+        )
+        .expect("Claude model credit dialog should be terminal");
+
+        assert!(failure.contains("resource limit"));
+        assert!(failure.contains("don't have usage credits"));
     }
 
     #[test]
