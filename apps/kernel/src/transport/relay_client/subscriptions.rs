@@ -749,6 +749,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     let mut next_heartbeat_at = Instant::now();
     loop {
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
@@ -893,7 +894,10 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             next_heartbeat_at
                 .checked_duration_since(Instant::now())
                 .unwrap_or(Duration::ZERO),
-            router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+            wait_for_relay_waiting_room_inventory_change(
+                router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                router.wait_for_session_projection_change_after(session_projection_change_sequence),
+            ),
         )
         .await;
         if wait_result.is_ok() {
@@ -906,12 +910,25 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     }
 }
 
+async fn wait_for_relay_waiting_room_inventory_change(
+    waiting_room_change: impl Future<Output = ()>,
+    session_projection_change: impl Future<Output = ()>,
+) {
+    tokio::pin!(waiting_room_change);
+    tokio::pin!(session_projection_change);
+    tokio::select! {
+        _ = &mut waiting_room_change => {}
+        _ = &mut session_projection_change => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         await_relay_subscription_watch_with_heartbeats, relay_subscription_task_key,
         relay_subscription_task_matches, remove_relay_subscription_task_by_relay_id,
-        RelaySubscriptionTask, RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+        wait_for_relay_waiting_room_inventory_change, RelaySubscriptionTask,
+        RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
         WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
     };
 
@@ -921,6 +938,29 @@ mod tests {
 
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn relay_waiting_room_inventory_wakes_for_either_projection_source() {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_relay_waiting_room_inventory_change(
+                std::future::ready(()),
+                std::future::pending::<()>(),
+            ),
+        )
+        .await
+        .expect("waiting-room changes should wake relay inventory projection");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_relay_waiting_room_inventory_change(
+                std::future::pending::<()>(),
+                std::future::ready(()),
+            ),
+        )
+        .await
+        .expect("session projection changes should wake relay inventory projection");
+    }
 
     #[tokio::test]
     async fn stalled_relay_watch_does_not_starve_attachment_heartbeats() {
