@@ -61,6 +61,7 @@ pub(super) async fn handle_relay_subscribe(
     subscription_scope: Option<String>,
     resume_from_event_id: Option<u64>,
 ) -> Result<(), DaemonError> {
+    let caller_user_id = relay_subscription_caller_user_id(caller_identity.as_ref());
     let is_inventory_subscription =
         subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
     if resume_from_event_id.is_none() {
@@ -253,6 +254,7 @@ pub(super) async fn handle_relay_subscribe(
         subscription_scope.clone(),
         Arc::clone(event_runtime),
         resume_from_event_id.is_some(),
+        caller_user_id,
     ));
     subscription_tasks.lock().await.insert(
         task_key,
@@ -263,6 +265,13 @@ pub(super) async fn handle_relay_subscribe(
         },
     );
     Ok(())
+}
+
+fn relay_subscription_caller_user_id(caller_identity: Option<&RelayCallerIdentity>) -> String {
+    caller_identity
+        .and_then(|identity| identity.user_id.as_deref())
+        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID)
+        .to_string()
 }
 
 fn relay_subscription_task_matches(
@@ -329,6 +338,7 @@ pub(super) async fn run_relay_subscription_loop(
     subscription_scope: Option<String>,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
+    caller_user_id: String,
 ) {
     if subscription_scope.as_deref() == Some("waiting_room_inventory") {
         run_relay_waiting_room_inventory_subscription_loop(
@@ -338,6 +348,7 @@ pub(super) async fn run_relay_subscription_loop(
             client_public_key,
             event_runtime,
             resumed,
+            caller_user_id,
         )
         .await;
         return;
@@ -732,6 +743,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     client_public_key: String,
     event_runtime: Arc<RelayEventRuntime>,
     resumed: bool,
+    caller_user_id: String,
 ) {
     let mut previous_waiting_room_snapshot = None;
     let mut previous_relay_status = if resumed {
@@ -753,7 +765,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
         if inventory_dirty
             || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
         {
-            match router.waiting_room_public_snapshot().await {
+            match router.waiting_room_public_snapshot(&caller_user_id).await {
                 Ok(snapshot) => {
                     inventory_dirty = false;
                     if let Some(event) = waiting_room_rows_changed_event(
@@ -925,10 +937,10 @@ async fn wait_for_relay_waiting_room_inventory_change(
 #[cfg(test)]
 mod tests {
     use super::{
-        await_relay_subscription_watch_with_heartbeats, relay_subscription_task_key,
-        relay_subscription_task_matches, remove_relay_subscription_task_by_relay_id,
-        wait_for_relay_waiting_room_inventory_change, RelaySubscriptionTask,
-        RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+        await_relay_subscription_watch_with_heartbeats, relay_subscription_caller_user_id,
+        relay_subscription_task_key, relay_subscription_task_matches,
+        remove_relay_subscription_task_by_relay_id, wait_for_relay_waiting_room_inventory_change,
+        RelaySubscriptionTask, RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
         WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
     };
 
@@ -938,6 +950,28 @@ mod tests {
 
     use tokio::sync::Mutex;
     use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn relay_subscription_inventory_uses_authenticated_caller_user() {
+        let identity = arroba_relay::protocol::RelayCallerIdentity {
+            realm_id: "realm-1".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: arroba_relay::auth::RelaySubjectKind::Client,
+            expires_at_ms: u64::MAX,
+            token_id: Some("token-1".to_string()),
+            user_id: Some("cloud-user-1".to_string()),
+            public_key_thumbprint: None,
+        };
+
+        assert_eq!(
+            relay_subscription_caller_user_id(Some(&identity)),
+            "cloud-user-1"
+        );
+        assert_eq!(
+            relay_subscription_caller_user_id(None),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+    }
 
     #[tokio::test]
     async fn relay_waiting_room_inventory_wakes_for_either_projection_source() {

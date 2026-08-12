@@ -757,7 +757,10 @@ async fn run_waiting_room_inventory_subscription_loop(
         let waiting_room_change_sequence = router.waiting_room_change_sequence();
         let session_projection_change_sequence = router.session_projection_change_sequence();
         if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
-            match router.waiting_room_public_snapshot().await {
+            match router
+                .waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID)
+                .await
+            {
                 Ok(snapshot) => {
                     inventory_dirty = false;
                     if let Some(event) = waiting_room_rows_changed_event(

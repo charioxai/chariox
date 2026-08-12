@@ -192,6 +192,21 @@ async fn relay_waiting_room_subscription_sends_baseline_after_reload_and_observe
         event["sessions"][0]["alias"],
         serde_json::json!("relay-visible-session")
     );
+    let reloaded_event = tokio::time::timeout(
+        Duration::from_secs(2),
+        expect_named_client_event(
+            &mut reloaded_client_socket,
+            &reloaded_subscription_private_key,
+            "waiting_room_rows_changed",
+        ),
+    )
+    .await
+    .expect("every concurrent relay waiting-room subscriber should observe the mutation")
+    .1;
+    assert_eq!(
+        reloaded_event["sessions"][0]["alias"],
+        serde_json::json!("relay-visible-session")
+    );
 
     let _ = shutdown_tx.send(true);
     connector_task.await.expect("connector task should join");

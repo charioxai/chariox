@@ -7,11 +7,11 @@ use crate::runtime::daemon_health_projection::{
 };
 use crate::runtime::projection::DaemonHealthProjection;
 use crate::runtime::waiting_room_control::projected_waiting_room_public_snapshot;
-use crate::session::DEFAULT_LOCAL_USER_ID;
 
 impl CommandRouter {
     pub(crate) async fn waiting_room_public_snapshot(
         &self,
+        caller_user_id: &str,
     ) -> Result<crate::local::WaitingRoomPublicSnapshot, DaemonError> {
         projected_waiting_room_public_snapshot(
             &self.runtime_state,
@@ -20,7 +20,7 @@ impl CommandRouter {
             Arc::clone(&self.relay_state),
             self.config_projection.clone(),
             self.remote_relay_inventory_projection.clone(),
-            DEFAULT_LOCAL_USER_ID,
+            caller_user_id,
         )
         .await
     }
