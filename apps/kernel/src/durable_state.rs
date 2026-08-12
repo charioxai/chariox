@@ -443,6 +443,8 @@ impl DurableKernelStateStore {
                 "SELECT COALESCE(MAX(sequence), 0) FROM (
                     SELECT sequence FROM durable_state_snapshots
                     UNION ALL
+                    SELECT sequence FROM durable_state_checkpoint_manifest
+                    UNION ALL
                     SELECT sequence FROM durable_state_owner_checkpoint_manifest
                  )",
                 [],
@@ -486,22 +488,14 @@ impl DurableKernelStateStore {
     }
 
     pub fn latest_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
-        let checkpoint = self.latest_entity_checkpoint(None)?;
-        let legacy_snapshot = self.latest_legacy_snapshot()?;
-        Ok(match (checkpoint, legacy_snapshot) {
-            (Some(checkpoint), Some(snapshot)) => {
-                if snapshot.sequence > checkpoint.sequence
-                    || (snapshot.sequence == checkpoint.sequence
-                        && snapshot.timestamp_ms > checkpoint.timestamp_ms)
-                {
-                    Some(snapshot)
-                } else {
-                    Some(checkpoint)
-                }
-            }
-            (Some(checkpoint), None) => Some(checkpoint),
-            (None, snapshot) => snapshot,
-        })
+        Ok([
+            self.latest_entity_checkpoint(None)?,
+            self.latest_unscoped_entity_checkpoint()?,
+            self.latest_legacy_snapshot()?,
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|snapshot| (snapshot.sequence, snapshot.timestamp_ms)))
     }
 
     fn latest_legacy_snapshot(&self) -> Result<Option<DurableStateSnapshot>, DaemonError> {
@@ -572,10 +566,67 @@ impl DurableKernelStateStore {
         &self,
         owner_id: &str,
     ) -> Result<Option<DurableStateSnapshot>, DaemonError> {
-        if let Some(checkpoint) = self.latest_entity_checkpoint(Some(owner_id))? {
-            return Ok(Some(checkpoint));
+        let legacy_checkpoint = self
+            .latest_unscoped_entity_checkpoint()?
+            .filter(|snapshot| snapshot_payload_has_owner(&snapshot.payload, owner_id));
+        Ok([
+            self.latest_entity_checkpoint(Some(owner_id))?,
+            legacy_checkpoint,
+            self.latest_legacy_snapshot_for_owner(owner_id)?,
+        ]
+        .into_iter()
+        .flatten()
+        .max_by_key(|snapshot| (snapshot.sequence, snapshot.timestamp_ms)))
+    }
+
+    fn latest_unscoped_entity_checkpoint(
+        &self,
+    ) -> Result<Option<DurableStateSnapshot>, DaemonError> {
+        let connection = self.lock_connection("durable_state.latest_legacy_entity_checkpoint")?;
+        let manifest = connection.query_row(
+            "SELECT sequence, timestamp_ms FROM durable_state_checkpoint_manifest
+             ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        );
+        let (sequence, timestamp_ms) = match manifest {
+            Ok(manifest) => manifest,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(error) => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "durable_state.latest_legacy_entity_checkpoint",
+                    message: error.to_string(),
+                })
+            }
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT entity_kind, payload_json
+                 FROM durable_state_checkpoint_entities
+                 ORDER BY entity_kind ASC, entity_id ASC",
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.prepare_legacy_entity_checkpoint",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query([])
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.query_legacy_entity_checkpoint",
+                message: error.to_string(),
+            })?;
+        let mut payload = empty_checkpoint_payload();
+        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.read_legacy_entity_checkpoint",
+            message: error.to_string(),
+        })? {
+            push_checkpoint_entity(&mut payload, row, "legacy")?;
         }
-        self.latest_legacy_snapshot_for_owner(owner_id)
+        Ok(Some(DurableStateSnapshot {
+            sequence: sequence.max(0) as u64,
+            timestamp_ms: timestamp_ms.max(0) as u64,
+            payload: serde_json::Value::Object(payload),
+        }))
     }
 
     fn latest_entity_checkpoint(
@@ -1121,6 +1172,52 @@ fn snapshot_payload_has_owner(payload: &serde_json::Value, owner_id: &str) -> bo
     })
 }
 
+fn empty_checkpoint_payload() -> serde_json::Map<String, serde_json::Value> {
+    [
+        "sessions",
+        "prompt_private_states",
+        "agents",
+        "slices",
+        "slice_saved_states",
+        "slice_backups",
+        "metaagent_event_records",
+        "metaagent_event_subscriptions",
+    ]
+    .into_iter()
+    .map(|kind| (kind.to_string(), serde_json::Value::Array(Vec::new())))
+    .collect()
+}
+
+fn push_checkpoint_entity(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    row: &rusqlite::Row<'_>,
+    _source: &'static str,
+) -> Result<(), DaemonError> {
+    let kind = row
+        .get::<_, String>(0)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.decode_entity_checkpoint_kind",
+            message: error.to_string(),
+        })?;
+    let encoded = row
+        .get::<_, String>(1)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.decode_entity_checkpoint_payload",
+            message: error.to_string(),
+        })?;
+    let value = serde_json::from_str(&encoded).map_err(|error| DaemonError::LocalTransport {
+        operation: "durable_state.decode_entity_checkpoint_json",
+        message: error.to_string(),
+    })?;
+    payload
+        .entry(kind)
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        .as_array_mut()
+        .expect("checkpoint entity group should be an array")
+        .push(value);
+    Ok(())
+}
+
 fn unix_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1365,6 +1462,54 @@ mod tests {
             .load_subject_events_by_kind("session-b", "session.updated", 10)
             .expect("second owner updates should load")
             .is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn owner_restore_reuses_compatible_unscoped_checkpoint_during_migration() {
+        let path = std::env::temp_dir().join(format!(
+            "arroba-durable-state-legacy-checkpoint-migration-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        {
+            let connection = Connection::open(&path).expect("migration fixture should open");
+            connection
+                .execute(
+                    "INSERT INTO durable_state_checkpoint_manifest (sequence, timestamp_ms)
+                     VALUES (42, 1000)",
+                    [],
+                )
+                .expect("legacy manifest should insert");
+            connection
+                .execute(
+                    "INSERT INTO durable_state_checkpoint_entities (
+                        entity_kind, entity_id, checkpoint_sequence, payload_json
+                     ) VALUES ('sessions', 'session-1', 42, ?1)",
+                    params![serde_json::json!({
+                        "id": "session-1",
+                        "host_daemon_id": "kernel-a",
+                    })
+                    .to_string()],
+                )
+                .expect("legacy entity should insert");
+        }
+
+        let compatible = store
+            .latest_snapshot_for_owner("kernel-a")
+            .expect("compatible checkpoint should load")
+            .expect("compatible checkpoint should exist");
+        assert_eq!(compatible.sequence, 42);
+        assert_eq!(compatible.payload["sessions"][0]["id"], "session-1");
+        assert!(store
+            .latest_snapshot_for_owner("kernel-b")
+            .expect("foreign lookup should succeed")
+            .is_none());
 
         drop(store);
         let _ = std::fs::remove_file(&path);
