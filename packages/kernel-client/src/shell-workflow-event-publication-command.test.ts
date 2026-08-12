@@ -192,6 +192,38 @@ test("workflow event publication command authorizes and enumerates provider reso
   ])
 })
 
+test("workflow event publication command pages connections without a generator filter", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return {
+        EventConnectionsPage: {
+          page: {
+            connections: [],
+            next_cursor: null,
+          },
+        },
+      }
+    },
+  }
+
+  const result = await executeWorkflowEventPublicationCommand(
+    ["connections", "--cursor", "cursor-2", "--limit", "5"],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    client,
+  )
+
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [{
+    ListEventConnections: {
+      generator_id: null,
+      cursor: "cursor-2",
+      limit: 5,
+    },
+  }])
+})
+
 test("workflow event publication command maps lifecycle actions to shared kernel requests", async () => {
   const requests: Record<string, unknown>[] = []
   const client = {

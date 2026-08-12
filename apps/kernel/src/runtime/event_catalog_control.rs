@@ -138,15 +138,24 @@ pub(crate) async fn validate_event_connection(
             "the selected event connection is not installed for this kernel user".to_string(),
         ));
     };
-    let connection = runtime_state
-        .event_connection_registry()
-        .upsert(caller_user_id, summary)?;
-    if connection.status != crate::local::EventConnectionStatus::Ready {
+    if summary.status != crate::local::EventConnectionStatus::Ready {
+        if runtime_state
+            .event_connection_registry()
+            .get(caller_user_id, &expected_connection_id)?
+            .is_some()
+        {
+            runtime_state
+                .event_connection_registry()
+                .upsert(caller_user_id, summary.clone())?;
+        }
         return Err(connection_error(format!(
             "event connection `{}` is {:?}; reconnect it before attaching",
-            connection.connection_id, connection.status
+            summary.connection_id, summary.status
         )));
     }
+    runtime_state
+        .event_connection_registry()
+        .upsert(caller_user_id, summary)?;
     Ok(())
 }
 

@@ -179,26 +179,20 @@ impl OAuthAuthorization {
         let now = now_ms();
         let expires_at_ms = now.saturating_add(AUTHORIZATION_TTL_MS);
         let state = random_opaque("state");
+        let state_digest = digest(&state);
+        let request = crate::store::CreateAuthorizationRequest {
+            state_digest: &state_digest,
+            connection_id: &connection_id,
+            owner_id,
+            provider: self.provider_slug,
+            return_url,
+            expires_at_ms,
+            now_ms: now,
+        };
         if reconnect {
-            self.store.create_reauthorization(
-                &digest(&state),
-                &connection_id,
-                owner_id,
-                self.provider_slug,
-                return_url,
-                expires_at_ms,
-                now,
-            )?;
+            self.store.create_reauthorization(request)?;
         } else {
-            self.store.create_authorization(
-                &digest(&state),
-                &connection_id,
-                owner_id,
-                self.provider_slug,
-                return_url,
-                expires_at_ms,
-                now,
-            )?;
+            self.store.create_authorization(request)?;
         }
         let callback_url = self.callback_url()?;
         let mut authorization_url = self.config.authorization_url.clone();

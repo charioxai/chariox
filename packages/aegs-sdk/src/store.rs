@@ -17,6 +17,17 @@ pub struct AuthorizationRecord {
     pub completed: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CreateAuthorizationRequest<'a> {
+    pub state_digest: &'a str,
+    pub connection_id: &'a str,
+    pub owner_id: &'a str,
+    pub provider: &'a str,
+    pub return_url: Option<&'a str>,
+    pub expires_at_ms: u64,
+    pub now_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionRecord {
     pub connection_id: String,
@@ -379,14 +390,17 @@ impl AegsStore {
 
     pub fn create_authorization(
         &self,
-        state_digest: &str,
-        connection_id: &str,
-        owner_id: &str,
-        provider: &str,
-        return_url: Option<&str>,
-        expires_at_ms: u64,
-        now_ms: u64,
+        request: CreateAuthorizationRequest<'_>,
     ) -> Result<(), String> {
+        let CreateAuthorizationRequest {
+            state_digest,
+            connection_id,
+            owner_id,
+            provider,
+            return_url,
+            expires_at_ms,
+            now_ms,
+        } = request;
         let mut connection = self
             .connection
             .lock()
@@ -433,14 +447,17 @@ impl AegsStore {
 
     pub fn create_reauthorization(
         &self,
-        state_digest: &str,
-        connection_id: &str,
-        owner_id: &str,
-        provider: &str,
-        return_url: Option<&str>,
-        expires_at_ms: u64,
-        now_ms: u64,
+        request: CreateAuthorizationRequest<'_>,
     ) -> Result<(), String> {
+        let CreateAuthorizationRequest {
+            state_digest,
+            connection_id,
+            owner_id,
+            provider,
+            return_url,
+            expires_at_ms,
+            now_ms,
+        } = request;
         let mut connection = self
             .connection
             .lock()
@@ -1027,15 +1044,15 @@ mod tests {
     fn authorization_state_is_single_use_and_persists_opaque_credentials() {
         let store = AegsStore::open(":memory:").unwrap();
         store
-            .create_authorization(
-                "state-digest",
-                "connection-1",
-                "owner-kernel-user",
-                "github",
-                Some("https://terminal.example/workflows"),
-                2_000,
-                1_000,
-            )
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "state-digest",
+                connection_id: "connection-1",
+                owner_id: "owner-kernel-user",
+                provider: "github",
+                return_url: Some("https://terminal.example/workflows"),
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
             .unwrap();
         let pending = store.connection("connection-1").unwrap().unwrap();
         assert_eq!(pending.status, "pending");
@@ -1065,15 +1082,15 @@ mod tests {
     fn connections_are_owner_scoped_and_legacy_connections_are_claimed_once() {
         let store = AegsStore::open(":memory:").unwrap();
         store
-            .create_authorization(
-                "state-owner-a",
-                "connection-owner-a",
-                "owner-a",
-                "github",
-                None,
-                2_000,
-                1_000,
-            )
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "state-owner-a",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
             .unwrap();
         assert_eq!(store.connections_for_owner("owner-a").unwrap().len(), 1);
         assert!(store.connections_for_owner("owner-b").unwrap().is_empty());
@@ -1108,15 +1125,15 @@ mod tests {
     fn reauthorization_retains_connection_identity_and_owner() {
         let store = AegsStore::open(":memory:").unwrap();
         store
-            .create_authorization(
-                "initial-state",
-                "connection-owner-a",
-                "owner-a",
-                "github",
-                None,
-                2_000,
-                1_000,
-            )
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "initial-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
             .unwrap();
         store
             .complete_authorization(
@@ -1128,29 +1145,29 @@ mod tests {
             )
             .unwrap();
         store
-            .create_reauthorization(
-                "replacement-state",
-                "connection-owner-a",
-                "owner-a",
-                "github",
-                Some("https://terminal.arroba.dev/notifications/callback"),
-                3_000,
-                2_000,
-            )
+            .create_reauthorization(CreateAuthorizationRequest {
+                state_digest: "replacement-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: Some("https://terminal.arroba.dev/notifications/callback"),
+                expires_at_ms: 3_000,
+                now_ms: 2_000,
+            })
             .unwrap();
         let pending = store.connection("connection-owner-a").unwrap().unwrap();
         assert_eq!(pending.owner_id, "owner-a");
         assert_eq!(pending.status, "pending");
         assert!(store
-            .create_reauthorization(
-                "foreign-state",
-                "connection-owner-a",
-                "owner-b",
-                "github",
-                None,
-                3_000,
-                2_100,
-            )
+            .create_reauthorization(CreateAuthorizationRequest {
+                state_digest: "foreign-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-b",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 3_000,
+                now_ms: 2_100,
+            })
             .unwrap_err()
             .contains("owned connection"));
         let ready = store

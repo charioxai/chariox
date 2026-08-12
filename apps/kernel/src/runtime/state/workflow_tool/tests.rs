@@ -208,7 +208,7 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
         .owned
         .workflow_tool_context(
             session.id().to_string(),
-            workflow_run_id,
+            workflow_run_id.clone(),
             node_run_id.clone(),
             Some("delivery-token".to_string()),
         )
@@ -226,6 +226,19 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
     assert!(dispatches.remote.is_empty());
     assert!(dispatches.starting_provider_runs.is_empty());
     assert!(result.ok);
+    let durable_events = runtime
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(session.id(), "session.updated", 10)
+        .expect("durable workflow runtime tool events should load");
+    let latest_event = durable_events
+        .last()
+        .expect("workflow runtime tool call should be durable before returning");
+    assert_eq!(latest_event.payload["reason"], "workflow_runtime_tool");
+    serde_json::from_value::<crate::session::RuntimeSession>(
+        latest_event.payload["session"].clone(),
+    )
+    .expect("durable workflow runtime session should deserialize");
     let outgoing = result.payload["outgoing_edges"]
         .as_array()
         .expect("outgoing edges should be an array");

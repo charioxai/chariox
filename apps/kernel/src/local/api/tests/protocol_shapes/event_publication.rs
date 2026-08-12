@@ -239,6 +239,42 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 created_at_ms: 1_800_000,
             },
         },
+        LocalDaemonResponse::EventConnection {
+            connection: crate::local::EventConnection {
+                generator_id: "dev.arroba.github".to_string(),
+                connection_id: "connection-1".to_string(),
+                status: crate::local::EventConnectionStatus::Ready,
+                metadata: serde_json::json!({"account": "arroba"}),
+                expires_at_ms: None,
+                created_at_ms: 1_700_000,
+                updated_at_ms: 1_800_000,
+                last_validated_at_ms: Some(1_800_000),
+            },
+        },
+        LocalDaemonResponse::EventConnectionAuthorizationObserved {
+            authorization: crate::local::EventConnectionAuthorization {
+                authorization_id: "event-authorization-1".to_string(),
+                generator_id: "dev.arroba.github".to_string(),
+                connection_id: Some("connection-1".to_string()),
+                status: "ready".to_string(),
+                authorization_url: None,
+                user_code: None,
+                expires_at_ms: Some(1_900_000),
+                created_at_ms: 1_800_000,
+            },
+            connection: None,
+        },
+        LocalDaemonResponse::EventConnectionResourcesPage {
+            page: crate::local::EventGeneratorResourcePage {
+                resources: vec![crate::local::EventGeneratorResource {
+                    id: "repository-1".to_string(),
+                    name: "arroba/arroba".to_string(),
+                    kind: "repository".to_string(),
+                    connection_scope: "arroba/arroba".to_string(),
+                }],
+                next_cursor: None,
+            },
+        },
         LocalDaemonResponse::EventConnectionDependencies {
             connection_id: "connection-1".to_string(),
             dependencies: vec![crate::local::WorkflowEventBindingDependency {
@@ -247,6 +283,19 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 binding_id: "binding-1".to_string(),
                 status: crate::session::WorkflowEventBindingStatus::Active,
             }],
+        },
+        LocalDaemonResponse::EventConnectionRemoved {
+            connection: crate::local::EventConnection {
+                generator_id: "dev.arroba.github".to_string(),
+                connection_id: "connection-1".to_string(),
+                status: crate::local::EventConnectionStatus::Revoked,
+                metadata: serde_json::json!({"account": "arroba"}),
+                expires_at_ms: None,
+                created_at_ms: 1_700_000,
+                updated_at_ms: 1_800_000,
+                last_validated_at_ms: Some(1_800_000),
+            },
+            deactivated_bindings: Vec::new(),
         },
     ];
     let snapshot = serde_json::json!({
@@ -296,6 +345,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "16bbea57289d582a26febfea83ee31663fdef56ee45a08db65effb6df675c68d"
+        "79498ab1751810a2194c0ea4f23b137db54a25e9417dfb04c9a8735c837ebc1b"
     );
 }

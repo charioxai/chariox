@@ -131,7 +131,8 @@ export async function executeWorkflowEventPublicationCommand(
   }
 
   if (action === "connections") {
-    const [generatorId, ...options] = rest
+    const generatorId = rest[0]?.startsWith("--") ? undefined : rest[0]
+    const options = generatorId ? rest.slice(1) : rest
     const parsed = parseCatalogOptions(options)
     if (!parsed.ok) return parsed
     if (parsed.query) return failure("usage: workflow publication event connections [generator-id] [--cursor <cursor>] [--limit <n>]")

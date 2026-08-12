@@ -122,14 +122,35 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
     };
     let (result, _) = runtime
         .owned
-        .workflow_submit_output_tool_result(
-            &serde_json::json!({ "workflow_output_json": "{\"status\":\"done\"}" }),
-            &context,
-            true,
+        .dispatch_workflow_runtime_tool_call(
+            crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+                .to_string(),
+            serde_json::json!({ "workflow_output_json": "{\"status\":\"done\"}" }),
+            context,
         )
         .expect("final publication output should settle");
 
     assert_eq!(result.payload["valid"], true);
+    let durable_events = runtime
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(session.id(), "session.updated", 10)
+        .expect("durable workflow runtime tool events should load");
+    let latest_event = durable_events
+        .last()
+        .expect("workflow output submission should be durable before returning");
+    assert_eq!(latest_event.payload["reason"], "workflow_runtime_tool");
+    let durable_session = serde_json::from_value::<crate::session::RuntimeSession>(
+        latest_event.payload["session"].clone(),
+    )
+    .expect("durable workflow output session should deserialize");
+    assert_eq!(
+        durable_session
+            .workflow_run(workflow_run.id())
+            .expect("durable workflow run should exist")
+            .status(),
+        crate::session::WorkflowRunStatus::Completed
+    );
     assert!(
         !runtime.owned.prompt_workspace_claims.contains(&claim_id),
         "fast publication completion must release the workflow workspace claim"

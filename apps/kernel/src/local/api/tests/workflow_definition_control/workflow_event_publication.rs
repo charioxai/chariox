@@ -721,6 +721,36 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
         .to_string()
         .contains("authorization was not found"));
 
+    let fresh_attach_error =
+        harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
+                CreateWorkflowEventBindingRequest {
+                    session_id: graph.session_id.clone(),
+                    publication_ref: publication.id().to_string(),
+                    generator_id: "dev.arroba.dummy".to_string(),
+                    generator_version: "1.0.0".to_string(),
+                    manifest_digest:
+                        crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+                            .to_string(),
+                    connection_id: binding.connection_id.clone(),
+                    connection_scope: "tenant:local".to_string(),
+                    event_type: "dummy.test".to_string(),
+                    event_type_version: 1,
+                    filter: serde_json::json!({"channel": "reattach"}),
+                    environment_id: Some("environment-removal".to_string()),
+                    queue_ref: Some("default".to_string()),
+                },
+            ))
+            .expect_err("a revoked connection must reject a fresh attachment");
+    assert!(fresh_attach_error.to_string().contains("Revoked"));
+    harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: binding.connection_id.clone(),
+            },
+        ))
+        .expect_err("failed fresh attachment must not resurrect the removed connection");
+
     let reactivate_error = harness
         .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
             SetWorkflowEventBindingStatusRequest {

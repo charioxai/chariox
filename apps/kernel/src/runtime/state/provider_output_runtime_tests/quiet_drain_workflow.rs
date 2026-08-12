@@ -149,11 +149,25 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         "complete only after turn/completed",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
         .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
         .expect("prompt should start")
     else {
         panic!("prompt should start immediately");
+    };
+    let active_prompt_id = prompt.id().to_string();
+    let queued_prompt = crate::session::PromptQueueItem::new(
+        "prompt-codex-terminal-gate-next",
+        attachment.id(),
+        agent.id(),
+        "run only after turn/completed",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("second prompt should queue")
+    else {
+        panic!("second prompt should remain queued");
     };
 
     let app = Arc::new(Mutex::new(app));
@@ -169,28 +183,31 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         .settle_owned_provider_prompt(session.id(), run.id(), false, false, false)
         .await
         .expect("quiet completion evidence should be accepted");
-    assert!(
+    assert_eq!(
         runtime
             .owned
             .session_snapshot(session.id())
             .expect("session snapshot should exist")
             .active_prompt_for_agent(agent.id())
-            .is_some(),
-        "Codex assistant output must not settle the prompt before turn/completed"
+            .map(|prompt| prompt.id().to_string()),
+        Some(active_prompt_id),
+        "Codex assistant output must keep the current prompt active before turn/completed"
     );
 
     runtime
         .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
         .await
         .expect("authoritative turn completion should be accepted");
-    assert!(
-        runtime
-            .owned
-            .session_snapshot(session.id())
-            .expect("session snapshot should exist")
+    let settled_session = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert_eq!(
+        settled_session
             .active_prompt_for_agent(agent.id())
-            .is_none(),
-        "turn/completed should release the prompt after Codex drained to quiet"
+            .map(|prompt| prompt.prompt().to_string()),
+        Some("run only after turn/completed".to_string()),
+        "turn/completed should release the current prompt and advance exactly one queued prompt"
     );
 }
 
