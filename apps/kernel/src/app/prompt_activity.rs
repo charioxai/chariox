@@ -99,7 +99,6 @@ impl ActiveTurnState {
         self.source_attachment_id = Some(prompt.source_attachment_id().to_string());
         self.prompt_origin = Some(prompt.prompt_origin());
         self.external_observed_id = prompt.external_observed_id();
-        self.started_at_ms = prompt.created_at_ms();
         self
     }
 
@@ -428,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_uses_prompt_acceptance_timestamp_and_keeps_it_on_restart() {
+    fn active_turn_uses_dispatch_timestamp_and_keeps_it_for_same_run() {
         let prompt = PromptQueueItem::new(
             "prompt-1",
             "attachment-1",
@@ -439,15 +438,15 @@ mod tests {
         let accepted_at_ms = prompt.created_at_ms();
         std::thread::sleep(std::time::Duration::from_millis(10));
         let store = ActiveTurnStore::default();
-        store.start(
-            ActiveTurnState::new(
-                "session-1".to_string(),
-                "agent-1".to_string(),
-                prompt.id().to_string(),
-                "run-1".to_string(),
-            )
-            .with_prompt_metadata(&prompt),
-        );
+        let dispatched = ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            prompt.id().to_string(),
+            "run-1".to_string(),
+        )
+        .with_prompt_metadata(&prompt);
+        let dispatched_at_ms = dispatched.started_at_ms;
+        store.start(dispatched);
         std::thread::sleep(std::time::Duration::from_millis(10));
         store.start(ActiveTurnState::new(
             "session-1".to_string(),
@@ -457,7 +456,8 @@ mod tests {
         ));
 
         let turn = store.get("run-1").expect("turn should remain active");
-        assert_eq!(turn.started_at_ms, accepted_at_ms);
+        assert!(dispatched_at_ms > accepted_at_ms);
+        assert_eq!(turn.started_at_ms, dispatched_at_ms);
     }
 
     #[test]
