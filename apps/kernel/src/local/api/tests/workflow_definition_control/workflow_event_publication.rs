@@ -398,6 +398,34 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
             .contains("workflow event binding is tombstoned"),
         "unexpected test error: {test_error}"
     );
+
+    harness
+        .dispatch(LocalDaemonRequest::ApplyWorkflowDesignOp(
+            ApplyWorkflowDesignOpRequest {
+                session_id: graph.session_id.clone(),
+                origin_client_id: "event-connection-lifecycle-test".to_string(),
+                op_id: "remove-event-workflow".to_string(),
+                op: WorkflowDesignOp::WorkflowRemove {
+                    workflow_id: graph.workflow_id,
+                },
+            },
+        ))
+        .expect("workflow deletion should tombstone bindings without removing the connection");
+    let preserved_connection = match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: binding.connection_id,
+            },
+        ))
+        .expect("workflow deletion must preserve the installed event connection")
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_eq!(
+        preserved_connection.status,
+        crate::local::EventConnectionStatus::Ready
+    );
 }
 
 #[test]
