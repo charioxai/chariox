@@ -10,15 +10,7 @@ const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Durat
 fn claude_native_dispatch_terminal_failure(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> Option<String> {
-    let context_file = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT")?;
-    let recent_failure_file = std::path::Path::new(context_file)
-        .parent()?
-        .join("permission-recent.txt");
-    let recent_failure = std::fs::read_to_string(recent_failure_file).ok()?;
-    crate::provider::classify_provider_terminal_failure_text(
-        provider_run.adapter_key(),
-        &recent_failure,
-    )
+    crate::app::claude_native_recent_terminal_failure(provider_run)
 }
 
 impl KernelRuntimeOwnedState {

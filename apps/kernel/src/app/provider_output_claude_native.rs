@@ -88,6 +88,18 @@ pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
     app: &'a mut DaemonApp,
 }
 
+pub(crate) fn claude_native_recent_terminal_failure(
+    provider_run: &RuntimeProviderRun,
+) -> Option<String> {
+    let context_file = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT")?;
+    let recent_failure_file = claude_permission_recent_file(context_file)?;
+    let recent_failure = fs::read_to_string(recent_failure_file).ok()?;
+    crate::provider::classify_provider_terminal_failure_text(
+        provider_run.adapter_key(),
+        &recent_failure,
+    )
+}
+
 fn claude_native_history_source_attachment_id(
     app: &DaemonApp,
     session_id: &str,
