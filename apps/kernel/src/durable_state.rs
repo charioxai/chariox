@@ -1,3 +1,7 @@
+// Durable state follows the kernel-wide `DaemonError` contract. Boxing that shared error is a
+// cross-cutting API change, so keep these storage-boundary results explicit here.
+#![allow(clippy::result_large_err)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
