@@ -49,6 +49,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -74,7 +76,9 @@ jobs:
         run: cargo test -p arroba-kernel client_protocol_conformance -- --nocapture
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          node --test scripts/clippy-changed-lines-gate.test.mjs
+          node scripts/clippy-changed-lines-gate.mjs
 
       - name: Test
         run: cargo test --workspace

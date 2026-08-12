@@ -30,6 +30,9 @@ pub(super) fn set_socket_timeouts(
     Ok(())
 }
 
+// Tungstenite owns this error representation, so boxing it here would only push an allocation
+// onto every nonblocking read while callers still need the concrete variants for control flow.
+#[allow(clippy::result_large_err)]
 pub(super) fn read_socket_nonblocking(socket: &mut CodexSocket) -> Result<Message, WebSocketError> {
     let MaybeTlsStream::Plain(stream) = socket.get_mut() else {
         return socket.read();

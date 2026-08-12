@@ -450,8 +450,7 @@ async fn execute_event_connection_request(
                 .count();
             if !request.confirm {
                 return Err(connection_error(format!(
-                    "removing this connection requires confirm=true and will deactivate {} workflow binding(s)",
-                    active_dependency_count
+                    "removing this connection requires confirm=true and will deactivate {active_dependency_count} workflow binding(s)"
                 )));
             }
             if active_dependency_count != 0 {
