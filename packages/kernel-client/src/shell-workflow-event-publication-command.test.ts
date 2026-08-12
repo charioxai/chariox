@@ -131,19 +131,21 @@ test("workflow event publication command authorizes and enumerates provider reso
   const client = {
     send: async (request: Record<string, unknown>) => {
       requests.push(request)
-      if ("StartEventGeneratorAuthorization" in request) {
+      if ("InstallEventConnection" in request) {
         return {
-          EventGeneratorAuthorizationStarted: {
-            flow: {
+          EventConnectionAuthorizationStarted: {
+            authorization: {
+              authorization_id: "authorization-1",
               generator_id: "dev.arroba.dummy",
               status: "ready",
               connection_id: "local-dummy",
+              created_at_ms: 1,
             },
           },
         }
       }
       return {
-        EventGeneratorResourcesPage: {
+        EventConnectionResourcesPage: {
           page: {
             resources: [{
               id: "default",
@@ -160,12 +162,12 @@ test("workflow event publication command authorizes and enumerates provider reso
   const context = createDefaultShellContext({ sessionId: "session-1" })
 
   const authorization = await executeWorkflowEventPublicationCommand(
-    ["authorize", "dev.arroba.dummy"],
+    ["install", "dev.arroba.dummy"],
     context,
     client,
   )
   const resources = await executeWorkflowEventPublicationCommand(
-    ["resources", "dev.arroba.dummy", "local-dummy", "default", "--limit", "5"],
+    ["resources", "local-dummy", "default", "--limit", "5"],
     context,
     client,
   )
@@ -174,14 +176,13 @@ test("workflow event publication command authorizes and enumerates provider reso
   assert.match(resources.message ?? "", /Default test environment/)
   assert.deepEqual(requests, [
     {
-      StartEventGeneratorAuthorization: {
+      InstallEventConnection: {
         generator_id: "dev.arroba.dummy",
         return_url: null,
       },
     },
     {
-      ListEventGeneratorResources: {
-        generator_id: "dev.arroba.dummy",
+      ListEventConnectionResources: {
         connection_id: "local-dummy",
         query: "default",
         cursor: null,

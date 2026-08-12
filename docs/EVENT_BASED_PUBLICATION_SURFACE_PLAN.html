@@ -981,14 +981,19 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             The TUI presents the same pages as navigable lists with incremental loading. Slash
             commands use the same kernel requests rather than a reduced secondary implementation.
           </p>
-          <pre><code>/workflow publication event browse [category]
-/workflow publication event search &lt;query&gt;
-/workflow publication event show &lt;generator-id&gt;
-/workflow publication event events &lt;generator-id&gt; [query]
-/workflow publication event add
-/workflow publication event status
-/workflow publication event test
-/workflow publication event remove</code></pre>
+          <pre><code>/notifications
+/notifications catalog
+/notifications search &lt;query&gt; [--category &lt;id&gt;] [--cursor &lt;cursor&gt;]
+/notifications show &lt;generator-id&gt;
+/notifications connections [generator-id]
+/notifications connect &lt;generator-id&gt;
+/notifications authorization &lt;authorization-id&gt;
+/notifications connection show|resources|refresh|reconnect|dependencies &lt;connection-id&gt;
+/notifications connection remove &lt;connection-id&gt; [--confirm]
+
+/workflow publication event connections [generator-id]
+/workflow publication event attach &lt;publication&gt; &lt;generator&gt; &lt;event-type&gt; ...
+/workflow publication event list|pause|resume|transfer|test|status</code></pre>
           <p>
             Search results expose a “load more” action tied to the returned cursor. Interactive
             authorization shows an external URL or device flow without requiring a graphical
@@ -1977,7 +1982,12 @@ arroba-cloud
                   <li>
                     Increment the local daemon protocol version and update shape/hash snapshots.
                   </li>
-                  <li>Add TUI views and slash commands using the shared requests.</li>
+                  <li>
+                    Add TUI views and slash commands using the shared requests. The shared
+                    <code>/notifications</code> namespace, detached-safe command catalog, reusable
+                    connection attachment, and dependency-confirmed removal are implemented;
+                    real PTY validation remains part of the acceptance gate.
+                  </li>
                   <li>Add focused PTY drills for search paging, configuration, and delivery.</li>
                 </ul>
               </div>

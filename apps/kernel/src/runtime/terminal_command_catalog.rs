@@ -21,6 +21,10 @@ const CATALOG_JSON_FRAGMENTS: &[(&str, &str)] = &[
         include_str!("terminal_command_catalog/catalog/workflow.json"),
     ),
     (
+        "notifications",
+        include_str!("terminal_command_catalog/catalog/notifications.json"),
+    ),
+    (
         "workspace",
         include_str!("terminal_command_catalog/catalog/workspace.json"),
     ),
@@ -542,6 +546,20 @@ mod tests {
                 "connector-doctor",
                 "connector-test",
                 "connector-show",
+                "notifications",
+                "notifications-catalog",
+                "notifications-search",
+                "notifications-category",
+                "notifications-show",
+                "notifications-connections",
+                "notifications-connect",
+                "notifications-authorization",
+                "notifications-connection-show",
+                "notifications-connection-resources",
+                "notifications-connection-refresh",
+                "notifications-connection-reconnect",
+                "notifications-connection-dependencies",
+                "notifications-connection-remove",
                 "slice",
                 "slice-list",
                 "slice-create",
@@ -667,10 +685,20 @@ mod tests {
         assert!(event
             .children
             .iter()
-            .any(|node| node.value == "/workflow publication event authorize "));
+            .any(|node| node.value == "/workflow publication event install "));
         assert!(event
             .children
             .iter()
             .any(|node| node.value == "/workflow publication event resources "));
+
+        let notifications = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "notifications")
+            .expect("notification center commands should be present");
+        assert!(notifications
+            .children
+            .iter()
+            .any(|node| node.value == "/notifications connection remove "));
     }
 }

@@ -30,6 +30,7 @@ import { executeStopCommand } from "./shell-stop-command.js"
 import type { ShellPlacementDeps } from "./shell-placement.js"
 import { executeWorkflowCommand } from "./shell-workflow-command.js"
 import { executeWorkspaceCommand } from "./shell-workspace-command.js"
+import { executeNotificationCommand } from "./shell-notification-command.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -96,6 +97,8 @@ export async function executeShellCommand(
       return executeExtensionCommand(parsed, context, deps)
     case "workflow":
       return executeWorkflowCommand(parsed, context, deps)
+    case "notifications":
+      return executeNotificationCommand(parsed.args, deps.client)
     case "workspace":
       return executeWorkspaceCommand(parsed, context, deps)
     case "recall":

@@ -1,6 +1,7 @@
 import type {
   EventDeliveryStatus,
-  EventGeneratorAuthorizationFlow,
+  EventConnectionAuthorization,
+  EventConnectionPage,
   EventGeneratorCatalogDetail,
   EventGeneratorCatalogPage,
   EventGeneratorEventPage,
@@ -16,10 +17,11 @@ import {
   getEventDeliveryStatusRequest,
   getEventGeneratorDetailRequest,
   listWorkflowEventBindingsRequest,
-  listEventGeneratorResourcesRequest,
+  installEventConnectionRequest,
+  listEventConnectionResourcesRequest,
+  listEventConnectionsRequest,
   searchEventGeneratorCatalogRequest,
   setWorkflowEventBindingStatusRequest,
-  startEventGeneratorAuthorizationRequest,
   testWorkflowEventBindingRequest,
   transferWorkflowEventBindingRequest,
 } from "./ipc-event-publication-requests.js"
@@ -107,41 +109,62 @@ export async function executeWorkflowEventPublicationCommand(
     }
   }
 
-  if (action === "authorize") {
+  if (action === "authorize" || action === "install") {
     const [generatorId, returnUrl] = rest
     if (!generatorId) {
-      return failure("usage: workflow publication event authorize <generator-id> [return-url]")
+      return failure(`usage: workflow publication event ${action} <generator-id> [return-url]`)
     }
-    const flow = expectField<EventGeneratorAuthorizationFlow>(
-      await client.send(startEventGeneratorAuthorizationRequest(generatorId, returnUrl)),
-      "EventGeneratorAuthorizationStarted",
-      "flow",
+    const authorization = expectField<EventConnectionAuthorization>(
+      await client.send(installEventConnectionRequest(generatorId, returnUrl)),
+      "EventConnectionAuthorizationStarted",
+      "authorization",
     )
-    const message = flow.status === "ready" && flow.connection_id
-      ? `authorized ${generatorId}; connection=${flow.connection_id}`
+    const message = authorization.status === "ready" && authorization.connection_id
+      ? `installed ${generatorId}; connection=${authorization.connection_id}`
       : [
           `authorization for ${generatorId} requires user action`,
-          flow.authorization_url ? `open: ${flow.authorization_url}` : null,
-          flow.user_code ? `code: ${flow.user_code}` : null,
-          flow.connection_id ? `pending connection: ${flow.connection_id}` : null,
+          authorization.authorization_url ? `open: ${authorization.authorization_url}` : null,
+          authorization.user_code ? `code: ${authorization.user_code}` : null,
+          `authorization: ${authorization.authorization_id}`,
         ].filter(Boolean).join("\n")
-    return { ok: true, message, data: flow }
+    return { ok: true, message, data: authorization }
+  }
+
+  if (action === "connections") {
+    const [generatorId, ...options] = rest
+    const parsed = parseCatalogOptions(options)
+    if (!parsed.ok) return parsed
+    if (parsed.query) return failure("usage: workflow publication event connections [generator-id] [--cursor <cursor>] [--limit <n>]")
+    const page = expectField<EventConnectionPage>(
+      await client.send(listEventConnectionsRequest({
+        ...(generatorId ? { generatorId } : {}),
+        ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
+        limit: parsed.limit,
+      })),
+      "EventConnectionsPage",
+      "page",
+    )
+    const lines = page.connections.map((connection) =>
+      `${connection.connection_id}  ${connection.status}  ${connection.generator_id}`,
+    )
+    if (page.next_cursor) lines.push(`next cursor: ${page.next_cursor}`)
+    return { ok: true, message: lines.join("\n") || "no installed notification connections", data: page }
   }
 
   if (action === "resources") {
-    const [generatorId, connectionId, ...options] = rest
-    if (!generatorId || !connectionId) {
-      return failure("usage: workflow publication event resources <generator-id> <connection-id> [query] [--cursor <cursor>] [--limit <n>]")
+    const [connectionId, ...options] = rest
+    if (!connectionId) {
+      return failure("usage: workflow publication event resources <connection-id> [query] [--cursor <cursor>] [--limit <n>]")
     }
     const parsed = parseCatalogOptions(options)
     if (!parsed.ok) return parsed
     const page = expectField<EventGeneratorResourcePage>(
-      await client.send(listEventGeneratorResourcesRequest(generatorId, connectionId, {
+      await client.send(listEventConnectionResourcesRequest(connectionId, {
         ...(parsed.query ? { query: parsed.query } : {}),
         ...(parsed.cursor ? { cursor: parsed.cursor } : {}),
         limit: parsed.limit,
       })),
-      "EventGeneratorResourcesPage",
+      "EventConnectionResourcesPage",
       "page",
     )
     const lines = page.resources.map((resource) =>
@@ -163,7 +186,7 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: formatBindings(bindings), data: { bindings } }
   }
 
-  if (action === "bind" || action === "subscribe") {
+  if (action === "bind" || action === "attach" || action === "subscribe") {
     const parsed = parseBindingOptions(rest)
     if (!parsed.ok) return parsed
     const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
@@ -236,7 +259,7 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: formatDeliveryStatus(status), data: status }
   }
 
-  return failure("usage: workflow publication event catalog|category|show|events|authorize|resources|list|bind|pause|resume|delete|transfer|test|status")
+  return failure("usage: workflow publication event catalog|category|show|events|connections|install|resources|list|attach|pause|resume|delete|transfer|test|status")
 }
 
 function parseCatalogOptions(args: string[]):

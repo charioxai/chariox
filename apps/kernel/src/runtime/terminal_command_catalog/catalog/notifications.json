@@ -1,0 +1,103 @@
+[
+  {
+    "id": "notifications",
+    "label": "/notifications",
+    "description": "Discover, install, inspect, reconnect, and remove kernel notification services",
+    "value": "/notifications",
+    "surfaces": ["session", "waiting_room"],
+    "searchAliases": ["notification center", "events", "AEGS", "event connections"],
+    "children": [
+      {
+        "id": "notifications-catalog",
+        "label": "catalog",
+        "description": "Show recommended notification services with bounded paging",
+        "value": "/notifications catalog",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-search",
+        "label": "search",
+        "description": "Search services by app, event, publisher, category, or verification",
+        "value": "/notifications search ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-category",
+        "label": "category",
+        "description": "Browse one paginated notification-service category",
+        "value": "/notifications category ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-show",
+        "label": "show service",
+        "description": "Show one notification service and its supported events",
+        "value": "/notifications show ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connections",
+        "label": "installed connections",
+        "description": "List kernel-owned installed connections, optionally for one service",
+        "value": "/notifications connections",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connect",
+        "label": "install service",
+        "description": "Install and authorize a notification service once for this kernel owner",
+        "value": "/notifications connect ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-authorization",
+        "label": "authorization status",
+        "description": "Observe an in-progress external authorization",
+        "value": "/notifications authorization ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-show",
+        "label": "connection details",
+        "description": "Show connection health and non-secret metadata",
+        "value": "/notifications connection show ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-resources",
+        "label": "connection resources",
+        "description": "Search resources available to an installed connection",
+        "value": "/notifications connection resources ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-refresh",
+        "label": "refresh connection",
+        "description": "Validate and refresh installed connection health",
+        "value": "/notifications connection refresh ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-reconnect",
+        "label": "reconnect service",
+        "description": "Reauthorize an unavailable or revoked connection without changing its identity",
+        "value": "/notifications connection reconnect ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-dependencies",
+        "label": "connection dependencies",
+        "description": "List workflow publications attached to a connection",
+        "value": "/notifications connection dependencies ",
+        "surfaces": ["session", "waiting_room"]
+      },
+      {
+        "id": "notifications-connection-remove",
+        "label": "remove connection",
+        "description": "Preview affected publications, then remove with --confirm",
+        "value": "/notifications connection remove ",
+        "surfaces": ["session", "waiting_room"]
+      }
+    ]
+  }
+]

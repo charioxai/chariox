@@ -53,6 +53,17 @@ test("parseSlashCommand parses workflow commands and args", () => {
   })
 })
 
+test("parseSlashCommand parses the kernel notification center namespace", () => {
+  assert.deepEqual(parseSlashCommand("/notifications connection remove connection-1 --confirm"), {
+    kind: "notifications",
+    raw: "/notifications connection remove connection-1 --confirm",
+    args: ["connection", "remove", "connection-1", "--confirm"],
+  })
+  assert.equal(shouldClearCommandCenterForSlashCommand(
+    parseSlashCommand("/notifications")!,
+  ), true)
+})
+
 test("parseSlashCommand parses durable agent wait schedules", () => {
   assert.deepEqual(parseSlashCommand("/wait-in 0.05 Check once"), {
     kind: "wait",
