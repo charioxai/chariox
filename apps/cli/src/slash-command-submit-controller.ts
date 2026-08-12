@@ -43,6 +43,7 @@ export type SlashCommandSubmitControllerDeps = {
   handleWorkspaceCommand: (command: SlashCommand<"workspace">) => Promise<unknown> | unknown
   handleWorktreeCommand: (command: SlashCommand<"worktree">) => Promise<unknown> | unknown
   handleWorkflowCommand: (command: SlashCommand<"workflow">) => Promise<unknown> | unknown
+  handleNotificationsCommand?: (command: SlashCommand<"notifications">) => Promise<unknown> | unknown
   handleLoopCommand: (command: SlashCommand<"loop">) => Promise<unknown> | unknown
   handleGoalCommand: (command: SlashCommand<"goal">) => Promise<unknown> | unknown
   handleWaitCommand: (command: SlashCommand<"wait">) => Promise<unknown> | unknown
@@ -159,6 +160,9 @@ export function createSlashCommandSubmitController(
         onWorkspace: (command) => runWithFooterError(deps.handleWorkspaceCommand, command),
         onWorktree: (command) => runWithFooterError(deps.handleWorktreeCommand, command),
         onWorkflow: (command) => runWithFooterError(deps.handleWorkflowCommand, command),
+        ...(deps.handleNotificationsCommand
+          ? { onNotifications: (command: SlashCommand<"notifications">) => runWithFooterError(deps.handleNotificationsCommand!, command) }
+          : {}),
         onLoop: (command) => runWithFooterError(deps.handleLoopCommand, command),
         onGoal: (command) => runWithFooterError(deps.handleGoalCommand, command),
         onWait: (command) => runWithFooterError(deps.handleWaitCommand, command),

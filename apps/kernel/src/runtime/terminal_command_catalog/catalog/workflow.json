@@ -684,10 +684,16 @@
                 "value": "/workflow publication event events "
               },
               {
-                "id": "workflow-publication-event-authorize",
-                "label": "authorize",
-                "description": "Authorize an event generator connection",
-                "value": "/workflow publication event authorize "
+                "id": "workflow-publication-event-connections",
+                "label": "connections",
+                "description": "List reusable kernel-owned connections for attachment",
+                "value": "/workflow publication event connections"
+              },
+              {
+                "id": "workflow-publication-event-install",
+                "label": "install",
+                "description": "Install a reusable notification connection from workflow configuration",
+                "value": "/workflow publication event install "
               },
               {
                 "id": "workflow-publication-event-resources",
@@ -702,10 +708,10 @@
                 "value": "/workflow publication event list"
               },
               {
-                "id": "workflow-publication-event-bind",
-                "label": "bind",
-                "description": "Subscribe an event-based workflow publication",
-                "value": "/workflow publication event bind "
+                "id": "workflow-publication-event-attach",
+                "label": "attach",
+                "description": "Attach an installed connection and event to this workflow publication",
+                "value": "/workflow publication event attach "
               },
               {
                 "id": "workflow-publication-event-pause",

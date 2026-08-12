@@ -12,6 +12,7 @@ pub(crate) mod durable_snapshot;
 pub mod durable_state;
 pub(crate) mod env_lock;
 pub mod error;
+pub(crate) mod event_connection;
 pub mod execution_lease;
 pub mod extension;
 pub(crate) mod git_observer;

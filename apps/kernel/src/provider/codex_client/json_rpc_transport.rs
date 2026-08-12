@@ -8,7 +8,7 @@ use crate::error::DaemonError;
 
 use super::json_rpc::JsonRpcMessage;
 use super::notifications::{parse_notification, rpc_error_message};
-use super::socket_io::set_socket_timeouts;
+use super::socket_io::{read_socket_nonblocking, set_socket_timeouts};
 use super::{CodexClient, CodexNotification, CodexSocket};
 
 impl CodexClient {
@@ -134,8 +134,7 @@ impl CodexClient {
             if remaining.is_zero() {
                 return Ok(None);
             }
-            set_socket_timeouts(socket, Some(remaining), Some(Duration::from_secs(5)))?;
-            match socket.read() {
+            match read_socket_nonblocking(socket) {
                 Ok(message) => {
                     let raw = match message {
                         Message::Text(text) => text.to_string(),

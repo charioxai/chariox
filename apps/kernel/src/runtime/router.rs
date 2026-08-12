@@ -28,6 +28,7 @@ mod caller_identity_bridge;
 mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
+pub(crate) mod event_connection_lifecycle;
 mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
@@ -46,6 +47,7 @@ pub(crate) struct CommandRouter {
     agent_runtime: AgentRuntime,
     session_runtime: SessionRuntime,
     workflow_runtime: WorkflowRuntime,
+    event_connection_lanes: event_connection_lifecycle::EventConnectionOperationLanes,
     provider_runtime_lanes: ProviderRunOperationLanes,
     focus_projection: FocusedAgentProjection,
     session_projection: SessionStateProjectionStore,

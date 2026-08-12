@@ -184,6 +184,7 @@ pub struct AegsSubscriptionReconcileResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AegsAuthorizationStartRequest {
     pub generator_id: String,
+    pub owner_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_url: Option<String>,
 }
@@ -191,16 +192,21 @@ pub struct AegsAuthorizationStartRequest {
 impl AegsAuthorizationStartRequest {
     pub fn validate(&self) -> Result<(), String> {
         require_opaque_id("generator_id", &self.generator_id)?;
-        if self.return_url.as_deref().is_some_and(|value| {
-            value.len() > 2048
-                || !(value.starts_with("https://")
-                    || value.starts_with("http://127.0.0.1:")
-                    || value.starts_with("http://localhost:"))
-        }) {
-            return Err("return_url must use HTTPS or loopback HTTP".to_string());
-        }
-        Ok(())
+        require_opaque_id("owner_id", &self.owner_id)?;
+        validate_return_url(self.return_url.as_deref())
     }
+}
+
+fn validate_return_url(return_url: Option<&str>) -> Result<(), String> {
+    if return_url.is_some_and(|value| {
+        value.len() > 2048
+            || !(value.starts_with("https://")
+                || value.starts_with("http://127.0.0.1:")
+                || value.starts_with("http://localhost:"))
+    }) {
+        return Err("return_url must use HTTPS or loopback HTTP".to_string());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +234,7 @@ pub struct AegsProviderResource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AegsProviderResourceQuery {
     pub generator_id: String,
+    pub owner_id: String,
     pub connection_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
@@ -239,6 +246,7 @@ pub struct AegsProviderResourceQuery {
 impl AegsProviderResourceQuery {
     pub fn validate(&self) -> Result<(), String> {
         require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
         require_opaque_id("connection_id", &self.connection_id)?;
         if self.query.as_deref().is_some_and(|value| value.len() > 512) {
             return Err("resource query exceeds 512 characters".to_string());
@@ -254,6 +262,106 @@ impl AegsProviderResourceQuery {
             return Err("resource page limit must be between 1 and 100".to_string());
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AegsConnectionStatus {
+    Pending,
+    Ready,
+    Expired,
+    Revoked,
+    Unavailable,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsConnectionSummary {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub status: AegsConnectionStatus,
+    #[serde(default, skip_serializing_if = "is_json_null")]
+    pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionQuery {
+    pub generator_id: String,
+    pub owner_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub limit: u32,
+}
+
+impl AegsConnectionQuery {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        if let Some(connection_id) = &self.connection_id {
+            require_opaque_id("connection_id", connection_id)?;
+        }
+        if self
+            .cursor
+            .as_deref()
+            .is_some_and(|value| value.len() > 2048)
+        {
+            return Err("connection cursor exceeds 2048 characters".to_string());
+        }
+        if !(1..=100).contains(&self.limit) {
+            return Err("connection page limit must be between 1 and 100".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsConnectionPage {
+    pub connections: Vec<AegsConnectionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionRevokeRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionRevokeResponse {
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionReconnectRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+impl AegsConnectionReconnectRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        require_opaque_id("connection_id", &self.connection_id)?;
+        validate_return_url(self.return_url.as_deref())
+    }
+}
+
+impl AegsConnectionRevokeRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_opaque_id("generator_id", &self.generator_id)?;
+        require_opaque_id("owner_id", &self.owner_id)?;
+        require_opaque_id("connection_id", &self.connection_id)
     }
 }
 
@@ -528,18 +636,32 @@ mod tests {
     fn aegs_management_requests_are_bounded_and_require_safe_return_urls() {
         let authorization = AegsAuthorizationStartRequest {
             generator_id: "dev.arroba.github".to_string(),
+            owner_id: "owner-kernel-user".to_string(),
             return_url: Some("http://provider.example/callback".to_string()),
         };
         assert!(authorization.validate().unwrap_err().contains("HTTPS"));
 
         let resources = AegsProviderResourceQuery {
             generator_id: "dev.arroba.github".to_string(),
+            owner_id: "owner-kernel-user".to_string(),
             connection_id: "connection-1".to_string(),
             query: None,
             cursor: None,
             limit: 101,
         };
         assert!(resources
+            .validate()
+            .unwrap_err()
+            .contains("between 1 and 100"));
+
+        let connections = AegsConnectionQuery {
+            generator_id: "dev.arroba.github".to_string(),
+            owner_id: "owner-kernel-user".to_string(),
+            connection_id: None,
+            cursor: None,
+            limit: 0,
+        };
+        assert!(connections
             .validate()
             .unwrap_err()
             .contains("between 1 and 100"));

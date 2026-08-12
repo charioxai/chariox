@@ -163,6 +163,12 @@ impl DaemonApp {
                 shutdown_rx.clone(),
             ),
         );
+        let event_connection_reconciliation_router = Arc::clone(&router);
+        let event_connection_reconciliation_task = tokio::spawn(async move {
+            event_connection_reconciliation_router
+                .run_event_connection_authorization_reconciler(shutdown_rx.clone())
+                .await;
+        });
         // Attached external provider transcript observation intentionally does not run.
         // Discovery may list/import external sessions, but provider transcript history
         // must not mutate kernel-owned active prompt state.
@@ -179,6 +185,7 @@ impl DaemonApp {
         let _ = relay_task.await;
         let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
+        let _ = event_connection_reconciliation_task.await;
         result
     }
 }

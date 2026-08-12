@@ -31,6 +31,7 @@ export type ParsedSlashCommand =
   | { kind: "workspace"; raw: string; args: string[] }
   | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
+  | { kind: "notifications"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
   | {
@@ -74,6 +75,7 @@ export type SlashCommandHandlers = {
   onWorkspace: (command: Extract<ParsedSlashCommand, { kind: "workspace" }>) => Promise<unknown> | unknown
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
+  onNotifications?: (command: Extract<ParsedSlashCommand, { kind: "notifications" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
   onWait?: (command: Extract<ParsedSlashCommand, { kind: "wait" }>) => Promise<unknown> | unknown
@@ -237,6 +239,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       kind: "worktree",
       raw: trimmed,
       args: trimmed.replace(/^\/worktree\s*/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
+  if (trimmed === "/notifications" || trimmed.startsWith("/notifications ")) {
+    return {
+      kind: "notifications",
+      raw: trimmed,
+      args: trimmed.replace(/^\/notifications\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed === "/loop" || trimmed.startsWith("/loop ")) {
@@ -454,6 +463,9 @@ export async function executeSlashCommand(
     case "workflow":
       await handlers.onWorkflow(command)
       break
+    case "notifications":
+      await handlers.onNotifications?.(command)
+      break
     case "loop":
       await handlers.onLoop(command)
       break
@@ -509,6 +521,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "workspace":
     case "worktree":
     case "workflow":
+    case "notifications":
     case "loop":
     case "goal":
     case "wait":

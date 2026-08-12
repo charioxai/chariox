@@ -111,7 +111,7 @@ impl KernelRuntimeOwnedState {
                     ok,
                 ),
             );
-        let _ = self.session_snapshot(&context.session_id);
+        self.persist_workflow_runtime_session(&context.session_id, "workflow_runtime_tool")?;
         result.map(|result| (result, dispatches))
     }
 

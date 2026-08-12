@@ -51,6 +51,7 @@ pub trait AegsProvider: Send + Sync {
 
     fn start_authorization(
         &self,
+        _owner_id: &str,
         _return_url: Option<&str>,
     ) -> Result<AegsAuthorizationFlow, String> {
         Err("provider authorization is not configured".to_string())
@@ -63,11 +64,24 @@ pub trait AegsProvider: Send + Sync {
         Err("provider authorization is not configured".to_string())
     }
 
+    fn reconnect_authorization(
+        &self,
+        _owner_id: &str,
+        _connection_id: &str,
+        _return_url: Option<&str>,
+    ) -> Result<AegsAuthorizationFlow, String> {
+        Err("provider reconnection is not configured".to_string())
+    }
+
     fn query_resources(
         &self,
         _query: &AegsProviderResourceQuery,
     ) -> Result<AegsProviderResourcePage, String> {
         Err("provider authorization is not configured".to_string())
+    }
+
+    fn revoke_connection(&self, _connection_id: &str) -> Result<(), String> {
+        Ok(())
     }
 
     fn maintain_subscriptions(&self) -> Result<(), String> {

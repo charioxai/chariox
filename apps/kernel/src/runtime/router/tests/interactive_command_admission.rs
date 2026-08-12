@@ -588,7 +588,9 @@ fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog() {
 
 async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner() {
     let mut config = DaemonConfig::for_tests();
-    config.provider_catalog_read_delay_ms = 120;
+    const CATALOG_DELAY: Duration = Duration::from_millis(500);
+    const INTERACTIVE_BUDGET: Duration = Duration::from_millis(250);
+    config.provider_catalog_read_delay_ms = CATALOG_DELAY.as_millis() as u64;
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -647,7 +649,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
     let focus_command =
         KernelCommand::from_local_request("cmd-focus-during-catalog", None, None, &focus_request);
     let focus_response = timeout(
-        Duration::from_millis(75),
+        INTERACTIVE_BUDGET,
         router.dispatch(focus_command, focus_request),
     )
     .await
@@ -667,7 +669,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
     let resize_command =
         KernelCommand::from_local_request("cmd-resize-during-catalog", None, None, &resize_request);
     let resize_response = timeout(
-        Duration::from_millis(75),
+        INTERACTIVE_BUDGET,
         router.dispatch(resize_command, resize_request),
     )
     .await
@@ -686,7 +688,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
     let cancel_command =
         KernelCommand::from_local_request("cmd-cancel-during-catalog", None, None, &cancel_request);
     let cancel_response = timeout(
-        Duration::from_millis(75),
+        INTERACTIVE_BUDGET,
         router.dispatch(cancel_command, cancel_request),
     )
     .await

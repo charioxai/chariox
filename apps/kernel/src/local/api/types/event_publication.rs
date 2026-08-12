@@ -3,9 +3,117 @@ use serde_json::Value;
 
 pub use arroba_event_protocol::{
     AegsAuthorizationFlow as EventGeneratorAuthorizationFlow,
-    AegsProviderResource as EventGeneratorResource,
+    AegsConnectionStatus as EventConnectionStatus, AegsProviderResource as EventGeneratorResource,
     AegsProviderResourcePage as EventGeneratorResourcePage,
 };
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnection {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub status: EventConnectionStatus,
+    #[serde(default, skip_serializing_if = "is_json_null")]
+    pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_validated_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventConnectionAuthorization {
+    pub authorization_id: String,
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnectionPage {
+    pub connections: Vec<EventConnection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEventBindingDependency {
+    pub session_id: String,
+    pub publication_id: String,
+    pub binding_id: String,
+    pub status: crate::session::WorkflowEventBindingStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallEventConnectionRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObserveEventConnectionAuthorizationRequest {
+    pub authorization_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconnectEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionResourcesRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionDependenciesRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorParty {

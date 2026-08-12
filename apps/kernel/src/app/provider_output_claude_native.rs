@@ -74,6 +74,8 @@ pub(crate) enum ClaudeNativeDispatchAttempt {
     AwaitingInjection,
 }
 
+const CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT: u8 = 10;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ClaudeNativeProcessOutcome {
     /// A managed Claude run reported Stop/SessionEnd this pass. The caller
@@ -122,7 +124,9 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
-    matches!(prompt.trim(), "[Request interrupted by user]")
+    let prompt = prompt.trim();
+    prompt == "[Request interrupted by user]"
+        || (prompt.starts_with("<task-notification>") && prompt.ends_with("</task-notification>"))
 }
 
 fn claude_headless_dispatch_matches_prompt(
@@ -1152,7 +1156,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else {
                 claude_headless_prompt_input(prompt, context_file)
             };
-            if count < 3
+            if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_prompt_waiting_in_composer(
                     &recent,
@@ -1173,7 +1177,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     now,
                     &visible_prompt,
                 );
-            } else if count < 3
+            } else if count < CLAUDE_HEADLESS_SUBMIT_RETRY_LIMIT
                 && now.saturating_sub(last_attempt_ms) >= 2_000
                 && claude_headless_composer_visible(&recent)
             {

@@ -153,7 +153,8 @@ pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun)
 pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run)
+    run.adapter_key() == "codex"
+        || (run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run))
 }
 
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
@@ -330,7 +331,7 @@ mod tests {
         assert!(!provider_run_waits_for_workflow_publication_completion(
             &headless_claude
         ));
-        assert!(!provider_run_waits_for_workflow_publication_completion(
+        assert!(provider_run_waits_for_workflow_publication_completion(
             &codex
         ));
         assert!(!provider_run_waits_for_workflow_publication_completion(

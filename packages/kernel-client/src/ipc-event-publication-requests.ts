@@ -90,6 +90,72 @@ export function listEventGeneratorResourcesRequest(
   }
 }
 
+export function listEventConnectionsRequest(
+  options: { generatorId?: string | null; cursor?: string | null; limit?: number } = {},
+) {
+  return {
+    ListEventConnections: {
+      generator_id: options.generatorId ?? null,
+      cursor: options.cursor ?? null,
+      limit: options.limit ?? 20,
+    },
+  }
+}
+
+export function getEventConnectionRequest(connectionId: string) {
+  return { GetEventConnection: { connection_id: connectionId } }
+}
+
+export function installEventConnectionRequest(generatorId: string, returnUrl?: string | null) {
+  return {
+    InstallEventConnection: {
+      generator_id: generatorId,
+      return_url: returnUrl ?? null,
+    },
+  }
+}
+
+export function observeEventConnectionAuthorizationRequest(authorizationId: string) {
+  return {
+    ObserveEventConnectionAuthorization: { authorization_id: authorizationId },
+  }
+}
+
+export function refreshEventConnectionRequest(connectionId: string) {
+  return { RefreshEventConnection: { connection_id: connectionId } }
+}
+
+export function reconnectEventConnectionRequest(connectionId: string, returnUrl?: string | null) {
+  return {
+    ReconnectEventConnection: {
+      connection_id: connectionId,
+      return_url: returnUrl ?? null,
+    },
+  }
+}
+
+export function listEventConnectionResourcesRequest(
+  connectionId: string,
+  options: { query?: string | null; cursor?: string | null; limit?: number } = {},
+) {
+  return {
+    ListEventConnectionResources: {
+      connection_id: connectionId,
+      query: options.query ?? null,
+      cursor: options.cursor ?? null,
+      limit: options.limit ?? 20,
+    },
+  }
+}
+
+export function listEventConnectionDependenciesRequest(connectionId: string) {
+  return { ListEventConnectionDependencies: { connection_id: connectionId } }
+}
+
+export function removeEventConnectionRequest(connectionId: string, confirm = false) {
+  return { RemoveEventConnection: { connection_id: connectionId, confirm } }
+}
+
 export type CreateWorkflowEventBindingInput = {
   generatorId: string
   generatorVersion: string

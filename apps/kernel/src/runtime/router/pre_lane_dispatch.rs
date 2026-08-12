@@ -6,7 +6,10 @@ use crate::runtime::agent_utility_executor::execute_agent_utility_request;
 use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
-use crate::runtime::event_catalog_control::execute_event_catalog_request;
+use crate::runtime::event_catalog_control::{
+    execute_event_catalog_request, validate_event_binding_contract, validate_event_connection,
+    validate_registered_event_connection, workflow_event_binding_connection,
+};
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::projected_provider_run_response;
@@ -39,6 +42,44 @@ impl CommandRouter {
         .await
         {
             return response.map(Some);
+        }
+        if let LocalDaemonRequest::RemoveEventConnection(request) = request {
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(caller_user_id, &request.connection_id)
+                .await;
+            return self
+                .remove_event_connection(command, caller_user_id, request.clone())
+                .await
+                .map(Some);
+        }
+        let managed_connection_id = match request {
+            LocalDaemonRequest::RefreshEventConnection(request) => {
+                Some(request.connection_id.clone())
+            }
+            LocalDaemonRequest::ReconnectEventConnection(request) => {
+                Some(request.connection_id.clone())
+            }
+            LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => self
+                .runtime_state
+                .event_connection_registry()
+                .authorization(caller_user_id, &request.authorization_id)?
+                .and_then(|authorization| authorization.connection_id),
+            _ => None,
+        };
+        if let Some(connection_id) = managed_connection_id {
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(caller_user_id, &connection_id)
+                .await;
+            return execute_event_catalog_request(
+                &self.runtime_state,
+                &self.config_projection,
+                caller_user_id,
+                request.clone(),
+            )
+            .await
+            .map(Some);
         }
         match request {
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
@@ -128,10 +169,19 @@ impl CommandRouter {
             | LocalDaemonRequest::BrowseEventGeneratorEvents(_)
             | LocalDaemonRequest::StartEventGeneratorAuthorization(_)
             | LocalDaemonRequest::ListEventGeneratorResources(_)
+            | LocalDaemonRequest::ListEventConnections(_)
+            | LocalDaemonRequest::GetEventConnection(_)
+            | LocalDaemonRequest::InstallEventConnection(_)
+            | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
+            | LocalDaemonRequest::RefreshEventConnection(_)
+            | LocalDaemonRequest::ReconnectEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionResources(_)
+            | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::GetEventDeliveryStatus(_)) => {
                 return execute_event_catalog_request(
                     &self.runtime_state,
                     &self.config_projection,
+                    caller_user_id,
                     request.clone(),
                 )
                 .await
@@ -202,6 +252,77 @@ impl CommandRouter {
             let response = self
                 .agent_runtime
                 .dispatch_prompt_complete(command, request.clone())
+                .await?;
+            return self
+                .redact_result_for_user(Ok(response), caller_user_id)
+                .map(Some);
+        }
+        let connection_mutation = match request {
+            LocalDaemonRequest::CreateWorkflowEventBinding(request) => Some((
+                request.generator_id.clone(),
+                request.connection_id.clone(),
+                false,
+            )),
+            LocalDaemonRequest::SetWorkflowEventBindingStatus(request)
+                if request.status == crate::session::WorkflowEventBindingStatus::Active =>
+            {
+                workflow_event_binding_connection(
+                    &self.runtime_state,
+                    &request.session_id,
+                    &request.binding_id,
+                )
+                .map(|(generator_id, connection_id)| (generator_id, connection_id, true))
+            }
+            LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
+                workflow_event_binding_connection(
+                    &self.runtime_state,
+                    &request.source_session_id,
+                    &request.binding_id,
+                )
+                .map(|(generator_id, connection_id)| (generator_id, connection_id, true))
+            }
+            _ => None,
+        };
+        if let Some((generator_id, connection_id, requires_registered_connection)) =
+            connection_mutation
+        {
+            if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
+                validate_event_binding_contract(
+                    &self.config_projection,
+                    &request.generator_id,
+                    &request.generator_version,
+                    &request.manifest_digest,
+                    &request.event_type,
+                    request.event_type_version,
+                )
+                .await?;
+            }
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(caller_user_id, &connection_id)
+                .await;
+            if requires_registered_connection {
+                validate_registered_event_connection(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    caller_user_id,
+                    &generator_id,
+                    &connection_id,
+                )
+                .await?;
+            } else {
+                validate_event_connection(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    caller_user_id,
+                    &generator_id,
+                    &connection_id,
+                )
+                .await?;
+            }
+            let response = self
+                .workflow_runtime
+                .dispatch_workflow_command(command.clone(), request.clone())
                 .await?;
             return self
                 .redact_result_for_user(Ok(response), caller_user_id)

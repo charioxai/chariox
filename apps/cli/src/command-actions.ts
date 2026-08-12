@@ -76,6 +76,10 @@ import {
   handleWorkflowSlashCommand,
   type WorkflowCommandHandlerDeps,
 } from "./workflow-command-handlers.js"
+import {
+  handleNotificationSlashCommand,
+  type NotificationCommandHandlerDeps,
+} from "./notification-command-handler.js"
 import type {
   LocalGitWorktreeOptions,
 } from "./command-worktree-placement.js"
@@ -106,6 +110,7 @@ type CommandActionDeps =
   & Omit<AgentCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
   & KernelCommandHandlerDeps
   & Omit<WorkflowCommandHandlerDeps, "currentWorkspaceTarget">
+  & NotificationCommandHandlerDeps
   & {
   workspace: string
   worktree: string
@@ -348,6 +353,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleWorkflowSlashCommand(workflowCommandDeps(), command)
   }
 
+  const handleNotificationsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "notifications" }>,
+  ): Promise<void> => {
+    await handleNotificationSlashCommand(deps, command)
+  }
+
   const handleLoopCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "loop" }>,
   ): Promise<void> => {
@@ -418,6 +429,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorkspaceCommand,
     handleWorktreeCommand,
     handleWorkflowCommand,
+    handleNotificationsCommand,
     handleLoopCommand,
     handleGoalCommand,
     handleWaitCommand,

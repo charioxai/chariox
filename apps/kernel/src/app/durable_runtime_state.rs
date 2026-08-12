@@ -957,8 +957,27 @@ impl DaemonApp {
                 if !private_states.is_empty() {
                     session.restore_durable_prompt_private_states(&private_states);
                 }
-                self.prompt_state_owner.restore_session_state(&session);
+                let preserved_prompt_states = self
+                    .sessions
+                    .get_session(session.id())
+                    .map(|current| current.prompt_states().clone())
+                    .unwrap_or_default();
                 let session = self.restore_session_with_project_migration(session);
+                for (agent_id, prompt_state) in preserved_prompt_states {
+                    if prompt_state.active_prompt().is_none()
+                        && prompt_state.queued_prompts().is_empty()
+                    {
+                        continue;
+                    }
+                    self.sessions.mirror_agent_prompt_state(
+                        session.id(),
+                        &agent_id,
+                        prompt_state.active_prompt().cloned(),
+                        prompt_state.queued_prompts().clone(),
+                    )?;
+                }
+                let session = self.sessions.get_session(session.id())?;
+                self.prompt_state_owner.restore_session_state(&session);
                 self.update_session_projection(session);
             }
             "sessions.updated" => {
@@ -971,8 +990,27 @@ impl DaemonApp {
                     if !self.session_belongs_to_current_kernel(&session) {
                         continue;
                     }
-                    self.prompt_state_owner.restore_session_state(&session);
+                    let preserved_prompt_states = self
+                        .sessions
+                        .get_session(session.id())
+                        .map(|current| current.prompt_states().clone())
+                        .unwrap_or_default();
                     self.sessions.restore_session(session.clone());
+                    for (agent_id, prompt_state) in preserved_prompt_states {
+                        if prompt_state.active_prompt().is_none()
+                            && prompt_state.queued_prompts().is_empty()
+                        {
+                            continue;
+                        }
+                        self.sessions.mirror_agent_prompt_state(
+                            session.id(),
+                            &agent_id,
+                            prompt_state.active_prompt().cloned(),
+                            prompt_state.queued_prompts().clone(),
+                        )?;
+                    }
+                    let session = self.sessions.get_session(session.id())?;
+                    self.prompt_state_owner.restore_session_state(&session);
                     self.update_session_projection(session);
                 }
             }
@@ -1322,6 +1360,58 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn later_session_snapshot_preserves_newer_durable_prompt_queue() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-prompt-order",
+                "worktree-prompt-order",
+            ))
+            .expect("session should create");
+        let queued = crate::session::PromptQueueItem::new(
+            "prompt-newer-than-snapshot",
+            "attachment-prompt-order",
+            agent.id(),
+            "preserve me",
+            crate::session::PromptStatus::Queued,
+        );
+        app.sessions_mut()
+            .mirror_agent_prompt_state(
+                session.id(),
+                agent.id(),
+                None,
+                std::collections::VecDeque::from([queued]),
+            )
+            .expect("newer prompt state should mirror");
+
+        let stale_session = session.clone();
+        let event = DurableStateEvent {
+            sequence: 2,
+            event_id: "event-stale-session-update".to_string(),
+            kind: "session.updated".to_string(),
+            subject_id: Some(session.id().to_string()),
+            timestamp_ms: crate::session::unix_epoch_ms(),
+            payload: serde_json::json!({"session": stale_session}),
+        };
+        let mut diagnostics = DurableRestoreDiagnostics::default();
+        app.restore_durable_state_event(event, &mut diagnostics)
+            .expect("stale session snapshot should restore");
+
+        let restored = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available");
+        assert_eq!(
+            restored
+                .queued_prompts_for_agent(agent.id())
+                .and_then(|prompts| prompts.front())
+                .map(|prompt| prompt.id()),
+            Some("prompt-newer-than-snapshot")
+        );
     }
 
     #[test]

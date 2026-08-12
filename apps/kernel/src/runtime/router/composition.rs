@@ -317,6 +317,7 @@ pub(super) fn compose_command_router(
         agent_runtime,
         session_runtime,
         workflow_runtime,
+        event_connection_lanes: Default::default(),
         provider_runtime_lanes,
         focus_projection,
         session_projection,

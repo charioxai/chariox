@@ -88,6 +88,48 @@ export type EventGeneratorResourcePage = {
   next_cursor?: string | null
 }
 
+export type EventConnectionStatus =
+  | "pending"
+  | "ready"
+  | "expired"
+  | "revoked"
+  | "unavailable"
+  | "error"
+
+export type EventConnection = {
+  generator_id: string
+  connection_id: string
+  status: EventConnectionStatus
+  metadata?: unknown
+  expires_at_ms?: number | null
+  created_at_ms: number
+  updated_at_ms: number
+  last_validated_at_ms?: number | null
+}
+
+export type EventConnectionAuthorization = {
+  authorization_id: string
+  generator_id: string
+  connection_id?: string | null
+  status: string
+  authorization_url?: string | null
+  user_code?: string | null
+  expires_at_ms?: number | null
+  created_at_ms: number
+}
+
+export type EventConnectionPage = {
+  connections: EventConnection[]
+  next_cursor?: string | null
+}
+
+export type WorkflowEventBindingDependency = {
+  session_id: string
+  publication_id: string
+  binding_id: string
+  status: "active" | "paused" | "conflict" | "tombstoned"
+}
+
 export type EventDeliveryStatus = {
   configured: boolean
   connected: boolean

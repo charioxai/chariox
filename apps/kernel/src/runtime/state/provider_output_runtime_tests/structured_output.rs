@@ -777,6 +777,8 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     app.pty_mut()
         .spawn_for_run(&run)
         .expect("pty-backed provider run should spawn");
+    let pty_output_signal = app.pty_output_signal();
+    let initial_pty_sequence = pty_output_signal.sequence();
     app.submit_prompt(
         session.id(),
         attachment.id(),
@@ -786,7 +788,14 @@ async fn pty_output_pump_batches_chunks_with_one_terminal_notification() {
     )
     .expect("prompt should start");
 
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while pty_output_signal.sequence() < initial_pty_sequence + 2 {
+            let sequence = pty_output_signal.sequence();
+            pty_output_signal.wait_for_change_after(sequence).await;
+        }
+    })
+    .await
+    .expect("both delayed PTY writes should be available before the batch pump");
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
