@@ -109,6 +109,9 @@ fn provider_text_reports_resource_limit(normalized: &str) -> bool {
         || normalized.contains("don't have usage credits")
         || normalized.contains("do not have usage credits")
         || normalized.contains("don’t have usage credits")
+        || normalized.contains("don'thaveusagecredits")
+        || normalized.contains("don’thaveusagecredits")
+        || normalized.contains("donothaveusagecredits")
         || normalized.contains("credits exhausted")
         || normalized.contains("credit balance")
         || normalized.contains("out of credits");
@@ -226,6 +229,12 @@ mod tests {
 
         assert!(failure.contains("resource limit"));
         assert!(failure.contains("don't have usage credits"));
+
+        assert!(classify_provider_terminal_failure_text(
+            "claude",
+            "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
+        )
+        .is_some());
     }
 
     #[test]
