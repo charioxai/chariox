@@ -1,3 +1,7 @@
+// Catalog control is a kernel runtime boundary and consistently returns the shared `DaemonError`.
+// Boxing only this module's results would introduce a second error contract for its callers.
+#![allow(clippy::result_large_err)]
+
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::{Mutex, OnceLock};

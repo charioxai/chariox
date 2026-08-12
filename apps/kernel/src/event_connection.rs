@@ -445,6 +445,8 @@ impl EventConnectionRegistry {
     }
 }
 
+// Durable registry decoding follows the same shared error contract as the registry operations.
+#[allow(clippy::result_large_err)]
 fn decode<T: for<'de> Deserialize<'de>>(value: serde_json::Value) -> Result<T, DaemonError> {
     serde_json::from_value(value).map_err(|error| registry_error(error.to_string()))
 }
