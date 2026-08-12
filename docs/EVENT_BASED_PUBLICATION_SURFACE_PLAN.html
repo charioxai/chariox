@@ -552,7 +552,7 @@
         <p class="aside-meta">
           Status: first wave implemented; separate OVH AEDS/AEGS staging active; web, PTY, and all six real provider deliveries validated<br />
           Scope: first-wave integrations<br />
-          Updated: 2026-08-11
+          Updated: 2026-08-12
         </p>
       </aside>
 
@@ -952,6 +952,23 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
           <span class="section-no">06 · Product UX</span>
           <h2>One model, adapted to two interfaces.</h2>
 
+          <h3>Global web notification center</h3>
+          <p>
+            The terminal sidebar has a dedicated <strong>Notifications</strong> tab. It lists
+            kernel-owned installed connections before a bounded catalog page, supports search and
+            category navigation without fetching the entire registry, and follows opaque cursors
+            through an explicit <strong>Show more</strong> action. Service detail includes the
+            publisher, operator, supported event inventory, and every compatible connection on the
+            active home kernel.
+          </p>
+          <p>
+            Connection detail exposes health, last validation, refresh, reconnect, dependent
+            workflow publications, and two-step removal. A provider can be installed here or from
+            workflow publication setup; both paths create the same durable kernel connection.
+            Workflow setup prefers a compatible ready connection and requires an explicit
+            <strong>Add another connection</strong> action before starting another authorization.
+          </p>
+
           <h3>Web workflow side panel</h3>
           <ol>
             <li>Select <strong>Event-based notifications</strong> in the Publication tab.</li>
@@ -999,6 +1016,19 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             authorization shows an external URL or device flow without requiring a graphical
             browser inside the TUI.
           </p>
+
+          <div class="callout success">
+            <strong>2026-08-12 local product checkpoint passed.</strong>
+            <p>
+              An isolated protocol-252 kernel, OSS dummy AEGS, and feature web build exercised the
+              global catalog, GitHub service detail, dummy installation, durable ready connection,
+              health, dependency preview, and removal controls. The real TUI in a PTY observed the
+              same connection through <code>/notifications connections</code> and found GitHub
+              through bounded <code>/notifications search GitHub --limit 3</code>. The cloud web
+              suite passed 3,874 tests, its focused notification tests passed 3/3, and the OSS CLI
+              and kernel-client suites remained green.
+            </p>
+          </div>
 
           <h3>Installed notification-service connections</h3>
           <div class="callout success">
