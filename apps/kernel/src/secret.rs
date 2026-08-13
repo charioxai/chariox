@@ -14,15 +14,16 @@ use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
     UserCredentialUse, UserCredentialVaultConfig,
 };
-use crate::credential::ArrobaCredentialRegistry;
+use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
 mod vault;
 use vault::vault_store_for_config;
 pub use vault::{
-    arroba_encrypted_vault_status, clear_all_arroba_encrypted_vault_unlocks,
-    extend_arroba_encrypted_vault, is_arroba_vault_locked_error, lock_arroba_encrypted_vault,
-    unlock_arroba_encrypted_vault, ArrobaVaultUnlockStatus, CredentialVaultStore, VaultUnlockLease,
+    chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
+    extend_chariox_encrypted_vault, is_chariox_vault_locked_error, lock_chariox_encrypted_vault,
+    unlock_chariox_encrypted_vault, CharioxVaultUnlockStatus, CredentialVaultStore,
+    VaultUnlockLease,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -398,7 +399,7 @@ impl RuntimeSecretService {
 
     pub fn upsert_vault_backed_credential_with_secret(
         &self,
-        registry: &ArrobaCredentialRegistry,
+        registry: &CharioxCredentialRegistry,
         credential: UserCredentialConfig,
         secret: &str,
         overwrite: bool,
@@ -539,24 +540,24 @@ impl RuntimeSecretService {
     }
 
     fn ensure_vault_cache_available(&self) -> Result<(), DaemonError> {
-        if self.vault_backend != crate::config::CredentialVaultBackend::ArrobaEncrypted {
+        if self.vault_backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
             return Ok(());
         }
-        let status = arroba_encrypted_vault_status(&self.vault_path)?;
+        let status = chariox_encrypted_vault_status(&self.vault_path)?;
         if status.unlocked {
             return Ok(());
         }
         clear_vault_secret_process_cache()?;
         Err(DaemonError::LocalTransport {
             operation: "credential_vault_locked",
-            message: "Arroba vault is locked".to_string(),
+            message: "Chariox vault is locked".to_string(),
         })
     }
 
     fn vault_cache_key(&self, key: &str) -> Result<VaultSecretCacheKey, DaemonError> {
         Ok(VaultSecretCacheKey {
             backend: match self.vault_backend {
-                crate::config::CredentialVaultBackend::ArrobaEncrypted => "arroba_encrypted",
+                crate::config::CredentialVaultBackend::CharioxEncrypted => "chariox_encrypted",
                 crate::config::CredentialVaultBackend::ProcessMemory => "process_memory",
             }
             .to_string(),

@@ -101,14 +101,14 @@ pub(crate) fn provider_inactivity_timeout_candidates(
 
 pub(crate) fn provider_first_output_timeout_diagnostic(elapsed_ms: u64) -> String {
     format!(
-        "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
+        "Provider prompt produced no output for {} seconds after launch; the provider may be stuck. Chariox closed this turn so the agent can be retried.",
         elapsed_ms / 1000
     )
 }
 
 pub(crate) fn provider_inactivity_timeout_diagnostic(elapsed_ms: u64) -> String {
     format!(
-        "Provider prompt produced no output for {} seconds after its last activity; the provider may be stuck. Arroba closed this turn so the agent can be retried.",
+        "Provider prompt produced no output for {} seconds after its last activity; the provider may be stuck. Chariox closed this turn so the agent can be retried.",
         elapsed_ms / 1000
     )
 }

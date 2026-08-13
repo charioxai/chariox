@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::{validate_non_empty, validate_optional_nonzero};
 use crate::error::DaemonError;
 
-pub const DEFAULT_LINUX_SLICE_DOCKER_IMAGE: &str = "arroba-slice-linux:0.1.0";
+pub const DEFAULT_LINUX_SLICE_DOCKER_IMAGE: &str = "chariox-slice-linux:0.1.0";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserSlicesConfig {
@@ -16,7 +16,7 @@ pub struct UserSlicesConfig {
 impl Default for UserSlicesConfig {
     fn default() -> Self {
         Self {
-            root: Some("~/.arroba/slices".to_string()),
+            root: Some("~/.chariox/slices".to_string()),
             linux: UserLinuxSliceConfig::default(),
         }
     }

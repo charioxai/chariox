@@ -299,7 +299,7 @@ impl OperationalHistoryStore {
         }
         let store = self.clone();
         match std::thread::Builder::new()
-            .name("arroba-history-reclaim".to_string())
+            .name("chariox-history-reclaim".to_string())
             .spawn(move || {
                 if let Err(error) = store.reclaim_disk_space() {
                     crate::logging::warn_with_fields(

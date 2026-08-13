@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use arroba_relay::protocol::RelayEnvelope;
+use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 

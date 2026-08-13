@@ -76,10 +76,10 @@ pub struct ProviderCatalogHealthSnapshot {
 pub struct ProviderRunHealthSnapshot {
     pub projected_runs: usize,
     pub active_runs: usize,
-    pub arroba_active_runs: usize,
+    pub chariox_active_runs: usize,
     pub native_tui_active_runs: usize,
     pub terminal_diagnostics: Vec<ProviderRunTerminalDiagnosticIssue>,
-    pub duplicate_arroba_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
+    pub duplicate_chariox_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub duplicate_native_tui_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub multi_interface_agent_bindings: Vec<ProviderRunAgentBindingConflict>,
     pub orphaned_active_runs: Vec<ProviderRunIdentityIssue>,

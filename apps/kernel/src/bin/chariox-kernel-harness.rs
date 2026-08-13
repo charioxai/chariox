@@ -1,7 +1,7 @@
-use arroba_kernel::local::run_local_harness;
-use arroba_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::local::run_local_harness;
+use chariox_kernel::{DaemonApp, DaemonConfig};
 
-fn main() -> Result<(), arroba_kernel::DaemonError> {
+fn main() -> Result<(), chariox_kernel::DaemonError> {
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests())?;
     let report = run_local_harness(app)?;
 

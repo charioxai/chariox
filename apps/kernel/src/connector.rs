@@ -19,21 +19,21 @@ use crate::config::{UserCredentialConfig, UserCredentialInjectionConfig, UserCre
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
-pub const CONNECTOR_ADAPTER_PROTOCOL_VERSION: &str = "arroba-connector-adapter-v2";
+pub const CONNECTOR_ADAPTER_PROTOCOL_VERSION: &str = "chariox-connector-adapter-v2";
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArrobaConnectorRegistry {
+pub struct CharioxConnectorRegistry {
     root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArrobaConnectorAdapterRegistry {
+pub struct CharioxConnectorAdapterRegistry {
     user_root: PathBuf,
     bundled_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaConnectorDefinition {
+pub struct CharioxConnectorDefinition {
     pub kind: String,
     pub name: String,
     pub description: String,
@@ -48,7 +48,7 @@ pub struct ArrobaConnectorDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaConnectorAdapterDefinition {
+pub struct CharioxConnectorAdapterDefinition {
     pub kind: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,7 +195,7 @@ pub struct PreparedConnectorCall {
     pub operation: String,
     pub safety: ConnectorSafety,
     pub request: ConnectorAdapterRequest,
-    pub adapter: ArrobaConnectorAdapterDefinition,
+    pub adapter: CharioxConnectorAdapterDefinition,
 }
 
 mod adapter_process;
@@ -253,8 +253,8 @@ fn adapter_response_to_prepare_result(
 }
 
 fn validate_connector_with_adapter(
-    definition: &ArrobaConnectorDefinition,
-    adapter: &ArrobaConnectorAdapterDefinition,
+    definition: &CharioxConnectorDefinition,
+    adapter: &CharioxConnectorAdapterDefinition,
 ) -> Result<(), DaemonError> {
     let request = ConnectorAdapterRequest {
         id: "validate-1".to_string(),
@@ -289,7 +289,7 @@ fn validate_connector_with_adapter(
 }
 
 fn run_adapter_request_once(
-    adapter: &ArrobaConnectorAdapterDefinition,
+    adapter: &CharioxConnectorAdapterDefinition,
     request: &ConnectorAdapterRequest,
 ) -> Result<ConnectorAdapterResponse, DaemonError> {
     let command = adapter.resolved_command()?;
@@ -396,7 +396,7 @@ fn connector_credential_metadata(
         (Some(_), _) => {}
     }
     let credential_id = credential_id.unwrap();
-    let credential = crate::credential::ArrobaCredentialRegistry::user()?
+    let credential = crate::credential::CharioxCredentialRegistry::user()?
         .get(credential_id)?
         .ok_or_else(|| {
             connector_error(
@@ -502,7 +502,7 @@ fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), DaemonErr
 fn read_adapter_root(
     root: &Path,
     source: ConnectorAdapterSource,
-    entries: &mut BTreeMap<String, ArrobaConnectorAdapterDefinition>,
+    entries: &mut BTreeMap<String, CharioxConnectorAdapterDefinition>,
 ) -> Result<(), DaemonError> {
     if !root.exists() {
         return Ok(());
@@ -513,7 +513,7 @@ fn read_adapter_root(
         if !manifest.exists() {
             continue;
         }
-        let adapter = ArrobaConnectorAdapterRegistry::read_yaml(&manifest, source)?;
+        let adapter = CharioxConnectorAdapterRegistry::read_yaml(&manifest, source)?;
         entries.entry(adapter.name.clone()).or_insert(adapter);
     }
     Ok(())
@@ -560,7 +560,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), DaemonErr
 fn adapter_process_key(
     run_id: &str,
     connector: &str,
-    adapter: &ArrobaConnectorAdapterDefinition,
+    adapter: &CharioxConnectorAdapterDefinition,
 ) -> Result<String, DaemonError> {
     Ok(format!(
         "{}:{}:{}:{}",
@@ -573,7 +573,7 @@ fn adapter_process_key(
 
 fn bundled_adapter_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Some(path) = std::env::var_os("ARROBA_CONNECTOR_ADAPTER_BUNDLED_DIR") {
+    if let Some(path) = std::env::var_os("CHARIOX_CONNECTOR_ADAPTER_BUNDLED_DIR") {
         roots.push(PathBuf::from(path));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -585,11 +585,11 @@ fn bundled_adapter_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn arroba_home() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_HOME")
+fn chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".chariox")))
 }
 
 fn default_timeout_ms() -> u64 {
@@ -683,7 +683,7 @@ mod tests {
 
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-connector-adapter-test-{name}-{}",
+            "chariox-connector-adapter-test-{name}-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn connector_validation_requires_adapter_name() {
-        let definition = ArrobaConnectorDefinition {
+        let definition = CharioxConnectorDefinition {
             kind: "connector".to_string(),
             name: "demo".to_string(),
             description: "Demo connector".to_string(),
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn connector_definition_hash_changes_with_projected_operations() {
-        let mut definition = ArrobaConnectorDefinition {
+        let mut definition = CharioxConnectorDefinition {
             kind: "connector".to_string(),
             name: "demo".to_string(),
             description: "Demo connector".to_string(),
@@ -751,12 +751,12 @@ mod tests {
             r#"
 kind: connector_adapter
 name: echo
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: bin/echo-adapter
 "#,
         )
         .unwrap();
-        let registry = ArrobaConnectorAdapterRegistry::new(root.join("adapters"), Vec::new());
+        let registry = CharioxConnectorAdapterRegistry::new(root.join("adapters"), Vec::new());
         let adapter = registry.get("echo").unwrap().unwrap();
         assert_eq!(adapter.name, "echo");
         assert_eq!(adapter.source, Some(ConnectorAdapterSource::User));
@@ -768,7 +768,7 @@ command: bin/echo-adapter
 
     #[test]
     fn adapter_command_without_path_uses_path_lookup() {
-        let adapter = ArrobaConnectorAdapterDefinition {
+        let adapter = CharioxConnectorAdapterDefinition {
             kind: "connector_adapter".to_string(),
             name: "path_lookup_adapter".to_string(),
             description: None,
@@ -778,7 +778,7 @@ command: bin/echo-adapter
             args: Vec::new(),
             source: Some(ConnectorAdapterSource::Bundled),
             manifest_path: Some(PathBuf::from(
-                "/opt/arroba/connector-adapters/path_lookup_adapter/adapter.yaml",
+                "/opt/chariox/connector-adapters/path_lookup_adapter/adapter.yaml",
             )),
         };
         assert_eq!(
@@ -797,13 +797,13 @@ command: bin/echo-adapter
             r#"
 kind: connector_adapter
 name: any_adapter
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: any-adapter-command
 "#,
         )
         .unwrap();
         let registry =
-            ArrobaConnectorAdapterRegistry::new(root.join("user"), vec![root.join("bundled")]);
+            CharioxConnectorAdapterRegistry::new(root.join("user"), vec![root.join("bundled")]);
         let adapters = registry.list().expect("bundled adapters should parse");
         assert_eq!(adapters.len(), 1);
         assert_eq!(adapters[0].name, "any_adapter");

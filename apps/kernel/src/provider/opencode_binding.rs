@@ -160,7 +160,7 @@ fn ensure_configured_mcp_servers_connected(
 ) -> Result<(), DaemonError> {
     let mut names = Vec::new();
     if run.runtime_mcp_server_url().is_some() {
-        names.push("arroba".to_string());
+        names.push("chariox".to_string());
     }
     names.extend(run.mcp_servers().iter().map(|server| server.name.clone()));
     names.sort();
@@ -895,7 +895,7 @@ mod tests {
         let mut pty_env = BTreeMap::new();
         if fenced {
             pty_env.insert(
-                "ARROBA_WORKSPACE_WRITE_FENCE".to_string(),
+                "CHARIOX_WORKSPACE_WRITE_FENCE".to_string(),
                 "macos-seatbelt".to_string(),
             );
         }

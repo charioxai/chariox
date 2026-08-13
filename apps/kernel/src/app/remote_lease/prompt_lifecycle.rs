@@ -363,7 +363,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 prompt: prompt.to_string(),
                 hidden_system_context: hidden_system_context.to_string(),
                 attachments: materialized_attachments,
-                prompt_origin: crate::session::PromptOrigin::Arroba,
+                prompt_origin: crate::session::PromptOrigin::Chariox,
                 external_provider: None,
                 external_provider_session_id: None,
                 external_provider_turn_id: None,

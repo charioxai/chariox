@@ -4,7 +4,7 @@ use crate::terminal::TerminalOutputKind;
 #[test]
 fn operational_history_imports_missing_legacy_transcripts_idempotently() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-legacy-import-{}-{}.db",
+        "chariox-operational-history-legacy-import-{}-{}.db",
         std::process::id(),
         super::super::unix_epoch_ms()
     ));
@@ -30,15 +30,15 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
         .expect("external prompt should append");
     assert!(
         store
-            .load_arroba_owned_prompt_texts("session-1", "agent-1")
-            .expect("arroba-owned prompt index should load")
+            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .expect("chariox-owned prompt index should load")
             .is_empty(),
-        "external-observed prompts should not count as Arroba-owned prompt text"
+        "external-observed prompts should not count as Chariox-owned prompt text"
     );
 
     let mut legacy_prompt =
         SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "legacy prompt")
-            .with_prompt_origin(crate::session::PromptOrigin::Arroba);
+            .with_prompt_origin(crate::session::PromptOrigin::Chariox);
     legacy_prompt.merge_key = Some("prompt:legacy-1".to_string());
     let legacy_output = SessionHistoryEntry::provider_output(
         "session-1",
@@ -55,8 +55,8 @@ fn operational_history_imports_missing_legacy_transcripts_idempotently() {
     assert_eq!(imported.len(), 2);
     assert_eq!(
         store
-            .load_arroba_owned_prompt_texts("session-1", "agent-1")
-            .expect("arroba owned prompt should load"),
+            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .expect("chariox owned prompt should load"),
         vec!["legacy prompt".to_string()]
     );
 

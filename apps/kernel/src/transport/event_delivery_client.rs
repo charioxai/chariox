@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use arroba_event_protocol::{
+use chariox_event_protocol::{
     AedsToKernelMessage, KernelToAedsMessage, EVENT_DELIVERY_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -263,7 +263,7 @@ async fn reconcile_aegs_subscriptions(
     }
     let mut claims = runtime_state.event_generator_subscription_claims();
     for (generator_id, target) in &config.generator_management_targets {
-        let request = arroba_event_protocol::AegsSubscriptionReconcileRequest {
+        let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
             generator_id: generator_id.clone(),
             subscriptions: claims.remove(generator_id).unwrap_or_default(),
@@ -281,7 +281,7 @@ async fn reconcile_aegs_subscriptions(
                     format!("AEGS {generator_id} reconciliation request failed: {error}")
                 })?;
             let response_body = response.into_string().map_err(|error| error.to_string())?;
-            let response: arroba_event_protocol::AegsSubscriptionReconcileResponse =
+            let response: chariox_event_protocol::AegsSubscriptionReconcileResponse =
                 serde_json::from_str(&response_body)
                     .map_err(|error| format!("AEGS {generator_id} response is invalid: {error}"))?;
             if !response.authoritative {

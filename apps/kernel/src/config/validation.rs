@@ -1,4 +1,4 @@
-use super::{validate_non_empty, ArrobaUserConfig, DaemonConfig};
+use super::{validate_non_empty, CharioxUserConfig, DaemonConfig};
 use crate::error::DaemonError;
 
 impl DaemonConfig {
@@ -142,7 +142,7 @@ fn validate_optional_nonzero_u64(
     Ok(())
 }
 
-impl ArrobaUserConfig {
+impl CharioxUserConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         self.providers.workspace_live_sync.validate()?;
         self.history.validate()?;

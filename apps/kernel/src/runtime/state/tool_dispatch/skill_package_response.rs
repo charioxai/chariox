@@ -9,7 +9,7 @@ impl KernelRuntimeState {
         workspace_root: &Path,
         home_kernel_id: &str,
         mut result: crate::transport::runtime_tools::RuntimeToolResult,
-        skill_package: Option<crate::skill::ArrobaSkillPackage>,
+        skill_package: Option<crate::skill::CharioxSkillPackage>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if !result.ok {
             return Ok(result);

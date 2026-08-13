@@ -487,7 +487,7 @@ fn local_request_api_exports_agent_app_publication_package() {
         _ => panic!("unexpected local response"),
     };
     let assets_root = std::env::temp_dir().join(format!(
-        "arroba-agent-app-assets-{}",
+        "chariox-agent-app-assets-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(assets_root.join("assets")).expect("asset directory should be created");

@@ -263,7 +263,7 @@ impl KernelRuntimeState {
     pub(crate) async fn rebind_and_relaunch_slice_agents(
         &self,
         manifests: Vec<SliceAgentRelaunchManifest>,
-        worker: &arroba_relay::protocol::RelayKernelPresence,
+        worker: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<(), DaemonError> {
         for manifest in manifests {
             let agent_id = manifest.agent_id.clone();
@@ -581,7 +581,7 @@ impl KernelRuntimeState {
     pub(crate) fn mark_slice_running(
         &self,
         slice_ref: &str,
-        worker: Option<arroba_relay::protocol::RelayKernelPresence>,
+        worker: Option<chariox_relay::protocol::RelayKernelPresence>,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         self.owned.slice_store.set_status(
             slice_ref,

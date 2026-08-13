@@ -33,7 +33,7 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 clear_effort: false,
             },
         ))
-        .expect_err("native TUI provider profile should be read-only from Arroba");
+        .expect_err("native TUI provider profile should be read-only from Chariox");
     assert_native_tui_config_error(profile_error, "update agent profile");
 
     let config_error = harness
@@ -51,7 +51,7 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 clear_worktree_id: false,
             },
         ))
-        .expect_err("native TUI provider config should be read-only from Arroba");
+        .expect_err("native TUI provider config should be read-only from Chariox");
     assert_native_tui_config_error(config_error, "update agent config");
 }
 

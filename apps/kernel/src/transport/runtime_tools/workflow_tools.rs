@@ -171,9 +171,9 @@ pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
         WORKFLOW_CONSOLE_CLEAR_TOOL => Some(WORKFLOW_CONSOLE_CLEAR_TOOL),
         AGENT_APP_ACTION_TOOL
         | AGENT_APP_ACTION_TOOL_QUALIFIED
-        | "arroba_agent_app_action"
-        | "mcp__arroba__agent_app_action"
-        | "mcp__arroba__arroba_agent_app_action" => Some(AGENT_APP_ACTION_TOOL),
+        | "chariox_agent_app_action"
+        | "mcp__chariox__agent_app_action"
+        | "mcp__chariox__chariox_agent_app_action" => Some(AGENT_APP_ACTION_TOOL),
         _ => None,
     }
 }

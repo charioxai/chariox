@@ -32,7 +32,7 @@ pub(super) fn metaagent_active_task_plan_is_empty(
 
 pub(super) fn meta_task_plan_required_error() -> DaemonError {
     meta_command_error(
-        "active meta task has no plan; call `arroba.meta.update_plan` with a concise plan before delegating work through run_command",
+        "active meta task has no plan; call `chariox.meta.update_plan` with a concise plan before delegating work through run_command",
     )
 }
 

@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_root_uses_git_toplevel_for_subdirectories() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-live-sync-tool-root-{}-{}",
+            "chariox-live-sync-tool-root-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_root_keeps_non_git_working_directory() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-live-sync-tool-root-non-git-{}-{}",
+            "chariox-live-sync-tool-root-non-git-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

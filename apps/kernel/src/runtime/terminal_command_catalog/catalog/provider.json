@@ -60,35 +60,35 @@
   {
     "id": "config",
     "label": "/config",
-    "description": "Inspect and update Arroba user config",
+    "description": "Inspect and update Chariox user config",
     "value": "/config ",
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "config-show",
         "label": "show",
-        "description": "Show the effective Arroba user config",
+        "description": "Show the effective Chariox user config",
         "value": "/config show",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-path",
         "label": "path",
-        "description": "Show the Arroba user config path",
+        "description": "Show the Chariox user config path",
         "value": "/config path",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-keys",
         "label": "keys",
-        "description": "List settable Arroba user config keys",
+        "description": "List settable Chariox user config keys",
         "value": "/config keys",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "config-schema",
         "label": "schema",
-        "description": "Show Arroba user config key metadata",
+        "description": "Show Chariox user config key metadata",
         "value": "/config schema",
         "surfaces": ["session", "waiting_room"]
       },

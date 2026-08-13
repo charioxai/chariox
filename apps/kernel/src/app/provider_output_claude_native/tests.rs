@@ -27,7 +27,7 @@ impl ProviderNativeInteractionBridge for RecordingPermissionBridge {
 #[test]
 fn repeated_claude_permission_render_is_stored_once() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-permission-recent-test-{}-{}",
+        "chariox-claude-permission-recent-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -61,7 +61,7 @@ fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
 
     assert!(!should_bridge_claude_permission(&serde_json::json!({
         "hook_event_name": "PermissionRequest",
-        "tool_name": "mcp__arroba__session_status",
+        "tool_name": "mcp__chariox__session_status",
     })));
     assert!(!should_bridge_claude_permission(&serde_json::json!({
         "hook_event_name": "PreToolUse",
@@ -75,7 +75,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-permission-dedupe-test-{}-{}",
+        "chariox-claude-permission-dedupe-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -102,7 +102,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::from([(
-                "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                 context_file.clone(),
             )]),
             pty_env_remove: Vec::new(),
@@ -177,7 +177,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
 #[test]
 fn hook_permission_tombstone_only_consumes_matching_rendered_frame() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-permission-tombstone-test-{}-{}",
+        "chariox-claude-permission-tombstone-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -227,7 +227,7 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-permission-input-test-{}-{}",
+        "chariox-claude-permission-input-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -258,11 +258,11 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
             pty_args: vec!["-lc".to_string(), "cat".to_string()],
             pty_env: std::collections::BTreeMap::from([
                 (
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                     context_file.clone(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
                     events_file.display().to_string(),
                 ),
             ]),
@@ -341,7 +341,7 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-stop-test-{}-{}-{}",
+        "chariox-claude-headless-stop-test-{}-{}-{}",
         provider,
         std::process::id(),
         timestamp_millis()
@@ -395,11 +395,11 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::from([
                 (
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                     context_file.clone(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
                     events_file.display().to_string(),
                 ),
             ]),
@@ -569,7 +569,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-ack-test-{}-{}",
+        "chariox-claude-headless-ack-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -596,7 +596,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::from([(
-                "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                 context_file.clone(),
             )]),
             pty_env_remove: Vec::new(),
@@ -623,7 +623,7 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         prompt: "Explain the lifecycle briefly.".to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),
-        prompt_origin: crate::session::PromptOrigin::Arroba,
+        prompt_origin: crate::session::PromptOrigin::Chariox,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -649,7 +649,7 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-steering-injection-test-{}-{}",
+        "chariox-claude-headless-steering-injection-test-{}-{}",
         std::process::id(),
         unix_epoch_ms()
     ));
@@ -674,7 +674,7 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
             pty_program: None,
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::from([(
-                "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                 context_file.to_string_lossy().into_owned(),
             )]),
             pty_env_remove: Vec::new(),
@@ -692,7 +692,7 @@ fn claude_headless_steering_dispatch_waits_for_provider_acknowledgement() {
         prompt: "Add one sentence before finishing.".to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),
-        prompt_origin: crate::session::PromptOrigin::Arroba,
+        prompt_origin: crate::session::PromptOrigin::Chariox,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -739,7 +739,7 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
         ))
         .expect("session should attach");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-submit-wait-ack-test-{}-{}",
+        "chariox-claude-headless-submit-wait-ack-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));
@@ -777,11 +777,11 @@ fn claude_headless_user_prompt_submit_acknowledges_matching_managed_dispatches()
             pty_args: Vec::new(),
             pty_env: std::collections::BTreeMap::from([
                 (
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                     context_file.clone(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
                     events_file.display().to_string(),
                 ),
             ]),
@@ -914,7 +914,7 @@ fn claude_native_dispatch_marker_extracts_steering_identity() {
 #[test]
 fn claude_headless_steering_enqueue_acknowledges_exact_injected_prompt() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-headless-steering-enqueue-ack-test-{}-{}",
+        "chariox-claude-headless-steering-enqueue-ack-test-{}-{}",
         std::process::id(),
         unix_epoch_ms()
     ));
@@ -960,7 +960,7 @@ fn claude_headless_steering_enqueue_acknowledges_exact_injected_prompt() {
 fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-test-{}",
+        "chariox-claude-transcript-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1025,7 +1025,7 @@ fn claude_transcript_drain_maps_assistant_text_reasoning_and_tools() {
 fn claude_transcript_drain_skips_content_before_active_prompt() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-active-prompt-cutoff-test-{}",
+        "chariox-claude-transcript-active-prompt-cutoff-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1084,7 +1084,7 @@ fn claude_transcript_drain_skips_content_before_active_prompt() {
 fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-resume-pair-test-{}",
+        "chariox-claude-transcript-resume-pair-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1161,7 +1161,7 @@ fn claude_transcript_drain_ignores_internal_resume_pair_before_real_response() {
 fn claude_transcript_drain_preserves_synthetic_api_errors() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-api-error-test-{}",
+        "chariox-claude-transcript-api-error-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1200,7 +1200,7 @@ fn claude_transcript_drain_preserves_synthetic_api_errors() {
 fn claude_transcript_drain_exposes_queue_enqueues_without_rendering_them() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-dedupe-test-{}",
+        "chariox-claude-transcript-dedupe-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1247,7 +1247,7 @@ fn claude_transcript_drain_exposes_queue_enqueues_without_rendering_them() {
 fn claude_transcript_completion_is_unique_per_assistant_message_id() {
     let mut cursor = ClaudeTranscriptCursor::default();
     let dir = std::env::temp_dir().join(format!(
-        "arroba-claude-transcript-message-completion-dedupe-test-{}",
+        "chariox-claude-transcript-message-completion-dedupe-test-{}",
         std::process::id()
     ));
     let _ = fs::create_dir_all(&dir);
@@ -1309,7 +1309,7 @@ fn claude_headless_prompt_waiting_in_composer_detects_collapsed_paste() {
 
 #[test]
 fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
-    let prompt = "Use the native-claude-skill skill. Give the Arroba skill marker.";
+    let prompt = "Use the native-claude-skill skill. Give the Chariox skill marker.";
     let rendered = format!("\u{1b}[?25l\u{1b}[H\r\u{1b}[37B{prompt}\u{1b}[40;1H\u{1b}[?25h");
 
     assert!(claude_headless_prompt_waiting_in_composer(
@@ -1336,7 +1336,7 @@ fn claude_headless_bypass_confirmation_detects_clipped_rendered_choice() {
 #[test]
 fn claude_headless_bypass_selection_marker_is_distinct_from_prompt_state() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-bypass-selection-test-{}-{}",
+        "chariox-claude-bypass-selection-test-{}-{}",
         std::process::id(),
         timestamp_millis()
     ));

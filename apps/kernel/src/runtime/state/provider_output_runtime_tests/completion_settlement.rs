@@ -463,7 +463,7 @@ async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
         prompt: "prompt whose delivery will fail\n".to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),
-        prompt_origin: crate::session::PromptOrigin::Arroba,
+        prompt_origin: crate::session::PromptOrigin::Chariox,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -578,7 +578,7 @@ async fn failed_prompt_dispatch_advances_the_next_queued_prompt() {
         prompt: first_prompt.prompt().to_string(),
         hidden_system_context: String::new(),
         attachments: Vec::new(),
-        prompt_origin: crate::session::PromptOrigin::Arroba,
+        prompt_origin: crate::session::PromptOrigin::Chariox,
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -644,7 +644,7 @@ async fn provider_completion_signal_preserves_external_active_prompt_and_queue()
         .expect("provider run should launch");
     app.update_provider_run_projection(run.clone());
     let (external_prompt_id, queued_prompt_id) =
-        sync_external_active_prompt_and_queue_arroba_prompt(
+        sync_external_active_prompt_and_queue_chariox_prompt(
             &mut app,
             session.id(),
             attachment.id(),
@@ -659,7 +659,7 @@ async fn provider_completion_signal_preserves_external_active_prompt_and_queue()
         .expect("provider completion signal should be accepted");
     assert!(!settlement.had_active_prompt);
     assert!(!settlement.started_next_prompt);
-    assert_external_active_prompt_and_queued_arroba_prompt(
+    assert_external_active_prompt_and_queued_chariox_prompt(
         &runtime,
         session.id(),
         agent.id(),
@@ -715,7 +715,7 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
         .expect("active provider run should be set");
     app.update_provider_run_projection(run.clone());
     let (external_prompt_id, queued_prompt_id) =
-        sync_external_active_prompt_and_queue_arroba_prompt(
+        sync_external_active_prompt_and_queue_chariox_prompt(
             &mut app,
             session.id(),
             attachment.id(),
@@ -737,7 +737,7 @@ async fn provider_terminal_failure_preserves_external_active_prompt_and_queue() 
         )
         .await
         .expect("terminal failure batch should be accepted");
-    assert_external_active_prompt_and_queued_arroba_prompt(
+    assert_external_active_prompt_and_queued_chariox_prompt(
         &runtime,
         session.id(),
         agent.id(),
@@ -897,7 +897,7 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
         )
         .expect("provider run should launch");
     app.update_provider_run_projection(run.clone());
-    sync_external_active_prompt_and_queue_arroba_prompt(
+    sync_external_active_prompt_and_queue_chariox_prompt(
         &mut app,
         session.id(),
         attachment.id(),

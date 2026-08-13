@@ -523,7 +523,7 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
 }
 
 #[tokio::test]
-async fn get_provider_run_projection_does_not_serve_opencode_arroba_runs() {
+async fn get_provider_run_projection_does_not_serve_opencode_chariox_runs() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))

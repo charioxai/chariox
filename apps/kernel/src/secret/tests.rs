@@ -159,12 +159,12 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
             .expect("response should write");
     });
 
-    std::env::set_var("ARROBA_TEST_SECRET_HTTP_TOKEN", "test-secret");
+    std::env::set_var("CHARIOX_TEST_SECRET_HTTP_TOKEN", "test-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "demo".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_SECRET_HTTP_TOKEN".to_string(),
+            name: "CHARIOX_TEST_SECRET_HTTP_TOKEN".to_string(),
         },
         allowed_hosts: vec![format!("127.0.0.1:{port}")],
         allowed_uses: vec![UserCredentialUse::Http],
@@ -187,7 +187,7 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
             max_response_bytes: 1_048_576,
         })
         .expect("credential request should succeed");
-    std::env::remove_var("ARROBA_TEST_SECRET_HTTP_TOKEN");
+    std::env::remove_var("CHARIOX_TEST_SECRET_HTTP_TOKEN");
     server.join().expect("server should finish");
 
     assert_eq!(response.status, 200);
@@ -200,12 +200,12 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
 #[test]
 fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
     let _guard = crate::env_lock::lock();
-    std::env::remove_var("ARROBA_TEST_SECRET_MISSING_TOKEN");
+    std::env::remove_var("CHARIOX_TEST_SECRET_MISSING_TOKEN");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "demo".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_SECRET_MISSING_TOKEN".to_string(),
+            name: "CHARIOX_TEST_SECRET_MISSING_TOKEN".to_string(),
         },
         allowed_hosts: vec!["api.example.com".to_string()],
         allowed_uses: vec![UserCredentialUse::Http],
@@ -232,18 +232,18 @@ fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
     assert!(error.to_string().contains("not allowed for host"));
     assert!(!error
         .to_string()
-        .contains("ARROBA_TEST_SECRET_MISSING_TOKEN"));
+        .contains("CHARIOX_TEST_SECRET_MISSING_TOKEN"));
 }
 
 #[test]
 fn browser_secret_input_rejects_wrong_host_before_secret_read() {
     let _guard = crate::env_lock::lock();
-    std::env::remove_var("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN");
+    std::env::remove_var("CHARIOX_TEST_SECRET_MISSING_BROWSER_TOKEN");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "browser-demo".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN".to_string(),
+            name: "CHARIOX_TEST_SECRET_MISSING_BROWSER_TOKEN".to_string(),
         },
         allowed_hosts: vec!["accounts.google.com".to_string()],
         allowed_uses: vec![UserCredentialUse::Browser],
@@ -258,18 +258,18 @@ fn browser_secret_input_rejects_wrong_host_before_secret_read() {
     assert!(error.to_string().contains("not allowed for host"));
     assert!(!error
         .to_string()
-        .contains("ARROBA_TEST_SECRET_MISSING_BROWSER_TOKEN"));
+        .contains("CHARIOX_TEST_SECRET_MISSING_BROWSER_TOKEN"));
 }
 
 #[test]
 fn terminal_secret_input_requires_pty_injection() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_TEST_TERMINAL_PASSWORD", "terminal-secret");
+    std::env::set_var("CHARIOX_TEST_TERMINAL_PASSWORD", "terminal-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "ssh_password".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_TERMINAL_PASSWORD".to_string(),
+            name: "CHARIOX_TEST_TERMINAL_PASSWORD".to_string(),
         },
         allowed_hosts: Vec::new(),
         allowed_uses: vec![UserCredentialUse::Pty],
@@ -283,18 +283,18 @@ fn terminal_secret_input_requires_pty_injection() {
             .expect("terminal secret should resolve"),
         "terminal-secret"
     );
-    std::env::remove_var("ARROBA_TEST_TERMINAL_PASSWORD");
+    std::env::remove_var("CHARIOX_TEST_TERMINAL_PASSWORD");
 }
 
 #[test]
 fn browser_secret_input_requires_browser_use() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_TEST_BROWSER_PASSWORD", "browser-secret");
+    std::env::set_var("CHARIOX_TEST_BROWSER_PASSWORD", "browser-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "browser_password".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_BROWSER_PASSWORD".to_string(),
+            name: "CHARIOX_TEST_BROWSER_PASSWORD".to_string(),
         },
         allowed_hosts: Vec::new(),
         allowed_uses: vec![UserCredentialUse::Browser],
@@ -308,18 +308,18 @@ fn browser_secret_input_requires_browser_use() {
             .expect("browser secret should resolve"),
         "browser-secret"
     );
-    std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
+    std::env::remove_var("CHARIOX_TEST_BROWSER_PASSWORD");
 }
 
 #[test]
 fn browser_secret_input_requires_browser_injection() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_TEST_BROWSER_PASSWORD", "browser-secret");
+    std::env::set_var("CHARIOX_TEST_BROWSER_PASSWORD", "browser-secret");
     let service = RuntimeSecretService::new(vec![UserCredentialConfig {
         id: "browser_password".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_BROWSER_PASSWORD".to_string(),
+            name: "CHARIOX_TEST_BROWSER_PASSWORD".to_string(),
         },
         allowed_hosts: Vec::new(),
         allowed_uses: vec![UserCredentialUse::Browser],
@@ -336,19 +336,19 @@ fn browser_secret_input_requires_browser_injection() {
     assert!(error
         .to_string()
         .contains("not configured for browser input"));
-    std::env::remove_var("ARROBA_TEST_BROWSER_PASSWORD");
+    std::env::remove_var("CHARIOX_TEST_BROWSER_PASSWORD");
 }
 
 #[test]
 fn upsert_vault_backed_credential_stores_secret_and_metadata() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-vault-credential-upsert-test-{}",
+        "chariox-vault-credential-upsert-test-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    let registry = ArrobaCredentialRegistry::new(root.clone());
+    let registry = CharioxCredentialRegistry::new(root.clone());
     let vault = Arc::new(MemoryVaultStore::default());
-    let service = RuntimeSecretService::with_vault_store(Vec::new(), "arroba-test", vault);
+    let service = RuntimeSecretService::with_vault_store(Vec::new(), "chariox-test", vault);
     let credential = UserCredentialConfig {
         id: "generated-browser-password".to_string(),
         description: Some("generated".to_string()),
@@ -383,7 +383,7 @@ fn upsert_vault_backed_credential_stores_secret_and_metadata() {
             .get("generated-browser-password")
             .expect("credential should read")
             .expect("credential should exist")],
-        "arroba-test",
+        "chariox-test",
         service.vault_store.clone(),
     );
     assert_eq!(
@@ -410,7 +410,7 @@ fn vault_source_resolves_without_exposing_secret_in_handles() {
             injection: UserCredentialInjectionConfig::Pty,
             metadata: None,
         }],
-        "arroba-test",
+        "chariox-test",
         vault,
     );
 
@@ -432,7 +432,10 @@ fn vault_source_resolves_without_exposing_secret_in_handles() {
 #[test]
 fn vault_write_warms_process_cache_across_secret_service_instances() {
     let vault = Arc::new(WriteOnlyVaultStore::default());
-    let service_name = format!("arroba-warm-cache-test-{}", crate::session::unix_epoch_ms());
+    let service_name = format!(
+        "chariox-warm-cache-test-{}",
+        crate::session::unix_epoch_ms()
+    );
     let writer = RuntimeSecretService::with_vault_store(Vec::new(), &service_name, vault.clone());
 
     writer
@@ -466,14 +469,14 @@ fn vault_write_warms_process_cache_across_secret_service_instances() {
 #[test]
 fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
     let service_name = format!(
-        "arroba-cache-scope-test-{}",
+        "chariox-cache-scope-test-{}",
         crate::session::unix_epoch_ms()
     );
     let writer = RuntimeSecretService {
         credentials: Vec::new(),
         vault_service: service_name.clone(),
         vault_backend: CredentialVaultBackend::ProcessMemory,
-        vault_path: "/tmp/arroba-cache-scope-a.json".to_string(),
+        vault_path: "/tmp/chariox-cache-scope-a.json".to_string(),
         vault_store: Arc::new(WriteOnlyVaultStore::default()),
     };
 
@@ -495,7 +498,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         }],
         vault_service: service_name,
         vault_backend: CredentialVaultBackend::ProcessMemory,
-        vault_path: "/tmp/arroba-cache-scope-b.json".to_string(),
+        vault_path: "/tmp/chariox-cache-scope-b.json".to_string(),
         vault_store: Arc::new(WriteOnlyVaultStore::default()),
     };
 
@@ -509,13 +512,13 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
 #[test]
 fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_failure() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-vault-upsert-rollback-test-{}-{}",
+        "chariox-vault-upsert-rollback-test-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("registry root should exist");
-    let registry = ArrobaCredentialRegistry::new(root.clone());
+    let registry = CharioxCredentialRegistry::new(root.clone());
     let vault = Arc::new(MemoryVaultStore::default());
     let service = RuntimeSecretService::with_vault_store(
         vec![UserCredentialConfig {
@@ -529,7 +532,7 @@ fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_fai
             injection: UserCredentialInjectionConfig::Browser,
             metadata: None,
         }],
-        "arroba-test",
+        "chariox-test",
         vault,
     );
     let credential = UserCredentialConfig {
@@ -579,22 +582,22 @@ fn upsert_vault_backed_credential_restores_previous_secret_on_metadata_write_fai
 #[test]
 fn encrypted_vault_cache_is_not_readable_after_lock() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-encrypted-cache-lock-test-{}-{}",
+        "chariox-encrypted-cache-lock-test-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
     let path = root.join("vault.json");
     let config = UserCredentialVaultConfig {
-        backend: CredentialVaultBackend::ArrobaEncrypted,
+        backend: CredentialVaultBackend::CharioxEncrypted,
         service: format!(
-            "arroba-encrypted-cache-lock-test-{}",
+            "chariox-encrypted-cache-lock-test-{}",
             crate::session::unix_epoch_ms()
         ),
         path: path.to_string_lossy().to_string(),
         ..UserCredentialVaultConfig::default()
     };
-    unlock_arroba_encrypted_vault(
+    unlock_chariox_encrypted_vault(
         &path,
         "correct horse battery staple",
         VaultUnlockLease::KernelShutdown,
@@ -625,11 +628,11 @@ fn encrypted_vault_cache_is_not_readable_after_lock() {
         "generated-secret"
     );
 
-    lock_arroba_encrypted_vault(&path).expect("vault should lock");
+    lock_chariox_encrypted_vault(&path).expect("vault should lock");
     let error = service
         .browser_secret_input("generated-password")
         .expect_err("locked encrypted vault must not read warm cache");
-    assert!(is_arroba_vault_locked_error(&error));
+    assert!(is_chariox_vault_locked_error(&error));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -637,7 +640,7 @@ fn encrypted_vault_cache_is_not_readable_after_lock() {
 fn vault_delete_clears_process_cache() {
     let vault = Arc::new(WriteOnlyVaultStore::default());
     let service_name = format!(
-        "arroba-warm-cache-delete-test-{}",
+        "chariox-warm-cache-delete-test-{}",
         crate::session::unix_epoch_ms()
     );
     let service = RuntimeSecretService::with_vault_store(
@@ -672,11 +675,11 @@ fn vault_delete_clears_process_cache() {
 #[test]
 fn process_memory_backend_round_trips_across_services() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
     let config = UserCredentialVaultConfig {
         backend: CredentialVaultBackend::ProcessMemory,
         service: format!(
-            "arroba-process-memory-test-{}",
+            "chariox-process-memory-test-{}",
             crate::session::unix_epoch_ms()
         ),
         ..UserCredentialVaultConfig::default()
@@ -709,14 +712,14 @@ fn process_memory_backend_round_trips_across_services() {
             .expect("process memory secret should resolve"),
         "super-secret"
     );
-    std::env::remove_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+    std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
 }
 
 #[test]
 fn process_memory_backend_requires_explicit_volatile_context() {
     let _guard = crate::env_lock::lock();
-    std::env::remove_var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
-    std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+    std::env::remove_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT");
+    std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
     let config = UserCredentialVaultConfig {
         backend: CredentialVaultBackend::ProcessMemory,
         ..UserCredentialVaultConfig::default()
@@ -727,5 +730,5 @@ fn process_memory_backend_requires_explicit_volatile_context() {
 
     assert!(error
         .to_string()
-        .contains("only allowed inside Arroba slices"));
+        .contains("only allowed inside Chariox slices"));
 }

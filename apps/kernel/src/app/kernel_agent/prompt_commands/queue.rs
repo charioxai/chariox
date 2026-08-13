@@ -40,7 +40,7 @@ impl<'a> KernelAgentService<'a> {
                                 None,
                                 self.app.attachments.list_session_attachment_ids(session_id),
                                 format!(
-                                    "Deferred queued workflow prompt `{}` because Arroba could not launch the provider run for agent `{}`: {}",
+                                    "Deferred queued workflow prompt `{}` because Chariox could not launch the provider run for agent `{}`: {}",
                                     peeked.id(),
                                     target_agent_id,
                                     error
@@ -56,7 +56,7 @@ impl<'a> KernelAgentService<'a> {
                         None,
                         self.app.attachments.list_session_attachment_ids(session_id),
                         format!(
-                            "Deferred queued prompt `{}` because Arroba could not activate the provider run for agent `{}`: {}",
+                            "Deferred queued prompt `{}` because Chariox could not activate the provider run for agent `{}`: {}",
                             peeked.id(),
                             target_agent_id,
                             error

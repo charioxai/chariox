@@ -6,7 +6,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
         "waiting-room-inventory-session-workspace-display-labels",
         || {
             let workspace_root =
-                std::env::temp_dir().join("arroba-waiting-room-session-label-test");
+                std::env::temp_dir().join("chariox-waiting-room-session-label-test");
             let _ = std::fs::remove_dir_all(&workspace_root);
             std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
             std::process::Command::new("git")
@@ -19,7 +19,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                     "remote",
                     "add",
                     "origin",
-                    "git@github.com:mgutierrez09/arroba.git",
+                    "git@github.com:mgutierrez09/chariox.git",
                 ])
                 .current_dir(&workspace_root)
                 .output()
@@ -57,7 +57,7 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                 .expect("created session should be in waiting-room inventory");
             assert_eq!(
                 session.workspace_label.as_deref(),
-                Some("mgutierrez09/arroba")
+                Some("mgutierrez09/chariox")
             );
             let workspace_path = workspace_root.display().to_string();
             assert_eq!(session.directory.as_deref(), Some(workspace_path.as_str()));
@@ -72,8 +72,8 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
         let (created, agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new(
-                    "/tmp/arroba-public-snapshot-workspace",
-                    "/tmp/arroba-public-snapshot-worktree",
+                    "/tmp/chariox-public-snapshot-workspace",
+                    "/tmp/chariox-public-snapshot-worktree",
                 )
                 .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
             ))
@@ -102,9 +102,9 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             .expect("created session should be in public snapshot");
         assert_eq!(
             session.workspace_id,
-            "/tmp/arroba-public-snapshot-workspace"
+            "/tmp/chariox-public-snapshot-workspace"
         );
-        assert_eq!(session.worktree_id, "/tmp/arroba-public-snapshot-worktree");
+        assert_eq!(session.worktree_id, "/tmp/chariox-public-snapshot-worktree");
         assert_eq!(
             session.workspace_live_sync_mode,
             Some(crate::config::WorkspaceLiveSyncMode::Tracked)
@@ -164,7 +164,7 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
     let harness = LocalRouterTestHarness::new();
     let (session, agent) = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("/tmp/arroba-workspace-a", "/tmp/arroba-workspace-a"),
+            CreateSessionRequest::new("/tmp/chariox-workspace-a", "/tmp/chariox-workspace-a"),
         ))
         .expect("session create should succeed")
     {
@@ -181,9 +181,9 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
                 clear_execution_mode: false,
                 permission_level: None,
                 clear_permission_level: false,
-                workspace_id: Some("/tmp/arroba-workspace-b".to_string()),
+                workspace_id: Some("/tmp/chariox-workspace-b".to_string()),
                 clear_workspace_id: false,
-                worktree_id: Some("/tmp/arroba-workspace-b-feature".to_string()),
+                worktree_id: Some("/tmp/chariox-workspace-b-feature".to_string()),
                 clear_worktree_id: false,
             },
         ))
@@ -210,12 +210,12 @@ fn waiting_room_agent_workspace_update_drill_updates_public_projection_inner() {
         })
         .expect("updated agent should be in public snapshot");
 
-    assert_eq!(public_agent.workspace_id, "/tmp/arroba-workspace-b");
+    assert_eq!(public_agent.workspace_id, "/tmp/chariox-workspace-b");
     assert_eq!(
         public_agent.directory.as_deref(),
-        Some("/tmp/arroba-workspace-b")
+        Some("/tmp/chariox-workspace-b")
     );
-    assert_eq!(public_agent.worktree_id, "/tmp/arroba-workspace-b-feature");
+    assert_eq!(public_agent.worktree_id, "/tmp/chariox-workspace-b-feature");
 }
 
 fn run_with_large_test_stack<F>(name: &'static str, test: F)
@@ -238,8 +238,8 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
         let (session, first_agent) = match harness
             .dispatch(LocalDaemonRequest::CreateSession(
                 CreateSessionRequest::new(
-                    "/tmp/arroba-public-workflow-workspace",
-                    "/tmp/arroba-public-workflow-worktree",
+                    "/tmp/chariox-public-workflow-workspace",
+                    "/tmp/chariox-public-workflow-worktree",
                 ),
             ))
             .expect("session create should succeed")
@@ -393,8 +393,8 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
             let (session, agent) = match harness
                 .dispatch(LocalDaemonRequest::CreateSession(
                     CreateSessionRequest::new(
-                        "/tmp/arroba-public-activity-workspace",
-                        "/tmp/arroba-public-activity-worktree",
+                        "/tmp/chariox-public-activity-workspace",
+                        "/tmp/chariox-public-activity-worktree",
                     ),
                 ))
                 .expect("session create should succeed")
@@ -573,7 +573,9 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
             other => panic!("unexpected response: {other:?}"),
         };
 
-        assert!(pairing.pairing_link.starts_with("arroba-terminal-pair-v1."));
+        assert!(pairing
+            .pairing_link
+            .starts_with("chariox-terminal-pair-v1."));
         assert_eq!(pairing.terminal_type, TerminalType::Web);
         assert_eq!(pairing.relay_url, "ws://relay.local");
         assert_eq!(pairing.pairing_code.len(), "ABCD-EFGH".len());

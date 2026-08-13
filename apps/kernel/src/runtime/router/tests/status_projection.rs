@@ -121,10 +121,10 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
     assert_eq!(projection.agent_runtime_projection.queued_prompts, 0);
     assert_eq!(projection.provider_runs.projected_runs, 1);
     assert_eq!(projection.provider_runs.active_runs, 1);
-    assert_eq!(projection.provider_runs.arroba_active_runs, 1);
+    assert_eq!(projection.provider_runs.chariox_active_runs, 1);
     assert!(projection
         .provider_runs
-        .duplicate_arroba_agent_bindings
+        .duplicate_chariox_agent_bindings
         .is_empty());
     assert!(projection.provider_runs.orphaned_active_runs.is_empty());
     assert!(projection
@@ -141,7 +141,7 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
 }
 
 #[tokio::test]
-async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent() {
+async fn daemon_health_reports_duplicate_active_chariox_provider_runs_per_agent() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -185,9 +185,9 @@ async fn daemon_health_reports_duplicate_active_arroba_provider_runs_per_agent()
 
     assert_eq!(projection.provider_runs.projected_runs, 2);
     assert_eq!(projection.provider_runs.active_runs, 2);
-    assert_eq!(projection.provider_runs.arroba_active_runs, 2);
+    assert_eq!(projection.provider_runs.chariox_active_runs, 2);
     assert_eq!(
-        projection.provider_runs.duplicate_arroba_agent_bindings,
+        projection.provider_runs.duplicate_chariox_agent_bindings,
         vec![
             crate::runtime::projection::ProviderRunAgentBindingConflict {
                 session_id,
@@ -250,7 +250,7 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();
-    let arroba_run = launch_test_provider(
+    let chariox_run = launch_test_provider(
         &mut app,
         &session_id,
         &agent_id,
@@ -288,11 +288,11 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
 
     assert_eq!(projection.provider_runs.projected_runs, 2);
     assert_eq!(projection.provider_runs.active_runs, 2);
-    assert_eq!(projection.provider_runs.arroba_active_runs, 1);
+    assert_eq!(projection.provider_runs.chariox_active_runs, 1);
     assert_eq!(projection.provider_runs.native_tui_active_runs, 1);
     assert!(projection
         .provider_runs
-        .duplicate_arroba_agent_bindings
+        .duplicate_chariox_agent_bindings
         .is_empty());
     assert!(projection
         .provider_runs
@@ -306,7 +306,7 @@ async fn daemon_health_reports_multi_interface_provider_runs_per_agent() {
                 agent_id,
                 provider_run_ids: {
                     let mut ids = vec![
-                        format!("{}:arroba", arroba_run.id()),
+                        format!("{}:chariox", chariox_run.id()),
                         format!("{}:native_tui", native_run.id()),
                     ];
                     ids.sort();
@@ -365,11 +365,11 @@ async fn daemon_health_reports_duplicate_active_native_tui_provider_runs_per_age
 
     assert_eq!(projection.provider_runs.projected_runs, 2);
     assert_eq!(projection.provider_runs.active_runs, 2);
-    assert_eq!(projection.provider_runs.arroba_active_runs, 0);
+    assert_eq!(projection.provider_runs.chariox_active_runs, 0);
     assert_eq!(projection.provider_runs.native_tui_active_runs, 2);
     assert!(projection
         .provider_runs
-        .duplicate_arroba_agent_bindings
+        .duplicate_chariox_agent_bindings
         .is_empty());
     assert_eq!(
         projection.provider_runs.duplicate_native_tui_agent_bindings,

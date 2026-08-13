@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::DaemonError;
 
 use super::provider_config::{
-    claude_mcp_config_paths, claude_mcp_server_sets, claude_mcp_to_arroba, codex_home_dir,
-    codex_mcp_to_arroba, opencode_config_paths, opencode_mcp_to_arroba,
+    claude_mcp_config_paths, claude_mcp_server_sets, claude_mcp_to_chariox, codex_home_dir,
+    codex_mcp_to_chariox, opencode_config_paths, opencode_mcp_to_chariox,
     remove_json_trailing_commas, strip_jsonc_comments,
 };
-use super::{validate_registry_name, ArrobaMcpRegistry, ArrobaMcpServerConfig};
+use super::{validate_registry_name, CharioxMcpRegistry, CharioxMcpServerConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpImportSkip {
@@ -20,7 +20,7 @@ pub struct McpImportSkip {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpImportOutcome {
-    pub imported: Vec<ArrobaMcpServerConfig>,
+    pub imported: Vec<CharioxMcpServerConfig>,
     pub skipped: Vec<McpImportSkip>,
 }
 
@@ -31,7 +31,7 @@ pub struct ProviderMcpImportCandidate {
     pub source: String,
     pub source_modified_ms: u64,
     pub definition_hash: String,
-    pub config: ArrobaMcpServerConfig,
+    pub config: CharioxMcpServerConfig,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,7 +41,7 @@ pub struct ProviderMcpImportDiscovery {
 }
 
 pub fn import_codex_mcp_servers(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     requested_name: Option<&str>,
 ) -> Result<McpImportOutcome, DaemonError> {
     let codex_home = codex_home_dir()?;
@@ -53,7 +53,7 @@ pub fn import_codex_mcp_servers(
 }
 
 pub fn import_opencode_mcp_servers(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<McpImportOutcome, DaemonError> {
@@ -89,7 +89,7 @@ pub fn import_opencode_mcp_servers(
 }
 
 pub fn import_claude_mcp_servers(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<McpImportOutcome, DaemonError> {
@@ -224,7 +224,7 @@ pub fn discover_provider_mcp_import_candidates(
 }
 
 pub fn import_opencode_mcp_servers_from_config_path(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     config_path: &Path,
     requested_name: Option<&str>,
 ) -> Result<McpImportOutcome, DaemonError> {
@@ -266,11 +266,11 @@ pub fn import_opencode_mcp_servers_from_config_path(
         if registry.get(name)?.is_some() {
             outcome.skipped.push(McpImportSkip {
                 name: name.clone(),
-                reason: "already installed in Arroba registry".to_string(),
+                reason: "already installed in Chariox registry".to_string(),
             });
             continue;
         }
-        match opencode_mcp_to_arroba(name, value) {
+        match opencode_mcp_to_chariox(name, value) {
             Ok(config) => {
                 registry.install(&config)?;
                 outcome.imported.push(config);
@@ -323,7 +323,7 @@ pub fn discover_opencode_mcp_candidates_from_config_path(
         if requested_name.is_some_and(|requested| requested != name) {
             continue;
         }
-        match opencode_mcp_to_arroba(name, value) {
+        match opencode_mcp_to_chariox(name, value) {
             Ok(config) => {
                 discovery
                     .candidates
@@ -339,7 +339,7 @@ pub fn discover_opencode_mcp_candidates_from_config_path(
 }
 
 pub fn import_claude_mcp_servers_from_config_path(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     config_path: &Path,
     workspace: &Path,
     requested_name: Option<&str>,
@@ -372,11 +372,11 @@ pub fn import_claude_mcp_servers_from_config_path(
             if registry.get(name)?.is_some() {
                 outcome.skipped.push(McpImportSkip {
                     name: name.to_string(),
-                    reason: format!("already installed in Arroba registry ({scope})"),
+                    reason: format!("already installed in Chariox registry ({scope})"),
                 });
                 continue;
             }
-            match claude_mcp_to_arroba(name, value) {
+            match claude_mcp_to_chariox(name, value) {
                 Ok(config) => {
                     registry.install(&config)?;
                     outcome.imported.push(config);
@@ -420,7 +420,7 @@ pub fn discover_claude_mcp_candidates_from_config_path(
             if requested_name.is_some_and(|requested| requested != name) {
                 continue;
             }
-            match claude_mcp_to_arroba(name, value) {
+            match claude_mcp_to_chariox(name, value) {
                 Ok(config) => discovery.candidates.push(provider_mcp_candidate(
                     "claude",
                     config_path,
@@ -437,7 +437,7 @@ pub fn discover_claude_mcp_candidates_from_config_path(
 }
 
 pub fn import_codex_mcp_servers_from_config_path(
-    registry: &ArrobaMcpRegistry,
+    registry: &CharioxMcpRegistry,
     config_path: &Path,
     requested_name: Option<&str>,
 ) -> Result<McpImportOutcome, DaemonError> {
@@ -470,11 +470,11 @@ pub fn import_codex_mcp_servers_from_config_path(
         if registry.get(name)?.is_some() {
             outcome.skipped.push(McpImportSkip {
                 name: name.clone(),
-                reason: "already installed in Arroba registry".to_string(),
+                reason: "already installed in Chariox registry".to_string(),
             });
             continue;
         }
-        match codex_mcp_to_arroba(name, value) {
+        match codex_mcp_to_chariox(name, value) {
             Ok(config) => {
                 registry.install(&config)?;
                 outcome.imported.push(config);
@@ -528,7 +528,7 @@ pub fn discover_codex_mcp_candidates_from_config_path(
         if requested_name.is_some_and(|requested| requested != name) {
             continue;
         }
-        match codex_mcp_to_arroba(name, value) {
+        match codex_mcp_to_chariox(name, value) {
             Ok(config) => {
                 discovery
                     .candidates
@@ -554,7 +554,7 @@ pub fn discover_codex_mcp_candidates_from_config_path(
 fn provider_mcp_candidate(
     provider: &str,
     source: &Path,
-    config: ArrobaMcpServerConfig,
+    config: CharioxMcpServerConfig,
 ) -> Result<ProviderMcpImportCandidate, DaemonError> {
     Ok(ProviderMcpImportCandidate {
         provider: provider.to_string(),

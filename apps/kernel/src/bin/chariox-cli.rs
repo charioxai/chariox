@@ -8,14 +8,14 @@ use std::time::SystemTime;
 use std::os::unix::process::CommandExt;
 
 fn main() -> ExitCode {
-    let _ = arroba_kernel::logging::init_process_logger("cli-launcher");
+    let _ = chariox_kernel::logging::init_process_logger("cli-launcher");
     match run() {
         Ok(code) => {
-            arroba_kernel::logging::info("cli.launcher", "TypeScript CLI exited");
+            chariox_kernel::logging::info("cli.launcher", "TypeScript CLI exited");
             code
         }
         Err(message) => {
-            arroba_kernel::logging::error_with_fields(
+            chariox_kernel::logging::error_with_fields(
                 "cli.launcher",
                 "TypeScript CLI launcher failed",
                 serde_json::json!({ "error": message }),
@@ -37,7 +37,7 @@ fn run() -> Result<ExitCode, String> {
     let cli_dir = workspace_root.join("apps/cli");
 
     let bun = env::var("BUN_BIN").unwrap_or_else(|_| "bun".to_string());
-    arroba_kernel::logging::info_with_fields(
+    chariox_kernel::logging::info_with_fields(
         "cli.launcher",
         "launching TypeScript CLI",
         serde_json::json!({
@@ -70,10 +70,10 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         return Ok(ExitCode::SUCCESS);
     }
     let package_arg = args.first().ok_or_else(|| {
-        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
+        "usage: chariox serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
     })?;
     let port = args.get(1).ok_or_else(|| {
-        "usage: arroba serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
+        "usage: chariox serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
     })?;
     let package_path = resolve_user_path(package_arg)?;
     if !package_path.exists() {
@@ -116,7 +116,7 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
                 return Ok(ExitCode::SUCCESS);
             }
             option => {
-                return Err(format!("unknown arroba serve option `{option}`"));
+                return Err(format!("unknown chariox serve option `{option}`"));
             }
         }
         index += 1;
@@ -132,29 +132,29 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .env("ARROBA_PUBLICATION_PACKAGE", package_path)
+        .env("CHARIOX_PUBLICATION_PACKAGE", package_path)
         .env("HOST", host)
         .env("PORT", port);
     if let Some(value) = hook_id {
-        command.env("ARROBA_PUBLICATION_HOOK_ID", value);
+        command.env("CHARIOX_PUBLICATION_HOOK_ID", value);
     }
     if let Some(value) = kernel_url {
-        command.env("ARROBA_KERNEL_URL", value);
+        command.env("CHARIOX_KERNEL_URL", value);
     }
     if let Some(value) = tls_key_file {
         command.env(
-            "ARROBA_PUBLICATION_TLS_KEY_FILE",
+            "CHARIOX_PUBLICATION_TLS_KEY_FILE",
             resolve_user_path(&value)?,
         );
     }
     if let Some(value) = tls_cert_file {
         command.env(
-            "ARROBA_PUBLICATION_TLS_CERT_FILE",
+            "CHARIOX_PUBLICATION_TLS_CERT_FILE",
             resolve_user_path(&value)?,
         );
     }
     if let Some(value) = cloud_deployment_id {
-        command.env("ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID", value);
+        command.env("CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID", value);
     }
     run_workflow_publication_server(command, &node)
 }
@@ -196,7 +196,7 @@ fn print_serve_help() {
     println!(
         "{}",
         [
-            "usage: arroba serve <publication-package-or-publication.json> <port> [options]",
+            "usage: chariox serve <publication-package-or-publication.json> <port> [options]",
             "",
             "Options:",
             "  --host <host>              Bind host (default: 127.0.0.1)",
@@ -219,7 +219,7 @@ fn ensure_bun_available(bun: &str) -> Result<(), String> {
         .stderr(Stdio::null())
         .status()
         .map_err(|_| {
-            "Arroba's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
+            "Chariox's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
                 .to_string()
         })?;
 
@@ -227,7 +227,7 @@ fn ensure_bun_available(bun: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(
-            "Arroba's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
+            "Chariox's TypeScript CLI requires Bun. Install Bun or set BUN_BIN to its executable path."
                 .to_string(),
         )
     }
@@ -238,7 +238,7 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
     let freshness = assess_cli_build_freshness(&cli_dir)?;
 
     if !freshness.needs_build {
-        arroba_kernel::logging::info_with_fields(
+        chariox_kernel::logging::info_with_fields(
             "cli.launcher",
             "skipping TypeScript CLI build because output is up to date",
             serde_json::json!({
@@ -248,7 +248,7 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    arroba_kernel::logging::info_with_fields(
+    chariox_kernel::logging::info_with_fields(
         "cli.launcher",
         "building TypeScript CLI before launch",
         serde_json::json!({
@@ -260,7 +260,7 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
         .arg("--dir")
         .arg(workspace_root)
         .arg("--filter")
-        .arg("@arroba/cli")
+        .arg("@chariox/cli")
         .arg("run")
         .arg("build")
         .stdin(Stdio::inherit())
@@ -277,7 +277,7 @@ fn ensure_cli_built(workspace_root: &PathBuf, bun: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "the TypeScript CLI build did not produce apps/cli/dist/index.js; rerun `pnpm --filter @arroba/cli run build` and then `{} apps/cli/dist/index.js` manually if needed",
+            "the TypeScript CLI build did not produce apps/cli/dist/index.js; rerun `pnpm --filter @chariox/cli run build` and then `{} apps/cli/dist/index.js` manually if needed",
             bun
         ))
     }
@@ -288,7 +288,7 @@ fn ensure_server_built(workspace_root: &Path) -> Result<(), String> {
     let freshness = assess_server_build_freshness(workspace_root, &server_dir)?;
 
     if !freshness.needs_build {
-        arroba_kernel::logging::info_with_fields(
+        chariox_kernel::logging::info_with_fields(
             "cli.launcher",
             "skipping workflow publication server build because output is up to date",
             serde_json::json!({
@@ -298,7 +298,7 @@ fn ensure_server_built(workspace_root: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    arroba_kernel::logging::info_with_fields(
+    chariox_kernel::logging::info_with_fields(
         "cli.launcher",
         "building workflow publication server before launch",
         serde_json::json!({
@@ -310,7 +310,7 @@ fn ensure_server_built(workspace_root: &Path) -> Result<(), String> {
         .arg("--dir")
         .arg(workspace_root)
         .arg("--filter")
-        .arg("@arroba/server")
+        .arg("@chariox/server")
         .arg("run")
         .arg("build")
         .stdin(Stdio::inherit())
@@ -566,7 +566,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("arroba-cli-launcher-{label}-{unique}"));
+        let root = std::env::temp_dir().join(format!("chariox-cli-launcher-{label}-{unique}"));
         fs::create_dir_all(root.join("src")).expect("src dir should exist");
         fs::create_dir_all(root.join("scripts")).expect("scripts dir should exist");
         fs::write(root.join("package.json"), "{}\n").expect("package.json should exist");

@@ -528,7 +528,7 @@ async fn provider_output_pump_includes_unfocused_active_prompt_runs() {
     );
     assert!(
         !provider_run_ids.contains(stale_idle_run.id()),
-        "stale Arroba runs without active prompts must not be pumped as background runs"
+        "stale Chariox runs without active prompts must not be pumped as background runs"
     );
 }
 
@@ -574,7 +574,7 @@ async fn provider_output_pump_includes_runs_with_pending_git_snapshots() {
             prompt_id: "prompt-1".to_string(),
             turn_id: "prompt-1".to_string(),
             source_attachment_id: Some("attachment-1".to_string()),
-            prompt_origin: Some(crate::session::PromptOrigin::Arroba),
+            prompt_origin: Some(crate::session::PromptOrigin::Chariox),
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,

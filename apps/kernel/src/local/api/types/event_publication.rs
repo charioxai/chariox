@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub use arroba_event_protocol::{
+pub use chariox_event_protocol::{
     AegsAuthorizationFlow as EventGeneratorAuthorizationFlow,
     AegsConnectionStatus as EventConnectionStatus, AegsProviderResource as EventGeneratorResource,
     AegsProviderResourcePage as EventGeneratorResourcePage,

@@ -206,18 +206,18 @@ mod tests {
     fn default_worktree_directory_base_uses_branch_leaf_without_duplicate_repo_prefix() {
         assert_eq!(
             default_worktree_directory_base(
-                "arroba-cloud",
-                "arroba/arroba-cloud-session-1783622367"
+                "chariox-cloud",
+                "chariox/chariox-cloud-session-1783622367"
             ),
-            "arroba-cloud-session-1783622367"
+            "chariox-cloud-session-1783622367"
         );
         assert_eq!(
-            default_worktree_directory_base("arroba", "arroba/arroba-session-1779647319"),
-            "arroba-session-1779647319"
+            default_worktree_directory_base("chariox", "chariox/chariox-session-1779647319"),
+            "chariox-session-1779647319"
         );
         assert_eq!(
-            default_worktree_directory_base("arroba-cloud", "feature/worktree-name"),
-            "arroba-cloud-worktree-name"
+            default_worktree_directory_base("chariox-cloud", "feature/worktree-name"),
+            "chariox-cloud-worktree-name"
         );
     }
 }

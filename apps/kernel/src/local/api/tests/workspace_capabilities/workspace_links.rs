@@ -146,8 +146,8 @@ fn local_request_api_manages_session_workspace_links_inner() {
     assert!(status.conflicts.is_empty());
     for pattern in [
         ".git/**",
-        ".arroba/**",
-        ".arrobaignore",
+        ".chariox/**",
+        ".charioxignore",
         ".env*",
         ".codex/**",
         ".opencode/**",
@@ -155,7 +155,7 @@ fn local_request_api_manages_session_workspace_links_inner() {
         ".cursor/**",
         "*.sock",
         "*.socket",
-        ".tmp-arroba/**",
+        ".tmp-chariox/**",
         ".tmp-live-workspace-live-sync-drill/**",
         ".tmp-live-remote-workspace-live-sync-drill/**",
         "history/**",
@@ -342,7 +342,7 @@ fn attach_workspace_link_rejects_non_git_worktree_targets() {
 
 fn attach_workspace_link_rejects_non_git_worktree_targets_inner() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-link-invalid-{}-{}",
+        "chariox-workspace-link-invalid-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -394,7 +394,7 @@ fn attach_workspace_link_infers_git_identity_when_missing() {
 
 fn attach_workspace_link_infers_git_identity_when_missing_inner() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-link-identity-{}-{}",
+        "chariox-workspace-link-identity-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

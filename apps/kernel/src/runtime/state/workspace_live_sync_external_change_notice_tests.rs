@@ -142,7 +142,7 @@ fn remote_workspace_live_sync_identity_mismatch_rejects_other_branch() {
 #[test]
 fn remote_workspace_live_sync_final_apply_rejects_worker_external_change() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-remote-workspace-live-sync-{}",
+        "chariox-remote-workspace-live-sync-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("create root");
@@ -219,7 +219,7 @@ fn workspace_live_sync_snapshot_id_treats_create_sentinel_as_absent() {
         None
     );
     assert_eq!(
-        workspace_live_sync_snapshot_id_from_arg(Some("__arroba_create__".to_string())),
+        workspace_live_sync_snapshot_id_from_arg(Some("__chariox_create__".to_string())),
         None
     );
     assert_eq!(
@@ -273,7 +273,7 @@ fn workspace_live_sync_write_snapshot_id_ignores_different_artifact_snapshot() {
 #[test]
 fn remote_workspace_live_sync_final_apply_writes_opaque_bytes() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-remote-managed-opaque-{}",
+        "chariox-remote-managed-opaque-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("create root");
@@ -302,7 +302,7 @@ fn remote_workspace_live_sync_final_apply_writes_opaque_bytes() {
 #[test]
 fn workspace_live_sync_whole_file_operations_move_and_delete_opaque_bytes() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-managed-whole-file-{}",
+        "chariox-managed-whole-file-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("create root");
@@ -389,7 +389,7 @@ fn remote_workspace_live_sync_whole_file_operations_return_opaque_move_and_delet
         crate::io::ArtifactReservationOwner::new(
             "remote:run-1",
             Some("agent-1".to_string()),
-            "arroba.move_artifact",
+            "chariox.move_artifact",
         ),
         &workspace_context,
     )
@@ -425,7 +425,7 @@ fn remote_workspace_live_sync_whole_file_operations_return_opaque_move_and_delet
 #[test]
 fn remote_workspace_live_sync_opaque_move_final_apply_preserves_deleted_source_domain() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-remote-managed-opaque-move-{}",
+        "chariox-remote-managed-opaque-move-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("create root");
@@ -464,7 +464,7 @@ fn remote_workspace_live_sync_opaque_move_final_apply_preserves_deleted_source_d
         crate::io::ArtifactReservationOwner::new(
             "remote:run-1",
             Some("agent-1".to_string()),
-            "arroba.move_artifact",
+            "chariox.move_artifact",
         ),
         &workspace_context,
     )
@@ -495,7 +495,7 @@ fn remote_workspace_live_sync_opaque_move_final_apply_preserves_deleted_source_d
 #[test]
 fn remote_workspace_live_sync_patch_operations_return_move_and_delete_final_states() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-remote-managed-patch-{}",
+        "chariox-remote-managed-patch-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("create root");
@@ -533,7 +533,7 @@ fn remote_workspace_live_sync_patch_operations_return_move_and_delete_final_stat
         crate::io::ArtifactReservationOwner::new(
             "remote:run-1",
             Some("agent-1".to_string()),
-            "arroba.apply_patch",
+            "chariox.apply_patch",
         ),
         &workspace_context,
     )
@@ -571,7 +571,7 @@ fn remote_workspace_live_sync_patch_operations_return_move_and_delete_final_stat
 #[test]
 fn workspace_live_sync_ignore_initializes_from_gitignore() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-ignore-{}",
+        "chariox-workspace-live-sync-ignore-{}",
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -584,8 +584,8 @@ fn workspace_live_sync_ignore_initializes_from_gitignore() {
         "test_workspace_live_sync_ignore",
     )
     .expect("ordinary file should not be ignored");
-    let initialized = std::fs::read_to_string(root.join(".arrobaignore"))
-        .expect(".arrobaignore should initialize from .gitignore");
+    let initialized = std::fs::read_to_string(root.join(".charioxignore"))
+        .expect(".charioxignore should initialize from .gitignore");
     assert_eq!(initialized, "ignored/\n*.secret\n");
     assert!(workspace_live_sync_reject_ignored_path(
         &root,
@@ -606,7 +606,7 @@ fn workspace_live_sync_ignore_initializes_from_gitignore() {
 #[test]
 fn workspace_live_sync_ignore_initializes_empty_without_gitignore() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-empty-ignore-{}",
+        "chariox-workspace-live-sync-empty-ignore-{}",
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -618,15 +618,15 @@ fn workspace_live_sync_ignore_initializes_empty_without_gitignore() {
         "test_workspace_live_sync_empty_ignore",
     )
     .expect("ordinary file should not be ignored");
-    let initialized = std::fs::read_to_string(root.join(".arrobaignore"))
-        .expect(".arrobaignore should initialize without .gitignore");
+    let initialized = std::fs::read_to_string(root.join(".charioxignore"))
+        .expect(".charioxignore should initialize without .gitignore");
     assert_eq!(initialized, "");
     workspace_live_sync_reject_ignored_path(
         &root,
         &PathBuf::from("nested/token.secret"),
         "test_workspace_live_sync_empty_ignore",
     )
-    .expect("empty .arrobaignore should not invent ignore patterns");
+    .expect("empty .charioxignore should not invent ignore patterns");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -634,7 +634,7 @@ fn workspace_live_sync_ignore_initializes_empty_without_gitignore() {
 #[test]
 fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-force-ignore-{}",
+        "chariox-workspace-live-sync-force-ignore-{}",
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -642,8 +642,8 @@ fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
 
     for path in [
         ".git/config",
-        ".arroba/logs/kernel.ndjson",
-        ".arrobaignore",
+        ".chariox/logs/kernel.ndjson",
+        ".charioxignore",
         ".env",
         ".env.local",
         ".envrc",
@@ -655,7 +655,7 @@ fn workspace_live_sync_force_excludes_runtime_and_private_paths() {
         "daemon.sock",
         "daemon.socket",
         "nested/worker.sock",
-        ".tmp-arroba/socket",
+        ".tmp-chariox/socket",
         ".tmp-live-workspace-live-sync-drill/state.json",
         ".tmp-live-remote-workspace-live-sync-drill/state.json",
         "history/session.jsonl",

@@ -6,7 +6,7 @@ use super::support::{run_git, test_context};
 #[test]
 fn observes_commit_and_indexes_searchable_metadata() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-git-observer-{}-{}",
+        "chariox-git-observer-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

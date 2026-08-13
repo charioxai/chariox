@@ -213,7 +213,7 @@ mod tests {
                         "pattern": "*"
                     }
                 ],
-                "prompt": "ignored by arroba"
+                "prompt": "ignored by chariox"
             },
             {
                 "name": "plan",

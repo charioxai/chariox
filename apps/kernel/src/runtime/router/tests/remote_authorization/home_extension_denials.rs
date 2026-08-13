@@ -137,22 +137,22 @@ async fn denied_home_extension_invocation_is_audited() {
 #[tokio::test]
 async fn forwarded_home_mcp_rejects_forged_dispatch_name() {
     let workspace = std::env::temp_dir().join(format!(
-        "arroba-home-mcp-forged-name-{}",
+        "chariox-home-mcp-forged-name-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos()
     ));
     let mcp_registry =
-        crate::mcp::ArrobaMcpRegistry::new(vec![workspace.join(".arroba").join("mcps")]);
+        crate::mcp::CharioxMcpRegistry::new(vec![workspace.join(".chariox").join("mcps")]);
     mcp_registry
-        .install(&crate::mcp::ArrobaMcpServerConfig::streamable_http(
+        .install(&crate::mcp::CharioxMcpServerConfig::streamable_http(
             "home-mcp-a",
             "http://127.0.0.1:9/a",
         ))
         .expect("authorized MCP should be installed");
     mcp_registry
-        .install(&crate::mcp::ArrobaMcpServerConfig::streamable_http(
+        .install(&crate::mcp::CharioxMcpServerConfig::streamable_http(
             "home-mcp-b",
             "http://127.0.0.1:9/b",
         ))
@@ -244,16 +244,16 @@ async fn forwarded_home_mcp_rejects_forged_dispatch_name() {
 #[tokio::test]
 async fn forwarded_home_extension_runtime_rejects_mcp_tools() {
     let workspace = std::env::temp_dir().join(format!(
-        "arroba-home-extension-mcp-wrong-dispatch-{}",
+        "chariox-home-extension-mcp-wrong-dispatch-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos()
     ));
     let mcp_registry =
-        crate::mcp::ArrobaMcpRegistry::new(vec![workspace.join(".arroba").join("mcps")]);
+        crate::mcp::CharioxMcpRegistry::new(vec![workspace.join(".chariox").join("mcps")]);
     mcp_registry
-        .install(&crate::mcp::ArrobaMcpServerConfig::streamable_http(
+        .install(&crate::mcp::CharioxMcpServerConfig::streamable_http(
             "home-mcp-runtime-misroute",
             "http://127.0.0.1:9/mcp",
         ))

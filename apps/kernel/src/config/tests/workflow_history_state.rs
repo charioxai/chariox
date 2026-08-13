@@ -34,7 +34,7 @@ fn workflow_code_limits_have_large_defaults() {
 #[test]
 fn workflow_code_limits_can_be_set_and_unset() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-config-test-{}-{}.toml",
+        "chariox-workflow-code-config-test-{}-{}.toml",
         std::process::id(),
         generate_identity_suffix()
     ));
@@ -163,7 +163,7 @@ fn history_archive_external_requires_url() {
 #[test]
 fn history_and_state_config_can_be_changed_and_persisted() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-history-config-test-{}-{}.toml",
+        "chariox-history-config-test-{}-{}.toml",
         std::process::id(),
         generate_identity_suffix()
     ));
@@ -174,7 +174,7 @@ fn history_and_state_config_can_be_changed_and_persisted() {
         .set_user_config_value("history.operational.enabled", "false")
         .expect("operational history capture should update");
     config
-        .set_user_config_value("history.operational.path", "~/.arroba/custom/history.db")
+        .set_user_config_value("history.operational.path", "~/.chariox/custom/history.db")
         .expect("operational history path should update");
     config
         .set_user_config_value("history.operational.retention_days", "10")
@@ -192,7 +192,7 @@ fn history_and_state_config_can_be_changed_and_persisted() {
     let loaded = load_user_config_from_path(&path);
     assert_eq!(
         loaded.history.operational.path.as_deref(),
-        Some("~/.arroba/custom/history.db")
+        Some("~/.chariox/custom/history.db")
     );
     assert!(!loaded.history.operational.enabled);
     assert_eq!(loaded.history.operational.retention_days, Some(10));
@@ -209,7 +209,7 @@ fn history_and_state_config_can_be_changed_and_persisted() {
 #[test]
 fn operational_history_size_config_is_clamped_to_hard_cap() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-history-size-config-test-{}-{}.toml",
+        "chariox-history-size-config-test-{}-{}.toml",
         std::process::id(),
         generate_identity_suffix()
     ));
@@ -236,8 +236,8 @@ fn operational_history_size_config_is_clamped_to_hard_cap() {
 
 #[test]
 fn default_user_config_rejects_test_persistence_paths() {
-    let mut config = ArrobaUserConfig::default();
-    config.history.operational.path = Some("/tmp/arroba-tests/operational-history.db".to_string());
+    let mut config = CharioxUserConfig::default();
+    config.history.operational.path = Some("/tmp/chariox-tests/operational-history.db".to_string());
 
     let error = reject_test_persistence_paths_for_persist(
         &DaemonConfig::default_user_config_path(),
@@ -257,33 +257,35 @@ fn default_user_config_rejects_test_persistence_paths() {
 #[test]
 fn operational_history_path_expands_home() {
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
-    config.user_config.history.operational.path = Some("~/.arroba/custom/history.db".to_string());
+    config.user_config.history.operational.path = Some("~/.chariox/custom/history.db".to_string());
 
     assert!(config
         .operational_history_path()
-        .ends_with(".arroba/custom/history.db"));
+        .ends_with(".chariox/custom/history.db"));
 }
 
 #[test]
 fn durable_state_path_expands_home() {
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
-    config.user_config.state.path = Some("~/.arroba/custom/state.db".to_string());
+    config.user_config.state.path = Some("~/.chariox/custom/state.db".to_string());
 
     assert!(config
         .durable_state_path()
-        .ends_with(".arroba/custom/state.db"));
+        .ends_with(".chariox/custom/state.db"));
 }
 
 #[test]
 fn event_counter_paths_expand_state_home_before_parent() {
     let mut config = DaemonConfig::new("daemon", "machine", "tester");
-    config.user_config.state.path = Some("~/.arroba/custom/state.db".to_string());
+    config.user_config.state.path = Some("~/.chariox/custom/state.db".to_string());
 
     let kernel_counter = config.kernel_event_counter_path();
     let relay_counter = config.kernel_relay_event_counter_path();
 
     assert!(!kernel_counter.starts_with("~"));
     assert!(!relay_counter.starts_with("~"));
-    assert!(kernel_counter.ends_with(".arroba/custom/kernel-events/daemon/event-counter.json"));
-    assert!(relay_counter.ends_with(".arroba/custom/kernel-events/daemon/relay-event-counter.json"));
+    assert!(kernel_counter.ends_with(".chariox/custom/kernel-events/daemon/event-counter.json"));
+    assert!(
+        relay_counter.ends_with(".chariox/custom/kernel-events/daemon/relay-event-counter.json")
+    );
 }

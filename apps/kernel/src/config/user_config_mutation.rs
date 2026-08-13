@@ -1,11 +1,11 @@
 use super::{
-    normalized_optional, validate_config_key_path, validate_non_empty, ArrobaUserConfig,
-    ArtifactOperationalBackend, HistoryArchiveMode, HistoryOperationalBackend,
-    SliceImageBuildPolicy, StateBackend, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode,
+    normalized_optional, validate_config_key_path, validate_non_empty, ArtifactOperationalBackend,
+    CharioxUserConfig, HistoryArchiveMode, HistoryOperationalBackend, SliceImageBuildPolicy,
+    StateBackend, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode,
 };
 use crate::error::DaemonError;
 
-impl ArrobaUserConfig {
+impl CharioxUserConfig {
     pub(super) fn set_value(&mut self, key_path: &str, value: String) -> Result<(), DaemonError> {
         let normalized = key_path.trim();
         validate_config_key_path(normalized)?;

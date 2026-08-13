@@ -314,10 +314,10 @@ fn local_request_api_waits_for_all_join_inputs_before_scheduling_downstream_node
 
     let entry_agent = harness.spawn_workflow_test_agent(session.id(), "entry");
     let branch_one_worktree = std::env::temp_dir()
-        .join("arroba-workflow-join-branch-one")
+        .join("chariox-workflow-join-branch-one")
         .join(session.id());
     let branch_two_worktree = std::env::temp_dir()
-        .join("arroba-workflow-join-branch-two")
+        .join("chariox-workflow-join-branch-two")
         .join(session.id());
     std::fs::create_dir_all(&branch_one_worktree)
         .expect("branch one workflow test worktree should exist");

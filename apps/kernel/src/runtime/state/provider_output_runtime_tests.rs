@@ -79,7 +79,7 @@ async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState 
     )
 }
 
-fn sync_external_active_prompt_and_queue_arroba_prompt(
+fn sync_external_active_prompt_and_queue_chariox_prompt(
     app: &mut DaemonApp,
     session_id: &str,
     attachment_id: &str,
@@ -101,19 +101,19 @@ fn sync_external_active_prompt_and_queue_arroba_prompt(
         app.sessions_mut().reserve_prompt_id(),
         attachment_id,
         agent_id,
-        "queued from Arroba\n",
+        "queued from Chariox\n",
         crate::session::PromptStatus::Queued,
     );
     let crate::session::PromptSubmissionOutcome::Queued { prompt } = app
         .prompt_owner_submit_prepared_prompt(session_id, queued_prompt, false)
-        .expect("Arroba prompt should queue behind external active prompt")
+        .expect("Chariox prompt should queue behind external active prompt")
     else {
-        panic!("Arroba prompt must not start while external prompt is active");
+        panic!("Chariox prompt must not start while external prompt is active");
     };
     (external_prompt_id, prompt.id().to_string())
 }
 
-fn assert_external_active_prompt_and_queued_arroba_prompt(
+fn assert_external_active_prompt_and_queued_chariox_prompt(
     runtime: &KernelRuntimeState,
     session_id: &str,
     agent_id: &str,
@@ -139,7 +139,7 @@ fn assert_external_active_prompt_and_queued_arroba_prompt(
         queued_prompts
             .iter()
             .any(|prompt| prompt.id() == queued_prompt_id),
-        "Arroba prompt should stay queued behind external active prompt"
+        "Chariox prompt should stay queued behind external active prompt"
     );
 }
 

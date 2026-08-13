@@ -6,11 +6,11 @@ impl WorkflowCodeArtifactRegistry {
     }
 
     pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
-        workspace.as_ref().join(".arroba").join("workflow-code")
+        workspace.as_ref().join(".chariox").join("workflow-code")
     }
 
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("workflow-code"))
+        chariox_home().map(|home| home.join("workflow-code"))
     }
 
     pub fn save(

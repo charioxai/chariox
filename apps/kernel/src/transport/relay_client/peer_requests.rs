@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arroba_relay::protocol::EncryptedRelayPayload;
+use chariox_relay::protocol::EncryptedRelayPayload;
 use tokio::sync::RwLock;
 
 use crate::runtime::router::CommandRouter;

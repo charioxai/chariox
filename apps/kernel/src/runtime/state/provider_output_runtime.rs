@@ -558,7 +558,7 @@ pub(super) fn provider_run_ids_for_owned_output_pump(
             .into_iter()
             .filter(|run| run.session_id() == session.id())
             .filter(|run| {
-                !run.client_interface().is_arroba()
+                !run.client_interface().is_chariox()
                     && matches!(
                         run.state(),
                         crate::provider::ProviderRunState::Starting
@@ -583,7 +583,7 @@ fn provider_run_requires_owned_output_pump(
     if run.state() == crate::provider::ProviderRunState::Starting {
         return true;
     }
-    if !run.client_interface().is_arroba()
+    if !run.client_interface().is_chariox()
         && matches!(
             run.state(),
             crate::provider::ProviderRunState::Starting

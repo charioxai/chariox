@@ -118,13 +118,13 @@ async fn home_extension_invocation_duplicate_rejection_is_audited() {
 #[tokio::test(flavor = "multi_thread")]
 async fn forwarded_home_script_invocation_uses_shared_timeout_policy() {
     let workspace = std::env::temp_dir().join(format!(
-        "arroba-home-extension-script-timeout-{}",
+        "chariox-home-extension-script-timeout-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos()
     ));
-    let script_dir = workspace.join(".arroba").join("scripts").join("home-slow");
+    let script_dir = workspace.join(".chariox").join("scripts").join("home-slow");
     std::fs::create_dir_all(&script_dir).expect("script dir should be created");
     std::fs::write(
         script_dir.join("metadata.json"),
@@ -145,7 +145,7 @@ async fn forwarded_home_script_invocation_uses_shared_timeout_policy() {
         "import time\n\ndef run():\n    time.sleep(5)\n    return {\"done\": True}\n",
     )
     .expect("script should be written");
-    let env_dir = workspace.join(".arroba").join("envs");
+    let env_dir = workspace.join(".chariox").join("envs");
     std::fs::create_dir_all(&env_dir).expect("env dir should be created");
     std::fs::write(
         env_dir.join("test-env.json"),

@@ -1,6 +1,6 @@
 //! Granted-skill prompt context injection.
 //!
-//! This module owns adding granted Arroba skill summaries and explicitly requested skill bodies to
+//! This module owns adding granted Chariox skill summaries and explicitly requested skill bodies to
 //! prompts before provider submission.
 
 use super::*;

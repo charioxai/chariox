@@ -59,7 +59,7 @@ fn export_debug_bundle_from_log_root(
     let logs_path = bundle_dir.join("logs.ndjson");
 
     let manifest = json!({
-        "schema": "arroba.debug_bundle.v1",
+        "schema": "chariox.debug_bundle.v1",
         "created_at_ms": unix_epoch_ms(),
         "log_root": log_root.display().to_string(),
         "filters": {
@@ -301,7 +301,7 @@ mod tests {
         assert!(!logs.contains("other"));
         let manifest =
             fs::read_to_string(export.manifest_path).expect("manifest should be readable");
-        assert!(manifest.contains(r#""schema": "arroba.debug_bundle.v1""#));
+        assert!(manifest.contains(r#""schema": "chariox.debug_bundle.v1""#));
         assert!(manifest.contains(r#""session_id": "session-1""#));
 
         let _ = fs::remove_dir_all(root);
@@ -343,7 +343,7 @@ mod tests {
 
     fn test_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-{name}-{}-{}",
+            "chariox-{name}-{}-{}",
             std::process::id(),
             unix_epoch_ms()
         ));

@@ -73,7 +73,7 @@ impl SessionService {
             publication.workflow_id(),
             queue_ref.as_deref().unwrap_or("default"),
         )?;
-        let event_interest_key = arroba_event_protocol::event_interest_key(
+        let event_interest_key = chariox_event_protocol::event_interest_key(
             &generator_id,
             &event_type,
             event_type_version,

@@ -1,4 +1,4 @@
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
@@ -262,7 +262,7 @@ impl KernelRuntimeState {
         self.owned
             .provider_run_projection
             .get_for_agent(agent.session_id(), agent.id())
-            .is_some_and(|run| !run.client_interface().is_arroba())
+            .is_some_and(|run| !run.client_interface().is_chariox())
     }
 
     pub(in crate::runtime::state) fn remote_agent_is_home_managed_slice(
@@ -361,7 +361,7 @@ impl KernelRuntimeState {
             .map(|entry| (entry.name.as_str(), entry))
             .collect::<std::collections::BTreeMap<_, _>>();
         let mut lines = vec![
-            "Available Arroba skills for this remote agent:".to_string(),
+            "Available Chariox skills for this remote agent:".to_string(),
             "These granted skills were synchronized from the home kernel and materialized on this worker before this prompt. Follow them when they match the task; assets, scripts, and references are available under each materialized_root.".to_string(),
         ];
         let mut bodies = Vec::new();
@@ -402,13 +402,13 @@ impl KernelRuntimeState {
             bodies.push((skill.name, materialized.materialized_root.clone(), body));
         }
         lines.push(String::new());
-        lines.push("Full instructions for synchronized Arroba skills:".to_string());
+        lines.push("Full instructions for synchronized Chariox skills:".to_string());
         for (name, materialized_root, body) in bodies {
             lines.push(format!(
-                "<arroba_skill name=\"{name}\" materialized_root=\"{materialized_root}\">"
+                "<chariox_skill name=\"{name}\" materialized_root=\"{materialized_root}\">"
             ));
             lines.push(body.trim().to_string());
-            lines.push("</arroba_skill>".to_string());
+            lines.push("</chariox_skill>".to_string());
         }
         Ok(format!("{}\n\n{}", lines.join("\n"), prompt))
     }

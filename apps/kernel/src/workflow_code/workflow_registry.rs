@@ -9,11 +9,11 @@ impl WorkflowRegistry {
     }
 
     pub fn workspace_root(workspace: impl AsRef<Path>) -> PathBuf {
-        workspace.as_ref().join(".arroba").join("workflows")
+        workspace.as_ref().join(".chariox").join("workflows")
     }
 
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("workflows"))
+        chariox_home().map(|home| home.join("workflows"))
     }
 
     pub fn add(
@@ -350,7 +350,7 @@ impl WorkflowRegistry {
                     .ok_or(crate::DaemonError::LocalTransport {
                     operation: "workflow_registry.add",
                     message:
-                        "user workflow registry is unavailable because ARROBA_HOME/HOME is not set"
+                        "user workflow registry is unavailable because CHARIOX_HOME/HOME is not set"
                             .to_string(),
                 })
             }

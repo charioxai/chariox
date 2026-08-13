@@ -126,7 +126,7 @@ impl CommandRouter {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::ArrobaSkillPackage>,
+            Option<crate::skill::CharioxSkillPackage>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,

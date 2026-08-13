@@ -186,7 +186,7 @@ impl KernelRuntimeState {
             variant: source_run.variant().map(str::to_string),
             structured_endpoint: source_run.structured_endpoint().map(str::to_string),
             provider_session_id: None,
-            native_tui: !source_run.client_interface().is_arroba(),
+            native_tui: !source_run.client_interface().is_chariox(),
         };
         let provider_run = self
             .launch_provider_for_fork(launch_request, caller_user_id)

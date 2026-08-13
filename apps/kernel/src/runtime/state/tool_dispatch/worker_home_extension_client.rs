@@ -1,4 +1,4 @@
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use super::*;
 
@@ -95,7 +95,7 @@ impl KernelRuntimeState {
             server.name == name
                 && matches!(
                     &server.transport,
-                    crate::mcp::ArrobaMcpTransportConfig::StreamableHttp { url, .. }
+                    crate::mcp::CharioxMcpTransportConfig::StreamableHttp { url, .. }
                         if url == "http://127.0.0.1/mcp"
                 )
         }) {

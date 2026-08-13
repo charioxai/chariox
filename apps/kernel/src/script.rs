@@ -14,14 +14,14 @@ mod execution;
 use execution::{execute_node_script, execute_python_script, inspect_script};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaEnvironmentConfig {
+pub struct CharioxEnvironmentConfig {
     pub name: String,
-    pub runtime: ArrobaEnvironmentRuntime,
+    pub runtime: CharioxEnvironmentRuntime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ArrobaEnvironmentRuntime {
+pub enum CharioxEnvironmentRuntime {
     Python {
         python: PathBuf,
     },
@@ -33,9 +33,9 @@ pub enum ArrobaEnvironmentRuntime {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaScriptMetadata {
+pub struct CharioxScriptMetadata {
     pub name: String,
-    pub runtime: ArrobaScriptRuntime,
+    pub runtime: CharioxScriptRuntime,
     pub path: PathBuf,
     pub description: String,
     pub input_schema: Value,
@@ -46,26 +46,26 @@ pub struct ArrobaScriptMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ArrobaScriptRuntime {
+pub enum CharioxScriptRuntime {
     Python,
     #[serde(rename = "typescript")]
     TypeScript,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArrobaEnvironmentRegistry {
+pub struct CharioxEnvironmentRegistry {
     roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArrobaScriptRegistry {
+pub struct CharioxScriptRegistry {
     roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredScriptMetadata {
     name: String,
-    runtime: ArrobaScriptRuntime,
+    runtime: CharioxScriptRuntime,
     entrypoint: String,
     description: String,
     input_schema: Value,
@@ -81,7 +81,7 @@ pub struct ScriptExecutionResult {
     pub logs: String,
 }
 pub const DEFAULT_SCRIPT_EXECUTION_TIMEOUT_SEC: u64 = 30;
-impl ArrobaEnvironmentRegistry {
+impl CharioxEnvironmentRegistry {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self { roots }
     }
@@ -94,7 +94,7 @@ impl ArrobaEnvironmentRegistry {
         user_capability_root_for("envs")
     }
 
-    pub fn install(&self, config: &ArrobaEnvironmentConfig) -> Result<PathBuf, DaemonError> {
+    pub fn install(&self, config: &CharioxEnvironmentConfig) -> Result<PathBuf, DaemonError> {
         config.validate()?;
         let root = self.primary_root()?;
         fs::create_dir_all(root).map_err(io_error("env.install"))?;
@@ -120,7 +120,7 @@ impl ArrobaEnvironmentRegistry {
         Ok(path)
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaEnvironmentConfig>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxEnvironmentConfig>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
             if !root.exists() {
@@ -138,7 +138,7 @@ impl ArrobaEnvironmentRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaEnvironmentConfig>, DaemonError> {
+    pub fn get(&self, name: &str) -> Result<Option<CharioxEnvironmentConfig>, DaemonError> {
         validate_registry_name(name, "environment name")?;
         let Some(path) = self.find_path(name)? else {
             return Ok(None);
@@ -146,7 +146,7 @@ impl ArrobaEnvironmentRegistry {
         Self::read(&path).map(Some)
     }
 
-    fn read(path: &Path) -> Result<ArrobaEnvironmentConfig, DaemonError> {
+    fn read(path: &Path) -> Result<CharioxEnvironmentConfig, DaemonError> {
         let contents = fs::read_to_string(path).map_err(io_error("env.read"))?;
         serde_json::from_str(&contents).map_err(|error| DaemonError::LocalTransport {
             operation: "env.read",
@@ -172,11 +172,11 @@ impl ArrobaEnvironmentRegistry {
     }
 }
 
-impl ArrobaEnvironmentConfig {
+impl CharioxEnvironmentConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_registry_name(&self.name, "environment name")?;
         match &self.runtime {
-            ArrobaEnvironmentRuntime::Python { python } => {
+            CharioxEnvironmentRuntime::Python { python } => {
                 if !python.exists() {
                     return Err(DaemonError::InvalidConfig {
                         field: "python",
@@ -194,7 +194,7 @@ impl ArrobaEnvironmentConfig {
                     });
                 }
             }
-            ArrobaEnvironmentRuntime::Node { node, package_root } => {
+            CharioxEnvironmentRuntime::Node { node, package_root } => {
                 if !node.exists() {
                     return Err(DaemonError::InvalidConfig {
                         field: "node",
@@ -225,7 +225,7 @@ impl ArrobaEnvironmentConfig {
     }
 }
 
-impl ArrobaScriptRegistry {
+impl CharioxScriptRegistry {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self { roots }
     }
@@ -242,8 +242,8 @@ impl ArrobaScriptRegistry {
         &self,
         source: &Path,
         name: Option<&str>,
-        env: &ArrobaEnvironmentConfig,
-    ) -> Result<ArrobaScriptMetadata, DaemonError> {
+        env: &CharioxEnvironmentConfig,
+    ) -> Result<CharioxScriptMetadata, DaemonError> {
         let name = name.map(str::to_string).unwrap_or_else(|| {
             source
                 .file_stem()
@@ -260,8 +260,8 @@ impl ArrobaScriptRegistry {
         }
         let runtime = runtime_for_path(source)?;
         match (&runtime, &env.runtime) {
-            (ArrobaScriptRuntime::Python, ArrobaEnvironmentRuntime::Python { .. }) => {}
-            (ArrobaScriptRuntime::TypeScript, ArrobaEnvironmentRuntime::Node { .. }) => {}
+            (CharioxScriptRuntime::Python, CharioxEnvironmentRuntime::Python { .. }) => {}
+            (CharioxScriptRuntime::TypeScript, CharioxEnvironmentRuntime::Node { .. }) => {}
             _ => {
                 return Err(DaemonError::InvalidConfig {
                     field: "environment",
@@ -271,7 +271,7 @@ impl ArrobaScriptRegistry {
         }
         let (description, input_schema) = inspect_script(source, &runtime, env)?;
         let definition_hash = script_definition_hash(source, &description, &input_schema)?;
-        Ok(ArrobaScriptMetadata {
+        Ok(CharioxScriptMetadata {
             name,
             runtime,
             path: source.to_path_buf(),
@@ -286,8 +286,8 @@ impl ArrobaScriptRegistry {
         &self,
         source: &Path,
         name: Option<&str>,
-        env: &ArrobaEnvironmentConfig,
-    ) -> Result<(ArrobaScriptMetadata, PathBuf), DaemonError> {
+        env: &CharioxEnvironmentConfig,
+    ) -> Result<(CharioxScriptMetadata, PathBuf), DaemonError> {
         let validated = self.validate_script(source, name, env)?;
         let root = self.primary_root()?;
         let destination = root.join(&validated.name);
@@ -299,8 +299,8 @@ impl ArrobaScriptRegistry {
         }
         fs::create_dir_all(&destination).map_err(io_error("script.install"))?;
         let entrypoint = match validated.runtime {
-            ArrobaScriptRuntime::Python => "script.py",
-            ArrobaScriptRuntime::TypeScript => "script.ts",
+            CharioxScriptRuntime::Python => "script.py",
+            CharioxScriptRuntime::TypeScript => "script.ts",
         };
         let script_path = destination.join(entrypoint);
         fs::copy(source, &script_path).map_err(io_error("script.install"))?;
@@ -329,7 +329,7 @@ impl ArrobaScriptRegistry {
         Ok((self.metadata_from_stored(&destination, stored), destination))
     }
 
-    pub fn uninstall(&self, name: &str) -> Result<(ArrobaScriptMetadata, PathBuf), DaemonError> {
+    pub fn uninstall(&self, name: &str) -> Result<(CharioxScriptMetadata, PathBuf), DaemonError> {
         let dir = self
             .find_dir(name)?
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -341,7 +341,7 @@ impl ArrobaScriptRegistry {
         Ok((metadata, dir))
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaScriptMetadata>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxScriptMetadata>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
             if !root.exists() {
@@ -359,7 +359,7 @@ impl ArrobaScriptRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaScriptMetadata>, DaemonError> {
+    pub fn get(&self, name: &str) -> Result<Option<CharioxScriptMetadata>, DaemonError> {
         let Some(dir) = self.find_dir(name)? else {
             return Ok(None);
         };
@@ -369,7 +369,7 @@ impl ArrobaScriptRegistry {
     pub fn execute(
         &self,
         name: &str,
-        env: &ArrobaEnvironmentConfig,
+        env: &CharioxEnvironmentConfig,
         arguments: Value,
     ) -> Result<ScriptExecutionResult, DaemonError> {
         let metadata = self.get(name)?.ok_or_else(|| DaemonError::LocalTransport {
@@ -377,7 +377,7 @@ impl ArrobaScriptRegistry {
             message: format!("script `{name}` is not registered"),
         })?;
         match (&metadata.runtime, &env.runtime) {
-            (ArrobaScriptRuntime::Python, ArrobaEnvironmentRuntime::Python { python }) => {
+            (CharioxScriptRuntime::Python, CharioxEnvironmentRuntime::Python { python }) => {
                 execute_python_script(
                     python,
                     &metadata.path,
@@ -388,8 +388,8 @@ impl ArrobaScriptRegistry {
                 )
             }
             (
-                ArrobaScriptRuntime::TypeScript,
-                ArrobaEnvironmentRuntime::Node { node, package_root },
+                CharioxScriptRuntime::TypeScript,
+                CharioxEnvironmentRuntime::Node { node, package_root },
             ) => execute_node_script(
                 node,
                 package_root.as_deref(),
@@ -407,7 +407,7 @@ impl ArrobaScriptRegistry {
         }
     }
 
-    fn read_metadata(&self, dir: &Path) -> Result<ArrobaScriptMetadata, DaemonError> {
+    fn read_metadata(&self, dir: &Path) -> Result<CharioxScriptMetadata, DaemonError> {
         let contents =
             fs::read_to_string(dir.join("metadata.json")).map_err(io_error("script.read"))?;
         let stored = serde_json::from_str::<StoredScriptMetadata>(&contents).map_err(|error| {
@@ -426,8 +426,8 @@ impl ArrobaScriptRegistry {
         &self,
         dir: &Path,
         stored: StoredScriptMetadata,
-    ) -> ArrobaScriptMetadata {
-        ArrobaScriptMetadata {
+    ) -> CharioxScriptMetadata {
+        CharioxScriptMetadata {
             name: stored.name,
             runtime: stored.runtime,
             path: dir.join(stored.entrypoint),
@@ -457,10 +457,10 @@ impl ArrobaScriptRegistry {
     }
 }
 
-fn runtime_for_path(path: &Path) -> Result<ArrobaScriptRuntime, DaemonError> {
+fn runtime_for_path(path: &Path) -> Result<CharioxScriptRuntime, DaemonError> {
     match path.extension().and_then(|ext| ext.to_str()) {
-        Some("py") => Ok(ArrobaScriptRuntime::Python),
-        Some("ts") => Ok(ArrobaScriptRuntime::TypeScript),
+        Some("py") => Ok(CharioxScriptRuntime::Python),
+        Some("ts") => Ok(CharioxScriptRuntime::TypeScript),
         _ => Err(DaemonError::InvalidConfig {
             field: "script path",
             message: "script extension must be .py or .ts",
@@ -492,7 +492,7 @@ fn capability_root_for(kind: &str, workspace: &Path) -> PathBuf {
             .join(workspace_registry_hash(workspace))
             .join(kind);
     }
-    workspace.join(".arroba").join(kind)
+    workspace.join(".chariox").join(kind)
 }
 
 fn user_capability_root_for(kind: &str) -> Option<PathBuf> {
@@ -501,11 +501,11 @@ fn user_capability_root_for(kind: &str) -> Option<PathBuf> {
     }
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".arroba").join(kind))
+        .map(|home| home.join(".chariox").join(kind))
 }
 
 fn managed_capability_root() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+    std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
@@ -537,7 +537,7 @@ mod tests {
         ]) else {
             return;
         };
-        let root = temp_root("arroba-script-python");
+        let root = temp_root("chariox-script-python");
         let source = root.join("lookup.py");
         fs::create_dir_all(&root).expect("temp root should be created");
         fs::write(
@@ -554,17 +554,17 @@ def test_run() -> None:
 "#,
         )
         .expect("script should be written");
-        let env = ArrobaEnvironmentConfig {
+        let env = CharioxEnvironmentConfig {
             name: "py".to_string(),
-            runtime: ArrobaEnvironmentRuntime::Python { python },
+            runtime: CharioxEnvironmentRuntime::Python { python },
         };
-        let registry = ArrobaScriptRegistry::new(vec![root.join("scripts")]);
+        let registry = CharioxScriptRegistry::new(vec![root.join("scripts")]);
 
         let validated = registry
             .validate_script(&source, Some("lookup"), &env)
             .expect("script should validate");
         assert_eq!(validated.name, "lookup");
-        assert_eq!(validated.runtime, ArrobaScriptRuntime::Python);
+        assert_eq!(validated.runtime, CharioxScriptRuntime::Python);
         assert_eq!(
             validated.input_schema["properties"]["key"]["type"],
             "string"
@@ -604,7 +604,7 @@ def test_run() -> None:
         ]) else {
             return;
         };
-        let root = temp_root("arroba-script-invalid");
+        let root = temp_root("chariox-script-invalid");
         let source = root.join("bad.py");
         fs::create_dir_all(&root).expect("temp root should be created");
         fs::write(
@@ -619,11 +619,11 @@ def test_run() -> None:
 "#,
         )
         .expect("script should be written");
-        let env = ArrobaEnvironmentConfig {
+        let env = CharioxEnvironmentConfig {
             name: "py".to_string(),
-            runtime: ArrobaEnvironmentRuntime::Python { python },
+            runtime: CharioxEnvironmentRuntime::Python { python },
         };
-        let registry = ArrobaScriptRegistry::new(vec![root.join("scripts")]);
+        let registry = CharioxScriptRegistry::new(vec![root.join("scripts")]);
 
         let error = registry
             .validate_script(&source, Some("bad"), &env)
@@ -654,7 +654,7 @@ def test_run() -> None:
         {
             return;
         }
-        let root = temp_root("arroba-script-typescript");
+        let root = temp_root("chariox-script-typescript");
         let source = root.join("vector_lookup.ts");
         fs::create_dir_all(&root).expect("temp root should be created");
         fs::write(
@@ -675,14 +675,14 @@ export function test_run(): void {
 "#,
         )
         .expect("script should be written");
-        let env = ArrobaEnvironmentConfig {
+        let env = CharioxEnvironmentConfig {
             name: "node".to_string(),
-            runtime: ArrobaEnvironmentRuntime::Node {
+            runtime: CharioxEnvironmentRuntime::Node {
                 node,
                 package_root: None,
             },
         };
-        let registry = ArrobaScriptRegistry::new(vec![root.join("scripts")]);
+        let registry = CharioxScriptRegistry::new(vec![root.join("scripts")]);
 
         registry
             .install(&source, Some("vector_lookup"), &env)

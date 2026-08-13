@@ -17,13 +17,16 @@ const LEGACY_WORKFLOW_TURN_HASHES: &[&str] = &[
 ];
 const LEGACY_METAAGENT_DELEGATION_HASHES: &[&str] =
     &["4182ea00a5ca086d4edcaa32900e3586fdc9feef6e954559b5ace7743698816e"];
-const LEGACY_META_MODE_ENTERED_HASHES: &[&str] =
-    &["62d1df699e55d3e4213dcb7cdf3eadee471155238c48d3898985e7e264dcea5e"];
+const LEGACY_META_MODE_ENTERED_HASHES: &[&str] = &[
+    "62d1df699e55d3e4213dcb7cdf3eadee471155238c48d3898985e7e264dcea5e",
+    "6aac2d837c2d629d1de3e5c96611dd877a9f5a54700a16e24469f53e052ddaa6",
+];
 const LEGACY_SLICE_HASHES: &[&str] = &[
     "ba79f023be2bcb85d9ab22ceebe992ada13b1fc2e5c3bbfe5b8aef60237ff412",
     "5b2723aede2fc23f4de963cc9aea35c7a0af4c1677e7ee5b64e0d74276be0a22",
     "fd8f931980e7a9645e79d24517b01e74d915e3592d366c4d003e0eba476a7ca6",
     "a9115e43cc0332fafcecdc29105b6151af4ed20bc584dc9f48ba00a267776b71",
+    "e92428d4e8c387de479477a3f33b873b0e81863cd499c224f44661d2efabb28f",
 ];
 
 const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
@@ -36,19 +39,19 @@ const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
 const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
-const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Arroba workspace live sync file write before replying.";
-const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Arroba runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Arroba workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
-const RUNTIME_METAAGENT_EVENT: &str = "Arroba runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `arroba.meta.session_overview`, `arroba.meta.list_events`, or `arroba.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
+const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Chariox workspace live sync file write before replying.";
+const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Chariox runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Chariox workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
+const RUNTIME_METAAGENT_EVENT: &str = "Chariox runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `chariox.meta.session_overview`, `chariox.meta.list_events`, or `chariox.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
 
 const WORKFLOW_TURN: &str = concat!(
-    "You are an agent participating in an Arroba workflow turn.\n\n",
+    "You are an agent participating in a Chariox workflow turn.\n\n",
     "{{NODE_INSTRUCTION_REFERENCE_BLOCK}}",
     "Your node-level instructions are in the referenced markdown file above. ",
     "If you do not remember them exactly, read that file before continuing.\n\n",
     "{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}",
     "{{OUTGOING_EDGE_CONTRACTS_BLOCK}}",
     "{{CONTROL_MAILBOX_BLOCK}}",
-    "For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Arroba runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n",
+    "For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Chariox runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n",
     "{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\n",
     "Outgoing edge routing:\n",
     "- If your final `output.message` is plain text or JSON without a non-empty `workflow_handoffs` array, the runtime sends the same handoff to every outgoing edge listed above.\n",
@@ -60,22 +63,22 @@ const WORKFLOW_TURN: &str = concat!(
     "When routing to selected edges, put the routing object inside the required final JSON block as `output.message`, for example:\n",
     "{\"summary\":\"human-facing summary\",\"output\":{\"message\":{\"workflow_handoffs\":[{\"edge_id\":\"edge-id-from-contract\",\"summary\":\"route summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}]}}}\n\n",
     "Only `handoff_schema_ref` values listed in this turn's `outgoing-edge-contracts` are valid for validation. Any schema ref inside `workflow-handoff-payloads` belongs to a completed incoming edge and MUST NOT be used for this turn.\n\n",
-    "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, validation is required before finalizing. For a plain `output.message`, validate that value by calling the Arroba runtime MCP tool `validate_workflow_handoff` with the delivery token above and the edge's `handoff_schema_ref`. If you use `workflow_handoffs`, do not validate the outer routing wrapper; validate only the routed message inside each selected edge entry with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
-    "If your node-level instructions require shared console output or inspection, you MUST use the Arroba runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\n",
-    "Do not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Arroba runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\n",
+    "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, validation is required before finalizing. For a plain `output.message`, validate that value by calling the Chariox runtime MCP tool `validate_workflow_handoff` with the delivery token above and the edge's `handoff_schema_ref`. If you use `workflow_handoffs`, do not validate the outer routing wrapper; validate only the routed message inside each selected edge entry with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
+    "If your node-level instructions require shared console output or inspection, you MUST use the Chariox runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\n",
+    "Do not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Chariox runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\n",
     "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n",
     "{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\n",
     "Do not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\n",
     "If a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
 );
 
-const WORKFLOW_RUN_COMPLETION: &str = "This node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Arroba runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n";
+const WORKFLOW_RUN_COMPLETION: &str = "This node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Chariox runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n";
 
-const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "This node is authorized to emit intermediate workflow run outputs.\nIntermediate outputs are user-visible progress, event, or status updates for the endpoint and workflow run observers. They do not send data downstream, do not satisfy outgoing edge handoff requirements, and do not replace the final fenced JSON handoff required at the end of this turn.\nIf you want to send one user-visible intermediate output without terminating the workflow run, call the Arroba runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nYou may call `validate_and_submit_intermediate_workflow_run_output` multiple times in the same workflow node turn when useful, for example during long-running work. Every intermediate output call in this node uses the same node-level intermediate output schema.\nAfter each successful intermediate output submission, continue this same workflow turn. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream handoff validation rules still apply.\nDo not treat intermediate output as downstream handoff data.\n\n";
+const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "This node is authorized to emit intermediate workflow run outputs.\nIntermediate outputs are user-visible progress, event, or status updates for the endpoint and workflow run observers. They do not send data downstream, do not satisfy outgoing edge handoff requirements, and do not replace the final fenced JSON handoff required at the end of this turn.\nIf you want to send one user-visible intermediate output without terminating the workflow run, call the Chariox runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nYou may call `validate_and_submit_intermediate_workflow_run_output` multiple times in the same workflow node turn when useful, for example during long-running work. Every intermediate output call in this node uses the same node-level intermediate output schema.\nAfter each successful intermediate output submission, continue this same workflow turn. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream handoff validation rules still apply.\nDo not treat intermediate output as downstream handoff data.\n\n";
 
 const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str = "Generate a git commit subject for the workspace changes supplied by the user.\nRules:\n- Output exactly one concise imperative subject line.\n- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n- Keep it under 72 characters.";
 
-const UTILITY_SEMANTIC_RECALL_SEARCH: &str = "You are running an Arroba recall-search utility. Answer the user's question only from the supplied recall candidates.\nDo not use external knowledge. Do not mention tool calls or runtime mechanics.\nReturn exactly one JSON object matching the JSON Schema supplied by the user.\nRules:\n- Select only event_id values present in Recall candidates.\n- If the candidates do not answer the question, say that in answer and return an empty matches array.\n- Keep answer concise.\n- Output JSON only.";
+const UTILITY_SEMANTIC_RECALL_SEARCH: &str = "You are running a Chariox recall-search utility. Answer the user's question only from the supplied recall candidates.\nDo not use external knowledge. Do not mention tool calls or runtime mechanics.\nReturn exactly one JSON object matching the JSON Schema supplied by the user.\nRules:\n- Select only event_id values present in Recall candidates.\n- If the candidates do not answer the question, say that in answer and return an empty matches array.\n- Keep answer concise.\n- Output JSON only.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -176,16 +179,16 @@ struct BundledPromptDefaultsState {
 
 impl PromptTemplateRegistry {
     pub(crate) fn from_env() -> Self {
-        let arroba_home = std::env::var_os("ARROBA_HOME")
+        let chariox_home = std::env::var_os("CHARIOX_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("HOME")
                     .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".arroba"))
+                    .map(|home| PathBuf::from(home).join(".chariox"))
             })
-            .unwrap_or_else(|| std::env::temp_dir().join("arroba"));
-        Self::new(arroba_home.join("prompts"))
+            .unwrap_or_else(|| std::env::temp_dir().join("chariox"));
+        Self::new(chariox_home.join("prompts"))
     }
 
     pub(crate) fn new(root: PathBuf) -> Self {
@@ -353,7 +356,7 @@ impl PromptAssemblyService {
         }
         if additional_hidden_context.is_some_and(|context| {
             context.contains("<workflow-runtime-instructions>")
-                || context.contains("Arroba workflow turn")
+                || context.contains("Chariox workflow turn")
         }) {
             self.push_template(
                 "runtime/workflow-direct-json-fallback",
@@ -445,10 +448,10 @@ pub(crate) fn bundled_metaagent_event_template() -> &'static str {
 }
 
 fn current_kernel_is_slice() -> bool {
-    std::env::var("ARROBA_MACHINE_ID")
+    std::env::var("CHARIOX_MACHINE_ID")
         .ok()
         .is_some_and(|machine_id| machine_id.starts_with("slice:"))
-        || std::env::var("ARROBA_SLICE_MACHINE_ID")
+        || std::env::var("CHARIOX_SLICE_MACHINE_ID")
             .ok()
             .is_some_and(|machine_id| machine_id.starts_with("slice:"))
 }
@@ -517,7 +520,7 @@ pub(crate) fn assembled_prompt_component(tag: &str, body: &str) -> String {
 }
 
 pub(crate) fn unescape_prompt_component_delimiters(body: &str) -> String {
-    ARROBA_PROMPT_COMPONENT_TAGS
+    CHARIOX_PROMPT_COMPONENT_TAGS
         .iter()
         .fold(body.to_string(), |value, tag| {
             unescape_prompt_component_tag_delimiters(&value, tag)
@@ -561,7 +564,7 @@ fn strip_legacy_template_heading(template_id: &str, body: &str) -> String {
 
 fn escape_prompt_component_delimiters(component_tag: &str, body: &str) -> String {
     let escaped = escape_prompt_component_tag_delimiters(body, component_tag);
-    ARROBA_PROMPT_COMPONENT_TAGS
+    CHARIOX_PROMPT_COMPONENT_TAGS
         .iter()
         .filter(|tag| **tag != component_tag)
         .fold(escaped, |value, tag| {
@@ -579,7 +582,7 @@ fn unescape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
         .replace(&format!("&lt;/{tag}&gt;"), &format!("</{tag}>"))
 }
 
-const ARROBA_PROMPT_COMPONENT_TAGS: &[&str] = &[
+const CHARIOX_PROMPT_COMPONENT_TAGS: &[&str] = &[
     "runtime-instructions",
     "workspace-live-sync-instructions",
     "workspace-live-sync-tracked-instructions",
@@ -625,7 +628,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let index = COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
-            .join("arroba-prompt-assembly-tests")
+            .join("chariox-prompt-assembly-tests")
             .join(format!("{}-{}-{index}", name, std::process::id()))
     }
 
@@ -702,10 +705,10 @@ mod tests {
         assert!(root.join("workflow").join("turn.md").exists());
         let base = fs::read_to_string(root.join("runtime").join("base.md"))
             .expect("base prompt should read");
-        assert!(base.contains("arroba.list_extensions"));
-        assert!(base.contains("arroba.list_session_agents"));
-        assert!(base.contains("arroba.get_session_agent"));
-        assert!(base.contains("arroba.send_agent_message"));
+        assert!(base.contains("chariox.list_extensions"));
+        assert!(base.contains("chariox.list_session_agents"));
+        assert!(base.contains("chariox.get_session_agent"));
+        assert!(base.contains("chariox.send_agent_message"));
         assert!(base.contains("Treat every interaction as an equal-level, self-contained message"));
         assert!(base
             .contains("Include a follow-up destination only when the sender explicitly requests"));
@@ -779,9 +782,9 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "Kernel mode transition: this agent is now operating in Arroba meta mode for the active task.\n\n",
-                "Delegate implementation to owned regular agents or workflows. Use Arroba meta tools for planning, supervision, task state, and allowed capability provisioning. ",
-                "Finish by calling `arroba.meta.complete_task`, `arroba.meta.mark_blocked`, or by honoring user pause/abort controls.",
+                "Kernel mode transition: this agent is now operating in Chariox meta mode for the active task.\n\n",
+                "Delegate implementation to owned regular agents or workflows. Use Chariox meta tools for planning, supervision, task state, and allowed capability provisioning. ",
+                "Finish by calling `chariox.meta.complete_task`, `chariox.meta.mark_blocked`, or by honoring user pause/abort controls.",
             ),
         )
         .expect("legacy default should write");
@@ -791,7 +794,7 @@ mod tests {
             .expect("legacy Meta default should update despite current state metadata");
 
         let body = fs::read_to_string(path).expect("updated Meta default should read");
-        assert!(body.contains("On continuation, first check `arroba.meta.session_overview`"));
+        assert!(body.contains("On continuation, first check `chariox.meta.session_overview`"));
     }
 
     #[test]
@@ -805,7 +808,7 @@ mod tests {
         fs::write(
             &path,
             concat!(
-                "You are running inside an Arroba slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
+                "You are running inside a Chariox slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.\n\n",
                 "Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.\n\n",
                 "Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.\n\n",
                 "Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation.",
@@ -895,10 +898,10 @@ mod tests {
 
         assert!(envelope
             .hidden_system_context
-            .contains("This agent is operating in Arroba Meta mode"));
+            .contains("This agent is operating in Chariox Meta mode"));
         assert!(envelope
             .hidden_system_context
-            .contains("start by calling `arroba.meta.read_task`"));
+            .contains("start by calling `chariox.meta.read_task`"));
         assert!(envelope
             .hidden_system_context
             .contains("confirm it appears in"));
@@ -949,7 +952,7 @@ mod tests {
                 &test_run(false),
                 "visible prompt",
                 Some(
-                    "<workflow-runtime-instructions>\nYou are an agent participating in an Arroba workflow turn.\n</workflow-runtime-instructions>",
+                    "<workflow-runtime-instructions>\nYou are an agent participating in a Chariox workflow turn.\n</workflow-runtime-instructions>",
                 ),
                 Vec::new(),
                 PromptAssemblyMode::NormalProviderTurn,
@@ -1087,8 +1090,8 @@ mod tests {
     #[test]
     fn slice_kernels_include_slice_template() {
         let _guard = env_lock::lock();
-        std::env::set_var("ARROBA_MACHINE_ID", "slice:test");
-        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
+        std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
         let root = temp_prompt_root("slice");
         let registry = PromptTemplateRegistry::new(root);
         registry
@@ -1105,7 +1108,7 @@ mod tests {
                 PromptAssemblyMode::NormalProviderTurn,
             )
             .expect("envelope should assemble");
-        std::env::remove_var("ARROBA_MACHINE_ID");
+        std::env::remove_var("CHARIOX_MACHINE_ID");
 
         assert!(envelope
             .manifest

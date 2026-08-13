@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV ARROBA_SLICE_ROOT=/opt/arroba-slice
+ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -53,31 +53,31 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --pr
 ENV PATH="/home/slice/.cargo/bin:${PATH}"
 
 USER root
-RUN mkdir -p /opt/arroba-source/apps /opt/arroba-slice/bin /opt/arroba-slice/logs \
-  && chown -R slice:slice /opt/arroba-source /opt/arroba-slice
+RUN mkdir -p /opt/chariox-source/apps /opt/chariox-slice/bin /opt/chariox-slice/logs \
+  && chown -R slice:slice /opt/chariox-source /opt/chariox-slice
 
-COPY --chown=slice:slice apps/kernel /opt/arroba-source/apps/kernel
-COPY --chown=slice:slice apps/relay /opt/arroba-source/apps/relay
-COPY --chown=slice:slice examples/workflow-code /opt/arroba-source/examples/workflow-code
+COPY --chown=slice:slice apps/kernel /opt/chariox-source/apps/kernel
+COPY --chown=slice:slice apps/relay /opt/chariox-source/apps/relay
+COPY --chown=slice:slice examples/workflow-code /opt/chariox-source/examples/workflow-code
 
 USER slice
-RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-kernel-target \
-    cargo build --manifest-path /opt/arroba-source/apps/kernel/Cargo.toml --bin arroba-kernel \
-  && cp /tmp/arroba-kernel-target/debug/arroba-kernel /opt/arroba-slice/bin/arroba-kernel \
-  && rm -rf /tmp/arroba-kernel-target \
-  && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/arroba-relay-target \
-    cargo build --manifest-path /opt/arroba-source/apps/relay/Cargo.toml --bin arroba-relay \
-  && cp /tmp/arroba-relay-target/debug/arroba-relay /opt/arroba-slice/bin/arroba-relay \
-  && rm -rf /tmp/arroba-relay-target /home/slice/.cargo/registry /home/slice/.cargo/git
+RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/chariox-kernel-target \
+    cargo build --manifest-path /opt/chariox-source/apps/kernel/Cargo.toml --bin chariox-kernel \
+  && cp /tmp/chariox-kernel-target/debug/chariox-kernel /opt/chariox-slice/bin/chariox-kernel \
+  && rm -rf /tmp/chariox-kernel-target \
+  && CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGET_DIR=/tmp/chariox-relay-target \
+    cargo build --manifest-path /opt/chariox-source/apps/relay/Cargo.toml --bin chariox-relay \
+  && cp /tmp/chariox-relay-target/debug/chariox-relay /opt/chariox-slice/bin/chariox-relay \
+  && rm -rf /tmp/chariox-relay-target /home/slice/.cargo/registry /home/slice/.cargo/git
 
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/arroba-slice/browser-cdp.mjs
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/arroba-slice/provider-port-bridge.mjs
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/arroba-slice/slice-screen.sh
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/arroba-slice/start-providers.sh
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/arroba-slice/start-runtime.sh
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/arroba-slice/validate-screen.sh
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh
 
-RUN chmod +x /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/validate-screen.sh
+RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
 
 USER root
 RUN apt-get update \
@@ -85,12 +85,12 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 USER slice
 
-ARG ARROBA_RELAY_PEER_PROTOCOL_VERSION=unknown
-ARG ARROBA_RUNTIME_SOURCE_REVISION=unknown
-LABEL io.arroba.relay-peer-protocol-version="${ARROBA_RELAY_PEER_PROTOCOL_VERSION}"
-LABEL io.arroba.runtime-source-revision="${ARROBA_RUNTIME_SOURCE_REVISION}"
+ARG CHARIOX_RELAY_PEER_PROTOCOL_VERSION=unknown
+ARG CHARIOX_RUNTIME_SOURCE_REVISION=unknown
+LABEL io.chariox.relay-peer-protocol-version="${CHARIOX_RELAY_PEER_PROTOCOL_VERSION}"
+LABEL io.chariox.runtime-source-revision="${CHARIOX_RUNTIME_SOURCE_REVISION}"
 
-RUN printf '%s\n' "${ARROBA_RUNTIME_SOURCE_REVISION}" > /opt/arroba-slice/runtime-source-revision
+RUN printf '%s\n' "${CHARIOX_RUNTIME_SOURCE_REVISION}" > /opt/chariox-slice/runtime-source-revision
 
 EXPOSE 43119 43130 43140 43252 6080
 WORKDIR /workspace

@@ -1127,7 +1127,7 @@ mod tests {
             first.text.len()
                 <= crate::provider_output_policy::output_bounds::MAX_PROVIDER_OUTPUT_RECORD_BYTES
         );
-        assert!(first.text.contains("\"arroba_truncated\":true"));
+        assert!(first.text.contains("\"chariox_truncated\":true"));
 
         assert!(
             bounded_history_entry(provider_tool_entry("running", &"y".repeat(2 * 1024 * 1024)))

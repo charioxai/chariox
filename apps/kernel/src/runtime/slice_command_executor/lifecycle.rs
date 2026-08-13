@@ -629,7 +629,7 @@ fn slice_backup_instructions(backup: &crate::slice::SliceBackupRecord) -> String
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| backup.manifest_path.clone());
     format!(
-        "Backup saved:\n  {backup_dir}\n\nTo use it manually, stop Arroba slice operations, then swap this backup directory with the active state directory for the slice.\n\nThe Docker image tag for this backup is:\n  {}",
+        "Backup saved:\n  {backup_dir}\n\nTo use it manually, stop Chariox slice operations, then swap this backup directory with the active state directory for the slice.\n\nThe Docker image tag for this backup is:\n  {}",
         backup.image_ref
     )
 }
@@ -658,7 +658,7 @@ fn slice_stop_is_already_complete(slice: &crate::slice::SliceRecord) -> bool {
 fn relay_presence_from_started_slice(
     slice: &crate::slice::SliceRecord,
     operation: &'static str,
-) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
     let Some(worker_kernel_id) = slice.worker_kernel_id.clone() else {
         return Err(DaemonError::LocalTransport {
             operation,
@@ -671,7 +671,7 @@ fn relay_presence_from_started_slice(
             message: format!("started slice `{}` has no worker machine id", slice.name),
         });
     };
-    Ok(arroba_relay::protocol::RelayKernelPresence {
+    Ok(chariox_relay::protocol::RelayKernelPresence {
         kernel_id: worker_kernel_id,
         machine_id: worker_machine_id,
         machine_alias: None,
@@ -691,7 +691,7 @@ async fn discover_started_slice_worker(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
     relay: &crate::slice::LocalDockerSliceRelay,
-) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
     let mut config = config_projection.snapshot();
     config.relay_url = Some(relay.relay_url.clone());
     config.relay_token = Some(relay.relay_token.clone());

@@ -122,8 +122,8 @@ pub(crate) async fn refresh_remote_inventory_projection(
 async fn validate_live_relay_kernels(
     config: &crate::config::DaemonConfig,
     known_kernel_ids: &std::collections::BTreeSet<String>,
-    kernels: Vec<arroba_relay::protocol::RelayKernelPresence>,
-) -> Vec<arroba_relay::protocol::RelayKernelPresence> {
+    kernels: Vec<chariox_relay::protocol::RelayKernelPresence>,
+) -> Vec<chariox_relay::protocol::RelayKernelPresence> {
     let mut validated = Vec::new();
     let mut probe_config = config.clone();
     probe_config.relay_request_timeout_ms = probe_config

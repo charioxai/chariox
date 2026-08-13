@@ -28,7 +28,7 @@ use crate::provider::{ProviderProcessServiceStore, ProviderRunOperationLanes};
 use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 mod workspace_live_sync;
 use workspace_live_sync::*;

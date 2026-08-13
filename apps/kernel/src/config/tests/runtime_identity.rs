@@ -52,26 +52,26 @@ fn generated_runtime_identity_has_expected_prefixes() {
 fn runtime_identity_is_stable_per_host_port() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(
-        "arroba-config-identity-test-{}",
+        "chariox-config-identity-test-{}",
         generate_identity_suffix()
     ));
     let old_home = env::var_os("HOME");
     let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
     let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
-    let old_kernel_host = env::var_os("ARROBA_KERNEL_HOST");
-    let old_kernel_port = env::var_os("ARROBA_KERNEL_PORT");
+    let old_kernel_host = env::var_os("CHARIOX_KERNEL_HOST");
+    let old_kernel_port = env::var_os("CHARIOX_KERNEL_PORT");
     unsafe {
         env::set_var("HOME", &temp_home);
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
-        env::set_var("ARROBA_KERNEL_HOST", "127.0.0.1");
-        env::set_var("ARROBA_KERNEL_PORT", "43118");
+        env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        env::set_var("CHARIOX_KERNEL_PORT", "43118");
     }
 
     let default_identity = DaemonConfig::load_from_env();
     let restarted_default = DaemonConfig::load_from_env();
     unsafe {
-        env::set_var("ARROBA_KERNEL_PORT", "43119");
+        env::set_var("CHARIOX_KERNEL_PORT", "43119");
     }
     let other_port = DaemonConfig::load_from_env();
 
@@ -79,8 +79,8 @@ fn runtime_identity_is_stable_per_host_port() {
         restore_env_var("HOME", old_home);
         restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
         restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
-        restore_env_var("ARROBA_KERNEL_HOST", old_kernel_host);
-        restore_env_var("ARROBA_KERNEL_PORT", old_kernel_port);
+        restore_env_var("CHARIOX_KERNEL_HOST", old_kernel_host);
+        restore_env_var("CHARIOX_KERNEL_PORT", old_kernel_port);
     }
     let _ = fs::remove_dir_all(temp_home);
 
@@ -97,22 +97,22 @@ fn runtime_identity_is_stable_per_host_port() {
 fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(
-        "arroba-config-relay-env-test-{}",
+        "chariox-config-relay-env-test-{}",
         generate_identity_suffix()
     ));
     let old_home = env::var_os("HOME");
     let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
     let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
-    let old_relay_url = env::var_os("ARROBA_RELAY_URL");
-    let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
-    let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+    let old_relay_url = env::var_os("CHARIOX_RELAY_URL");
+    let old_relay_token = env::var_os("CHARIOX_RELAY_TOKEN");
+    let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
-        env::set_var("ARROBA_RELAY_URL", "ws://127.0.0.1:47000");
-        env::set_var("ARROBA_RELAY_TOKEN", "local-drill-token");
-        env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+        env::set_var("CHARIOX_RELAY_URL", "ws://127.0.0.1:47000");
+        env::set_var("CHARIOX_RELAY_TOKEN", "local-drill-token");
+        env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     }
     let daemon_config_path = DaemonConfig::default_daemon_config_path();
     if let Some(parent) = daemon_config_path.parent() {
@@ -154,9 +154,9 @@ fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
         restore_env_var("HOME", old_home);
         restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
         restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
-        restore_env_var("ARROBA_RELAY_URL", old_relay_url);
-        restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
-        restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
+        restore_env_var("CHARIOX_RELAY_URL", old_relay_url);
+        restore_env_var("CHARIOX_RELAY_TOKEN", old_relay_token);
+        restore_env_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
     }
     let _ = fs::remove_dir_all(temp_home);
 
@@ -196,33 +196,33 @@ fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
 fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(
-        "arroba-config-env-cloud-relay-test-{}",
+        "chariox-config-env-cloud-relay-test-{}",
         generate_identity_suffix()
     ));
     let old_home = env::var_os("HOME");
     let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
     let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
-    let old_relay_url = env::var_os("ARROBA_RELAY_URL");
-    let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
-    let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+    let old_relay_url = env::var_os("CHARIOX_RELAY_URL");
+    let old_relay_token = env::var_os("CHARIOX_RELAY_TOKEN");
+    let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
-        env::set_var("ARROBA_RELAY_URL", "wss://195.201.123.115.sslip.io");
-        env::set_var("ARROBA_RELAY_TOKEN", "runtime-token");
+        env::set_var("CHARIOX_RELAY_URL", "wss://195.201.123.115.sslip.io");
+        env::set_var("CHARIOX_RELAY_TOKEN", "runtime-token");
         env::set_var(
-            "ARROBA_CLOUD_RELAY_CONFIG_JSON",
+            "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
             r#"{
                   "cloud_relay": {
-                    "api_url": "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+                    "api_url": "https://chariox-cloud-staging.osc-fr1.scalingo.io",
                     "email": "worker@example.com",
                     "account_id": "account-1",
                     "user_id": "user-1",
                     "account_slug": "account",
                     "realm_id": "realm-1",
                     "relay_url": "ws://195.201.123.115:43130",
-                    "issuer_id": "arroba-cloud-staging",
+                    "issuer_id": "chariox-cloud-staging",
                     "machine_id": "machine-1",
                     "machine_credential": "machine-credential",
                     "token_expires_at_ms": 1
@@ -237,9 +237,9 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
         restore_env_var("HOME", old_home);
         restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
         restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
-        restore_env_var("ARROBA_RELAY_URL", old_relay_url);
-        restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
-        restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
+        restore_env_var("CHARIOX_RELAY_URL", old_relay_url);
+        restore_env_var("CHARIOX_RELAY_TOKEN", old_relay_token);
+        restore_env_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
     }
     let _ = fs::remove_dir_all(temp_home);
 
@@ -260,24 +260,24 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(
-        "arroba-config-cli-cloud-import-test-{}",
+        "chariox-config-cli-cloud-import-test-{}",
         generate_identity_suffix()
     ));
     let old_home = env::var_os("HOME");
     let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
     let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
-    let old_relay_url = env::var_os("ARROBA_RELAY_URL");
-    let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
-    let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+    let old_relay_url = env::var_os("CHARIOX_RELAY_URL");
+    let old_relay_token = env::var_os("CHARIOX_RELAY_TOKEN");
+    let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
-        env::remove_var("ARROBA_RELAY_URL");
-        env::remove_var("ARROBA_RELAY_TOKEN");
-        env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+        env::remove_var("CHARIOX_RELAY_URL");
+        env::remove_var("CHARIOX_RELAY_TOKEN");
+        env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     }
-    let preferences_path = temp_home.join(".arroba").join("config.json");
+    let preferences_path = temp_home.join(".chariox").join("config.json");
     fs::create_dir_all(preferences_path.parent().expect("preferences parent"))
         .expect("preferences parent should be created");
     fs::write(
@@ -285,14 +285,14 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
         r#"{
               "relay": {
                 "cloud": {
-                  "apiUrl": "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+                  "apiUrl": "https://chariox-cloud-staging.osc-fr1.scalingo.io",
                   "email": "test@example.com",
                   "accountId": "account-1",
                   "userId": "user-1",
                   "accountSlug": "account",
                   "realmId": "realm-1",
                   "relayUrl": "ws://195.201.123.115:43130",
-                  "issuerId": "arroba-cloud-staging",
+                  "issuerId": "chariox-cloud-staging",
                   "machineId": "machine-1",
                   "machineCredential": "machine-credential",
                   "cloudSessionToken": "session-token",
@@ -309,9 +309,9 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
         restore_env_var("HOME", old_home);
         restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
         restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
-        restore_env_var("ARROBA_RELAY_URL", old_relay_url);
-        restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
-        restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
+        restore_env_var("CHARIOX_RELAY_URL", old_relay_url);
+        restore_env_var("CHARIOX_RELAY_TOKEN", old_relay_token);
+        restore_env_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
     }
     let _ = fs::remove_dir_all(temp_home);
 
@@ -333,22 +333,22 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(
-        "arroba-config-daemon-cloud-precedence-test-{}",
+        "chariox-config-daemon-cloud-precedence-test-{}",
         generate_identity_suffix()
     ));
     let old_home = env::var_os("HOME");
     let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
     let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
-    let old_relay_url = env::var_os("ARROBA_RELAY_URL");
-    let old_relay_token = env::var_os("ARROBA_RELAY_TOKEN");
-    let old_cloud_relay_config = env::var_os("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+    let old_relay_url = env::var_os("CHARIOX_RELAY_URL");
+    let old_relay_token = env::var_os("CHARIOX_RELAY_TOKEN");
+    let old_cloud_relay_config = env::var_os("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     unsafe {
         env::set_var("HOME", &temp_home);
         env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_STATE_HOME");
-        env::remove_var("ARROBA_RELAY_URL");
-        env::remove_var("ARROBA_RELAY_TOKEN");
-        env::remove_var("ARROBA_CLOUD_RELAY_CONFIG_JSON");
+        env::remove_var("CHARIOX_RELAY_URL");
+        env::remove_var("CHARIOX_RELAY_TOKEN");
+        env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
     }
     let daemon_config_path = DaemonConfig::default_daemon_config_path();
     fs::create_dir_all(daemon_config_path.parent().expect("daemon config parent"))
@@ -370,7 +370,7 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
             }"#,
     )
     .expect("daemon config should write");
-    let preferences_path = temp_home.join(".arroba").join("config.json");
+    let preferences_path = temp_home.join(".chariox").join("config.json");
     fs::write(
         &preferences_path,
         r#"{
@@ -397,9 +397,9 @@ fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
         restore_env_var("HOME", old_home);
         restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
         restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
-        restore_env_var("ARROBA_RELAY_URL", old_relay_url);
-        restore_env_var("ARROBA_RELAY_TOKEN", old_relay_token);
-        restore_env_var("ARROBA_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
+        restore_env_var("CHARIOX_RELAY_URL", old_relay_url);
+        restore_env_var("CHARIOX_RELAY_TOKEN", old_relay_token);
+        restore_env_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON", old_cloud_relay_config);
     }
     let _ = fs::remove_dir_all(temp_home);
 

@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn inspects_git_status_inside_repo() {
-        let root = std::env::temp_dir().join("arroba-git-capability-test");
+        let root = std::env::temp_dir().join("chariox-git-capability-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
         Command::new("git")

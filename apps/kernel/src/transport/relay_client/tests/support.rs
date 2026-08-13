@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 pub(super) use super::super::*;
 
-pub(super) use arroba_relay::{
+pub(super) use chariox_relay::{
     protocol::{ClientTarget, RelayError},
     RelayConfig, RelayServer,
 };
@@ -99,7 +99,7 @@ pub(super) async fn refresh_remote_inventory_projection_for_app_with_relay_state
 }
 
 pub(super) async fn wait_for_daemon_registration(
-    registry: Arc<RwLock<arroba_relay::server::RelayRegistry>>,
+    registry: Arc<RwLock<chariox_relay::server::RelayRegistry>>,
     daemon_id: &str,
 ) {
     for _ in 0..200 {

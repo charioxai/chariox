@@ -45,7 +45,7 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
         )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
-        "arroba-leased-agent-worktree-{}",
+        "chariox-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
@@ -97,7 +97,7 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
         )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
-        "arroba-leased-agent-wls-mode-{}",
+        "chariox-leased-agent-wls-mode-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
@@ -165,7 +165,7 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
         )
         .expect("execution lease should be created");
     let worktree = std::env::temp_dir().join(format!(
-        "arroba-shared-leased-agent-worktree-{}",
+        "chariox-shared-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&worktree).expect("leased worktree should exist");
@@ -225,7 +225,7 @@ fn leased_agents_reject_missing_working_directory() {
         )
         .expect("execution lease should be created");
     let missing = std::env::temp_dir().join(format!(
-        "arroba-missing-leased-agent-worktree-{}",
+        "chariox-missing-leased-agent-worktree-{}",
         crate::session::unix_epoch_ms()
     ));
     let error = RemoteLeaseRuntime::new(&mut app)
@@ -247,19 +247,19 @@ fn leased_agents_reject_missing_working_directory() {
 #[test]
 fn leased_agents_materialize_remote_git_worktree_before_creation() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-remote-git-worktree-base-{}",
+        "chariox-remote-git-worktree-base-{}",
         crate::session::unix_epoch_ms()
     ));
     let target = std::env::temp_dir().join(format!(
-        "arroba-remote-git-worktree-target-{}",
+        "chariox-remote-git-worktree-target-{}",
         crate::session::unix_epoch_ms()
     ));
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&target);
     std::fs::create_dir_all(&root).expect("repo root should exist");
     run_test_git(&root, &["init", "-b", "main"]);
-    run_test_git(&root, &["config", "user.email", "arroba@example.test"]);
-    run_test_git(&root, &["config", "user.name", "Arroba Test"]);
+    run_test_git(&root, &["config", "user.email", "chariox@example.test"]);
+    run_test_git(&root, &["config", "user.name", "Chariox Test"]);
     std::fs::write(root.join("README.md"), "remote worktree\n").expect("readme should write");
     run_test_git(&root, &["add", "README.md"]);
     run_test_git(&root, &["commit", "-m", "init"]);

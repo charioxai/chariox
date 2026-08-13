@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use arroba_relay::auth::RelaySubjectKind;
-use arroba_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
+use chariox_relay::auth::RelaySubjectKind;
+use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
 use serde::Deserialize;
 use serde_json::Value;
 

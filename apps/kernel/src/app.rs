@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn durable_restore_keeps_sessions_bound_to_their_kernel_id() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-state-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn durable_restore_ignores_orphan_ephemeral_prompt_state() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "orphan-ephemeral-prompt-state-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     fn durable_restore_keeps_slices_bound_to_their_owner_kernel_id() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-slice-state-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn daemon_restart_restores_sessions_after_shutdown_cleanup() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-preserves-sessions-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn durable_restore_ignores_newer_snapshot_from_other_kernel_owner() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "shared-kernel-snapshot-owner-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -741,7 +741,7 @@ mod tests {
 
     #[test]
     fn durable_restore_republishes_agent_runtime_profile_to_session_projection() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-agent-projection-{}.db",
             crate::session::unix_epoch_ms()
         ));
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn durable_restore_preserves_metaagent_event_inbox_state() {
-        let state_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "restart-metaagent-events-{}.db",
             crate::session::unix_epoch_ms()
         ));

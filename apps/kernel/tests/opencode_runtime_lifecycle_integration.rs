@@ -3,10 +3,10 @@ use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arroba_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
-use arroba_kernel::provider::{LaunchProviderRequest, ProviderRunState};
-use arroba_kernel::session::{CreateSessionRequest, PromptStatus, SessionStatus};
-use arroba_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
+use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
+use chariox_kernel::session::{CreateSessionRequest, PromptStatus, SessionStatus};
+use chariox_kernel::{DaemonApp, DaemonConfig};
 
 mod support;
 use support::runtime_integration::{
@@ -21,10 +21,10 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
     let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
+    let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
+    env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
+    env::set_var("CHARIOX_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -74,14 +74,14 @@ fn end_session_aborts_active_opencode_session_before_cleanup() {
     );
 
     if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+        env::set_var("CHARIOX_OPENCODE_BIN", previous_bin);
     } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
+        env::remove_var("CHARIOX_OPENCODE_BIN");
     }
     if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+        env::set_var("CHARIOX_OPENCODE_PORT", previous_port);
     } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
+        env::remove_var("CHARIOX_OPENCODE_PORT");
     }
     mock_server.stop();
     let _ = fs::remove_file(&fixture_path);
@@ -118,7 +118,7 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
     assert!(app
         .providers()
         .structured_runtime_state_bound_for_tests(run.id()));
-    let outcome = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let outcome = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -129,7 +129,7 @@ fn clearing_runtime_during_slow_opencode_submit_does_not_restore_state() {
     assert!(
         matches!(
             outcome,
-            arroba_kernel::session::PromptSubmissionOutcome::Started { .. }
+            chariox_kernel::session::PromptSubmissionOutcome::Started { .. }
         ),
         "prompt should dispatch immediately: {outcome:?}"
     );
@@ -174,7 +174,7 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
         .expect("provider run should launch");
     wait_for_mock_opencode_event_subscription(&mock_server);
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -184,7 +184,7 @@ fn clearing_runtime_during_slow_opencode_abort_does_not_restore_state() {
     .expect("prompt should start");
     wait_for_provider_runtime_state(&app, run.id(), false, "submit I/O is in flight");
     wait_for_provider_runtime_state(&app, run.id(), true, "submit has restored runtime state");
-    let cancellation = arroba_kernel::transport::TransportService::cancel_active_prompt(
+    let cancellation = chariox_kernel::transport::TransportService::cancel_active_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -233,7 +233,7 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
     app.providers()
         .set_output_poll_delay_for_tests(run.id(), Duration::from_millis(500));
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -250,7 +250,7 @@ fn clearing_runtime_during_slow_opencode_output_poll_does_not_restore_state() {
         .structured_runtime_state_bound_for_tests(run.id())
     {
         let recipients = app.attachments().list_session_attachment_ids(session.id());
-        let _ = arroba_kernel::transport::TransportService::pump_provider_output(
+        let _ = chariox_kernel::transport::TransportService::pump_provider_output(
             &mut app,
             session.id(),
             run.id(),
@@ -280,10 +280,10 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
     mock_server.fail_next_prompt("fixture prompt failure");
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
+    let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
+    env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
+    env::set_var("CHARIOX_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -309,7 +309,7 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -317,7 +317,7 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         Vec::new(),
     )
     .expect("first prompt should start");
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -368,14 +368,14 @@ fn session_error_completes_the_active_prompt_and_advances_the_queue() {
         .any(|record| record.message.contains("fixture prompt failure")));
 
     if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+        env::set_var("CHARIOX_OPENCODE_BIN", previous_bin);
     } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
+        env::remove_var("CHARIOX_OPENCODE_BIN");
     }
     if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+        env::set_var("CHARIOX_OPENCODE_PORT", previous_port);
     } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
+        env::remove_var("CHARIOX_OPENCODE_PORT");
     }
     mock_server.stop();
     let _ = fs::remove_file(&fixture_path);
@@ -386,10 +386,10 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
     let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
+    let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
+    env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
+    env::set_var("CHARIOX_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -415,7 +415,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -423,7 +423,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
         Vec::new(),
     )
     .expect("first prompt should start");
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -432,7 +432,7 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
     )
     .expect("second prompt should queue");
 
-    let cancellation = arroba_kernel::transport::TransportService::cancel_active_prompt(
+    let cancellation = chariox_kernel::transport::TransportService::cancel_active_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -462,14 +462,14 @@ fn cancelling_active_opencode_prompt_waits_for_provider_confirmation_before_adva
     assert_eq!(mock_server.abort_count(), 1);
 
     if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+        env::set_var("CHARIOX_OPENCODE_BIN", previous_bin);
     } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
+        env::remove_var("CHARIOX_OPENCODE_BIN");
     }
     if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+        env::set_var("CHARIOX_OPENCODE_PORT", previous_port);
     } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
+        env::remove_var("CHARIOX_OPENCODE_PORT");
     }
     mock_server.stop();
     let _ = fs::remove_file(&fixture_path);
@@ -480,10 +480,10 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
     let _guard = opencode_env_guard();
     let fixture_path = create_opencode_fixture_script(10);
     let mock_server = MockOpenCodeServer::start(Duration::from_millis(50));
-    let previous_bin = env::var_os("ARROBA_OPENCODE_BIN");
-    let previous_port = env::var_os("ARROBA_OPENCODE_PORT");
-    env::set_var("ARROBA_OPENCODE_BIN", &fixture_path);
-    env::set_var("ARROBA_OPENCODE_PORT", mock_server.port().to_string());
+    let previous_bin = env::var_os("CHARIOX_OPENCODE_BIN");
+    let previous_port = env::var_os("CHARIOX_OPENCODE_PORT");
+    env::set_var("CHARIOX_OPENCODE_BIN", &fixture_path);
+    env::set_var("CHARIOX_OPENCODE_PORT", mock_server.port().to_string());
 
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -509,7 +509,7 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -518,7 +518,7 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
     )
     .expect("prompt should start");
 
-    let cancellation = arroba_kernel::transport::TransportService::cancel_active_prompt(
+    let cancellation = chariox_kernel::transport::TransportService::cancel_active_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -550,18 +550,18 @@ fn cancelling_active_opencode_prompt_without_queue_clears_the_active_prompt() {
     assert!(session_state.active_prompt().is_none());
     assert_eq!(
         session_state.scheduler_state(),
-        arroba_kernel::session::SchedulerState::Idle
+        chariox_kernel::session::SchedulerState::Idle
     );
 
     if let Some(previous_bin) = previous_bin {
-        env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+        env::set_var("CHARIOX_OPENCODE_BIN", previous_bin);
     } else {
-        env::remove_var("ARROBA_OPENCODE_BIN");
+        env::remove_var("CHARIOX_OPENCODE_BIN");
     }
     if let Some(previous_port) = previous_port {
-        env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+        env::set_var("CHARIOX_OPENCODE_PORT", previous_port);
     } else {
-        env::remove_var("ARROBA_OPENCODE_PORT");
+        env::remove_var("CHARIOX_OPENCODE_PORT");
     }
     mock_server.stop();
     let _ = fs::remove_file(&fixture_path);

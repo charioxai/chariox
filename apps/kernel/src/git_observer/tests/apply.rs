@@ -12,12 +12,12 @@ use super::support::{run_git, test_context};
 #[test]
 fn workspace_live_sync_apply_target_applies_exact_base_changes() {
     let source = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-source-{}-{}",
+        "chariox-tracked-sync-source-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-target-{}-{}",
+        "chariox-tracked-sync-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -85,12 +85,12 @@ fn workspace_live_sync_apply_target_applies_exact_base_changes() {
 #[test]
 fn workspace_live_sync_apply_target_skips_conflicting_target() {
     let source = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-conflict-source-{}-{}",
+        "chariox-tracked-sync-conflict-source-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-conflict-target-{}-{}",
+        "chariox-tracked-sync-conflict-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -136,7 +136,7 @@ fn workspace_live_sync_apply_target_skips_conflicting_target() {
 #[test]
 fn workspace_live_sync_apply_target_treats_already_applied_paths_as_applied() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-idempotent-target-{}-{}",
+        "chariox-tracked-sync-idempotent-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -221,7 +221,7 @@ fn workspace_live_sync_apply_target_treats_already_applied_paths_as_applied() {
 #[test]
 fn workspace_live_sync_apply_target_continues_after_path_failure() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-partial-failure-target-{}-{}",
+        "chariox-tracked-sync-partial-failure-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -274,12 +274,12 @@ fn workspace_live_sync_apply_target_continues_after_path_failure() {
 #[test]
 fn workspace_live_sync_apply_target_skips_ignored_target_path() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-ignore-target-{}-{}",
+        "chariox-tracked-sync-ignore-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(target.join("ignored")).expect("target should be created");
-    std::fs::write(target.join(".arrobaignore"), "ignored/\n").expect("ignore should write");
+    std::fs::write(target.join(".charioxignore"), "ignored/\n").expect("ignore should write");
     let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value);
     let change = WorkspaceLiveSyncChange {
         session_id: "session-1".to_string(),
@@ -316,7 +316,7 @@ fn workspace_live_sync_apply_target_skips_ignored_target_path() {
 #[test]
 fn workspace_live_sync_apply_target_skips_forced_excluded_path() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-force-exclude-target-{}-{}",
+        "chariox-tracked-sync-force-exclude-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -356,7 +356,7 @@ fn workspace_live_sync_apply_target_skips_forced_excluded_path() {
 #[test]
 fn workspace_live_sync_apply_target_conflicts_on_binary_mismatch() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-binary-conflict-target-{}-{}",
+        "chariox-tracked-sync-binary-conflict-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -401,7 +401,7 @@ fn workspace_live_sync_apply_target_conflicts_on_binary_mismatch() {
 #[test]
 fn workspace_live_sync_apply_target_conflicts_on_incompatible_rename() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-rename-conflict-target-{}-{}",
+        "chariox-tracked-sync-rename-conflict-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -451,7 +451,7 @@ fn workspace_live_sync_apply_target_conflicts_on_incompatible_rename() {
 #[test]
 fn workspace_live_sync_identity_conflict_detects_branch_drift() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-identity-target-{}-{}",
+        "chariox-tracked-sync-identity-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -493,7 +493,7 @@ fn workspace_live_sync_identity_conflict_detects_branch_drift() {
 #[test]
 fn workspace_live_sync_apply_target_rebases_non_overlapping_text_changes() {
     let target = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-rebase-target-{}-{}",
+        "chariox-tracked-sync-rebase-target-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

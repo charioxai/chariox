@@ -326,21 +326,21 @@
   {
     "id": "cloud",
     "label": "/cloud",
-    "description": "Open Arroba Cloud and manage collaboration",
+    "description": "Open Chariox Cloud and manage collaboration",
     "value": "/cloud ",
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "cloud-open",
         "label": "open",
-        "description": "Open the Arroba Cloud browser terminal",
+        "description": "Open the Chariox Cloud browser terminal",
         "value": "/cloud open",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "cloud-link",
         "label": "link",
-        "description": "Pair this machine with Arroba Cloud",
+        "description": "Pair this machine with Chariox Cloud",
         "value": "/cloud link",
         "surfaces": ["session", "waiting_room"]
       },

@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn reads_directory_tree_with_depth_limit() {
-        let root = std::env::temp_dir().join("arroba-tree-capability-test");
+        let root = std::env::temp_dir().join("chariox-tree-capability-test");
         let nested = root.join("src/nested");
         fs::create_dir_all(&nested).expect("nested dirs should exist");
         fs::write(root.join("README.md"), "hello").expect("file should exist");
@@ -211,8 +211,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn does_not_follow_symlinked_directory_outside_worktree() {
-        let root = std::env::temp_dir().join("arroba-tree-capability-symlink-test");
-        let outside = std::env::temp_dir().join("arroba-tree-capability-outside");
+        let root = std::env::temp_dir().join("chariox-tree-capability-symlink-test");
+        let outside = std::env::temp_dir().join("chariox-tree-capability-outside");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&outside);
         fs::create_dir_all(&root).expect("root should exist");

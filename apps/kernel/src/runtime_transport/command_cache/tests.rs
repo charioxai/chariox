@@ -642,7 +642,7 @@ fn command_fingerprint_hash_is_stable() {
 fn temp_cache_path(label: &str) -> PathBuf {
     let unique = crate::session::unix_epoch_ms();
     std::env::temp_dir().join(format!(
-        "arroba-command-cache-{label}-{}-{unique}.jsonl",
+        "chariox-command-cache-{label}-{}-{unique}.jsonl",
         std::process::id()
     ))
 }

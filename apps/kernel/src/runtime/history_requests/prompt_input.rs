@@ -139,7 +139,7 @@ fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> boo
         return true;
     };
     match entry.prompt_origin {
-        Some(crate::session::PromptOrigin::Arroba) => true,
+        Some(crate::session::PromptOrigin::Chariox) => true,
         Some(crate::session::PromptOrigin::External) => false,
         None => !entry.is_external_provider_observed(),
     }
@@ -195,7 +195,7 @@ mod tests {
 
     fn temp_history_store(name: &str) -> (OperationalHistoryStore, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "arroba-prompt-input-history-{name}-{}-{}.db",
+            "chariox-prompt-input-history-{name}-{}-{}.db",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -237,8 +237,8 @@ mod tests {
     #[test]
     fn prompt_input_history_excludes_external_observed_prompts() {
         let (store, path) = temp_history_store("exclude-external");
-        let arroba_prompt =
-            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+        let chariox_prompt =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "chariox");
         let external_origin_prompt = SessionHistoryEntry::user_prompt(
             "session-1",
             "attachment-1",
@@ -258,7 +258,7 @@ mod tests {
             Some(2_000),
         );
         for (sequence, entry) in [
-            (1, arroba_prompt),
+            (1, chariox_prompt),
             (2, external_origin_prompt),
             (3, external_observed_prompt),
         ] {
@@ -296,7 +296,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["arroba", "draft input"]
+            vec!["chariox", "draft input"]
         );
 
         remove_temp_history_store(&path);
@@ -323,7 +323,12 @@ mod tests {
         append_prompt_entry(
             &store,
             2,
-            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba one"),
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "chariox one",
+            ),
         );
         append_prompt_entry(
             &store,
@@ -339,7 +344,12 @@ mod tests {
         append_prompt_entry(
             &store,
             4,
-            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba two"),
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "chariox two",
+            ),
         );
 
         let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
@@ -362,7 +372,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.text.as_str())
                 .collect::<Vec<_>>(),
-            vec!["arroba one", "arroba two"]
+            vec!["chariox one", "chariox two"]
         );
 
         remove_temp_history_store(&path);

@@ -1030,14 +1030,14 @@ mod tests {
 
     fn temp_git_repo(label: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-{label}-{}-{}",
+            "chariox-{label}-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("temp repo should be created");
         run_git(&root, &["init"]);
         run_git(&root, &["config", "user.email", "tests@example.invalid"]);
-        run_git(&root, &["config", "user.name", "Arroba Tests"]);
+        run_git(&root, &["config", "user.name", "Chariox Tests"]);
         std::fs::write(root.join("README.md"), "worktree placement\n")
             .expect("fixture file should be written");
         run_git(&root, &["add", "README.md"]);

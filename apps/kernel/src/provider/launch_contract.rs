@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::CharioxMcpServerConfig;
 use crate::session::DEFAULT_LOCAL_USER_ID;
 
 use super::types::{
@@ -56,7 +56,7 @@ pub fn normalize_provider_resume_model(provider: &str, model: &str) -> String {
 pub fn provider_resume_failure_notice(provider: &str, provider_session_id: &str) -> Option<String> {
     match provider.trim().to_ascii_lowercase().as_str() {
         "codex" => Some(format!(
-            "Codex resume thread `{provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable Codex thread."
+            "Codex resume thread `{provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable Codex thread."
         )),
         _ => None,
     }
@@ -287,7 +287,7 @@ pub struct ExternalProviderObservedCursor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_observed_merge_key: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub arroba_owned_observed_prompt_turn_ids: BTreeSet<String>,
+    pub chariox_owned_observed_prompt_turn_ids: BTreeSet<String>,
 }
 
 impl ExternalProviderObservedCursor {
@@ -300,7 +300,7 @@ impl ExternalProviderObservedCursor {
             last_observed_turn_id,
             last_observed_at_ms,
             last_observed_merge_key,
-            arroba_owned_observed_prompt_turn_ids: BTreeSet::new(),
+            chariox_owned_observed_prompt_turn_ids: BTreeSet::new(),
         }
     }
 
@@ -308,7 +308,7 @@ impl ExternalProviderObservedCursor {
         self.last_observed_turn_id.is_none()
             && self.last_observed_at_ms.is_none()
             && self.last_observed_merge_key.is_none()
-            && self.arroba_owned_observed_prompt_turn_ids.is_empty()
+            && self.chariox_owned_observed_prompt_turn_ids.is_empty()
     }
 }
 
@@ -395,7 +395,7 @@ pub struct LaunchProviderRequest {
     pub workspace_live_sync_roots: Vec<PathBuf>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mcp_servers: Vec<ArrobaMcpServerConfig>,
+    pub mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
         default,
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -418,7 +418,7 @@ pub struct LaunchProviderRequest {
     pub resume_state: Option<ProviderResumeState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_endpoint: Option<String>,
-    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_arroba")]
+    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_chariox")]
     pub client_interface: ProviderClientInterface,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider_import: Option<ExternalProviderImportMetadata>,
@@ -558,7 +558,7 @@ impl LaunchProviderRequest {
             permission_level: None,
             resume_state: None,
             structured_endpoint: None,
-            client_interface: ProviderClientInterface::Arroba,
+            client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
         }
     }
@@ -596,7 +596,7 @@ impl LaunchProviderRequest {
         self
     }
 
-    pub fn with_mcp_servers(mut self, mcp_servers: Vec<ArrobaMcpServerConfig>) -> Self {
+    pub fn with_mcp_servers(mut self, mcp_servers: Vec<CharioxMcpServerConfig>) -> Self {
         self.mcp_servers = mcp_servers;
         self
     }
@@ -770,7 +770,7 @@ mod tests {
                 last_observed_turn_id: Some("turn-2".to_string()),
                 last_observed_at_ms: Some(2),
                 last_observed_merge_key: Some("merge-2".to_string()),
-                arroba_owned_observed_prompt_turn_ids: std::collections::BTreeSet::new(),
+                chariox_owned_observed_prompt_turn_ids: std::collections::BTreeSet::new(),
             });
         second.imported_at_ms = 2;
         let different =

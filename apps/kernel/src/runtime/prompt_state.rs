@@ -627,7 +627,7 @@ impl PromptStateOwner {
                 if state
                     .active_prompt
                     .as_ref()
-                    .is_some_and(|active| active.is_arroba_owned())
+                    .is_some_and(|active| active.is_chariox_owned())
                 {
                     return false;
                 }

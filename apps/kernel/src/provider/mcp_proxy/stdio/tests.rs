@@ -5,11 +5,11 @@ use serde_json::json;
 
 use super::*;
 
-fn node_stdio_config(script: &str) -> Option<ArrobaMcpServerConfig> {
+fn node_stdio_config(script: &str) -> Option<CharioxMcpServerConfig> {
     if Command::new("node").arg("--version").output().is_err() {
         return None;
     }
-    Some(ArrobaMcpServerConfig::stdio(
+    Some(CharioxMcpServerConfig::stdio(
         format!("stdio-concurrency-test-{}", crate::session::unix_epoch_ms()),
         "node",
         vec![
@@ -24,7 +24,7 @@ fn process_for(
     supervisor: &mut StdioMcpSupervisor,
     provider_run_id: &str,
     session_id: &str,
-    config: &ArrobaMcpServerConfig,
+    config: &CharioxMcpServerConfig,
 ) -> Arc<Mutex<StdioMcpProcess>> {
     let key = config.definition_hash().expect("definition hash");
     supervisor
@@ -137,7 +137,7 @@ fn busy_process_lookup_does_not_hold_the_supervisor_lock() {
 
 #[test]
 fn closed_run_and_session_reject_late_process_ownership() {
-    let config = ArrobaMcpServerConfig::stdio(
+    let config = CharioxMcpServerConfig::stdio(
         "stdio-closed-owner-test",
         "command-must-not-run",
         Vec::new(),
@@ -166,21 +166,21 @@ fn request_timeout_kills_the_unresponsive_stdio_child() {
     let Some(mut config) = node_stdio_config(
         r#"
 import fs from 'node:fs'
-fs.writeFileSync(process.env.ARROBA_TEST_PID_FILE, String(process.pid))
+fs.writeFileSync(process.env.CHARIOX_TEST_PID_FILE, String(process.pid))
 process.stdin.resume()
 "#,
     ) else {
         return;
     };
     let pid_file = std::env::temp_dir().join(format!(
-        "arroba-stdio-timeout-{}-{}.pid",
+        "chariox-stdio-timeout-{}-{}.pid",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     config.tool_timeout_sec = Some(1);
-    if let ArrobaMcpTransportConfig::Stdio { env, .. } = &mut config.transport {
+    if let CharioxMcpTransportConfig::Stdio { env, .. } = &mut config.transport {
         env.insert(
-            "ARROBA_TEST_PID_FILE".to_string(),
+            "CHARIOX_TEST_PID_FILE".to_string(),
             pid_file.to_string_lossy().to_string(),
         );
     }

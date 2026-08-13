@@ -76,13 +76,13 @@ fn session_history_entry_source_metadata_line_matches_serialized_source() {
         Some(crate::session::PromptOrigin::External)
     );
 
-    let arroba_owned =
-        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
-    assert!(!arroba_owned.is_external_provider_observed());
-    assert_eq!(arroba_owned.external_provider_observed_turn_id(), None);
+    let chariox_owned =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "chariox");
+    assert!(!chariox_owned.is_external_provider_observed());
+    assert_eq!(chariox_owned.external_provider_observed_turn_id(), None);
     assert_eq!(
-        arroba_owned.prompt_origin,
-        Some(crate::session::PromptOrigin::Arroba)
+        chariox_owned.prompt_origin,
+        Some(crate::session::PromptOrigin::Chariox)
     );
 }
 
@@ -121,7 +121,7 @@ fn appends_and_loads_session_history() {
     assert_eq!(entries[0].kind, SessionHistoryEntryKind::UserPrompt);
     assert_eq!(
         entries[0].prompt_origin,
-        Some(crate::session::PromptOrigin::Arroba)
+        Some(crate::session::PromptOrigin::Chariox)
     );
     assert_eq!(entries[1].kind, SessionHistoryEntryKind::ProviderOutput);
     assert_eq!(entries[1].prompt_origin, None);
@@ -144,7 +144,7 @@ fn session_history_append_rejects_prompt_origin_without_source_attachment() {
         Some("output-1".to_string()),
         "output",
     )
-    .with_prompt_origin(crate::session::PromptOrigin::Arroba);
+    .with_prompt_origin(crate::session::PromptOrigin::Chariox);
 
     let error = store
         .append(&session, &entry)
@@ -281,7 +281,7 @@ fn session_history_replacement_appends_and_deduplicates_without_rewriting_the_fi
 #[test]
 fn operational_history_append_rejects_prompt_origin_without_source_attachment_before_sequence() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-prompt-owned-validation-{}-{}.db",
+        "chariox-operational-history-prompt-owned-validation-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -299,7 +299,7 @@ fn operational_history_append_rejects_prompt_origin_without_source_attachment_be
         Some("output-1".to_string()),
         "output",
     )
-    .with_prompt_origin(crate::session::PromptOrigin::Arroba);
+    .with_prompt_origin(crate::session::PromptOrigin::Chariox);
 
     let error = store
         .append_transcript(&invalid, HistoryEventTurnContext::default())
@@ -328,7 +328,7 @@ fn operational_history_append_rejects_prompt_origin_without_source_attachment_be
 fn operational_history_append_rejects_external_provider_observed_without_complete_identity_before_sequence(
 ) {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-external-observed-validation-{}-{}.db",
+        "chariox-operational-history-external-observed-validation-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -405,7 +405,7 @@ fn session_history_load_rehydrates_file_image_attachment_previews() {
     let store = SessionHistoryStore::new(config.session_history_root.clone())
         .expect("history store should initialize");
     let image_path = std::env::temp_dir().join(format!(
-        "arroba-jsonl-history-preview-{}-{}.png",
+        "chariox-jsonl-history-preview-{}-{}.png",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -501,7 +501,7 @@ fn converts_session_history_entry_to_canonical_history_event() {
 #[test]
 fn operational_history_replaces_transcripts_through_merge_key_index() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-indexed-replace-{}-{}.db",
+        "chariox-operational-history-indexed-replace-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -564,7 +564,7 @@ fn operational_history_replaces_transcripts_through_merge_key_index() {
 #[test]
 fn operational_history_reads_do_not_hold_the_writer_connection() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-read-write-isolation-{}-{}.db",
+        "chariox-operational-history-read-write-isolation-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -597,14 +597,14 @@ fn operational_history_reads_do_not_hold_the_writer_connection() {
 #[test]
 fn canonical_history_events_preserve_prompt_attachments() {
     let image_path = std::env::temp_dir().join(format!(
-        "arroba-history-preview-{}-{}.png",
+        "chariox-history-preview-{}-{}.png",
         std::process::id(),
         super::unix_epoch_ms()
     ));
     std::fs::write(&image_path, b"file-image").expect("fixture image should write");
     let contents_base64 = base64::engine::general_purpose::STANDARD.encode("image");
     let inline_attachment = PromptAttachment::new(
-        "arroba-terminal://prompt-attachment/attachment-1/screenshot.png",
+        "chariox-terminal://prompt-attachment/attachment-1/screenshot.png",
         "image/png",
         Some("screenshot.png".to_string()),
     )
@@ -650,7 +650,7 @@ fn canonical_history_events_preserve_prompt_attachments() {
 #[test]
 fn canonical_history_events_rehydrate_file_image_attachment_previews() {
     let image_path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-preview-{}-{}.png",
+        "chariox-operational-history-preview-{}-{}.png",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -682,7 +682,7 @@ fn canonical_history_events_rehydrate_file_image_attachment_previews() {
 #[test]
 fn operational_history_store_reports_max_prompt_number() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-max-prompt-{}-{}.db",
+        "chariox-operational-history-max-prompt-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -721,9 +721,9 @@ fn operational_history_store_reports_max_prompt_number() {
 }
 
 #[test]
-fn operational_history_store_excludes_external_observed_prompts_from_arroba_owned_prompts() {
+fn operational_history_store_excludes_external_observed_prompts_from_chariox_owned_prompts() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-arroba-prompts-{}-{}.db",
+        "chariox-operational-history-chariox-prompts-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -733,8 +733,8 @@ fn operational_history_store_excludes_external_observed_prompts_from_arroba_owne
 
     let store =
         OperationalHistoryStore::open(path.clone()).expect("operational history should open");
-    let arroba_prompt =
-        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+    let chariox_prompt =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "chariox");
     let external_origin_prompt =
         SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "external origin")
             .with_prompt_origin(crate::session::PromptOrigin::External);
@@ -750,7 +750,7 @@ fn operational_history_store_excludes_external_observed_prompts_from_arroba_owne
         Some(2_000),
     );
     for (sequence, entry) in [
-        (1, arroba_prompt),
+        (1, chariox_prompt),
         (2, external_origin_prompt),
         (3, external_prompt),
     ] {
@@ -769,9 +769,9 @@ fn operational_history_store_excludes_external_observed_prompts_from_arroba_owne
 
     assert_eq!(
         store
-            .load_arroba_owned_prompt_texts("session-1", "agent-1")
-            .expect("arroba-owned prompts should load"),
-        vec!["arroba".to_string()]
+            .load_chariox_owned_prompt_texts("session-1", "agent-1")
+            .expect("chariox-owned prompts should load"),
+        vec!["chariox".to_string()]
     );
 
     drop(store);
@@ -783,7 +783,7 @@ fn operational_history_store_excludes_external_observed_prompts_from_arroba_owne
 #[test]
 fn operational_history_store_indexes_external_import_history() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-external-index-{}-{}.db",
+        "chariox-operational-history-external-index-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -793,8 +793,8 @@ fn operational_history_store_indexes_external_import_history() {
 
     let store =
         OperationalHistoryStore::open(path.clone()).expect("operational history should open");
-    let arroba_prompt =
-        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "arroba");
+    let chariox_prompt =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "chariox");
     let external_origin_prompt =
         SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "external origin")
             .with_prompt_origin(crate::session::PromptOrigin::External);
@@ -858,7 +858,7 @@ fn operational_history_store_indexes_external_import_history() {
     );
 
     for (sequence, entry) in [
-        (1, arroba_prompt),
+        (1, chariox_prompt),
         (2, external_origin_prompt),
         (3, external_prompt),
         (4, external_output),
@@ -883,7 +883,7 @@ fn operational_history_store_indexes_external_import_history() {
     let index = store
         .load_external_import_history_index("session-1", "agent-1", "external:codex:thread-1")
         .expect("external import index should load");
-    assert_eq!(index.arroba_owned_prompts, vec!["arroba".to_string()]);
+    assert_eq!(index.chariox_owned_prompts, vec!["chariox".to_string()]);
     assert_eq!(
         index
             .external_entries_by_merge_key
@@ -959,7 +959,7 @@ fn operational_history_store_indexes_external_import_history() {
 #[test]
 fn operational_history_lists_agents_by_first_event_sequence() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-agent-order-{}-{}.db",
+        "chariox-operational-history-agent-order-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1008,7 +1008,7 @@ fn operational_history_lists_agents_by_first_event_sequence() {
 #[test]
 fn operational_history_external_import_index_uses_latest_duplicate_merge_key() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-external-index-duplicate-{}-{}.db",
+        "chariox-operational-history-external-index-duplicate-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1086,7 +1086,7 @@ fn operational_history_external_import_index_uses_latest_duplicate_merge_key() {
 #[test]
 fn operational_history_store_appends_and_loads_events_idempotently() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-{}-{}.db",
+        "chariox-operational-history-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1224,7 +1224,7 @@ fn operational_history_store_appends_and_loads_events_idempotently() {
 #[test]
 fn operational_history_amortizes_size_budget_checks_for_small_appends() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-amortized-{}-{}.db",
+        "chariox-operational-history-amortized-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1274,7 +1274,7 @@ fn operational_history_amortizes_size_budget_checks_for_small_appends() {
 #[test]
 fn operational_history_writer_groups_concurrent_acknowledged_appends() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-grouped-writes-{}-{}.db",
+        "chariox-operational-history-grouped-writes-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1325,7 +1325,7 @@ fn operational_history_writer_groups_concurrent_acknowledged_appends() {
 #[test]
 fn operational_history_enforces_size_budget_for_temp_stores() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-cap-{}-{}.db",
+        "chariox-operational-history-cap-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));
@@ -1377,7 +1377,7 @@ fn operational_history_enforces_size_budget_for_temp_stores() {
 #[test]
 fn operational_history_capture_can_be_disabled_and_reenabled_live() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-operational-history-capture-{}-{}.db",
+        "chariox-operational-history-capture-{}-{}.db",
         std::process::id(),
         super::unix_epoch_ms()
     ));

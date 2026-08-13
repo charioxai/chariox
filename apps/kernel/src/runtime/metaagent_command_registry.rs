@@ -213,7 +213,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
     else {
         return MetaCommandExecutionPolicy::NotRouted {
             message: format!(
-                "`{}` is not registered for arroba.meta.run_command",
+                "`{}` is not registered for chariox.meta.run_command",
                 tokens[0]
             ),
         };

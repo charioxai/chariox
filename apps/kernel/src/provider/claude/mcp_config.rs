@@ -5,12 +5,12 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use zeroize::{Zeroize, Zeroizing};
 
-pub(crate) const CLAUDE_MCP_CONFIG_PLACEHOLDER: &str = "arroba://claude-mcp-config";
-const CLAUDE_RUNTIME_FILES_PREFIX: &str = "arroba-claude-remote-native-";
+pub(crate) const CLAUDE_MCP_CONFIG_PLACEHOLDER: &str = "chariox://claude-mcp-config";
+const CLAUDE_RUNTIME_FILES_PREFIX: &str = "chariox-claude-remote-native-";
 const CLAUDE_MCP_CONFIG_FILE_NAME: &str = "mcp-config.json";
 
 pub(super) struct ClaudeRuntimeFilesRoot {
@@ -157,7 +157,7 @@ fn cleanup_claude_runtime_files_root(root: &Path) {
 
 fn materialize_claude_mcp_config(
     root: &ClaudeRuntimeFilesRoot,
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
 ) -> Result<Option<PathBuf>, DaemonError> {
@@ -224,7 +224,7 @@ fn validate_claude_runtime_files_root(root: &Path) -> Result<(), DaemonError> {
 }
 
 fn claude_mcp_config(
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
 ) -> Result<Option<Zeroizing<String>>, DaemonError> {
@@ -255,7 +255,7 @@ fn claude_mcp_config(
     }
     if let (Some(url), Some(token)) = (runtime_mcp_url, runtime_mcp_auth_token) {
         mcp_servers.insert(
-            "arroba".to_string(),
+            "chariox".to_string(),
             serde_json::json!({
                 "type": "http",
                 "url": url,
@@ -279,12 +279,12 @@ fn claude_mcp_config(
 }
 
 fn claude_provider_facing_mcp_proxy_url(
-    server: &ArrobaMcpServerConfig,
+    server: &CharioxMcpServerConfig,
     runtime_mcp_url: &str,
 ) -> Result<String, DaemonError> {
     let proxy_url =
         super::super::mcp_proxy::provider_facing_mcp_proxy_url(runtime_mcp_url, &server.name)?;
-    ArrobaMcpServerConfig::streamable_http(&server.name, &proxy_url).validate()?;
+    CharioxMcpServerConfig::streamable_http(&server.name, &proxy_url).validate()?;
     Ok(proxy_url)
 }
 
@@ -313,9 +313,9 @@ fn zeroize_json_strings(value: &mut serde_json::Value) {
     }
 }
 
-fn claude_mcp_server_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
+fn claude_mcp_server_config(server: &CharioxMcpServerConfig) -> serde_json::Value {
     match &server.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env,
@@ -340,7 +340,7 @@ fn claude_mcp_server_config(server: &ArrobaMcpServerConfig) -> serde_json::Value
             }
             config
         }
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
             bearer_token_credential: _,
@@ -373,7 +373,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{create_claude_runtime_files_root, materialize_request_claude_mcp_config};
@@ -439,7 +439,7 @@ mod tests {
             "http://127.0.0.1:43120/mcp",
             "private-token",
         ))
-        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+        .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
             "browser",
             "npx",
             vec!["@playwright/mcp@latest".to_string()],

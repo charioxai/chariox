@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use arroba_relay::auth::RelaySubjectKind;
-use arroba_relay::protocol::RelayCallerIdentity;
+use chariox_relay::auth::RelaySubjectKind;
+use chariox_relay::protocol::RelayCallerIdentity;
 
 use crate::session::DEFAULT_LOCAL_USER_ID;
 

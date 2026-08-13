@@ -536,7 +536,7 @@ mod tests {
             agent.id(),
             "history without projection churn",
             &[],
-            crate::session::PromptOrigin::Arroba,
+            crate::session::PromptOrigin::Chariox,
             "prompt-history-read-only",
             crate::session::unix_epoch_ms(),
             None,
@@ -560,7 +560,7 @@ mod tests {
         );
         assert_eq!(
             entries[0].prompt_origin,
-            Some(crate::session::PromptOrigin::Arroba)
+            Some(crate::session::PromptOrigin::Chariox)
         );
         assert!(
             app.history
@@ -704,7 +704,7 @@ mod tests {
             Some("direct-history-turn-output".to_string()),
             "output",
         );
-        entry.prompt_origin = Some(crate::session::PromptOrigin::Arroba);
+        entry.prompt_origin = Some(crate::session::PromptOrigin::Chariox);
         entry.source_attachment_id = Some(attachment.id().to_string());
         app.append_history_entry(session.id(), entry);
 

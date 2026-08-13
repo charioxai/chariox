@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn prompt_launched_agents_inherit_session_workspace_live_sync_mode() {
         let workspace = std::env::temp_dir().join(format!(
-            "arroba-prompt-provider-live-sync-{}-{}",
+            "chariox-prompt-provider-live-sync-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

@@ -92,9 +92,9 @@ fn large_provider_tool_delta_bytes(
     serde_json::to_vec(&serde_json::json!({
         "id": tool_id,
         "status": "running",
-        "arroba_truncated": true,
-        "arroba_original_bytes": bytes.len(),
-        "arroba_delta_bytes": delta_bytes,
+        "chariox_truncated": true,
+        "chariox_original_bytes": bytes.len(),
+        "chariox_delta_bytes": delta_bytes,
         "message": format!(
             "provider tool output exceeded the live terminal cap; suppressed {} bytes of cumulative output",
             bytes.len()
@@ -154,9 +154,9 @@ fn provider_tool_delta_bytes(
             if previous.byte_len < current_len {
                 output_text =
                     Some(String::from_utf8_lossy(&current_bytes[previous.byte_len..]).into_owned());
-                object.insert("arroba_delta".to_string(), Value::Bool(true));
+                object.insert("chariox_delta".to_string(), Value::Bool(true));
                 object.insert(
-                    "arroba_delta_offset_bytes".to_string(),
+                    "chariox_delta_offset_bytes".to_string(),
                     Value::Number((previous.byte_len as u64).into()),
                 );
             }
@@ -166,13 +166,13 @@ fn provider_tool_delta_bytes(
                 MAX_PROVIDER_TOOL_STRING_BYTES,
                 current_len,
             ));
-            object.insert("arroba_output_replaced".to_string(), Value::Bool(true));
+            object.insert("chariox_output_replaced".to_string(), Value::Bool(true));
             object.insert(
-                "arroba_original_bytes".to_string(),
+                "chariox_original_bytes".to_string(),
                 Value::Number((current_len as u64).into()),
             );
             object.insert(
-                "arroba_message".to_string(),
+                "chariox_message".to_string(),
                 Value::String(
                     "provider tool output was replaced; showing the latest capped tail".to_string(),
                 ),
@@ -184,9 +184,9 @@ fn provider_tool_delta_bytes(
             MAX_PROVIDER_TOOL_STRING_BYTES,
             current_len,
         ));
-        object.insert("arroba_truncated".to_string(), Value::Bool(true));
+        object.insert("chariox_truncated".to_string(), Value::Bool(true));
         object.insert(
-            "arroba_original_bytes".to_string(),
+            "chariox_original_bytes".to_string(),
             Value::Number((current_len as u64).into()),
         );
     }
@@ -275,9 +275,9 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     truncate_json_strings(&mut value, &mut truncated);
     if truncated {
         if let Value::Object(object) = &mut value {
-            object.insert("arroba_truncated".to_string(), Value::Bool(true));
+            object.insert("chariox_truncated".to_string(), Value::Bool(true));
             object.insert(
-                "arroba_original_bytes".to_string(),
+                "chariox_original_bytes".to_string(),
                 Value::Number((bytes.len() as u64).into()),
             );
         }
@@ -294,9 +294,9 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
             }
         }
     }
-    fallback.insert("arroba_truncated".to_string(), Value::Bool(true));
+    fallback.insert("chariox_truncated".to_string(), Value::Bool(true));
     fallback.insert(
-        "arroba_original_bytes".to_string(),
+        "chariox_original_bytes".to_string(),
         Value::Number((bytes.len() as u64).into()),
     );
     fallback.insert(
@@ -342,7 +342,7 @@ fn bounded_text_bytes(bytes: &[u8]) -> Vec<u8> {
 
 fn bounded_text_string(bytes: &[u8], limit: usize, original_len: usize) -> String {
     let marker = format!(
-        "\n\n[arroba: output truncated, omitted {} bytes]\n",
+        "\n\n[chariox: output truncated, omitted {} bytes]\n",
         original_len.saturating_sub(limit),
     );
     let marker_bytes = marker.as_bytes();
@@ -361,7 +361,7 @@ fn bounded_text_tail_string(bytes: &[u8], limit: usize, original_len: usize) -> 
         return String::from_utf8_lossy(bytes).into_owned();
     }
     let marker = format!(
-        "[arroba: output truncated, omitted {} leading bytes]\n\n",
+        "[chariox: output truncated, omitted {} leading bytes]\n\n",
         original_len.saturating_sub(limit),
     );
     let marker_bytes = marker.as_bytes();
@@ -526,7 +526,7 @@ mod tests {
 
         assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
         let text = String::from_utf8(bounded).expect("bounded output should remain utf8");
-        assert!(text.contains("[arroba: output truncated"));
+        assert!(text.contains("[chariox: output truncated"));
     }
 
     #[test]
@@ -546,7 +546,7 @@ mod tests {
             serde_json::from_slice(&bounded).expect("bounded tool should remain json");
         assert_eq!(value.get("id").and_then(Value::as_str), Some("call-1"));
         assert_eq!(
-            value.get("arroba_truncated").and_then(Value::as_bool),
+            value.get("chariox_truncated").and_then(Value::as_bool),
             Some(true)
         );
     }
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(first.get("output").and_then(Value::as_str), Some("hello "));
         assert_eq!(second.get("output").and_then(Value::as_str), Some("world"));
         assert_eq!(
-            second.get("arroba_delta").and_then(Value::as_bool),
+            second.get("chariox_delta").and_then(Value::as_bool),
             Some(true)
         );
     }
@@ -686,7 +686,7 @@ mod tests {
         assert!(output.len() <= MAX_PROVIDER_TOOL_STRING_BYTES);
         assert_eq!(
             replacement
-                .get("arroba_output_replaced")
+                .get("chariox_output_replaced")
                 .and_then(Value::as_bool),
             Some(true)
         );
@@ -737,7 +737,7 @@ mod tests {
         let first: Value = serde_json::from_slice(&first).expect("first summary should be json");
         assert_eq!(first.get("id").and_then(Value::as_str), Some("call-large"));
         assert_eq!(
-            first.get("arroba_truncated").and_then(Value::as_bool),
+            first.get("chariox_truncated").and_then(Value::as_bool),
             Some(true)
         );
     }

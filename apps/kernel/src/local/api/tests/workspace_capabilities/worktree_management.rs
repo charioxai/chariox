@@ -9,7 +9,7 @@ fn local_request_api_commits_workspace_changes() {
 }
 
 fn local_request_api_commits_workspace_changes_inner() {
-    let worktree_root = std::env::temp_dir().join("arroba-workspace-commit-test");
+    let worktree_root = std::env::temp_dir().join("chariox-workspace-commit-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
@@ -58,7 +58,7 @@ fn local_request_api_push_without_upstream_fails_loudly() {
 }
 
 fn local_request_api_push_without_upstream_fails_loudly_inner() {
-    let worktree_root = std::env::temp_dir().join("arroba-workspace-push-no-upstream-test");
+    let worktree_root = std::env::temp_dir().join("chariox-workspace-push-no-upstream-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
@@ -93,8 +93,8 @@ fn local_request_api_deletes_unused_workspace_worktree() {
 }
 
 fn local_request_api_deletes_unused_workspace_worktree_inner() {
-    let workspace_root = std::env::temp_dir().join("arroba-workspace-delete-worktree-test");
-    let feature_root = std::env::temp_dir().join("arroba-workspace-delete-worktree-test-feature");
+    let workspace_root = std::env::temp_dir().join("chariox-workspace-delete-worktree-test");
+    let feature_root = std::env::temp_dir().join("chariox-workspace-delete-worktree-test-feature");
     let _ = std::fs::remove_dir_all(&workspace_root);
     let _ = std::fs::remove_dir_all(&feature_root);
     std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
@@ -114,7 +114,7 @@ fn local_request_api_deletes_unused_workspace_worktree_inner() {
             CreateWorkspaceWorktreeRequest {
                 workspace_id: workspace_root.display().to_string(),
                 path: Some(feature_root.display().to_string()),
-                branch: Some("arroba/delete-test".to_string()),
+                branch: Some("chariox/delete-test".to_string()),
                 base_ref: Some("main".to_string()),
             },
         ))
@@ -135,8 +135,8 @@ fn local_request_api_deletes_unused_workspace_worktree_inner() {
         .expect("unused worktree delete should succeed");
     match delete {
         LocalDaemonResponse::WorkspaceWorktreeDeleted { path, .. } => {
-            assert!(path.ends_with("arroba-workspace-delete-worktree-test-feature"));
-            assert!(worktree_path.ends_with("arroba-workspace-delete-worktree-test-feature"));
+            assert!(path.ends_with("chariox-workspace-delete-worktree-test-feature"));
+            assert!(worktree_path.ends_with("chariox-workspace-delete-worktree-test-feature"));
         }
         _ => panic!("unexpected local response"),
     }
@@ -152,11 +152,11 @@ fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix() {
 }
 
 fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inner() {
-    let parent = std::env::temp_dir().join("arroba-workspace-session-worktree-prefix-test");
-    let workspace_root = parent.join("arroba-cloud");
-    let expected_worktree_root = parent.join("arroba-cloud-session-1783622367");
+    let parent = std::env::temp_dir().join("chariox-workspace-session-worktree-prefix-test");
+    let workspace_root = parent.join("chariox-cloud");
+    let expected_worktree_root = parent.join("chariox-cloud-session-1783622367");
     let duplicate_worktree_root =
-        parent.join("arroba-cloud-arroba-arroba-cloud-session-1783622367");
+        parent.join("chariox-cloud-chariox-chariox-cloud-session-1783622367");
     let _ = std::fs::remove_dir_all(&parent);
     std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
     std::fs::write(workspace_root.join("README.md"), "hello\n").expect("file should exist");
@@ -175,7 +175,7 @@ fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inne
             CreateWorkspaceWorktreeRequest {
                 workspace_id: workspace_root.display().to_string(),
                 path: None,
-                branch: Some("arroba/arroba-cloud-session-1783622367".to_string()),
+                branch: Some("chariox/chariox-cloud-session-1783622367".to_string()),
                 base_ref: Some("main".to_string()),
             },
         ))
@@ -186,7 +186,7 @@ fn local_request_api_creates_session_worktree_without_duplicate_repo_prefix_inne
             let returned_path = std::path::PathBuf::from(&worktree.path);
             assert_eq!(
                 returned_path.file_name().and_then(std::ffi::OsStr::to_str),
-                Some("arroba-cloud-session-1783622367")
+                Some("chariox-cloud-session-1783622367")
             );
             assert!(returned_path.exists());
             assert!(expected_worktree_root.exists());
@@ -207,8 +207,8 @@ fn local_request_api_refuses_to_delete_runtime_owned_worktree() {
 }
 
 fn local_request_api_refuses_to_delete_runtime_owned_worktree_inner() {
-    let workspace_root = std::env::temp_dir().join("arroba-workspace-delete-owned-test");
-    let feature_root = std::env::temp_dir().join("arroba-workspace-delete-owned-test-feature");
+    let workspace_root = std::env::temp_dir().join("chariox-workspace-delete-owned-test");
+    let feature_root = std::env::temp_dir().join("chariox-workspace-delete-owned-test-feature");
     let _ = std::fs::remove_dir_all(&workspace_root);
     let _ = std::fs::remove_dir_all(&feature_root);
     std::fs::create_dir_all(&workspace_root).expect("workspace should exist");
@@ -227,7 +227,7 @@ fn local_request_api_refuses_to_delete_runtime_owned_worktree_inner() {
             "worktree",
             "add",
             "-b",
-            "arroba/owned-delete-test",
+            "chariox/owned-delete-test",
             feature_root.to_str().expect("feature path should encode"),
             "main",
         ],

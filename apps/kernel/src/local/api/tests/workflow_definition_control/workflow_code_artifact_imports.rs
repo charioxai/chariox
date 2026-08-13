@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn local_request_api_rejects_workflow_code_artifact_import_with_definition_hash_mismatch() {
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-hash-mismatch-import-{}-{}",
+        "chariox-workflow-code-hash-mismatch-import-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

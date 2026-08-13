@@ -63,7 +63,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync edit approval".to_string(),
                 format!(
-                    "Allow editing `{}` through Arroba workspace live sync?",
+                    "Allow editing `{}` through Chariox workspace live sync?",
                     args.path
                 ),
             ))
@@ -100,7 +100,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync delete approval".to_string(),
                 format!(
-                    "Allow deleting `{}` through Arroba workspace live sync?",
+                    "Allow deleting `{}` through Chariox workspace live sync?",
                     args.path
                 ),
             ))
@@ -116,7 +116,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync move approval".to_string(),
                 format!(
-                    "Allow moving `{}` to `{}` through Arroba workspace live sync?",
+                    "Allow moving `{}` to `{}` through Chariox workspace live sync?",
                     args.from_path, args.to_path
                 ),
             ))
@@ -132,7 +132,7 @@ fn workspace_live_sync_permission_message(
             Ok((
                 "Workspace live sync write approval".to_string(),
                 format!(
-                    "Allow writing `{}` through Arroba workspace live sync?",
+                    "Allow writing `{}` through Chariox workspace live sync?",
                     args.path
                 ),
             ))

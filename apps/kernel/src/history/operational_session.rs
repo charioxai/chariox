@@ -15,7 +15,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalImportHistoryIndex {
-    pub arroba_owned_prompts: Vec<String>,
+    pub chariox_owned_prompts: Vec<String>,
     pub external_entries_by_merge_key: BTreeMap<String, ExternalImportHistoryEntry>,
 }
 
@@ -356,7 +356,7 @@ impl OperationalHistoryStore {
                 operation: "load external import history entry index",
                 message: error.to_string(),
             })?;
-        let mut arroba_owned_prompts = Vec::new();
+        let mut chariox_owned_prompts = Vec::new();
         let mut external_entries_by_merge_key = BTreeMap::new();
         while let Some(row) = rows
             .next()
@@ -402,13 +402,13 @@ impl OperationalHistoryStore {
                 .as_ref()
                 .and_then(|entry| entry.external_observation.clone());
             if kind == "user_prompt"
-                && history_user_prompt_counts_as_arroba_owned(
+                && history_user_prompt_counts_as_chariox_owned(
                     history_entry.as_ref(),
                     &metadata_text,
                 )
             {
                 if let Some(content) = content.clone() {
-                    arroba_owned_prompts.push(content);
+                    chariox_owned_prompts.push(content);
                 }
             }
             let Some(kind) = session_history_kind_from_key(&kind) else {
@@ -448,12 +448,12 @@ impl OperationalHistoryStore {
             }
         }
         Ok(ExternalImportHistoryIndex {
-            arroba_owned_prompts,
+            chariox_owned_prompts,
             external_entries_by_merge_key,
         })
     }
 
-    pub fn load_arroba_owned_prompt_texts(
+    pub fn load_chariox_owned_prompt_texts(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -471,14 +471,14 @@ impl OperationalHistoryStore {
             )
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
-                operation: "prepare arroba-owned prompt history load",
+                operation: "prepare chariox-owned prompt history load",
                 message: error.to_string(),
             })?;
         let mut rows = statement
             .query(params![session_id, agent_id])
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
-                operation: "load arroba-owned prompt history",
+                operation: "load chariox-owned prompt history",
                 message: error.to_string(),
             })?;
         let mut prompts = Vec::new();
@@ -486,21 +486,21 @@ impl OperationalHistoryStore {
             .next()
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
-                operation: "read arroba-owned prompt history",
+                operation: "read chariox-owned prompt history",
                 message: error.to_string(),
             })?
         {
             let content = row.get::<_, Option<String>>(0).map_err(|error| {
                 DaemonError::SessionHistoryFailed {
                     session_id: Some(session_id.to_string()),
-                    operation: "decode arroba-owned prompt content",
+                    operation: "decode chariox-owned prompt content",
                     message: error.to_string(),
                 }
             })?;
             let metadata_text = row.get::<_, Option<String>>(1).map_err(|error| {
                 DaemonError::SessionHistoryFailed {
                     session_id: Some(session_id.to_string()),
-                    operation: "decode arroba-owned prompt metadata",
+                    operation: "decode chariox-owned prompt metadata",
                     message: error.to_string(),
                 }
             })?;
@@ -508,14 +508,15 @@ impl OperationalHistoryStore {
                 row.get::<_, String>(2)
                     .map_err(|error| DaemonError::SessionHistoryFailed {
                         session_id: Some(session_id.to_string()),
-                        operation: "decode arroba-owned prompt event json",
+                        operation: "decode chariox-owned prompt event json",
                         message: error.to_string(),
                     })?;
             let metadata_text = metadata_text.unwrap_or_default();
             let history_entry = serde_json::from_str::<HistoryEvent>(&event_json)
                 .ok()
                 .and_then(|event| event.to_session_history_entry());
-            if !history_user_prompt_counts_as_arroba_owned(history_entry.as_ref(), &metadata_text) {
+            if !history_user_prompt_counts_as_chariox_owned(history_entry.as_ref(), &metadata_text)
+            {
                 continue;
             }
             if let Some(content) = content {
@@ -576,12 +577,12 @@ fn session_history_kind_from_key(kind: &str) -> Option<SessionHistoryEntryKind> 
     }
 }
 
-fn history_user_prompt_counts_as_arroba_owned(
+fn history_user_prompt_counts_as_chariox_owned(
     entry: Option<&SessionHistoryEntry>,
     metadata_text: &str,
 ) -> bool {
     match entry.and_then(|entry| entry.prompt_origin) {
-        Some(PromptOrigin::Arroba) => true,
+        Some(PromptOrigin::Chariox) => true,
         Some(PromptOrigin::External) => false,
         None => !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
             metadata_text,

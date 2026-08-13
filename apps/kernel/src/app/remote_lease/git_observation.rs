@@ -198,8 +198,8 @@ mod tests {
     fn init_repo_with_file(root: &std::path::Path, path: &str, contents: &str) {
         std::fs::create_dir_all(root).expect("repo root should exist");
         run_test_git(root, &["init", "-b", "main"]);
-        run_test_git(root, &["config", "user.email", "arroba@example.test"]);
-        run_test_git(root, &["config", "user.name", "Arroba Test"]);
+        run_test_git(root, &["config", "user.email", "chariox@example.test"]);
+        run_test_git(root, &["config", "user.name", "Chariox Test"]);
         let file = root.join(path);
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent).expect("parent dir should exist");
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn tracked_leased_git_observation_keeps_snapshot_until_change_exists() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-remote-tracked-git-observation-{}-{}",
+            "chariox-remote-tracked-git-observation-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

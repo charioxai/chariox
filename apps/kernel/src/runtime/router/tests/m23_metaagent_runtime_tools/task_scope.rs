@@ -1197,7 +1197,7 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
     assert!(
         specs
             .iter()
-            .all(|spec| spec.name.starts_with("arroba.meta.")
+            .all(|spec| spec.name.starts_with("chariox.meta.")
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                 || spec.name == crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL

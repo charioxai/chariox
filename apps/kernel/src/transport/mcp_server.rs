@@ -236,7 +236,7 @@ async fn handle_json_rpc_value(
                             }
                         },
                         "serverInfo": {
-                            "name": "arroba-runtime",
+                            "name": "chariox-runtime",
                             "version": env!("CARGO_PKG_VERSION"),
                         }
                     }

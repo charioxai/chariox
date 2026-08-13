@@ -39,7 +39,7 @@ pub enum VaultUnlockLease {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaVaultUnlockStatus {
+pub struct CharioxVaultUnlockStatus {
     pub path: PathBuf,
     pub unlocked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,12 +47,12 @@ pub struct ArrobaVaultUnlockStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct ArrobaEncryptedCredentialVaultStore {
+pub struct CharioxEncryptedCredentialVaultStore {
     path: PathBuf,
     kdf_profile: VaultKdfProfile,
 }
 
-impl ArrobaEncryptedCredentialVaultStore {
+impl CharioxEncryptedCredentialVaultStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: normalize_vault_path(path.into()),
@@ -73,7 +73,7 @@ impl ArrobaEncryptedCredentialVaultStore {
     }
 }
 
-impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
+impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         let vault_key = unlocked_vault_key(&self.path)?;
         let plaintext = read_vault_plaintext(&self.path, vault_key.as_ref())?;
@@ -82,7 +82,7 @@ impl CredentialVaultStore for ArrobaEncryptedCredentialVaultStore {
             .get(service)
             .and_then(|service_secrets| service_secrets.get(key))
             .cloned()
-            .ok_or_else(|| secret_error(format!("credential `{key}` not found in Arroba vault")))
+            .ok_or_else(|| secret_error(format!("credential `{key}` not found in Chariox vault")))
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -168,26 +168,26 @@ pub(super) fn vault_store_for_config(
     config: &UserCredentialVaultConfig,
 ) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
     match config.backend {
-        CredentialVaultBackend::ArrobaEncrypted => Ok(Arc::new(
-            ArrobaEncryptedCredentialVaultStore::new(config.path.clone()),
+        CredentialVaultBackend::CharioxEncrypted => Ok(Arc::new(
+            CharioxEncryptedCredentialVaultStore::new(config.path.clone()),
         )),
         CredentialVaultBackend::ProcessMemory => {
             if process_memory_vault_backend_allowed() {
                 Ok(Arc::new(ProcessMemoryCredentialVaultStore))
             } else {
                 Err(secret_error(
-                    "credential_vault.backend=process_memory is volatile and is only allowed inside Arroba slices or with ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1".to_string(),
+                    "credential_vault.backend=process_memory is volatile and is only allowed inside Chariox slices or with CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1".to_string(),
                 ))
             }
         }
     }
 }
 
-pub fn unlock_arroba_encrypted_vault(
+pub fn unlock_chariox_encrypted_vault(
     path: impl AsRef<Path>,
     passphrase: &str,
     lease: VaultUnlockLease,
-) -> Result<ArrobaVaultUnlockStatus, DaemonError> {
+) -> Result<CharioxVaultUnlockStatus, DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     validate_passphrase(passphrase)?;
     let now_ms = crate::session::unix_epoch_ms();
@@ -209,32 +209,32 @@ pub fn unlock_arroba_encrypted_vault(
     };
     unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
         .insert(path.clone(), UnlockedVault { key, expires_at_ms });
-    Ok(ArrobaVaultUnlockStatus {
+    Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: true,
         expires_at_ms,
     })
 }
 
-pub fn lock_arroba_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
+pub fn lock_chariox_encrypted_vault(path: impl AsRef<Path>) -> Result<(), DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
         .remove(&path);
     Ok(())
 }
 
-pub fn extend_arroba_encrypted_vault(
+pub fn extend_chariox_encrypted_vault(
     path: impl AsRef<Path>,
     lease: VaultUnlockLease,
-) -> Result<ArrobaVaultUnlockStatus, DaemonError> {
+) -> Result<CharioxVaultUnlockStatus, DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     let mut unlocked = unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?;
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     let vault = unlocked
         .get_mut(&path)
         .ok_or_else(|| vault_locked_error(&path))?;
@@ -244,20 +244,20 @@ pub fn extend_arroba_encrypted_vault(
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
         VaultUnlockLease::KernelShutdown => None,
     };
-    Ok(ArrobaVaultUnlockStatus {
+    Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: true,
         expires_at_ms: vault.expires_at_ms,
     })
 }
 
-pub fn arroba_encrypted_vault_status(
+pub fn chariox_encrypted_vault_status(
     path: impl AsRef<Path>,
-) -> Result<ArrobaVaultUnlockStatus, DaemonError> {
+) -> Result<CharioxVaultUnlockStatus, DaemonError> {
     let path = normalize_vault_path(path.as_ref().to_path_buf());
     let mut unlocked = unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?;
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     let now_ms = crate::session::unix_epoch_ms();
     let (is_unlocked, expires_at_ms) = match unlocked.get(&path) {
         Some(vault) if !vault.is_expired(now_ms) => (true, vault.expires_at_ms),
@@ -267,22 +267,22 @@ pub fn arroba_encrypted_vault_status(
         }
         None => (false, None),
     };
-    Ok(ArrobaVaultUnlockStatus {
+    Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: is_unlocked,
         expires_at_ms,
     })
 }
 
-pub fn clear_all_arroba_encrypted_vault_unlocks() -> Result<(), DaemonError> {
+pub fn clear_all_chariox_encrypted_vault_unlocks() -> Result<(), DaemonError> {
     unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
         .clear();
     Ok(())
 }
 
-pub fn is_arroba_vault_locked_error(error: &DaemonError) -> bool {
+pub fn is_chariox_vault_locked_error(error: &DaemonError) -> bool {
     matches!(
         error,
         DaemonError::LocalTransport { operation, .. } if *operation == "credential_vault_locked"
@@ -294,7 +294,7 @@ fn unlocked_vault_key(path: &Path) -> Result<Zeroizing<[u8; KEY_LEN]>, DaemonErr
     let now_ms = crate::session::unix_epoch_ms();
     let mut unlocked = unlocked_vaults()
         .lock()
-        .map_err(|error| secret_error(format!("Arroba vault unlock state poisoned: {error}")))?;
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     match unlocked.get(&path) {
         Some(vault) if !vault.is_expired(now_ms) => Ok(vault.key.clone()),
         Some(_) => {
@@ -327,13 +327,13 @@ fn write_vault_plaintext(
 fn read_vault_file(path: &Path) -> Result<EncryptedVaultFile, DaemonError> {
     let bytes = fs::read(path).map_err(|error| {
         secret_error(format!(
-            "failed to read Arroba vault `{}`: {error}",
+            "failed to read Chariox vault `{}`: {error}",
             path.display()
         ))
     })?;
     let file = serde_json::from_slice::<EncryptedVaultFile>(&bytes).map_err(|error| {
         secret_error(format!(
-            "failed to parse Arroba vault `{}`: {error}",
+            "failed to parse Chariox vault `{}`: {error}",
             path.display()
         ))
     })?;
@@ -350,23 +350,25 @@ fn write_vault_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             secret_error(format!(
-                "failed to create Arroba vault directory `{}`: {error}",
+                "failed to create Chariox vault directory `{}`: {error}",
                 parent.display()
             ))
         })?;
     }
     let nonce = random_bytes::<NONCE_LEN>();
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| {
-        secret_error(format!("failed to initialize Arroba vault cipher: {error}"))
+        secret_error(format!(
+            "failed to initialize Chariox vault cipher: {error}"
+        ))
     })?;
     let plaintext_bytes = serde_json::to_vec(plaintext).map_err(|error| {
         secret_error(format!(
-            "failed to serialize Arroba vault plaintext: {error}"
+            "failed to serialize Chariox vault plaintext: {error}"
         ))
     })?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plaintext_bytes.as_slice())
-        .map_err(|error| secret_error(format!("failed to encrypt Arroba vault: {error}")))?;
+        .map_err(|error| secret_error(format!("failed to encrypt Chariox vault: {error}")))?;
     let file = EncryptedVaultFile {
         version: VAULT_FILE_VERSION,
         kdf,
@@ -375,7 +377,7 @@ fn write_vault_file(
         ciphertext: base64_encode(&ciphertext),
     };
     let serialized = serde_json::to_vec_pretty(&file)
-        .map_err(|error| secret_error(format!("failed to serialize Arroba vault: {error}")))?;
+        .map_err(|error| secret_error(format!("failed to serialize Chariox vault: {error}")))?;
     let tmp_path = vault_temp_path(path);
     let mut tmp_file = OpenOptions::new()
         .write(true)
@@ -383,27 +385,27 @@ fn write_vault_file(
         .open(&tmp_path)
         .map_err(|error| {
             secret_error(format!(
-                "failed to create Arroba vault temp file `{}`: {error}",
+                "failed to create Chariox vault temp file `{}`: {error}",
                 tmp_path.display()
             ))
         })?;
     set_vault_file_permissions(&tmp_file)?;
     tmp_file.write_all(&serialized).map_err(|error| {
         secret_error(format!(
-            "failed to write Arroba vault temp file `{}`: {error}",
+            "failed to write Chariox vault temp file `{}`: {error}",
             tmp_path.display()
         ))
     })?;
     tmp_file.sync_all().map_err(|error| {
         secret_error(format!(
-            "failed to sync Arroba vault temp file `{}`: {error}",
+            "failed to sync Chariox vault temp file `{}`: {error}",
             tmp_path.display()
         ))
     })?;
     drop(tmp_file);
     fs::rename(&tmp_path, path).map_err(|error| {
         secret_error(format!(
-            "failed to replace Arroba vault `{}`: {error}",
+            "failed to replace Chariox vault `{}`: {error}",
             path.display()
         ))
     })?;
@@ -419,31 +421,33 @@ fn decrypt_vault_payload(
     let nonce = base64_decode_fixed::<NONCE_LEN>(&file.nonce, "nonce")?;
     let ciphertext = base64_decode(&file.ciphertext, "ciphertext")?;
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| {
-        secret_error(format!("failed to initialize Arroba vault cipher: {error}"))
+        secret_error(format!(
+            "failed to initialize Chariox vault cipher: {error}"
+        ))
     })?;
     let plaintext = cipher
         .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
-        .map_err(|_| secret_error("failed to unlock Arroba vault; passphrase may be incorrect or the vault is corrupted".to_string()))?;
+        .map_err(|_| secret_error("failed to unlock Chariox vault; passphrase may be incorrect or the vault is corrupted".to_string()))?;
     serde_json::from_slice::<VaultPlaintext>(&plaintext)
-        .map_err(|error| secret_error(format!("failed to decode Arroba vault plaintext: {error}")))
+        .map_err(|error| secret_error(format!("failed to decode Chariox vault plaintext: {error}")))
 }
 
 fn validate_vault_file(file: &EncryptedVaultFile) -> Result<(), DaemonError> {
     if file.version != VAULT_FILE_VERSION {
         return Err(secret_error(format!(
-            "unsupported Arroba vault version {}",
+            "unsupported Chariox vault version {}",
             file.version
         )));
     }
     if file.cipher != VAULT_CIPHER {
         return Err(secret_error(format!(
-            "unsupported Arroba vault cipher `{}`",
+            "unsupported Chariox vault cipher `{}`",
             file.cipher
         )));
     }
     if file.kdf.algorithm != VAULT_KDF {
         return Err(secret_error(format!(
-            "unsupported Arroba vault KDF `{}`",
+            "unsupported Chariox vault KDF `{}`",
             file.kdf.algorithm
         )));
     }
@@ -461,12 +465,12 @@ fn derive_key(
         kdf.parallelism,
         Some(KEY_LEN),
     )
-    .map_err(|error| secret_error(format!("invalid Arroba vault KDF params: {error}")))?;
+    .map_err(|error| secret_error(format!("invalid Chariox vault KDF params: {error}")))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = Zeroizing::new([0_u8; KEY_LEN]);
     argon2
         .hash_password_into(passphrase.as_bytes(), &salt, key.as_mut())
-        .map_err(|error| secret_error(format!("failed to derive Arroba vault key: {error}")))?;
+        .map_err(|error| secret_error(format!("failed to derive Chariox vault key: {error}")))?;
     Ok(key)
 }
 
@@ -491,7 +495,7 @@ fn sync_vault_parent_dir(path: &Path) -> Result<(), DaemonError> {
         .and_then(|dir| dir.sync_all())
         .map_err(|error| {
             secret_error(format!(
-                "failed to sync Arroba vault directory `{}`: {error}",
+                "failed to sync Chariox vault directory `{}`: {error}",
                 parent.display()
             ))
         })
@@ -501,7 +505,7 @@ fn sync_vault_parent_dir(path: &Path) -> Result<(), DaemonError> {
 fn set_vault_file_permissions(file: &File) -> Result<(), DaemonError> {
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(fs::Permissions::from_mode(0o600))
-        .map_err(|error| secret_error(format!("failed to set Arroba vault permissions: {error}")))
+        .map_err(|error| secret_error(format!("failed to set Chariox vault permissions: {error}")))
 }
 
 #[cfg(not(unix))]
@@ -512,7 +516,7 @@ fn set_vault_file_permissions(_file: &File) -> Result<(), DaemonError> {
 fn base64_decode(value: &str, label: &'static str) -> Result<Vec<u8>, DaemonError> {
     base64::engine::general_purpose::STANDARD
         .decode(value)
-        .map_err(|error| secret_error(format!("invalid Arroba vault {label}: {error}")))
+        .map_err(|error| secret_error(format!("invalid Chariox vault {label}: {error}")))
 }
 
 fn base64_decode_fixed<const N: usize>(
@@ -522,7 +526,7 @@ fn base64_decode_fixed<const N: usize>(
     let bytes = base64_decode(value, label)?;
     bytes.try_into().map_err(|bytes: Vec<u8>| {
         secret_error(format!(
-            "invalid Arroba vault {label} length: expected {N}, got {}",
+            "invalid Chariox vault {label} length: expected {N}, got {}",
             bytes.len()
         ))
     })
@@ -541,17 +545,17 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 fn validate_passphrase(passphrase: &str) -> Result<(), DaemonError> {
     if passphrase.is_empty() {
         return Err(secret_error(
-            "Arroba vault passphrase must not be empty".to_string(),
+            "Chariox vault passphrase must not be empty".to_string(),
         ));
     }
     Ok(())
 }
 
 fn process_memory_vault_backend_allowed() -> bool {
-    std::env::var("ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT")
+    std::env::var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
-        || std::env::var_os("ARROBA_SLICE_MACHINE_ID").is_some()
+        || std::env::var_os("CHARIOX_SLICE_MACHINE_ID").is_some()
 }
 
 fn process_memory_vault() -> &'static Mutex<BTreeMap<(String, String), Zeroizing<String>>> {
@@ -582,7 +586,7 @@ fn normalize_vault_path(path: PathBuf) -> PathBuf {
 fn vault_locked_error(_path: &Path) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "credential_vault_locked",
-        message: "Arroba vault is locked".to_string(),
+        message: "Chariox vault is locked".to_string(),
     }
 }
 
@@ -664,8 +668,8 @@ impl UnlockedVault {
 mod tests {
     use super::*;
 
-    fn test_store(path: PathBuf) -> ArrobaEncryptedCredentialVaultStore {
-        ArrobaEncryptedCredentialVaultStore::with_kdf_profile(
+    fn test_store(path: PathBuf) -> CharioxEncryptedCredentialVaultStore {
+        CharioxEncryptedCredentialVaultStore::with_kdf_profile(
             path,
             VaultKdfProfile {
                 memory_kib: 1024,
@@ -678,13 +682,13 @@ mod tests {
     #[test]
     fn encrypted_vault_round_trips_after_unlock() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-encrypted-vault-test-{}-{}",
+            "chariox-encrypted-vault-test-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         let path = root.join("vault.json");
         let store = test_store(path.clone());
-        unlock_arroba_encrypted_vault(
+        unlock_chariox_encrypted_vault(
             &path,
             "correct horse battery staple",
             VaultUnlockLease::KernelShutdown,
@@ -692,11 +696,11 @@ mod tests {
         .expect("vault should unlock");
 
         store
-            .set_secret("arroba-test", "github-token", "secret-value")
+            .set_secret("chariox-test", "github-token", "secret-value")
             .expect("secret should store");
         assert_eq!(
             store
-                .get_secret("arroba-test", "github-token")
+                .get_secret("chariox-test", "github-token")
                 .expect("secret should read"),
             "secret-value"
         );
@@ -713,16 +717,16 @@ mod tests {
             assert_eq!(mode, 0o600);
         }
 
-        lock_arroba_encrypted_vault(&path).expect("vault should lock");
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
         let locked_error = store
-            .get_secret("arroba-test", "github-token")
+            .get_secret("chariox-test", "github-token")
             .expect_err("locked vault should not read");
-        assert!(is_arroba_vault_locked_error(&locked_error));
+        assert!(is_chariox_vault_locked_error(&locked_error));
         assert!(!locked_error
             .to_string()
             .contains(&path.display().to_string()));
 
-        unlock_arroba_encrypted_vault(
+        unlock_chariox_encrypted_vault(
             &path,
             "correct horse battery staple",
             VaultUnlockLease::KernelShutdown,
@@ -730,7 +734,7 @@ mod tests {
         .expect("vault should unlock again");
         assert_eq!(
             store
-                .get_secret("arroba-test", "github-token")
+                .get_secret("chariox-test", "github-token")
                 .expect("secret should read after unlock"),
             "secret-value"
         );
@@ -740,26 +744,26 @@ mod tests {
     #[test]
     fn encrypted_vault_rejects_wrong_passphrase() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-encrypted-vault-wrong-pass-test-{}-{}",
+            "chariox-encrypted-vault-wrong-pass-test-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         let path = root.join("vault.json");
         let store = test_store(path.clone());
-        unlock_arroba_encrypted_vault(&path, "right-passphrase", VaultUnlockLease::KernelShutdown)
+        unlock_chariox_encrypted_vault(&path, "right-passphrase", VaultUnlockLease::KernelShutdown)
             .expect("vault should unlock");
         store
-            .set_secret("arroba-test", "github-token", "secret-value")
+            .set_secret("chariox-test", "github-token", "secret-value")
             .expect("secret should store");
-        lock_arroba_encrypted_vault(&path).expect("vault should lock");
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
 
-        let error = unlock_arroba_encrypted_vault(
+        let error = unlock_chariox_encrypted_vault(
             &path,
             "wrong-passphrase",
             VaultUnlockLease::KernelShutdown,
         )
         .expect_err("wrong passphrase should fail");
-        assert!(format!("{error}").contains("failed to unlock Arroba vault"));
+        assert!(format!("{error}").contains("failed to unlock Chariox vault"));
         let _ = fs::remove_dir_all(root);
     }
 }

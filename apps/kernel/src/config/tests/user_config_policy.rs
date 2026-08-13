@@ -57,12 +57,12 @@ fn user_config_parses_slice_defaults() {
 version = 1
 
 [slices]
-root = "~/.arroba/slices-dev"
+root = "~/.chariox/slices-dev"
 
 [slices.linux]
-docker_image = "arroba-slice-linux-custom:local"
+docker_image = "chariox-slice-linux-custom:local"
 	build_image = "never"
-	extension_dockerfile = "~/.arroba/slices/extensions/Dockerfile"
+	extension_dockerfile = "~/.chariox/slices/extensions/Dockerfile"
 	allow_unconfined_seccomp = true
 	memory_mb = 4096
 cpus = "2.5"
@@ -71,13 +71,13 @@ screen_width = 1440
 screen_height = 900
 "#;
 
-    let config = toml::from_str::<ArrobaUserConfig>(payload).expect("slice config should parse");
+    let config = toml::from_str::<CharioxUserConfig>(payload).expect("slice config should parse");
     config.validate().expect("slice config should validate");
 
-    assert_eq!(config.slices.root.as_deref(), Some("~/.arroba/slices-dev"));
+    assert_eq!(config.slices.root.as_deref(), Some("~/.chariox/slices-dev"));
     assert_eq!(
         config.slices.linux.docker_image.as_deref(),
-        Some("arroba-slice-linux-custom:local")
+        Some("chariox-slice-linux-custom:local")
     );
     assert_eq!(
         config.slices.linux.build_image,
@@ -92,13 +92,16 @@ screen_height = 900
 
 #[test]
 fn user_config_defaults_to_versioned_slice_image() {
-    let config = ArrobaUserConfig::default();
+    let config = CharioxUserConfig::default();
 
     assert_eq!(
         config.slices.linux.docker_image.as_deref(),
         Some(DEFAULT_LINUX_SLICE_DOCKER_IMAGE)
     );
-    assert_ne!(DEFAULT_LINUX_SLICE_DOCKER_IMAGE, "arroba-slice-linux:local");
+    assert_ne!(
+        DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
+        "chariox-slice-linux:local"
+    );
 }
 
 #[test]
@@ -107,13 +110,13 @@ fn user_config_parses_credential_vault_service() {
 version = 1
 
 [credential_vault]
-service = "arroba-test"
+service = "chariox-test"
 "#;
 
     let config =
-        toml::from_str::<ArrobaUserConfig>(payload).expect("credential vault should parse");
+        toml::from_str::<CharioxUserConfig>(payload).expect("credential vault should parse");
     config.validate().expect("credential vault should validate");
-    assert_eq!(config.credential_vault.service, "arroba-test");
+    assert_eq!(config.credential_vault.service, "chariox-test");
 }
 
 #[test]
@@ -126,7 +129,7 @@ backend = "process_memory"
 "#;
 
     let config =
-        toml::from_str::<ArrobaUserConfig>(payload).expect("credential vault should parse");
+        toml::from_str::<CharioxUserConfig>(payload).expect("credential vault should parse");
     config.validate().expect("credential vault should validate");
     assert_eq!(
         config.credential_vault.backend,
@@ -146,7 +149,7 @@ unlock_policy = "{unlock_policy}"
 "#
         );
 
-        let error = toml::from_str::<ArrobaUserConfig>(&payload)
+        let error = toml::from_str::<CharioxUserConfig>(&payload)
             .expect_err("unimplemented unlock scope should not parse");
         assert!(error.to_string().contains("kernel_init, ttl, or always"));
     }
@@ -200,7 +203,7 @@ fn test_config_defaults_to_unrestricted_workspace_live_sync() {
 #[test]
 fn workspace_live_sync_policy_can_be_changed_and_persisted_in_user_config() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-user-config-test-{}-{}.toml",
+        "chariox-user-config-test-{}-{}.toml",
         std::process::id(),
         generate_identity_suffix()
     ));
@@ -243,7 +246,7 @@ fn workspace_live_sync_policy_defaults_to_off() {
 #[test]
 fn remote_lease_acceptance_defaults_to_enabled_and_user_config_is_live() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-remote-lease-config-test-{}-{}.toml",
+        "chariox-remote-lease-config-test-{}-{}.toml",
         std::process::id(),
         generate_identity_suffix()
     ));

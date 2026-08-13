@@ -590,7 +590,7 @@ impl KernelRuntimeState {
             prompt: continuation,
             hidden_system_context: String::new(),
             attachments: Vec::new(),
-            prompt_origin: crate::session::PromptOrigin::Arroba,
+            prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,
@@ -704,7 +704,7 @@ fn recoverable_queued_publication_prompt(
 
 fn provider_restart_continuation_prompt(operation_id: &str) -> String {
     format!(
-        "[Arroba recovery operation {operation_id}] Continue the active task from the current provider session state. Do not repeat completed tool calls or external side effects. If the task already completed, return its final response from the existing results."
+        "[Chariox recovery operation {operation_id}] Continue the active task from the current provider session state. Do not repeat completed tool calls or external side effects. If the task already completed, return its final response from the existing results."
     )
 }
 
@@ -1087,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn restart_recovery_skips_local_prompt_when_its_workspace_is_gone() {
         let missing_worktree = std::env::temp_dir().join(format!(
-            "arroba-missing-restart-recovery-{}",
+            "chariox-missing-restart-recovery-{}",
             std::process::id()
         ));
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_in_worktree(
@@ -1199,8 +1199,8 @@ mod tests {
         ));
         let second = prompt.begin_durable_recovery_operation();
 
-        assert_eq!(first, "arroba-recovery:prompt-1:1");
-        assert_eq!(second, "arroba-recovery:prompt-1:2");
+        assert_eq!(first, "chariox-recovery:prompt-1:1");
+        assert_eq!(second, "chariox-recovery:prompt-1:2");
         assert_eq!(
             prompt.durable_recovery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
@@ -1218,7 +1218,7 @@ mod tests {
             .expect("provider run should exist")
             .id()
             .to_string();
-        let operation_id = "arroba-recovery:prompt-hidden:1";
+        let operation_id = "chariox-recovery:prompt-hidden:1";
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.clone(),
             provider_run_id: provider_run_id.clone(),
@@ -1229,7 +1229,7 @@ mod tests {
             prompt: provider_restart_continuation_prompt(operation_id),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
-            prompt_origin: crate::session::PromptOrigin::Arroba,
+            prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,
@@ -1279,7 +1279,7 @@ mod tests {
                     .to_string()
             })
             .await;
-        let operation_id = "arroba-recovery:prompt-hidden:1";
+        let operation_id = "chariox-recovery:prompt-hidden:1";
         let recovery_source_attachment =
             format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}");
         let recovery_prompt = provider_restart_continuation_prompt(operation_id);

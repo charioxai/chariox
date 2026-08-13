@@ -10,10 +10,10 @@ pub fn workflow_code_definition_sha256_hex(definition: &WorkflowCodeDefinition) 
     sha256_hex(&bytes)
 }
 
-pub(super) fn arroba_home() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_HOME")
+pub(super) fn chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".chariox")))
 }
 
 pub(super) fn io_error(

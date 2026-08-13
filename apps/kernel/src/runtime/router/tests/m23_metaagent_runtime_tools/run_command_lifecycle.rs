@@ -295,7 +295,7 @@ async fn metaagent_run_command_requires_plan_before_delegation_inner() {
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("call `arroba.meta.update_plan`")),
+            .is_some_and(|message| message.contains("call `chariox.meta.update_plan`")),
         "{:?}",
         denied.payload
     );

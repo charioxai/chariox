@@ -244,7 +244,7 @@ impl KernelRuntimeState {
             META_RUN_COMMAND_TOOL => Ok(RuntimeToolResult {
                 ok: false,
                 payload: serde_json::json!({
-                    "error": "arroba.meta.run_command must be dispatched through the runtime MCP router",
+                    "error": "chariox.meta.run_command must be dispatched through the runtime MCP router",
                     "tool": tool_name,
                     "agent_ref": agent.agent_ref(),
                 }),

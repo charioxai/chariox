@@ -46,12 +46,12 @@ pub(in crate::runtime::state) fn workspace_live_sync_validate_patch_path(
         message: "workspace live sync patch paths must be workspace-relative and cannot escape the workspace root".to_string(),
     })?;
     if path == std::path::Path::new(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
-        && workspace_live_sync_is_arroba_source_workspace(workspace_root)
+        && workspace_live_sync_is_chariox_source_workspace(workspace_root)
     {
         return Err(DaemonError::LocalTransport {
             operation: "runtime_tool_apply_patch",
             message: format!(
-                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through Workspace Live Sync managed tools",
+                "the Chariox workspace live sync instruction policy `{}` is owned by Chariox and cannot be edited through Workspace Live Sync managed tools",
                 crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH
             ),
         });
@@ -253,7 +253,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
         return Err(DaemonError::LocalTransport {
             operation,
             message: format!(
-                "`{}` is excluded from workspace live sync by .arrobaignore or a forced runtime exclusion",
+                "`{}` is excluded from workspace live sync by .charioxignore or a forced runtime exclusion",
                 path.to_string_lossy()
             ),
         });
@@ -264,7 +264,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_reject_ignored_path(
 fn workspace_live_sync_ignore_patterns(
     workspace_root: &PathBuf,
 ) -> Result<Vec<String>, DaemonError> {
-    let ignore_path = workspace_root.join(".arrobaignore");
+    let ignore_path = workspace_root.join(".charioxignore");
     if !ignore_path.exists() {
         let seed = match std::fs::read_to_string(workspace_root.join(".gitignore")) {
             Ok(contents) => contents,
@@ -278,13 +278,13 @@ fn workspace_live_sync_ignore_patterns(
         };
         std::fs::write(&ignore_path, seed).map_err(|error| DaemonError::LocalTransport {
             operation: "workspace_live_sync_ignore",
-            message: format!("failed to initialize `.arrobaignore`: {error}"),
+            message: format!("failed to initialize `.charioxignore`: {error}"),
         })?;
     }
     let contents =
         std::fs::read_to_string(&ignore_path).map_err(|error| DaemonError::LocalTransport {
             operation: "workspace_live_sync_ignore",
-            message: format!("failed to read `.arrobaignore`: {error}"),
+            message: format!("failed to read `.charioxignore`: {error}"),
         })?;
     Ok(contents
         .lines()

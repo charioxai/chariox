@@ -43,7 +43,7 @@ pub(super) fn execute_submit_command(
         return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
     if run.adapter_key() == "claude" {
-        if !run.client_interface().is_arroba() {
+        if !run.client_interface().is_chariox() {
             return Ok(ProviderPromptSubmitAcknowledgement {
                 resume_state: run.resume_state().clone(),
             });
@@ -86,7 +86,7 @@ pub(super) fn execute_abort_command(
         return result;
     }
     if run.adapter_key() == "claude" {
-        if !run.client_interface().is_arroba() {
+        if !run.client_interface().is_chariox() {
             return Ok(());
         }
         let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;

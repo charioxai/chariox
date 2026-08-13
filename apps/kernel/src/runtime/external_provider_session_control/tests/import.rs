@@ -74,7 +74,7 @@ fn import_external_provider_session_creates_session_agent_and_run() {
         assert!(store
             .get("dev-stub:external-1")
             .expect("record should remain indexed")
-            .is_attached_to_arroba());
+            .is_attached_to_chariox());
     });
 }
 
@@ -236,7 +236,7 @@ fn import_external_provider_session_rejects_already_attached_thread() {
         .expect_err("already attached external session should be rejected");
 
         assert!(error.to_string().contains(
-            "already attached to Arroba session `session-existing` agent `agent-existing`"
+            "already attached to Chariox session `session-existing` agent `agent-existing`"
         ));
     });
 }
@@ -279,7 +279,7 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
             store
                 .get("codex:thread-owned-by-resume")
                 .expect("record should start indexed")
-                .is_attachable_to_arroba(),
+                .is_attachable_to_chariox(),
             "test starts from a stale attachable store record",
         );
 
@@ -299,16 +299,16 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
             "external-import-user",
         )
         .await
-        .expect_err("Arroba-owned Codex thread should not import as a second session");
+        .expect_err("Chariox-owned Codex thread should not import as a second session");
 
         let message = error.to_string();
         assert!(message.contains(&format!(
-            "already attached to Arroba session `{session_id}` agent `{agent_id}`"
+            "already attached to Chariox session `{session_id}` agent `{agent_id}`"
         )));
         assert!(store
             .get("codex:thread-owned-by-resume")
             .expect("record should remain indexed")
-            .is_attached_to_arroba());
+            .is_attached_to_chariox());
     });
 }
 
@@ -324,7 +324,7 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
             session_dir.join("owned-discovered.jsonl"),
             concat!(
                 "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-owned-discovered\",\"cwd\":\"/tmp/owned-discovered\",\"model_provider\":\"openai\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"This thread was created by Arroba and should not be attachable.\"}]}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"This thread was created by Chariox and should not be attachable.\"}]}}\n",
             ),
         )
         .expect("codex session should write");
@@ -377,16 +377,16 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
             "external-import-user",
         )
         .await
-        .expect_err("discovered Arroba-owned Codex thread should not import");
+        .expect_err("discovered Chariox-owned Codex thread should not import");
 
         let message = error.to_string();
         assert!(message.contains(&format!(
-            "already attached to Arroba session `{session_id}` agent `{agent_id}`"
+            "already attached to Chariox session `{session_id}` agent `{agent_id}`"
         )));
         assert!(store
             .get("codex:thread-owned-discovered")
             .expect("discovered record should remain indexed")
-            .is_attached_to_arroba());
+            .is_attached_to_chariox());
     });
 
     restore_env_var("CODEX_HOME", previous_codex_home);
@@ -514,7 +514,7 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
             store
                 .get("codex:thread-owned-by-run")
                 .expect("record should start indexed")
-                .is_attachable_to_arroba(),
+                .is_attachable_to_chariox(),
             "test starts from a stale attachable store record",
         );
 
@@ -533,21 +533,21 @@ fn import_external_provider_agent_rejects_thread_owned_by_provider_run() {
             "external-agent-user",
         )
         .await
-        .expect_err("Arroba-owned Codex thread should not import as a second agent");
+        .expect_err("Chariox-owned Codex thread should not import as a second agent");
 
         let message = error.to_string();
         assert!(message.contains(&format!(
-            "already attached to Arroba session `{owner_session_id}` agent `{owner_agent_id}`"
+            "already attached to Chariox session `{owner_session_id}` agent `{owner_agent_id}`"
         )));
         assert!(store
             .get("codex:thread-owned-by-run")
             .expect("record should remain indexed")
-            .is_attached_to_arroba());
+            .is_attached_to_chariox());
     });
 }
 
 #[test]
-fn attached_arroba_agent_resume_state_removes_external_session_from_attachable_list() {
+fn attached_chariox_agent_resume_state_removes_external_session_from_attachable_list() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -558,15 +558,15 @@ fn attached_arroba_agent_resume_state_removes_external_session_from_attachable_l
             "codex",
             Some("gpt-test".to_string()),
             None,
-            ProviderResumeState::from_codex_thread_id("thread-owned-by-arroba"),
+            ProviderResumeState::from_codex_thread_id("thread-owned-by-chariox"),
         )
         .expect("agent runtime profile should update");
     attach_test_session(&app, session.id());
     let store = app.external_provider_session_index_store();
     store.upsert(record(
         "codex",
-        "thread-owned-by-arroba",
-        "/tmp/owned-by-arroba",
+        "thread-owned-by-chariox",
+        "/tmp/owned-by-chariox",
     ));
 
     mark_attached_external_provider_sessions(&app, None, &store);
@@ -578,9 +578,9 @@ fn attached_arroba_agent_resume_state_removes_external_session_from_attachable_l
     });
     assert!(page.sessions.is_empty());
     let attached = store
-        .get("codex:thread-owned-by-arroba")
+        .get("codex:thread-owned-by-chariox")
         .expect("record should remain indexed");
-    assert!(attached.is_attached_to_arroba());
+    assert!(attached.is_attached_to_chariox());
     assert_eq!(attached.first_attached_session_id(), Some(session.id()));
     assert_eq!(attached.first_attached_agent_id(), Some(agent.id()));
 }
@@ -610,7 +610,7 @@ fn changed_attached_resume_state_returns_previous_provider_session_to_attachable
     assert!(store
         .get("codex:thread-old")
         .expect("old provider session should be indexed")
-        .is_attached_to_arroba());
+        .is_attached_to_chariox());
 
     app.agents()
         .set_agent_runtime_profile(
@@ -640,13 +640,13 @@ fn changed_attached_resume_state_returns_previous_provider_session_to_attachable
     let current = store
         .get("codex:thread-new")
         .expect("new provider session should be indexed");
-    assert!(current.is_attached_to_arroba());
+    assert!(current.is_attached_to_chariox());
     assert_eq!(current.first_attached_session_id(), Some(session.id()));
     assert_eq!(current.first_attached_agent_id(), Some(agent.id()));
 }
 
 #[test]
-fn live_provider_run_provider_session_id_counts_as_attached_to_arroba() {
+fn live_provider_run_provider_session_id_counts_as_attached_to_chariox() {
     let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-test")
         .with_agent_id("agent-1");
     let launch = crate::provider::ProviderLaunchResult {
@@ -674,7 +674,7 @@ fn live_provider_run_provider_session_id_counts_as_attached_to_arroba() {
 }
 
 #[test]
-fn arroba_owned_provider_run_provider_session_id_becomes_observer_target() {
+fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -682,8 +682,8 @@ fn arroba_owned_provider_run_provider_session_id_becomes_observer_target() {
     let run = test_codex_run(
         session.id(),
         agent.id(),
-        "run-arroba-owned",
-        "thread-arroba",
+        "run-chariox-owned",
+        "thread-chariox",
     );
     app.providers_mut().insert_run_for_test(run.clone());
 
@@ -692,12 +692,12 @@ fn arroba_owned_provider_run_provider_session_id_becomes_observer_target() {
     assert_eq!(target.session_id, session.id());
     assert_eq!(target.agent_id, agent.id());
     assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
-    assert_eq!(target.external_session_id, "codex:thread-arroba");
+    assert_eq!(target.external_session_id, "codex:thread-chariox");
     assert_eq!(target.provider, "codex");
-    assert_eq!(target.provider_session_id, "thread-arroba");
+    assert_eq!(target.provider_session_id, "thread-chariox");
     assert!(matches!(
         target.cursor_source,
-        AttachedExternalObserverCursorSource::ArrobaOwned(_)
+        AttachedExternalObserverCursorSource::CharioxOwned(_)
     ));
     assert!(app
         .agents()

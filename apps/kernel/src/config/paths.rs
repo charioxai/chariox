@@ -119,17 +119,17 @@ pub(super) fn default_state_dir() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return state_dir.join("arroba");
+        return state_dir.join("chariox");
     }
 
     if let Some(home_dir) = env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return home_dir.join(".local").join("state").join("arroba");
+        return home_dir.join(".local").join("state").join("chariox");
     }
 
-    env::temp_dir().join("arroba")
+    env::temp_dir().join("chariox")
 }
 
 pub(super) fn default_config_dir() -> PathBuf {
@@ -137,17 +137,17 @@ pub(super) fn default_config_dir() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return config_dir.join("arroba");
+        return config_dir.join("chariox");
     }
 
     if let Some(home_dir) = env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return home_dir.join(".arroba");
+        return home_dir.join(".chariox");
     }
 
-    env::temp_dir().join("arroba").join("config")
+    env::temp_dir().join("chariox").join("config")
 }
 
 fn default_runtime_dir() -> PathBuf {
@@ -155,17 +155,17 @@ fn default_runtime_dir() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return runtime_dir.join("arroba");
+        return runtime_dir.join("chariox");
     }
 
     if let Some(home_dir) = env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return home_dir.join(".arroba").join("run");
+        return home_dir.join(".chariox").join("run");
     }
 
-    env::temp_dir().join("arroba")
+    env::temp_dir().join("chariox")
 }
 
 fn expand_user_path(value: &str) -> PathBuf {

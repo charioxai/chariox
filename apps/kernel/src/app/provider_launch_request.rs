@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn app_launch_preparation_scopes_workspace_live_sync_roots_to_selected_repo_and_local_links() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-app-live-sync-root-scope-{}-{}",
+            "chariox-app-live-sync-root-scope-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -229,7 +229,7 @@ mod tests {
                 .with_execution_mode(AgentExecutionMode::Build)
                 .with_permission_level(AgentPermissionLevel::Yolo)
                 .with_mcp_servers(vec![
-                    crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                    crate::mcp::CharioxMcpServerConfig::streamable_http(
                         "worker-tool",
                         "http://127.0.0.1/mcp",
                     ),
@@ -250,9 +250,9 @@ mod tests {
         assert_eq!(
             prepared
                 .provider_config_overrides
-                .get("arroba.metaagent_tools_only"),
+                .get("chariox.metaagent_tools_only"),
             Some(&serde_json::json!(true)),
-            "Meta mode should expose only Arroba orchestration tools to provider-native runtimes"
+            "Meta mode should expose only Chariox orchestration tools to provider-native runtimes"
         );
         assert!(
             prepared.mcp_servers.is_empty(),

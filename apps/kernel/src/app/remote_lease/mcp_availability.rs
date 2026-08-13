@@ -8,10 +8,10 @@ use crate::transport::relay_peer::{
 use super::RemoteLeaseRuntime;
 
 fn validate_worker_mcp_runtime(
-    config: &crate::mcp::ArrobaMcpServerConfig,
+    config: &crate::mcp::CharioxMcpServerConfig,
 ) -> RemoteMcpAvailabilityStatus {
     match &config.transport {
-        crate::mcp::ArrobaMcpTransportConfig::Stdio {
+        crate::mcp::CharioxMcpTransportConfig::Stdio {
             command,
             env_vars,
             cwd,
@@ -39,7 +39,7 @@ fn validate_worker_mcp_runtime(
             }
             RemoteMcpAvailabilityStatus::Available
         }
-        crate::mcp::ArrobaMcpTransportConfig::StreamableHttp {
+        crate::mcp::CharioxMcpTransportConfig::StreamableHttp {
             bearer_token_env_var,
             env_http_headers,
             ..
@@ -143,7 +143,7 @@ fn format_remote_mcp_unavailable_message(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "remote agent `{}` requires MCPs that are not available in worker Arroba. Install the matching MCP definition in the worker global registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{}",
+        "remote agent `{}` requires MCPs that are not available in worker Chariox. Install the matching MCP definition in the worker global registry, or revoke the worker-local MCP grant and expose the home MCP as a home-proxy extension, then retry.\n{}",
         leased_agent.id, details
     )
 }
@@ -233,7 +233,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_mcps: &[RequiredRemoteMcp],
     ) -> Result<(), DaemonError> {
         if required_mcps.is_empty()
-            || std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+            || std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
                 .filter(|value| !value.is_empty())
                 .is_none()
             || !worker_is_home_managed_slice()
@@ -244,10 +244,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
-        let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() else {
+        let Some(root) = crate::mcp::CharioxMcpRegistry::user_root() else {
             return Ok(());
         };
-        let registry = crate::mcp::ArrobaMcpRegistry::new(vec![root]);
+        let registry = crate::mcp::CharioxMcpRegistry::new(vec![root]);
         for required in required_mcps {
             registry.install(&required.config)?;
         }
@@ -303,10 +303,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .collect();
             }
         };
-        let roots = crate::mcp::ArrobaMcpRegistry::user_root()
+        let roots = crate::mcp::CharioxMcpRegistry::user_root()
             .map(|root| vec![root])
             .unwrap_or_default();
-        let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
+        let registry = crate::mcp::CharioxMcpRegistry::new(roots);
         required_mcps
             .iter()
             .map(|required| {
@@ -338,7 +338,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 }
 
 fn worker_is_home_managed_slice() -> bool {
-    std::env::var("ARROBA_SLICE_MACHINE_ID")
+    std::env::var("CHARIOX_SLICE_MACHINE_ID")
         .ok()
         .is_some_and(|machine_id| machine_id.starts_with("slice:"))
 }

@@ -169,7 +169,7 @@ fn local_request_api_runs_workflow_code_with_generated_agent() {
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-run-{}",
+        "chariox-workflow-code-run-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");

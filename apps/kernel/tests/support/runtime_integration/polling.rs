@@ -4,12 +4,12 @@ pub fn wait_for_terminal_output(
     app: &mut DaemonApp,
     session_id: &str,
     attachment_id: &str,
-) -> Vec<arroba_kernel::terminal::TerminalOutputRecord> {
+) -> Vec<chariox_kernel::terminal::TerminalOutputRecord> {
     let timeout_ms = output_timeout_ms();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
     loop {
-        let records = arroba_kernel::transport::TransportService::pump_terminal_output(
+        let records = chariox_kernel::transport::TransportService::pump_terminal_output(
             app,
             session_id,
             attachment_id,
@@ -104,14 +104,14 @@ pub fn collect_terminal_output_until<F>(
     done: F,
 ) -> String
 where
-    F: Fn(&str, &arroba_kernel::session::RuntimeSession) -> bool,
+    F: Fn(&str, &chariox_kernel::session::RuntimeSession) -> bool,
 {
     let timeout_ms = output_timeout_ms().max(8_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut output = Vec::new();
 
     loop {
-        let records = arroba_kernel::transport::TransportService::pump_terminal_output(
+        let records = chariox_kernel::transport::TransportService::pump_terminal_output(
             app,
             session_id,
             attachment_id,
@@ -153,7 +153,7 @@ where
     let mut output = Vec::new();
 
     loop {
-        let records = arroba_kernel::transport::TransportService::pump_provider_output(
+        let records = chariox_kernel::transport::TransportService::pump_provider_output(
             app,
             session_id,
             provider_run_id,
@@ -204,7 +204,7 @@ where
             .get_run_for_agent(session_id, agent_id)
             .map(|run| run.id().to_string())
             .unwrap_or_else(|| initial_provider_run_id.to_string());
-        let records = arroba_kernel::transport::TransportService::pump_provider_output(
+        let records = chariox_kernel::transport::TransportService::pump_provider_output(
             app,
             session_id,
             &provider_run_id,
@@ -234,16 +234,16 @@ pub fn collect_provider_records_until<F>(
     provider_run_id: &str,
     recipient_attachment_ids: Vec<String>,
     done: F,
-) -> Vec<arroba_kernel::terminal::TerminalOutputRecord>
+) -> Vec<chariox_kernel::terminal::TerminalOutputRecord>
 where
-    F: Fn(&[arroba_kernel::terminal::TerminalOutputRecord], &DaemonApp) -> bool,
+    F: Fn(&[chariox_kernel::terminal::TerminalOutputRecord], &DaemonApp) -> bool,
 {
     let timeout_ms = output_timeout_ms().max(4_000);
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut records = Vec::new();
 
     loop {
-        let next = arroba_kernel::transport::TransportService::pump_provider_output(
+        let next = chariox_kernel::transport::TransportService::pump_provider_output(
             app,
             session_id,
             provider_run_id,
@@ -285,7 +285,9 @@ pub fn wait_for_provider_runtime_state(
     }
 }
 
-pub fn render_terminal_output(records: &[arroba_kernel::terminal::TerminalOutputRecord]) -> String {
+pub fn render_terminal_output(
+    records: &[chariox_kernel::terminal::TerminalOutputRecord],
+) -> String {
     let mut output = Vec::new();
     for record in records {
         output.extend_from_slice(&record.bytes);

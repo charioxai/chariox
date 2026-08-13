@@ -20,7 +20,7 @@ impl KernelRuntimeState {
         let Some(slice_id) = self.slice_kernel_id() else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch_slice_runtime_tool_call",
-                message: "slice runtime tools are only available inside Arroba slices".to_string(),
+                message: "slice runtime tools are only available inside Chariox slices".to_string(),
             });
         };
         let agent_id =
@@ -44,7 +44,7 @@ impl KernelRuntimeState {
                 })?;
                 let image_path = args
                     .path
-                    .unwrap_or_else(|| "/tmp/arroba-slice-screenshot.png".to_string());
+                    .unwrap_or_else(|| "/tmp/chariox-slice-screenshot.png".to_string());
                 let output =
                     run_slice_screen_command(vec!["screenshot".to_string(), image_path.clone()])
                         .await?;
@@ -395,8 +395,8 @@ async fn run_slice_screen_command_inner(
     args: Vec<String>,
     stdin: Option<String>,
 ) -> Result<SliceScreenCommandOutput, DaemonError> {
-    let tool_path = std::env::var("ARROBA_SLICE_SCREEN_TOOL")
-        .unwrap_or_else(|_| "/opt/arroba-slice/slice-screen.sh".to_string());
+    let tool_path = std::env::var("CHARIOX_SLICE_SCREEN_TOOL")
+        .unwrap_or_else(|_| "/opt/chariox-slice/slice-screen.sh".to_string());
     tokio::task::spawn_blocking(move || {
         let mut command = std::process::Command::new(&tool_path);
         command
@@ -500,7 +500,7 @@ async fn run_slice_screen_command_inner(
 }
 
 fn slice_screen_command_timeout_ms() -> u64 {
-    std::env::var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS")
+    std::env::var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -828,7 +828,7 @@ mod tests {
     async fn slice_screen_command_times_out() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
-            "arroba-slice-timeout-test-{}",
+            "chariox-slice-timeout-test-{}",
             crate::session::unix_epoch_ms()
         ));
         let _ = std::fs::create_dir_all(&root);
@@ -840,16 +840,16 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
                 .expect("script should be executable");
         }
-        std::env::set_var("ARROBA_SLICE_SCREEN_TOOL", &script);
-        std::env::set_var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS", "50");
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &script);
+        std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS", "50");
 
         let error = run_slice_screen_command(vec!["status".to_string()])
             .await
             .expect_err("sleeping helper should time out");
 
         assert!(error.to_string().contains("timed out"));
-        std::env::remove_var("ARROBA_SLICE_SCREEN_TOOL");
-        std::env::remove_var("ARROBA_SLICE_SCREEN_TOOL_TIMEOUT_MS");
+        std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+        std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL_TIMEOUT_MS");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -5,7 +5,7 @@ use std::future::Future;
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
-use arroba_relay::protocol::RelayCallerIdentity;
+use chariox_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
 
@@ -953,10 +953,10 @@ mod tests {
 
     #[test]
     fn relay_subscription_inventory_uses_authenticated_caller_user() {
-        let identity = arroba_relay::protocol::RelayCallerIdentity {
+        let identity = chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "realm-1".to_string(),
             subject: "client-1".to_string(),
-            subject_kind: arroba_relay::auth::RelaySubjectKind::Client,
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Client,
             expires_at_ms: u64::MAX,
             token_id: Some("token-1".to_string()),
             user_id: Some("cloud-user-1".to_string()),

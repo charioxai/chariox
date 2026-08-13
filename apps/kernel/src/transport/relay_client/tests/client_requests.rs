@@ -131,7 +131,7 @@ async fn proxied_session_requests_are_handled_through_relay() {
     ));
 
     let schema_path = std::env::temp_dir().join(format!(
-        "arroba-relay-validate-schema-{}.json",
+        "chariox-relay-validate-schema-{}.json",
         std::process::id()
     ));
     std::fs::write(

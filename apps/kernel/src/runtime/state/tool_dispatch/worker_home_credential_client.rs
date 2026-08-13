@@ -1,4 +1,4 @@
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 use std::time::Duration;
 
 use super::*;

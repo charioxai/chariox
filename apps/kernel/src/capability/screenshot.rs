@@ -53,7 +53,7 @@ impl ScreenshotCapabilityService {
         &self,
         request: CaptureScreenshotRequest,
     ) -> Result<CaptureScreenshotResult, DaemonError> {
-        if std::env::var("ARROBA_SCREENSHOT_DISABLE").as_deref() == Ok("1") {
+        if std::env::var("CHARIOX_SCREENSHOT_DISABLE").as_deref() == Ok("1") {
             return Ok(CaptureScreenshotResult {
                 session_id: request.session_id,
                 status: ScreenshotStatus::Unavailable,
@@ -150,15 +150,15 @@ mod tests {
     #[test]
     fn returns_unavailable_when_disabled() {
         let _guard = crate::env_lock::lock();
-        std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
+        std::env::set_var("CHARIOX_SCREENSHOT_DISABLE", "1");
         let result = ScreenshotCapabilityService::new()
             .capture(CaptureScreenshotRequest::new(
                 "session-1",
                 "attachment-1",
-                std::env::temp_dir().join("arroba-screenshot-test"),
+                std::env::temp_dir().join("chariox-screenshot-test"),
             ))
             .expect("capture should return structured unavailable result");
-        std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
+        std::env::remove_var("CHARIOX_SCREENSHOT_DISABLE");
 
         assert_eq!(result.status, ScreenshotStatus::Unavailable);
         assert!(result.artifact_path.is_none());

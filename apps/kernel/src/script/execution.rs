@@ -9,7 +9,7 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 
 use super::{
-    io_error, ArrobaEnvironmentConfig, ArrobaEnvironmentRuntime, ArrobaScriptRuntime,
+    io_error, CharioxEnvironmentConfig, CharioxEnvironmentRuntime, CharioxScriptRuntime,
     ScriptExecutionResult,
 };
 
@@ -24,7 +24,7 @@ import sys
 import typing
 
 path = pathlib.Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("arroba_user_script", path)
+spec = importlib.util.spec_from_file_location("chariox_user_script", path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 run = getattr(module, "run", None)
@@ -124,7 +124,7 @@ import traceback
 
 path = pathlib.Path(sys.argv[1])
 arguments = json.loads(sys.stdin.read() or "{}")
-spec = importlib.util.spec_from_file_location("arroba_user_script", path)
+spec = importlib.util.spec_from_file_location("chariox_user_script", path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 captured_stdout = io.StringIO()
@@ -188,11 +188,11 @@ try {
 "#;
 pub(super) fn inspect_script(
     source: &Path,
-    runtime: &ArrobaScriptRuntime,
-    env: &ArrobaEnvironmentConfig,
+    runtime: &CharioxScriptRuntime,
+    env: &CharioxEnvironmentConfig,
 ) -> Result<(String, Value), DaemonError> {
     match (runtime, &env.runtime) {
-        (ArrobaScriptRuntime::Python, ArrobaEnvironmentRuntime::Python { python }) => {
+        (CharioxScriptRuntime::Python, CharioxEnvironmentRuntime::Python { python }) => {
             let output = Command::new(python)
                 .arg("-c")
                 .arg(PYTHON_INSPECTOR)
@@ -224,8 +224,8 @@ pub(super) fn inspect_script(
             ))
         }
         (
-            ArrobaScriptRuntime::TypeScript,
-            ArrobaEnvironmentRuntime::Node { node, package_root },
+            CharioxScriptRuntime::TypeScript,
+            CharioxEnvironmentRuntime::Node { node, package_root },
         ) => inspect_typescript_script(source, node, package_root.as_deref()),
         _ => Err(DaemonError::InvalidConfig {
             field: "environment",
@@ -309,7 +309,7 @@ fn inspect_typescript_script(
             "type": "object",
             "properties": properties,
             "required": required,
-            "x-arroba-parameter-order": parameter_order,
+            "x-chariox-parameter-order": parameter_order,
             "additionalProperties": false
         }),
     ))
@@ -434,7 +434,7 @@ pub(super) fn execute_node_script(
         command.arg("--import").arg("tsx");
     }
     let parameter_order = input_schema
-        .get("x-arroba-parameter-order")
+        .get("x-chariox-parameter-order")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
     command

@@ -60,7 +60,7 @@ fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
         ".github/workflows/ci.yml",
         &[
             "Client protocol conformance gate",
-            "cargo test -p arroba-kernel client_protocol_conformance",
+            "cargo test -p chariox-kernel client_protocol_conformance",
             "cargo test --workspace",
             "pnpm test",
         ],

@@ -25,12 +25,12 @@ impl Drop for TempDir {
 }
 
 pub(super) fn temp_dir(name: &str) -> TempDir {
-    let path = env::temp_dir().join(format!("arroba-{name}-{}", unix_epoch_ms()));
+    let path = env::temp_dir().join(format!("chariox-{name}-{}", unix_epoch_ms()));
     match fs::create_dir_all(&path) {
         Ok(()) => TempDir { path },
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let fallback =
-                env::temp_dir().join(format!("arroba-{name}-{}-fallback", unix_epoch_ms()));
+                env::temp_dir().join(format!("chariox-{name}-{}-fallback", unix_epoch_ms()));
             fs::create_dir_all(&fallback).unwrap();
             TempDir { path: fallback }
         }

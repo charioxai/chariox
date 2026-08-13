@@ -390,11 +390,11 @@ fn sampled(key: &str) -> bool {
     }
     static CONFIG: OnceLock<Option<u64>> = OnceLock::new();
     let Some(sample_rate) = *CONFIG.get_or_init(|| {
-        let enabled = std::env::var("ARROBA_PERF_DIAGNOSTICS")
+        let enabled = std::env::var("CHARIOX_PERF_DIAGNOSTICS")
             .ok()
             .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"));
         enabled.then(|| {
-            std::env::var("ARROBA_PERF_DIAGNOSTICS_SAMPLE_RATE")
+            std::env::var("CHARIOX_PERF_DIAGNOSTICS_SAMPLE_RATE")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(100)

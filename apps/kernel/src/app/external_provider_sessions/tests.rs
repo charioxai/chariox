@@ -92,7 +92,7 @@ fn attached_markers_match_canonicalized_provider_session_records() {
     let session = store
         .get("codex:thread-1")
         .expect("session should be indexed with canonical id");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.first_attached_session_id(), Some("session-1"));
     assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     assert!(
@@ -135,7 +135,7 @@ fn replace_provider_sessions_preserves_attachment_markers() {
     let session = store
         .get("codex:thread-1")
         .expect("session should remain indexed");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.first_attached_session_id(), Some("session-1"));
     assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     assert_eq!(session.last_modified_at_ms, 40);
@@ -159,7 +159,7 @@ fn attachment_marker_applies_to_later_discovered_provider_session() {
     let session = store
         .get("codex:thread-1")
         .expect("session should be indexed");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.first_attached_session_id(), Some("session-1"));
     assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
 }
@@ -175,7 +175,7 @@ fn attachment_marker_can_be_applied_from_external_import_metadata() {
         .mark_import_attached(&import, "session-1", "agent-1")
         .expect("provider session should be indexed");
 
-    assert!(attached.is_attached_to_arroba());
+    assert!(attached.is_attached_to_chariox());
     assert_eq!(attached.first_attached_session_id(), Some("session-1"));
     assert_eq!(attached.first_attached_agent_id(), Some("agent-1"));
 }
@@ -197,7 +197,7 @@ fn attachment_marker_can_be_applied_from_provider_resume_state() {
         let session = store
             .get(external_session_id)
             .expect("provider session should remain indexed");
-        assert!(session.is_attached_to_arroba());
+        assert!(session.is_attached_to_chariox());
         assert_eq!(session.first_attached_session_id(), Some("session-1"));
         assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     }
@@ -233,7 +233,7 @@ fn provider_run_attachment_marks_resume_state_and_direct_provider_session() {
         let session = store
             .get(external_session_id)
             .expect("provider session should remain indexed");
-        assert!(session.is_attached_to_arroba());
+        assert!(session.is_attached_to_chariox());
         assert_eq!(session.first_attached_session_id(), Some("session-1"));
         assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     }
@@ -256,7 +256,7 @@ fn external_session_id_for_provider_session_canonicalizes_known_providers() {
 }
 
 #[test]
-fn list_excludes_attached_to_arroba_external_provider_sessions() {
+fn list_excludes_attached_to_chariox_external_provider_sessions() {
     let store = ExternalProviderSessionIndexStore::default();
     store.upsert(record("codex", "thread-1", 30));
     store.upsert(record("codex", "thread-2", 20));
@@ -301,7 +301,7 @@ fn detach_session_returns_provider_session_to_attachable_list() {
     });
     assert_eq!(page.sessions.len(), 1);
     assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
-    assert!(page.sessions[0].is_attachable_to_arroba());
+    assert!(page.sessions[0].is_attachable_to_chariox());
     assert_eq!(page.sessions[0].first_attached_session_id(), None);
     assert_eq!(page.sessions[0].first_attached_agent_id(), None);
 }
@@ -318,7 +318,7 @@ fn detach_session_preserves_other_session_attachment_agents() {
     let session = store
         .get("codex:thread-1")
         .expect("session should remain indexed");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.attached_session_ids, vec!["session-2"]);
     assert_eq!(session.attached_agent_ids, vec!["agent-2"]);
     assert!(store
@@ -346,7 +346,7 @@ fn detach_agent_returns_provider_session_to_attachable_list() {
     });
     assert_eq!(page.sessions.len(), 1);
     assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
-    assert!(page.sessions[0].is_attachable_to_arroba());
+    assert!(page.sessions[0].is_attachable_to_chariox());
     assert_eq!(page.sessions[0].first_attached_session_id(), None);
     assert_eq!(page.sessions[0].first_attached_agent_id(), None);
 }
@@ -364,11 +364,11 @@ fn detach_attachment_removes_only_exact_provider_session_agent_ref() {
     let old = store
         .get("codex:thread-old")
         .expect("old provider session should remain indexed");
-    assert!(old.is_attachable_to_arroba());
+    assert!(old.is_attachable_to_chariox());
     let new = store
         .get("codex:thread-new")
         .expect("new provider session should remain indexed");
-    assert!(new.is_attached_to_arroba());
+    assert!(new.is_attached_to_chariox());
     assert_eq!(new.first_attached_session_id(), Some("session-1"));
     assert_eq!(new.first_attached_agent_id(), Some("agent-1"));
     assert_eq!(
@@ -394,7 +394,7 @@ fn detach_agent_preserves_other_agent_attachments() {
     let session = store
         .get("codex:thread-1")
         .expect("session should remain indexed");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.attached_session_ids, vec!["session-1", "session-2"]);
     assert_eq!(session.attached_agent_ids, vec!["agent-2", "agent-3"]);
     assert!(store
@@ -410,7 +410,7 @@ fn detach_agent_preserves_other_agent_attachments() {
     let session = store
         .get("codex:thread-1")
         .expect("session should remain indexed");
-    assert!(session.is_attached_to_arroba());
+    assert!(session.is_attached_to_chariox());
     assert_eq!(session.attached_session_ids, vec!["session-2"]);
     assert_eq!(session.attached_agent_ids, vec!["agent-3"]);
 }
@@ -536,7 +536,7 @@ fn record(
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }

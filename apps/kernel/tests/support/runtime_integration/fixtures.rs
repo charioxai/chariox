@@ -2,7 +2,7 @@ use super::*;
 
 pub fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "arroba-opencode-fixture-{}-{}.sh",
+        "chariox-opencode-fixture-{}-{}.sh",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -38,12 +38,12 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$PORT" ] || [ -z "$ARROBA_OPENCODE_PORT" ]; then
+if [ -z "$PORT" ] || [ -z "$CHARIOX_OPENCODE_PORT" ]; then
   exit 2
 fi
 
-export ARROBA_OPENCODE_FIXTURE_LISTEN_PORT="$PORT"
-export ARROBA_OPENCODE_FIXTURE_MAX_SECONDS="{delay_seconds}"
+export CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT="$PORT"
+export CHARIOX_OPENCODE_FIXTURE_MAX_SECONDS="{delay_seconds}"
 python3 - <<'PY'
 import os
 import signal
@@ -52,9 +52,9 @@ import sys
 import threading
 import time
 
-listen_port = int(os.environ["ARROBA_OPENCODE_FIXTURE_LISTEN_PORT"])
-target_port = int(os.environ["ARROBA_OPENCODE_PORT"])
-max_seconds = float(os.environ["ARROBA_OPENCODE_FIXTURE_MAX_SECONDS"])
+listen_port = int(os.environ["CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT"])
+target_port = int(os.environ["CHARIOX_OPENCODE_PORT"])
+max_seconds = float(os.environ["CHARIOX_OPENCODE_FIXTURE_MAX_SECONDS"])
 deadline = time.monotonic() + max_seconds
 stopping = threading.Event()
 
@@ -114,7 +114,7 @@ PY
 }
 
 pub fn output_timeout_ms() -> u64 {
-    env::var("ARROBA_HARNESS_OUTPUT_TIMEOUT_MS")
+    env::var("CHARIOX_HARNESS_OUTPUT_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(2_000)

@@ -1,4 +1,4 @@
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
@@ -174,7 +174,7 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::ArrobaSkillPackage>,
+            Option<crate::skill::CharioxSkillPackage>,
             crate::extension::RemoteExtensionManifest,
         ),
         DaemonError,
@@ -230,7 +230,7 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::ArrobaSkillPackage>,
+            Option<crate::skill::CharioxSkillPackage>,
         ),
         DaemonError,
     > {

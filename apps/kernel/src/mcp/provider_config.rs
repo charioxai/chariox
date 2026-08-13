@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
 
-use super::{home_dir, ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use super::{home_dir, CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
-pub(super) fn codex_mcp_to_arroba(
+pub(super) fn codex_mcp_to_chariox(
     name: &str,
     value: &toml::Value,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     let table = value
         .as_table()
         .ok_or_else(|| "MCP entry must be a TOML table".to_string())?;
@@ -34,8 +34,8 @@ pub(super) fn codex_mcp_to_arroba(
         }
         let command = required_string(command, "command")?;
         let args = optional_string_array(table.get("args"), "args")?.unwrap_or_default();
-        let mut config = ArrobaMcpServerConfig::stdio(name, command, args);
-        if let ArrobaMcpTransportConfig::Stdio {
+        let mut config = CharioxMcpServerConfig::stdio(name, command, args);
+        if let CharioxMcpTransportConfig::Stdio {
             env, env_vars, cwd, ..
         } = &mut config.transport
         {
@@ -55,8 +55,8 @@ pub(super) fn codex_mcp_to_arroba(
             }
         }
         let url = required_string(url, "url")?;
-        let mut config = ArrobaMcpServerConfig::streamable_http(name, url);
-        if let ArrobaMcpTransportConfig::StreamableHttp {
+        let mut config = CharioxMcpServerConfig::streamable_http(name, url);
+        if let CharioxMcpTransportConfig::StreamableHttp {
             bearer_token_env_var,
             http_headers,
             env_http_headers,
@@ -238,7 +238,7 @@ pub(super) fn opencode_config_paths(workspace: &Path) -> Vec<PathBuf> {
 
 pub(super) fn claude_mcp_config_paths(workspace: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(custom) = std::env::var_os("ARROBA_CLAUDE_CONFIG") {
+    if let Some(custom) = std::env::var_os("CHARIOX_CLAUDE_CONFIG") {
         paths.push(PathBuf::from(custom));
     } else if let Some(home) = home_dir() {
         paths.push(home.join(".claude.json"));
@@ -297,10 +297,10 @@ pub(super) fn claude_mcp_server_sets<'a>(
     sets
 }
 
-pub(super) fn opencode_mcp_to_arroba(
+pub(super) fn opencode_mcp_to_chariox(
     name: &str,
     value: &serde_json::Value,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "MCP entry must be an object".to_string())?;
@@ -309,16 +309,16 @@ pub(super) fn opencode_mcp_to_arroba(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "missing MCP type".to_string())?;
     match mcp_type {
-        "local" => opencode_local_mcp_to_arroba(name, object),
-        "remote" => opencode_remote_mcp_to_arroba(name, object),
+        "local" => opencode_local_mcp_to_chariox(name, object),
+        "remote" => opencode_remote_mcp_to_chariox(name, object),
         other => Err(format!("unsupported OpenCode MCP type `{other}`")),
     }
 }
 
-fn opencode_local_mcp_to_arroba(
+fn opencode_local_mcp_to_chariox(
     name: &str,
     object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     let command_parts = object
         .get("command")
         .and_then(serde_json::Value::as_array)
@@ -334,10 +334,10 @@ fn opencode_local_mcp_to_arroba(
     let Some((command, args)) = command_parts.split_first() else {
         return Err("local MCP command must not be empty".to_string());
     };
-    let mut config = ArrobaMcpServerConfig::stdio(name, command.clone(), args.to_vec());
+    let mut config = CharioxMcpServerConfig::stdio(name, command.clone(), args.to_vec());
     config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
     config.tool_timeout_sec = optional_json_timeout_ms(object.get("timeout"), "timeout")?;
-    if let ArrobaMcpTransportConfig::Stdio { env, env_vars, .. } = &mut config.transport {
+    if let CharioxMcpTransportConfig::Stdio { env, env_vars, .. } = &mut config.transport {
         let environment =
             optional_json_string_map(object.get("environment"), "environment")?.unwrap_or_default();
         for (key, value) in environment {
@@ -346,7 +346,7 @@ fn opencode_local_mcp_to_arroba(
                     env_vars.push(key);
                 } else {
                     return Err(format!(
-                        "environment `{key}` references env var `{var_name}`, which cannot be represented in Arroba stdio env_vars"
+                        "environment `{key}` references env var `{var_name}`, which cannot be represented in Chariox stdio env_vars"
                     ));
                 }
             } else {
@@ -358,10 +358,10 @@ fn opencode_local_mcp_to_arroba(
     Ok(config)
 }
 
-fn opencode_remote_mcp_to_arroba(
+fn opencode_remote_mcp_to_chariox(
     name: &str,
     object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     let url = object
         .get("url")
         .and_then(serde_json::Value::as_str)
@@ -372,10 +372,10 @@ fn opencode_remote_mcp_to_arroba(
     {
         return Err("OpenCode OAuth MCP config is not imported yet".to_string());
     }
-    let mut config = ArrobaMcpServerConfig::streamable_http(name, url);
+    let mut config = CharioxMcpServerConfig::streamable_http(name, url);
     config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
     config.tool_timeout_sec = optional_json_timeout_ms(object.get("timeout"), "timeout")?;
-    if let ArrobaMcpTransportConfig::StreamableHttp {
+    if let CharioxMcpTransportConfig::StreamableHttp {
         http_headers,
         env_http_headers,
         ..
@@ -395,10 +395,10 @@ fn opencode_remote_mcp_to_arroba(
     Ok(config)
 }
 
-pub(super) fn claude_mcp_to_arroba(
+pub(super) fn claude_mcp_to_chariox(
     name: &str,
     value: &serde_json::Value,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "MCP entry must be an object".to_string())?;
@@ -421,18 +421,18 @@ pub(super) fn claude_mcp_to_arroba(
             }
         });
     match mcp_type {
-        "stdio" => claude_stdio_mcp_to_arroba(name, object),
-        "http" | "streamable_http" => claude_http_mcp_to_arroba(name, object),
+        "stdio" => claude_stdio_mcp_to_chariox(name, object),
+        "http" | "streamable_http" => claude_http_mcp_to_chariox(name, object),
         "sse" => Err("Claude SSE MCP config is not imported yet".to_string()),
         "" => Err("missing Claude MCP type, command, or url".to_string()),
         other => Err(format!("unsupported Claude MCP type `{other}`")),
     }
 }
 
-fn claude_stdio_mcp_to_arroba(
+fn claude_stdio_mcp_to_chariox(
     name: &str,
     object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     if object.contains_key("url") {
         return Err("stdio MCP entry also contains url".to_string());
     }
@@ -441,14 +441,14 @@ fn claude_stdio_mcp_to_arroba(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "stdio MCP command must be a string".to_string())?;
     let args = optional_json_string_array(object.get("args"), "args")?.unwrap_or_default();
-    let mut config = ArrobaMcpServerConfig::stdio(name, command, args);
+    let mut config = CharioxMcpServerConfig::stdio(name, command, args);
     config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
     config.required = optional_json_bool(object.get("required"), "required")?.unwrap_or(false);
     config.startup_timeout_sec =
         optional_json_timeout_secs(object.get("startup_timeout_sec"), "startup_timeout_sec")?;
     config.tool_timeout_sec =
         optional_json_timeout_secs(object.get("tool_timeout_sec"), "tool_timeout_sec")?;
-    if let ArrobaMcpTransportConfig::Stdio {
+    if let CharioxMcpTransportConfig::Stdio {
         env, env_vars, cwd, ..
     } = &mut config.transport
     {
@@ -459,7 +459,7 @@ fn claude_stdio_mcp_to_arroba(
                     env_vars.push(key);
                 } else {
                     return Err(format!(
-                        "env `{key}` references env var `{var_name}`, which cannot be represented in Arroba stdio env_vars"
+                        "env `{key}` references env var `{var_name}`, which cannot be represented in Chariox stdio env_vars"
                     ));
                 }
             } else {
@@ -483,10 +483,10 @@ fn claude_stdio_mcp_to_arroba(
     Ok(config)
 }
 
-fn claude_http_mcp_to_arroba(
+fn claude_http_mcp_to_chariox(
     name: &str,
     object: &serde_json::Map<String, serde_json::Value>,
-) -> Result<ArrobaMcpServerConfig, String> {
+) -> Result<CharioxMcpServerConfig, String> {
     if object.contains_key("command") {
         return Err("HTTP MCP entry also contains command".to_string());
     }
@@ -494,14 +494,14 @@ fn claude_http_mcp_to_arroba(
         .get("url")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| "HTTP MCP url must be a string".to_string())?;
-    let mut config = ArrobaMcpServerConfig::streamable_http(name, url);
+    let mut config = CharioxMcpServerConfig::streamable_http(name, url);
     config.enabled = optional_json_bool(object.get("enabled"), "enabled")?.unwrap_or(true);
     config.required = optional_json_bool(object.get("required"), "required")?.unwrap_or(false);
     config.startup_timeout_sec =
         optional_json_timeout_secs(object.get("startup_timeout_sec"), "startup_timeout_sec")?;
     config.tool_timeout_sec =
         optional_json_timeout_secs(object.get("tool_timeout_sec"), "tool_timeout_sec")?;
-    if let ArrobaMcpTransportConfig::StreamableHttp {
+    if let CharioxMcpTransportConfig::StreamableHttp {
         http_headers,
         env_http_headers,
         ..

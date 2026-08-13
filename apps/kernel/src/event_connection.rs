@@ -111,7 +111,7 @@ impl EventConnectionRegistry {
     pub(crate) fn upsert(
         &self,
         owner_user_id: &str,
-        summary: arroba_event_protocol::AegsConnectionSummary,
+        summary: chariox_event_protocol::AegsConnectionSummary,
     ) -> Result<EventConnection, DaemonError> {
         let now_ms = unix_epoch_ms();
         let key = (owner_user_id.to_string(), summary.connection_id.clone());
@@ -155,7 +155,7 @@ impl EventConnectionRegistry {
             .ok_or_else(|| registry_error("connection was not found".to_string()))?;
         self.upsert(
             owner_user_id,
-            arroba_event_protocol::AegsConnectionSummary {
+            chariox_event_protocol::AegsConnectionSummary {
                 generator_id: current.generator_id,
                 connection_id: current.connection_id,
                 status,
@@ -222,7 +222,7 @@ impl EventConnectionRegistry {
     pub(crate) fn start_authorization(
         &self,
         owner_user_id: &str,
-        flow: arroba_event_protocol::AegsAuthorizationFlow,
+        flow: chariox_event_protocol::AegsAuthorizationFlow,
     ) -> Result<EventConnectionAuthorization, DaemonError> {
         if flow
             .connection_id
@@ -490,20 +490,20 @@ fn unix_epoch_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arroba_event_protocol::AegsConnectionStatus;
+    use chariox_event_protocol::AegsConnectionStatus;
     use serde_json::json;
 
     #[test]
     fn registry_is_owner_scoped_and_restores_after_reopen() {
-        let root = std::env::temp_dir().join(opaque_id("arroba-event-connection-test"));
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-connection-test"));
         let path = root.join("state.sqlite3");
         let store = DurableKernelStateStore::open(path.clone()).unwrap();
         let registry = EventConnectionRegistry::new(store);
         let missing_connection_id = registry
             .start_authorization(
                 "user-a",
-                arroba_event_protocol::AegsAuthorizationFlow {
-                    generator_id: "dev.arroba.github".to_string(),
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
                     connection_id: None,
                     authorization_url: Some("https://example.test/authorize".to_string()),
@@ -518,8 +518,8 @@ mod tests {
         let expired = registry
             .start_authorization(
                 "user-a",
-                arroba_event_protocol::AegsAuthorizationFlow {
-                    generator_id: "dev.arroba.github".to_string(),
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
                     connection_id: Some("expired-connection".to_string()),
                     authorization_url: Some("https://example.test/authorize".to_string()),
@@ -536,11 +536,11 @@ mod tests {
         registry
             .upsert(
                 "user-a",
-                arroba_event_protocol::AegsConnectionSummary {
-                    generator_id: "dev.arroba.github".to_string(),
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.github".to_string(),
                     connection_id: "github-connection-1".to_string(),
                     status: AegsConnectionStatus::Ready,
-                    metadata: json!({"account": "arroba"}),
+                    metadata: json!({"account": "chariox"}),
                     expires_at_ms: None,
                     updated_at_ms: 42,
                 },
@@ -560,8 +560,8 @@ mod tests {
         let authorization = restored
             .start_authorization(
                 "user-a",
-                arroba_event_protocol::AegsAuthorizationFlow {
-                    generator_id: "dev.arroba.github".to_string(),
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.github".to_string(),
                     status: "pending".to_string(),
                     connection_id: Some("github-connection-1".to_string()),
                     authorization_url: Some("https://example.test/authorize".to_string()),
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn registry_restore_does_not_decode_unrelated_durable_events() {
-        let root = std::env::temp_dir().join(opaque_id("arroba-event-connection-indexed-test"));
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-connection-indexed-test"));
         let path = root.join("state.sqlite3");
         drop(DurableKernelStateStore::open(path.clone()).expect("store should initialize"));
         let connection = rusqlite::Connection::open(&path).expect("database should open");

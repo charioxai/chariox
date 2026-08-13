@@ -184,7 +184,7 @@ pub(in crate::runtime::state) fn apply_remote_workspace_live_sync_final_states(
                         "path": path.to_string_lossy(),
                         "message": "The remote workspace artifact changed after the home kernel accepted the workspace live sync operation but before the worker could apply it."
                     },
-                    "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through Arroba workspace live sync.",
+                    "next_action": "Reread the artifact with chariox.read_artifact, reconcile with the current content, and retry through Chariox workspace live sync.",
                 }),
             }));
         }

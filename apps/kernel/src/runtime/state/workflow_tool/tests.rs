@@ -395,9 +395,9 @@ fn agent_app_http_action_forwards_invocation_context_headers() {
 
     assert_eq!(response.status, 200);
     let captured = receiver.recv().expect("captured request");
-    assert!(captured.contains("x-arroba-agent-app-action-id: cart.add"));
-    assert!(captured.contains("x-arroba-agent-app-session: session-a"));
-    assert!(captured.contains("x-arroba-publication-invocation: invocation-a"));
+    assert!(captured.contains("x-chariox-agent-app-action-id: cart.add"));
+    assert!(captured.contains("x-chariox-agent-app-session: session-a"));
+    assert!(captured.contains("x-chariox-publication-invocation: invocation-a"));
     handle.join().expect("action server thread");
 }
 
@@ -488,7 +488,7 @@ fn agent_app_action_audit_posts_deployment_log_entry() {
             session: Some("session-a".to_string()),
             invocation_request_id: Some("invocation-a".to_string()),
             audit: Some(AgentAppActionAuditContext {
-                url: format!("http://{address}/.well-known/arroba/agent-app/audit-log"),
+                url: format!("http://{address}/.well-known/chariox/agent-app/audit-log"),
                 token: "audit-token".to_string(),
             }),
         },
@@ -501,7 +501,7 @@ fn agent_app_action_audit_posts_deployment_log_entry() {
     );
 
     let captured = receiver.recv().expect("captured request");
-    assert!(captured.contains("POST /.well-known/arroba/agent-app/audit-log"));
+    assert!(captured.contains("POST /.well-known/chariox/agent-app/audit-log"));
     assert!(captured.contains("\"token\":\"audit-token\""));
     assert!(captured.contains("\"kind\":\"agent_app_action\""));
     assert!(captured.contains("\"action_id\":\"cart.checkout\""));

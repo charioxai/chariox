@@ -74,13 +74,13 @@ pub struct ManageCredentialVaultRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallMcpServerRequest {
     pub workspace_id: Option<String>,
-    pub config: ArrobaMcpServerConfig,
+    pub config: CharioxMcpServerConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateMcpServerRequest {
     pub workspace_id: Option<String>,
-    pub config: ArrobaMcpServerConfig,
+    pub config: CharioxMcpServerConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,7 +178,7 @@ pub struct GetSkillRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterEnvironmentRequest {
     pub workspace_id: Option<String>,
-    pub config: ArrobaEnvironmentConfig,
+    pub config: CharioxEnvironmentConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,7 +263,7 @@ pub struct RegisterConnectorRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpsertConnectorRequest {
-    pub connector: ArrobaConnectorDefinition,
+    pub connector: CharioxConnectorDefinition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

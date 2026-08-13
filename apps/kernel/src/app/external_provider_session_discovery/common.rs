@@ -26,7 +26,7 @@ pub(super) fn bounded_observed_metadata_value(value: &Value) -> Value {
                 .collect::<Vec<_>>();
             if items.len() > MAX_OBSERVED_METADATA_ARRAY_ITEMS {
                 bounded.push(serde_json::json!({
-                    "__arroba_truncated_items": items.len() - MAX_OBSERVED_METADATA_ARRAY_ITEMS,
+                    "__chariox_truncated_items": items.len() - MAX_OBSERVED_METADATA_ARRAY_ITEMS,
                 }));
             }
             Value::Array(bounded)
@@ -38,7 +38,7 @@ pub(super) fn bounded_observed_metadata_value(value: &Value) -> Value {
             }
             if map.len() > MAX_OBSERVED_METADATA_OBJECT_FIELDS {
                 bounded.insert(
-                    "__arroba_truncated_fields".to_string(),
+                    "__chariox_truncated_fields".to_string(),
                     serde_json::json!(map.len() - MAX_OBSERVED_METADATA_OBJECT_FIELDS),
                 );
             }
@@ -53,7 +53,7 @@ pub(super) fn bounded_observed_string_value(value: &str) -> Value {
         return Value::String(value.to_string());
     }
     Value::String(format!(
-        "{} [arroba truncated {} chars]",
+        "{} [chariox truncated {} chars]",
         truncate_chars(value, MAX_OBSERVED_METADATA_STRING_CHARS),
         value.chars().count() - MAX_OBSERVED_METADATA_STRING_CHARS,
     ))
@@ -89,7 +89,7 @@ pub(super) fn record_from_parts(
         worktree_path,
         account_profile,
         capabilities,
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }

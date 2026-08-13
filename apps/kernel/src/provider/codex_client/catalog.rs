@@ -1,4 +1,4 @@
-//! Codex model-list response mapping into Arroba provider catalog shape.
+//! Codex model-list response mapping into Chariox provider catalog shape.
 
 use std::collections::BTreeMap;
 

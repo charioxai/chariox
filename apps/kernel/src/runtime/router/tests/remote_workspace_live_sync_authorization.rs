@@ -422,7 +422,7 @@ fn remote_workspace_live_sync_context(
 
 fn create_test_git_worktree(label: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "arroba-{label}-{}-{}",
+        "chariox-{label}-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

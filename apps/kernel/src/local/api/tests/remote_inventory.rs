@@ -13,7 +13,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                     machine_alias: Some("workstation".to_string()),
                     kernel_count: 1,
                     available_providers: vec!["codex".to_string(), "opencode".to_string()],
-                    provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+                    provider_accounts: vec![chariox_relay::protocol::RelayProviderAccountSummary {
                         provider: "codex".to_string(),
                         state: "configured".to_string(),
                         auth_type: Some("chatgpt".to_string()),
@@ -34,7 +34,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                 relay_alias: Some("mbp".to_string()),
                 kernel_alias: Some("default".to_string()),
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
-                provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+                provider_accounts: vec![chariox_relay::protocol::RelayProviderAccountSummary {
                     provider: "codex".to_string(),
                     state: "configured".to_string(),
                     auth_type: Some("chatgpt".to_string()),

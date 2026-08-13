@@ -4,7 +4,7 @@ use super::*;
 fn private_meta_continuation_observation_matches_its_owned_marker() {
     let mut counts = BTreeMap::from([("<metaagent-event/>".to_string(), 1)]);
 
-    assert!(consume_arroba_owned_prompt_text_match(
+    assert!(consume_chariox_owned_prompt_text_match(
         &mut counts,
         "The task context rendered by the provider.<metaagent-event/>"
     ));
@@ -252,7 +252,7 @@ fn empty_external_observation_clears_projected_activity() {
 }
 
 #[test]
-fn arroba_owned_turn_with_generated_runtime_context_is_not_imported_again() {
+fn chariox_owned_turn_with_generated_runtime_context_is_not_imported_again() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -319,7 +319,7 @@ fn arroba_owned_turn_with_generated_runtime_context_is_not_imported_again() {
 }
 
 #[test]
-fn arroba_owned_agent_message_with_provider_attachment_suffix_is_not_imported_again() {
+fn chariox_owned_agent_message_with_provider_attachment_suffix_is_not_imported_again() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -648,7 +648,7 @@ fn observed_live_external_completion_does_not_clear_active_prompt() {
 }
 
 #[test]
-fn observed_live_external_completion_does_not_advance_queued_arroba_prompt() {
+fn observed_live_external_completion_does_not_advance_queued_chariox_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -739,7 +739,7 @@ fn observed_live_external_completion_does_not_advance_queued_arroba_prompt() {
 }
 
 #[test]
-fn observed_external_completion_does_not_dispatch_queued_arroba_prompt() {
+fn observed_external_completion_does_not_dispatch_queued_chariox_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))

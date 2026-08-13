@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use arroba_relay::protocol::EncryptedRelayPayload;
 use base64::Engine;
+use chariox_relay::protocol::EncryptedRelayPayload;
 use hkdf::Hkdf;
 use p256::ecdh::diffie_hellman;
 use p256::elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint};
@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-const RELAY_INFO: &[u8] = b"arroba-relay-v1";
+const RELAY_INFO: &[u8] = b"chariox-relay-v1";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const PEER_CRYPTO_CONTEXT_CACHE_LIMIT: usize = 256;

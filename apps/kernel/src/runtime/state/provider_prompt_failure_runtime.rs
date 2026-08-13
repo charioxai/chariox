@@ -131,7 +131,7 @@ impl KernelRuntimeState {
                 app.block_on_relay_future(
                     crate::transport::relay_client::send_peer_request_via_temporary_connection(
                         app.config(),
-                        arroba_relay::protocol::ClientTarget {
+                        chariox_relay::protocol::ClientTarget {
                             daemon_id: Some(context.home_kernel_id.clone()),
                             daemon_alias: None,
                         },

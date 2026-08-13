@@ -376,11 +376,11 @@ struct QueuedPromptRouterFixture {
 }
 
 fn queued_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
-    queued_prompt_router_fixture_with_options(label, PromptOrigin::Arroba, false)
+    queued_prompt_router_fixture_with_options(label, PromptOrigin::Chariox, false)
 }
 
 fn queued_workflow_prompt_router_fixture(label: &str) -> QueuedPromptRouterFixture {
-    queued_prompt_router_fixture_with_options(label, PromptOrigin::Arroba, true)
+    queued_prompt_router_fixture_with_options(label, PromptOrigin::Chariox, true)
 }
 
 fn queued_prompt_router_fixture_with_origin(

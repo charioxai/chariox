@@ -7,7 +7,7 @@ use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
 use super::package::package_skill_directory;
-use super::{parse_skill_metadata, ArrobaSkillMetadata, ArrobaSkillRegistry};
+use super::{parse_skill_metadata, CharioxSkillMetadata, CharioxSkillRegistry};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillImportSkip {
     pub name: String,
@@ -17,7 +17,7 @@ pub struct SkillImportSkip {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillImportOutcome {
-    pub imported: Vec<ArrobaSkillMetadata>,
+    pub imported: Vec<CharioxSkillMetadata>,
     pub skipped: Vec<SkillImportSkip>,
 }
 
@@ -30,7 +30,7 @@ pub struct ProviderSkillImportCandidate {
     pub skill_md_path: PathBuf,
     pub source_modified_ms: u64,
     pub version_hash: String,
-    pub metadata: ArrobaSkillMetadata,
+    pub metadata: CharioxSkillMetadata,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub struct ProviderSkillImportDiscovery {
 }
 
 pub fn import_codex_skills(
-    registry: &ArrobaSkillRegistry,
+    registry: &CharioxSkillRegistry,
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<SkillImportOutcome, DaemonError> {
@@ -48,7 +48,7 @@ pub fn import_codex_skills(
 }
 
 pub fn import_opencode_skills(
-    registry: &ArrobaSkillRegistry,
+    registry: &CharioxSkillRegistry,
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<SkillImportOutcome, DaemonError> {
@@ -56,7 +56,7 @@ pub fn import_opencode_skills(
 }
 
 pub fn import_claude_skills(
-    registry: &ArrobaSkillRegistry,
+    registry: &CharioxSkillRegistry,
     workspace: &Path,
     requested_name: Option<&str>,
 ) -> Result<SkillImportOutcome, DaemonError> {
@@ -148,7 +148,7 @@ fn discover_provider_skill_import_candidates_from_roots(
 }
 
 fn import_skills_from_roots(
-    registry: &ArrobaSkillRegistry,
+    registry: &CharioxSkillRegistry,
     roots: Vec<PathBuf>,
     requested_name: Option<&str>,
 ) -> Result<SkillImportOutcome, DaemonError> {
@@ -186,7 +186,7 @@ fn import_skills_from_roots(
                 outcome.skipped.push(SkillImportSkip {
                     name: metadata.name,
                     path: skill_md,
-                    reason: "already installed in Arroba registry".to_string(),
+                    reason: "already installed in Chariox registry".to_string(),
                 });
                 continue;
             }

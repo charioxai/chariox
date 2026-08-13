@@ -17,7 +17,7 @@ pub(crate) fn attachment_artifact_root(
     category: &str,
 ) -> PathBuf {
     std::env::temp_dir()
-        .join("arroba-session-artifacts")
+        .join("chariox-session-artifacts")
         .join(session_id)
         .join(category)
         .join(artifact_attachment_segment(attachment_id))

@@ -430,7 +430,7 @@ fn session_snapshot_active_turn_phase_drill_projects_awaiting_first_output() {
     );
     assert_eq!(
         active_turn.prompt_origin,
-        Some(crate::session::PromptOrigin::Arroba)
+        Some(crate::session::PromptOrigin::Chariox)
     );
     assert!(active_turn.started_at_ms.is_some());
 }

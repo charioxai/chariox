@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;

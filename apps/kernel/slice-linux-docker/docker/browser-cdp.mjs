@@ -16,7 +16,7 @@ async function getPage() {
   const targets = await response.json();
   const pages = targets.filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
   const page =
-    pages.find((target) => target.url?.includes("arroba-slice-screen-test")) ??
+    pages.find((target) => target.url?.includes("chariox-slice-screen-test")) ??
     pages.find((target) => target.url?.startsWith("file:///workspace/")) ??
     pages.find((target) => target.url && target.url !== "about:blank") ??
     pages.at(-1);
@@ -91,7 +91,7 @@ async function navigate(url) {
 function evaluateExpression(source, args = {}) {
   return `
     (() => {
-      const __arrobaArgs = ${JSON.stringify(args)};
+      const __charioxArgs = ${JSON.stringify(args)};
       ${source}
     })()
   `;
@@ -109,7 +109,7 @@ async function evaluate(send, source, args = {}) {
 async function showAgentCursor(send, x, y, clicked = false) {
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   await evaluate(send, `
-    const cursorId = "__arroba-agent-cursor";
+    const cursorId = "__chariox-agent-cursor";
     let cursor = document.getElementById(cursorId);
     if (!cursor) {
       cursor = document.createElement("div");
@@ -131,26 +131,26 @@ async function showAgentCursor(send, x, y, clicked = false) {
         "transition:transform 90ms cubic-bezier(.2,.8,.2,1),opacity 160ms ease",
       ].join(";");
       cursor.innerHTML = \`
-        <svg data-arroba-pointer viewBox="0 0 19 25" aria-hidden="true" style="position:absolute;left:-4px;top:-4px;width:28px;height:37px;filter:drop-shadow(0 2px 2px rgba(0,0,0,.72))">
+        <svg data-chariox-pointer viewBox="0 0 19 25" aria-hidden="true" style="position:absolute;left:-4px;top:-4px;width:28px;height:37px;filter:drop-shadow(0 2px 2px rgba(0,0,0,.72))">
           <path d="M1.5 1.7v18.1l4.7-4.2 3.2 7.4 3.2-1.4-3.1-7.2 6.4-.1L1.5 1.7Z" fill="#f09352" stroke="#151515" stroke-width="1.5" stroke-linejoin="round"/>
         </svg>
-        <span data-arroba-tag style="position:absolute;left:24px;top:22px;padding:5px 9px;border:1px solid rgba(255,255,255,.72);border-radius:5px;background:rgba(18,18,18,.92);color:#f4f1ec;font:700 16px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;box-shadow:0 2px 7px rgba(0,0,0,.38)">agent</span>
-        <span data-arroba-ring style="position:absolute;left:-16px;top:-16px;width:32px;height:32px;border:3px solid #f09352;border-radius:999px;opacity:0"></span>
+        <span data-chariox-tag style="position:absolute;left:24px;top:22px;padding:5px 9px;border:1px solid rgba(255,255,255,.72);border-radius:5px;background:rgba(18,18,18,.92);color:#f4f1ec;font:700 16px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;box-shadow:0 2px 7px rgba(0,0,0,.38)">agent</span>
+        <span data-chariox-ring style="position:absolute;left:-16px;top:-16px;width:32px;height:32px;border:3px solid #f09352;border-radius:999px;opacity:0"></span>
       \`;
       document.documentElement.appendChild(cursor);
     }
-    cursor.style.transform = \`translate3d(\${__arrobaArgs.x}px, \${__arrobaArgs.y}px, 0)\`;
+    cursor.style.transform = \`translate3d(\${__charioxArgs.x}px, \${__charioxArgs.y}px, 0)\`;
     cursor.style.setProperty("opacity", "1", "important");
     cursor.style.setProperty("display", "block", "important");
     cursor.style.setProperty("visibility", "visible", "important");
-    window.clearTimeout(window.__arrobaAgentCursorFadeTimer);
-    window.__arrobaAgentCursorFadeTimer = window.setTimeout(() => {
+    window.clearTimeout(window.__charioxAgentCursorFadeTimer);
+    window.__charioxAgentCursorFadeTimer = window.setTimeout(() => {
       cursor.style.setProperty("opacity", "0", "important");
     // Keep the last automated pointer visible long enough for the agent's
     // response and the remote screen stream to settle in the controlling UI.
     }, 45000);
-    if (__arrobaArgs.clicked) {
-      const ring = cursor.querySelector?.("[data-arroba-ring]");
+    if (__charioxArgs.clicked) {
+      const ring = cursor.querySelector?.("[data-chariox-ring]");
       ring?.animate?.([
         { transform: "scale(.35)", opacity: .95 },
         { transform: "scale(1.8)", opacity: 0 },
@@ -165,7 +165,7 @@ async function typeIntoBrowser(text, options = {}) {
     if (options.useNativeInput) {
       const focusResult = await evaluate(send, `
         ${browserDomScript()}
-        const selector = __arrobaArgs.selector;
+        const selector = __charioxArgs.selector;
         const target = selector
           ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
@@ -268,7 +268,7 @@ async function typeIntoBrowser(text, options = {}) {
       await send("Input.insertText", { text });
       const verified = await evaluate(send, `
         ${browserDomScript()}
-        const selector = __arrobaArgs.selector;
+        const selector = __charioxArgs.selector;
         const active = selector
           ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
@@ -278,9 +278,9 @@ async function typeIntoBrowser(text, options = {}) {
         const value = "value" in active ? active.value : active.textContent;
         const current = String(value || "");
         return {
-          ok: __arrobaArgs.append
-            ? current.length >= __arrobaArgs.minLength
-            : current === __arrobaArgs.text,
+          ok: __charioxArgs.append
+            ? current.length >= __charioxArgs.minLength
+            : current === __charioxArgs.text,
         };
       `, { selector: options.selector ?? null, minLength: text.length, text, append: options.append === true });
       if (!verified?.ok) {
@@ -307,9 +307,9 @@ async function typeIntoBrowser(text, options = {}) {
 
     const result = await evaluate(send, `
           ${browserDomScript()}
-          const text = __arrobaArgs.text;
-          const selector = __arrobaArgs.selector;
-          const allowFallback = __arrobaArgs.allowFallback;
+          const text = __charioxArgs.text;
+          const selector = __charioxArgs.selector;
+          const allowFallback = __charioxArgs.allowFallback;
           const active = selector
             ? resolveTarget(selector, ["field"])
             : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
@@ -332,14 +332,14 @@ async function typeIntoBrowser(text, options = {}) {
             return { ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           }
           if ("value" in active) {
-            const expectedLength = (__arrobaArgs.append ? active.value.length : 0) + text.length;
-            active.value = __arrobaArgs.append ? active.value + text : text;
+            const expectedLength = (__charioxArgs.append ? active.value.length : 0) + text.length;
+            active.value = __charioxArgs.append ? active.value + text : text;
             active.dispatchEvent(new Event("input", { bubbles: true }));
             active.dispatchEvent(new Event("change", { bubbles: true }));
             const rect = active.getBoundingClientRect();
             return { ok: true, selector: selector || null, filled: String(active.value || "").length >= expectedLength, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
           }
-          active.textContent = __arrobaArgs.append ? (active.textContent || "") + text : text;
+          active.textContent = __charioxArgs.append ? (active.textContent || "") + text : text;
           active.dispatchEvent(new Event("input", { bubbles: true }));
           const rect = active.getBoundingClientRect();
           return { ok: true, selector: selector || null, filled: String(active.textContent || "").length >= text.length, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -356,7 +356,7 @@ async function typeIntoBrowser(text, options = {}) {
     if (!result.filled) {
       const focusResult = await evaluate(send, `
         ${browserDomScript()}
-        const selector = __arrobaArgs.selector;
+        const selector = __charioxArgs.selector;
         const active = selector
           ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
@@ -373,7 +373,7 @@ async function typeIntoBrowser(text, options = {}) {
       await send("Input.insertText", { text });
       const verified = await evaluate(send, `
         ${browserDomScript()}
-        const selector = __arrobaArgs.selector;
+        const selector = __charioxArgs.selector;
         const active = selector
           ? resolveTarget(selector, ["field"])
           : document.activeElement?.matches?.("input, textarea, select, [contenteditable=true]")
@@ -381,7 +381,7 @@ async function typeIntoBrowser(text, options = {}) {
             : null;
         if (!active) return { ok: false, error: selector ? "target_not_found" : "no_focused_fillable_element" };
         const value = "value" in active ? active.value : active.textContent;
-        return { ok: String(value || "").length >= __arrobaArgs.minLength };
+        return { ok: String(value || "").length >= __charioxArgs.minLength };
       `, { selector: options.selector ?? null, minLength: text.length });
       if (!verified?.ok) {
         throw new Error(verified?.error ?? "browser_type_not_applied");
@@ -392,8 +392,8 @@ async function typeIntoBrowser(text, options = {}) {
 
 function browserDomScript() {
   return `
-    window.__arrobaCdpElementIds = window.__arrobaCdpElementIds || new WeakMap();
-    window.__arrobaCdpNextElementId = window.__arrobaCdpNextElementId || 1;
+    window.__charioxCdpElementIds = window.__charioxCdpElementIds || new WeakMap();
+    window.__charioxCdpNextElementId = window.__charioxCdpNextElementId || 1;
     const visible = (element) => {
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
@@ -418,11 +418,11 @@ function browserDomScript() {
       return parts.length ? "body > " + parts.join(" > ") : element.tagName.toLowerCase();
     };
     const fieldIdFor = (element, kind) => {
-      const existing = window.__arrobaCdpElementIds.get(element);
+      const existing = window.__charioxCdpElementIds.get(element);
       if (existing) return existing;
-      const next = String(window.__arrobaCdpNextElementId++);
+      const next = String(window.__charioxCdpNextElementId++);
       const id = kind + ":" + next;
-      window.__arrobaCdpElementIds.set(element, id);
+      window.__charioxCdpElementIds.set(element, id);
       return id;
     };
     const labelFor = (element) => {
@@ -506,8 +506,8 @@ async function browserStatus() {
 async function browserFind(query, kind = "any") {
   return await withSocket(async (send) => evaluate(send, `
     ${browserDomScript()}
-    const query = (__arrobaArgs.query || "").toLowerCase();
-    const kind = __arrobaArgs.kind || "any";
+    const query = (__charioxArgs.query || "").toLowerCase();
+    const kind = __charioxArgs.kind || "any";
     const pool = [
       ...(kind === "field" || kind === "any" ? fields : []),
       ...(kind === "button" || kind === "any" ? buttons : []),
@@ -523,7 +523,7 @@ async function browserFind(query, kind = "any") {
       entry.text,
       entry.type,
     ].some((value) => String(value || "").toLowerCase().includes(query)));
-    return { query: __arrobaArgs.query, kind, matches };
+    return { query: __charioxArgs.query, kind, matches };
   `, { query, kind }));
 }
 
@@ -531,7 +531,7 @@ async function clickSelector(selector) {
   await withSocket(async (send) => {
     const result = await evaluate(send, `
       ${browserDomScript()}
-      const element = resolveTarget(__arrobaArgs.selector, ["button", "link", "field"]);
+      const element = resolveTarget(__charioxArgs.selector, ["button", "link", "field"]);
       if (!element) return { ok: false, error: "target_not_found" };
       element.scrollIntoView({ block: "center", inline: "center" });
       const rect = element.getBoundingClientRect();
@@ -570,7 +570,7 @@ async function submitSelector(selector) {
   await withSocket(async (send) => {
     const result = await evaluate(send, `
       ${browserDomScript()}
-      const target = __arrobaArgs.selector ? resolveTarget(__arrobaArgs.selector, ["field", "button"]) : document.activeElement;
+      const target = __charioxArgs.selector ? resolveTarget(__charioxArgs.selector, ["field", "button"]) : document.activeElement;
       if (!target) return { ok: false, error: "target_not_found" };
       const form = target.closest?.("form");
       if (!form) return { ok: false, error: "form_not_found" };
@@ -623,7 +623,7 @@ async function waitForPredicate(label, timeoutMs, predicateSource, args = {}) {
 
 async function waitForText(text, timeoutMs) {
   return await waitForPredicate("text", timeoutMs, `
-    const text = String(__arrobaArgs.text || "");
+    const text = String(__charioxArgs.text || "");
     const body = document.body?.innerText || "";
     return { ok: body.includes(text), text, readyState: document.readyState };
   `, { text });
@@ -631,7 +631,7 @@ async function waitForText(text, timeoutMs) {
 
 async function waitForSelector(selector, timeoutMs) {
   return await waitForPredicate("selector", timeoutMs, `
-    const selector = String(__arrobaArgs.selector || "");
+    const selector = String(__charioxArgs.selector || "");
     const element = selector ? document.querySelector(selector) : null;
     if (!element) return { ok: false, selector, reason: "missing" };
     const style = window.getComputedStyle(element);
@@ -706,7 +706,7 @@ if (command === "click") {
   process.stdout.write(JSON.stringify({ ok: true, selector }));
 } else if (command === "cursor-status") {
   const result = await withSocket(async (send) => evaluate(send, `
-    const cursor = document.getElementById("__arroba-agent-cursor");
+    const cursor = document.getElementById("__chariox-agent-cursor");
     return { visible: Boolean(cursor && cursor.style.opacity === "1") };
   `));
   process.stdout.write(JSON.stringify(result));

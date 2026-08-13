@@ -375,10 +375,10 @@ impl KernelRuntimeState {
         if !authority.requires_approval() {
             return Ok(None);
         }
-        let title = "Arroba extension registration approval".to_string();
+        let title = "Chariox extension registration approval".to_string();
         let subject = name
-            .map(|name| format!("global Arroba {kind} `{name}`"))
-            .unwrap_or_else(|| format!("global Arroba {kind}"));
+            .map(|name| format!("global Chariox {kind} `{name}`"))
+            .unwrap_or_else(|| format!("global Chariox {kind}"));
         let source = source_path
             .map(|path| format!(" Source: `{}`.", path.display()))
             .unwrap_or_default();
@@ -607,7 +607,7 @@ impl KernelRuntimeState {
                         )
                     })
             })
-            .unwrap_or_else(|| ("arroba-runtime".to_string(), String::new()));
+            .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
         self.remember_pending_mcp_continuation(
             session_id,
             granted_agent.id(),
@@ -625,24 +625,24 @@ fn invalid_registration_args(operation: &'static str) -> impl Fn(serde_json::Err
     }
 }
 
-fn mcp_transport_kind(transport: &crate::mcp::ArrobaMcpTransportConfig) -> &'static str {
+fn mcp_transport_kind(transport: &crate::mcp::CharioxMcpTransportConfig) -> &'static str {
     match transport {
-        crate::mcp::ArrobaMcpTransportConfig::Stdio { .. } => "stdio",
-        crate::mcp::ArrobaMcpTransportConfig::StreamableHttp { .. } => "streamable_http",
+        crate::mcp::CharioxMcpTransportConfig::Stdio { .. } => "stdio",
+        crate::mcp::CharioxMcpTransportConfig::StreamableHttp { .. } => "streamable_http",
     }
 }
 
-fn environment_runtime_kind(runtime: &crate::script::ArrobaEnvironmentRuntime) -> &'static str {
+fn environment_runtime_kind(runtime: &crate::script::CharioxEnvironmentRuntime) -> &'static str {
     match runtime {
-        crate::script::ArrobaEnvironmentRuntime::Python { .. } => "python",
-        crate::script::ArrobaEnvironmentRuntime::Node { .. } => "node",
+        crate::script::CharioxEnvironmentRuntime::Python { .. } => "python",
+        crate::script::CharioxEnvironmentRuntime::Node { .. } => "node",
     }
 }
 
-fn script_runtime_kind(runtime: &crate::script::ArrobaScriptRuntime) -> &'static str {
+fn script_runtime_kind(runtime: &crate::script::CharioxScriptRuntime) -> &'static str {
     match runtime {
-        crate::script::ArrobaScriptRuntime::Python => "python",
-        crate::script::ArrobaScriptRuntime::TypeScript => "typescript",
+        crate::script::CharioxScriptRuntime::Python => "python",
+        crate::script::CharioxScriptRuntime::TypeScript => "typescript",
     }
 }
 
@@ -675,7 +675,7 @@ fn registration_result(
         });
     } else {
         payload["next_action"] = serde_json::json!(
-            "Call arroba.request_extension to grant this extension to the current agent before using it."
+            "Call chariox.request_extension to grant this extension to the current agent before using it."
         );
     }
     if let (Some(payload), Some(extra)) = (payload.as_object_mut(), extra.as_object()) {

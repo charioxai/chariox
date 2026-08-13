@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -254,7 +254,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     let artifact_metadata = crate::workflow_code::WorkflowCodeArtifactMetadata {
         name: "toy-flow".to_string(),
         language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-        path: std::path::PathBuf::from("/workspace/.arroba/workflow-code/toy-flow.json"),
+        path: std::path::PathBuf::from("/workspace/.chariox/workflow-code/toy-flow.json"),
         source_sha256: "sha256".to_string(),
         source_bytes: 37,
         validation: crate::workflow_code::WorkflowCodeValidationReport {
@@ -358,7 +358,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     };
     let artifact_deleted_response = LocalDaemonResponse::WorkflowCodeArtifactDeleted {
         name: "toy-flow".to_string(),
-        path: std::path::PathBuf::from("/workspace/.arroba/workflow-code/toy-flow.json"),
+        path: std::path::PathBuf::from("/workspace/.chariox/workflow-code/toy-flow.json"),
     };
     let artifact_exported_response = LocalDaemonResponse::WorkflowCodeArtifactExported {
         package: package.clone(),
@@ -557,7 +557,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     };
     let registry_entry_deleted_response = LocalDaemonResponse::WorkflowRegistryEntryDeleted {
         name: "toy-flow".to_string(),
-        path: std::path::PathBuf::from("/workspace/.arroba/workflows/toy-flow"),
+        path: std::path::PathBuf::from("/workspace/.chariox/workflows/toy-flow"),
     };
     let registry_entry_loaded_response = LocalDaemonResponse::WorkflowRegistryEntryLoaded {
         entry: registry_entry.clone(),
@@ -794,7 +794,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/17/WorkflowCodeArtifactDeleted/path"),
         Some(&serde_json::json!(
-            "/workspace/.arroba/workflow-code/toy-flow.json"
+            "/workspace/.chariox/workflow-code/toy-flow.json"
         ))
     );
     assert_eq!(
@@ -931,7 +931,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/39/WorkflowRegistryEntryDeleted/path"),
-        Some(&serde_json::json!("/workspace/.arroba/workflows/toy-flow"))
+        Some(&serde_json::json!("/workspace/.chariox/workflows/toy-flow"))
     );
     assert_eq!(
         snapshot.pointer("/40/WorkflowRegistryEntryLoaded/result/apply/workflow_id"),

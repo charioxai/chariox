@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
 
-use arroba_kernel::local::{GetProviderRunRequest, LocalDaemonRequest};
+use chariox_kernel::local::{GetProviderRunRequest, LocalDaemonRequest};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;

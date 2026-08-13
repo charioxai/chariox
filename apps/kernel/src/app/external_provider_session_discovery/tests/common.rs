@@ -351,11 +351,11 @@ fn prompt_recovery_match_prefers_exact_worktree_and_tracks_recovery_anchor() {
         "codex",
         "build the recovery path",
         Some("/repo/target"),
-        Some("arroba-recovery:prompt-1:1"),
+        Some("chariox-recovery:prompt-1:1"),
         sessions,
         |session_id| {
             let recovery = format!(
-                "[Arroba recovery operation arroba-recovery:prompt-1:1] continue {session_id}"
+                "[Chariox recovery operation chariox-recovery:prompt-1:1] continue {session_id}"
             );
             vec![
                 observed_turn(
@@ -397,7 +397,7 @@ fn recovery_session(
         worktree_path: Some(worktree_path.to_string()),
         account_profile: None,
         capabilities: ExternalProviderSessionCapabilities::default(),
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }

@@ -160,7 +160,7 @@ pub(super) fn external_session_or_refresh(
 pub(super) fn ensure_external_session_is_attachable(
     external: &ExternalProviderSessionRecord,
 ) -> Result<(), DaemonError> {
-    if external.is_attachable_to_arroba() {
+    if external.is_attachable_to_chariox() {
         return Ok(());
     }
     let session_label = external.first_attached_session_id().unwrap_or("unknown");
@@ -168,7 +168,7 @@ pub(super) fn ensure_external_session_is_attachable(
     Err(DaemonError::LocalTransport {
         operation: "import external provider session",
         message: format!(
-            "external provider session `{}` is already attached to Arroba session `{}` agent `{}`",
+            "external provider session `{}` is already attached to Chariox session `{}` agent `{}`",
             external.external_session_id, session_label, agent_label
         ),
     })

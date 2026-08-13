@@ -155,7 +155,7 @@ async fn proxied_peer_requests_are_handled_through_relay() {
 async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay() {
     let _relay_test_guard = relay_client_test_guard().await;
     let test_root = std::env::temp_dir().join(format!(
-        "arroba-relay-workspace-live-sync-{}-{}",
+        "chariox-relay-workspace-live-sync-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

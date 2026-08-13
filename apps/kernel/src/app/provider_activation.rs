@@ -78,7 +78,7 @@ impl ProviderRunActivationState {
                         app.providers.clear_runtime(active_run_id);
                     }
                     ProviderRunState::Starting => {
-                        if active_run.client_interface().is_arroba() {
+                        if active_run.client_interface().is_chariox() {
                             let outcome = app
                                 .providers
                                 .terminate_run_provider_only(&session_id, active_run_id)?;
@@ -91,7 +91,7 @@ impl ProviderRunActivationState {
                         }
                     }
                     ProviderRunState::Running => {
-                        if active_run.client_interface().is_arroba()
+                        if active_run.client_interface().is_chariox()
                             && !app.provider_run_has_active_prompt(&session_id, &active_run)?
                         {
                             let outcome = app
@@ -112,7 +112,7 @@ impl ProviderRunActivationState {
             }
         }
 
-        for run in Self::active_arroba_runs_for_target_agent(app, &request) {
+        for run in Self::active_chariox_runs_for_target_agent(app, &request) {
             if run.state() == ProviderRunState::Running
                 && app.provider_run_has_active_prompt(&session_id, &run)?
             {
@@ -124,7 +124,7 @@ impl ProviderRunActivationState {
             }
         }
 
-        for run in Self::active_arroba_runs_for_target_agent(app, &request) {
+        for run in Self::active_chariox_runs_for_target_agent(app, &request) {
             if previous_active_run_id.as_deref() == Some(run.id()) {
                 continue;
             }
@@ -147,14 +147,14 @@ impl ProviderRunActivationState {
         })
     }
 
-    fn active_arroba_runs_for_target_agent(
+    fn active_chariox_runs_for_target_agent(
         app: &DaemonApp,
         request: &LaunchProviderRequest,
     ) -> Vec<RuntimeProviderRun> {
         let Some(agent_id) = request.agent_id.as_deref() else {
             return Vec::new();
         };
-        if request.client_interface != ProviderClientInterface::Arroba {
+        if request.client_interface != ProviderClientInterface::Chariox {
             return Vec::new();
         }
         app.providers()
@@ -163,7 +163,7 @@ impl ProviderRunActivationState {
             .filter(|run| {
                 run.session_id() == request.session_id
                     && run.agent_instance_id() == Some(agent_id)
-                    && run.client_interface() == ProviderClientInterface::Arroba
+                    && run.client_interface() == ProviderClientInterface::Chariox
                     && run.state() != ProviderRunState::Ended
             })
             .collect()

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn shell_command_capability_runs_through_capability_boundary() {
-    let worktree_root = std::env::temp_dir().join("arroba-shell-app-test");
+    let worktree_root = std::env::temp_dir().join("chariox-shell-app-test");
     std::fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
@@ -38,7 +38,7 @@ fn shell_command_capability_runs_through_capability_boundary() {
 
 #[test]
 fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
-    let worktree_root = std::env::temp_dir().join("arroba-kernel-app-capability-test");
+    let worktree_root = std::env::temp_dir().join("chariox-kernel-app-capability-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
@@ -130,7 +130,7 @@ fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
 #[test]
 fn screenshot_capability_returns_structured_unavailable_result() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
+    std::env::set_var("CHARIOX_SCREENSHOT_DISABLE", "1");
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let session = app
@@ -155,7 +155,7 @@ fn screenshot_capability_returns_structured_unavailable_result() {
             crate::app::attachment_artifact_root(session.id(), attachment.id(), "screenshots"),
         ))
         .expect("screenshot request should return structured result");
-    std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
+    std::env::remove_var("CHARIOX_SCREENSHOT_DISABLE");
 
     assert_eq!(
         result.status,
@@ -166,7 +166,7 @@ fn screenshot_capability_returns_structured_unavailable_result() {
 
 #[test]
 fn transfer_capability_stores_artifact_under_session_root() {
-    let worktree_root = std::env::temp_dir().join("arroba-transfer-app-test");
+    let worktree_root = std::env::temp_dir().join("chariox-transfer-app-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     let source = worktree_root.join("artifact.txt");
@@ -212,6 +212,6 @@ fn transfer_capability_stores_artifact_under_session_root() {
     assert!(result
         .stored_path
         .to_string_lossy()
-        .contains("arroba-session-artifacts"));
+        .contains("chariox-session-artifacts"));
     assert_eq!(result.bytes, 8);
 }

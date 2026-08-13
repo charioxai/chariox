@@ -402,7 +402,7 @@ fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
 }
 
 #[test]
-fn pump_active_prompt_outputs_skips_idle_running_arroba_provider_run() {
+fn pump_active_prompt_outputs_skips_idle_running_chariox_provider_run() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -444,7 +444,7 @@ fn pump_active_prompt_outputs_skips_idle_running_arroba_provider_run() {
 
     assert!(
         pumped.is_empty(),
-        "idle running Arroba provider runs should not keep the background pump active"
+        "idle running Chariox provider runs should not keep the background pump active"
     );
 }
 

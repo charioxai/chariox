@@ -89,7 +89,7 @@ fn claude_config_model_entries() -> Vec<(String, String)> {
 }
 
 fn claude_config_path() -> Option<PathBuf> {
-    env::var_os("ARROBA_CLAUDE_CONFIG")
+    env::var_os("CHARIOX_CLAUDE_CONFIG")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude.json")))
 }

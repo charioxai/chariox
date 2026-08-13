@@ -77,11 +77,11 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
     ) {
         if let Some(binding) = request.runtime_mcp_binding.as_ref() {
             env.insert(
-                "ARROBA_DEV_STUB_RUNTIME_MCP_URL".to_string(),
+                "CHARIOX_DEV_STUB_RUNTIME_MCP_URL".to_string(),
                 binding.server_url.clone(),
             );
             env.insert(
-                "ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN".to_string(),
+                "CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN".to_string(),
                 binding.auth_token.clone(),
             );
         }
@@ -91,8 +91,8 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
 
 fn dev_stub_workflow_code_topology_script() -> String {
     let js = r#"const http = require("node:http");
-const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
-const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN;
 const emittedDeliveryTokens = new Set();
 let promptBuffer = "";
 let pendingTimer = null;
@@ -494,8 +494,8 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry", canvas: { x: -220, 
     let source_json = serde_json::to_string(source).expect("workflow-code source should encode");
     let js = format!(
         r#"const http = require("node:http");
-const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
-const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN;
 const source = {source_json};
 let started = false;
 let promptBuffer = "";
@@ -547,27 +547,27 @@ function unwrap(value, key) {{
 async function authorWorkflowCode() {{
   const name = `observed-meta-workflow-code-${{Date.now()}}`;
   const providerRebindings = [{{ node: "worker", provider: "dev-stub", model: "default" }}];
-  await callRuntimeTool("arroba.meta.update_task", {{
+  await callRuntimeTool("chariox.meta.update_task", {{
     markdown: "Observed workflow-code authoring drill: discover guidance, create, validate, apply, and run a workflow-code artifact.",
   }});
-  await callRuntimeTool("arroba.meta.search_guides", {{
+  await callRuntimeTool("chariox.meta.search_guides", {{
     query: "workflow-code authoring create validate apply run",
     tag: "workflow-code",
-    command: "arroba.meta.workflow_code.create",
+    command: "chariox.meta.workflow_code.create",
     limit: 5,
   }});
-  await callRuntimeTool("arroba.meta.read_guide", {{ guide: "workflows/workflow-code-authoring" }});
-  const created = await callRuntimeTool("arroba.meta.workflow_code.create", {{ name, source }});
+  await callRuntimeTool("chariox.meta.read_guide", {{ guide: "workflows/workflow-code-authoring" }});
+  const created = await callRuntimeTool("chariox.meta.workflow_code.create", {{ name, source }});
   const createdArtifact = unwrap(created, "WorkflowCodeArtifactCreated").artifact;
-  const validated = await callRuntimeTool("arroba.meta.workflow_code.validate", {{ name }});
+  const validated = await callRuntimeTool("chariox.meta.workflow_code.validate", {{ name }});
   const validationOk = unwrap(validated, "WorkflowCodeValidated").result.validation.ok;
   if (!validationOk) throw new Error("workflow-code validation failed");
-  const applied = await callRuntimeTool("arroba.meta.workflow_code.apply", {{
+  const applied = await callRuntimeTool("chariox.meta.workflow_code.apply", {{
     name,
     provider_rebindings: providerRebindings,
   }});
   const appliedPayload = unwrap(applied, "WorkflowCodeApplied");
-  const run = await callRuntimeTool("arroba.meta.workflow_code.run", {{
+  const run = await callRuntimeTool("chariox.meta.workflow_code.run", {{
     name,
     endpoint: "entry",
     provider_rebindings: providerRebindings,
@@ -579,7 +579,7 @@ async function authorWorkflowCode() {{
     `workflow=${{appliedPayload.result.apply.workflow_id}}`,
     `invocation=${{runPayload.result.invocation.kind}}`,
   ].join(" ");
-  await callRuntimeTool("arroba.meta.update_plan", {{
+  await callRuntimeTool("chariox.meta.update_plan", {{
     markdown: marker,
   }});
   process.stdout.write(`${{marker}}\n`);
@@ -603,7 +603,7 @@ function maybeStart() {{
     const message = `OBSERVED_WORKFLOW_CODE_AUTHORING_FAILED ${{error.message || error}}`;
     process.stdout.write(message + "\n");
     try {{
-      await callRuntimeTool("arroba.meta.update_plan", {{ markdown: message }});
+      await callRuntimeTool("chariox.meta.update_plan", {{ markdown: message }});
     }} catch {{}}
   }});
 }}
@@ -661,7 +661,7 @@ fn dev_stub_workflow_intermediate_script(
 }
 
 fn dev_stub_workflow_delayed_output_script() -> String {
-    let delay_ms = std::env::var("ARROBA_DEV_STUB_WORKFLOW_OUTPUT_DELAY_MS")
+    let delay_ms = std::env::var("CHARIOX_DEV_STUB_WORKFLOW_OUTPUT_DELAY_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .unwrap_or(750)
@@ -693,7 +693,7 @@ fn dev_stub_workflow_dashboard_producer_script() -> String {
                 "prompt": "Generate a vibrant dashboard as a compact self-contained HTML document.",
                 "requirements": [
                     "Visible title text `Real Provider Workflow Dashboard`.",
-                    "Main dashboard element has data-arroba-real-provider-dashboard=\"true\".",
+                    "Main dashboard element has data-chariox-real-provider-dashboard=\"true\".",
                     "Inline CSS only.",
                     "No scripts, external assets, network calls, or unrelated workspace inspection.",
                     "The final workflow output must be shaped exactly as {\"kind\":\"html\",\"html\":\"<full html document>\"}.",
@@ -716,8 +716,8 @@ fn dev_stub_workflow_intermediate_payload_script(
         .unwrap_or_else(|| "null".to_string());
     let js = format!(
         r#"const http = require("node:http");
-const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
-const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN;
 const finalPayload = {payload_json};
 const intermediateOutput = {intermediate_json};
 const outputDelayMs = {output_delay_ms};
@@ -801,7 +801,7 @@ async function emitForDeliveryToken(deliveryToken) {{
 }}
 
 async function emitOnce() {{
-  const sourceProofMatches = [...promptBuffer.matchAll(/arroba-source-proof:([A-Za-z0-9_-]{{16,}})/g)];
+  const sourceProofMatches = [...promptBuffer.matchAll(/chariox-source-proof:([A-Za-z0-9_-]{{16,}})/g)];
   const sourceProof = sourceProofMatches.length ? sourceProofMatches[sourceProofMatches.length - 1][1] : undefined;
   if (sourceProof && !emittedSourceProofs.has(sourceProof)) {{
     emittedSourceProofs.add(sourceProof);
@@ -862,8 +862,8 @@ fn dev_stub_workflow_final_passthrough_script() -> String {
     let js = r#"const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const runtimeUrl = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_URL;
-const runtimeToken = process.env.ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN;
+const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL;
+const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN;
 const emittedDeliveryTokens = new Set();
 let emittedWithoutToken = false;
 let promptBuffer = "";
@@ -1063,7 +1063,7 @@ fn dev_stub_semantic_renderer_script() -> String {
         "kind": "http_response",
         "status": 200,
         "headers": { "content-type": "text/html; charset=utf-8" },
-        "body": "<!doctype html><html><head><title>About Arroba Foods - Neon</title><style>body{background:#000;color:#39ff14;font-family:system-ui,sans-serif}a{color:#39ff14}main{border:1px solid #39ff14;padding:2rem;box-shadow:0 0 24px #39ff14}</style></head><body data-arroba-render=\"ARROBA_RENDER_NEON_GREEN\"><main><h1>About Arroba Foods</h1><p>We build practical grocery tools for neighborhood stores.</p><a href=\"/contact\">Contact us</a></main></body></html>"
+        "body": "<!doctype html><html><head><title>About Chariox Foods - Neon</title><style>body{background:#000;color:#39ff14;font-family:system-ui,sans-serif}a{color:#39ff14}main{border:1px solid #39ff14;padding:2rem;box-shadow:0 0 24px #39ff14}</style></head><body data-chariox-render=\"CHARIOX_RENDER_NEON_GREEN\"><main><h1>About Chariox Foods</h1><p>We build practical grocery tools for neighborhood stores.</p><a href=\"/contact\">Contact us</a></main></body></html>"
     });
     let payload = serde_json::json!({
         "summary": "semantic renderer stub",
@@ -1076,7 +1076,7 @@ fn dev_stub_semantic_renderer_script() -> String {
 }
 
 fn dev_stub_slow_first_output_script() -> String {
-    let delay_ms = std::env::var("ARROBA_DEV_STUB_FIRST_OUTPUT_DELAY_MS")
+    let delay_ms = std::env::var("CHARIOX_DEV_STUB_FIRST_OUTPUT_DELAY_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .unwrap_or(35_000)
@@ -1088,12 +1088,12 @@ fn dev_stub_slow_first_output_script() -> String {
 }
 
 fn dev_stub_large_output_script() -> String {
-    let line_count = std::env::var("ARROBA_DEV_STUB_LARGE_OUTPUT_LINES")
+    let line_count = std::env::var("CHARIOX_DEV_STUB_LARGE_OUTPUT_LINES")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .unwrap_or(1_000)
         .min(100_000);
-    let line_bytes = std::env::var("ARROBA_DEV_STUB_LARGE_OUTPUT_LINE_BYTES")
+    let line_bytes = std::env::var("CHARIOX_DEV_STUB_LARGE_OUTPUT_LINE_BYTES")
         .ok()
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(128)
@@ -1113,7 +1113,7 @@ mod tests {
     fn html_final_fixture_waits_for_and_acknowledges_the_workflow_turn() {
         let script = dev_stub_workflow_html_final_script();
 
-        assert!(script.contains("ARROBA_DEV_STUB_RUNTIME_MCP_URL"));
+        assert!(script.contains("CHARIOX_DEV_STUB_RUNTIME_MCP_URL"));
         assert!(script.contains("ack_workflow_turn"));
         assert!(script.contains("emittedDeliveryTokens"));
         assert!(script.contains("if (runtimeUrl && runtimeToken) return;"));
@@ -1124,7 +1124,7 @@ mod tests {
     fn single_turn_fixture_waits_for_and_acknowledges_the_workflow_turn() {
         let script = dev_stub_workflow_read_through_script("single turn", 1842);
 
-        assert!(script.contains("ARROBA_DEV_STUB_RUNTIME_MCP_URL"));
+        assert!(script.contains("CHARIOX_DEV_STUB_RUNTIME_MCP_URL"));
         assert!(script.contains("ack_workflow_turn"));
         assert!(script.contains("emittedDeliveryTokens"));
         assert!(script.contains("if (runtimeUrl && runtimeToken) return;"));
@@ -1136,7 +1136,7 @@ mod tests {
         let script = dev_stub_workflow_intermediate_script("intermediate", 1841, 1842);
 
         assert!(script.contains("const outputDelayMs = 750;"));
-        assert!(script.contains("arroba-source-proof:"));
+        assert!(script.contains("chariox-source-proof:"));
         assert!(script.contains("emittedSourceProofs"));
         assert!(script.contains("process.stdout.write(sourceProof + \"\\n\")"));
     }
@@ -1198,13 +1198,13 @@ mod tests {
 
             let env = dev_stub_pty_env(&request);
             assert_eq!(
-                env.get("ARROBA_DEV_STUB_RUNTIME_MCP_URL")
+                env.get("CHARIOX_DEV_STUB_RUNTIME_MCP_URL")
                     .map(String::as_str),
                 Some("http://127.0.0.1:1234/mcp"),
                 "model {model}"
             );
             assert_eq!(
-                env.get("ARROBA_DEV_STUB_RUNTIME_MCP_TOKEN")
+                env.get("CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN")
                     .map(String::as_str),
                 Some("test-token"),
                 "model {model}"

@@ -5,7 +5,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
 pub(super) fn stdio_mcp_supervisor() -> &'static Mutex<StdioMcpSupervisor> {
     static SUPERVISOR: OnceLock<Mutex<StdioMcpSupervisor>> = OnceLock::new();
@@ -30,7 +30,7 @@ impl StdioMcpSupervisor {
         key: &str,
         owner_provider_run_id: &str,
         owner_session_id: &str,
-        backing: &ArrobaMcpServerConfig,
+        backing: &CharioxMcpServerConfig,
     ) -> Result<Arc<Mutex<StdioMcpProcess>>, DaemonError> {
         if self.closed_provider_run_ids.contains(owner_provider_run_id)
             || self.closed_session_ids.contains(owner_session_id)
@@ -154,8 +154,8 @@ pub(super) struct StdioMcpProcess {
 }
 
 impl StdioMcpProcess {
-    fn spawn(backing: &ArrobaMcpServerConfig) -> Result<Self, DaemonError> {
-        let ArrobaMcpTransportConfig::Stdio {
+    fn spawn(backing: &CharioxMcpServerConfig) -> Result<Self, DaemonError> {
+        let CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env,
@@ -209,7 +209,7 @@ impl StdioMcpProcess {
         let (frame_tx, frame_rx) = mpsc::channel();
         let reader_name = backing.name.clone();
         if let Err(error) = std::thread::Builder::new()
-            .name("arroba-stdio-mcp-reader".to_string())
+            .name("chariox-stdio-mcp-reader".to_string())
             .spawn(move || read_frames(stdout, &reader_name, frame_tx))
         {
             let _ = child.kill();
@@ -322,7 +322,7 @@ impl StdioMcpProcess {
                         "error": {
                             "code": -32601,
                             "message": format!(
-                                "server-initiated MCP request `{method}` is not supported by the Arroba stdio proxy"
+                                "server-initiated MCP request `{method}` is not supported by the Chariox stdio proxy"
                             ),
                         },
                     }))?;

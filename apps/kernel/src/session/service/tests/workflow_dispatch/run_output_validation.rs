@@ -23,7 +23,7 @@ fn create_schema_bound_completion_workflow(
         .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
         .expect("completion capability should update");
     let schema_path = std::env::temp_dir().join(format!(
-        "arroba-workflow-output-schema-{}-{}-{}.json",
+        "chariox-workflow-output-schema-{}-{}-{}.json",
         std::process::id(),
         unix_epoch_ms(),
         SCHEMA_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

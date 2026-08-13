@@ -487,7 +487,7 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
     );
 
     let mut wrong_origin = active_turn.clone();
-    wrong_origin.prompt_origin = Some(PromptOrigin::Arroba);
+    wrong_origin.prompt_origin = Some(PromptOrigin::Chariox);
     active_turns.insert(provider_run.id().to_string(), wrong_origin);
     let origin_drift_snapshot =
         session_store.invariant_snapshot(&agent_store, &[], &active_turns, &provider_runs);
@@ -495,7 +495,7 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
         mismatch.kind == "active_turn_prompt_origin_mismatch"
             && mismatch.session_id == session_id
             && mismatch.agent_id.as_deref() == Some(agent_id.as_str())
-            && mismatch.details.contains("arroba")
+            && mismatch.details.contains("chariox")
             && mismatch.details.contains("external")
     }));
 
@@ -573,7 +573,7 @@ fn projection_invariant_health_reports_active_turn_prompt_metadata_drift() {
 }
 
 #[test]
-fn projection_invariant_health_requires_active_turn_source_attachment_for_arroba_prompt() {
+fn projection_invariant_health_requires_active_turn_source_attachment_for_chariox_prompt() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -585,7 +585,7 @@ fn projection_invariant_health_requires_active_turn_source_attachment_for_arroba
         "prompt-1",
         "attachment-1",
         &agent_id,
-        "arroba prompt",
+        "chariox prompt",
         crate::session::PromptStatus::Running,
     );
     app.prompt_owner_activate_prompt(&session_id, active_prompt.clone())

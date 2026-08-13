@@ -10,7 +10,7 @@ use tokio::time::timeout;
 
 use crate::runtime::router::CommandRouter;
 
-use arroba_relay::protocol::{
+use chariox_relay::protocol::{
     RelayDisplayTunnelRegistration, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
 };
 

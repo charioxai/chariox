@@ -239,9 +239,9 @@ pub(crate) async fn execute_lock_credential_vault_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let user_config = config_projection.snapshot().user_config;
     let path = user_config.credential_vault.path.clone();
-    crate::secret::lock_arroba_encrypted_vault(&path)?;
+    crate::secret::lock_chariox_encrypted_vault(&path)?;
     crate::secret::clear_vault_secret_process_cache()?;
-    let status = crate::secret::arroba_encrypted_vault_status(&path)?;
+    let status = crate::secret::chariox_encrypted_vault_status(&path)?;
     Ok(LocalDaemonResponse::CredentialVaultLocked { status })
 }
 
@@ -260,7 +260,7 @@ pub(crate) async fn execute_manage_credential_vault_request(
 
 fn credential_vault_status(
     config_projection: &DaemonConfigProjectionStore,
-) -> Result<crate::secret::ArrobaVaultUnlockStatus, DaemonError> {
+) -> Result<crate::secret::CharioxVaultUnlockStatus, DaemonError> {
     let user_config = config_projection.snapshot().user_config;
-    crate::secret::arroba_encrypted_vault_status(&user_config.credential_vault.path)
+    crate::secret::chariox_encrypted_vault_status(&user_config.credential_vault.path)
 }

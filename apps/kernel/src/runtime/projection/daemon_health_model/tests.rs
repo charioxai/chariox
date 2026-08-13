@@ -67,7 +67,7 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
         ProviderRunHealthSnapshot {
             projected_runs: 4,
             active_runs: 3,
-            arroba_active_runs: 2,
+            chariox_active_runs: 2,
             native_tui_active_runs: 1,
             terminal_diagnostics: vec![ProviderRunTerminalDiagnosticIssue {
                 provider_run_id: "provider-run-timeout".to_string(),
@@ -77,7 +77,7 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
                 state: "Running".to_string(),
                 diagnostic: "provider produced no terminal output within 10m".to_string(),
             }],
-            duplicate_arroba_agent_bindings: vec![ProviderRunAgentBindingConflict {
+            duplicate_chariox_agent_bindings: vec![ProviderRunAgentBindingConflict {
                 session_id: "session-1".to_string(),
                 agent_id: "agent-1".to_string(),
                 provider_run_ids: vec!["provider-run-1".to_string(), "provider-run-2".to_string()],
@@ -94,7 +94,7 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
                 session_id: "session-2".to_string(),
                 agent_id: "agent-2".to_string(),
                 provider_run_ids: vec![
-                    "provider-run-3:arroba".to_string(),
+                    "provider-run-3:chariox".to_string(),
                     "provider-run-4:native_tui".to_string(),
                 ],
             }],
@@ -308,7 +308,7 @@ fn daemon_health_projection_records_actor_queue_snapshots() {
     assert_eq!(
         projection
             .provider_runs
-            .duplicate_arroba_agent_bindings
+            .duplicate_chariox_agent_bindings
             .len(),
         1
     );

@@ -9,7 +9,7 @@ fn local_request_api_rejects_ambiguous_workflow_code_run_endpoint_without_applyi
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-ambiguous-run-{}",
+        "chariox-workflow-code-ambiguous-run-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
@@ -171,7 +171,7 @@ fn local_request_api_rejects_unknown_workflow_code_run_queue_without_applying() 
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-missing-queue-{}",
+        "chariox-workflow-code-missing-queue-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
@@ -318,7 +318,7 @@ fn local_request_api_rejects_duplicate_workflow_code_edges_without_applying() {
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-duplicate-edge-{}",
+        "chariox-workflow-code-duplicate-edge-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
@@ -432,7 +432,7 @@ fn local_request_api_rejects_duplicate_workflow_code_endpoint_aliases_without_ap
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-duplicate-endpoint-{}",
+        "chariox-workflow-code-duplicate-endpoint-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
@@ -539,7 +539,7 @@ fn local_request_api_rejects_workflow_code_over_runtime_queue_limit_without_appl
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-queue-limit-{}",
+        "chariox-workflow-code-queue-limit-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");
@@ -653,7 +653,7 @@ fn local_request_api_rejects_workflow_code_over_session_agent_limit_without_spaw
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-agent-limit-{}",
+        "chariox-workflow-code-agent-limit-{}",
         crate::session::unix_epoch_ms()
     ));
     let worktree_root = workspace_root.join("worktree");

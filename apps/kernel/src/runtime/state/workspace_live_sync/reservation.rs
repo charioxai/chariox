@@ -32,7 +32,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_try_reserve_ranges(
             payload: serde_json::json!({
                 "applied": false,
                 "reason": workspace_live_sync_error_payload(reason),
-                "next_action": "Another workspace live sync writer has reserved the same artifact area. Wait for that write to finish, reread the artifact with arroba.read_artifact, and retry through Arroba workspace live sync.",
+                "next_action": "Another workspace live sync writer has reserved the same artifact area. Wait for that write to finish, reread the artifact with chariox.read_artifact, and retry through Chariox workspace live sync.",
             }),
         })
 }

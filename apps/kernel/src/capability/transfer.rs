@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn stores_transfer_artifact_under_session_artifact_root() {
-        let root = std::env::temp_dir().join("arroba-transfer-capability-test");
+        let root = std::env::temp_dir().join("chariox-transfer-capability-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
@@ -159,7 +159,7 @@ mod tests {
                 "attachment-1",
                 root,
                 std::env::temp_dir()
-                    .join("arroba-session-artifacts")
+                    .join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),
@@ -171,7 +171,7 @@ mod tests {
         assert!(result
             .stored_path
             .to_string_lossy()
-            .contains("arroba-session-artifacts"));
+            .contains("chariox-session-artifacts"));
         assert_eq!(result.bytes, 8);
         assert_eq!(
             fs::read_to_string(result.stored_path).expect("stored artifact should exist"),
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn sanitizes_display_name_for_storage_path() {
-        let root = std::env::temp_dir().join("arroba-transfer-display-name-test");
+        let root = std::env::temp_dir().join("chariox-transfer-display-name-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
@@ -193,7 +193,7 @@ mod tests {
                 "attachment-1",
                 root,
                 std::env::temp_dir()
-                    .join("arroba-session-artifacts")
+                    .join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_sanitized_display_name() {
-        let root = std::env::temp_dir().join("arroba-transfer-invalid-name-test");
+        let root = std::env::temp_dir().join("chariox-transfer-invalid-name-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
         let source = root.join("sample.txt");
@@ -221,7 +221,7 @@ mod tests {
                 "attachment-1",
                 root,
                 std::env::temp_dir()
-                    .join("arroba-session-artifacts")
+                    .join("chariox-session-artifacts")
                     .join("session-1")
                     .join("transfers")
                     .join("attachment-1"),

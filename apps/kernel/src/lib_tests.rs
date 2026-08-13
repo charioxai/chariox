@@ -73,7 +73,7 @@ mod remote_leases;
 
 #[test]
 fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let context = RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -152,7 +152,7 @@ fn relay_peer_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let spawn = RelayPeerRequest::SpawnLeasedAgent {
         lease_id: "lease-1".to_string(),
@@ -229,7 +229,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        12
+        13
     );
 
     let launch_request =
@@ -310,7 +310,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 fn relay_peer_provider_terminal_resize_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        12
+        13
     );
 
     let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
@@ -349,7 +349,7 @@ fn relay_peer_provider_terminal_resize_shape_is_versioned() {
 fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        12
+        13
     );
     let request = RelayPeerRequest::UpdateLeasedAgentProfile {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -373,7 +373,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        12
+        13
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
@@ -422,7 +422,7 @@ fn relay_peer_queued_prompt_steer_shape_is_versioned() {
 
 #[test]
 fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
-    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let context = RemoteWorkspaceLiveSyncContext {
         home_kernel_id: "kernel-home".to_string(),
@@ -470,7 +470,7 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     let request = RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
         context: context.clone(),
         metadata: metadata.clone(),
-        tool_name: "arroba.write_artifact".to_string(),
+        tool_name: "chariox.write_artifact".to_string(),
         arguments: arguments.clone(),
         artifact_states: initial_artifact_states.clone(),
     };
@@ -487,7 +487,7 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     let finalize_request = RelayPeerRequest::FinalizeWorkspaceLiveSyncRuntimeTool {
         context,
         metadata,
-        tool_name: "arroba.write_artifact".to_string(),
+        tool_name: "chariox.write_artifact".to_string(),
         arguments,
         initial_artifact_states,
         final_artifact_states,
@@ -540,6 +540,6 @@ fn relay_peer_workspace_live_sync_runtime_tool_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6c1503d9cdc37a49cb5a678ebc130c83c7b93f1af6c5b9c7e06e299688d2263c"
+        "8b7b15d322af3d317f09bbc6992600b472f97f4420a5e2483074378a991cb9f6"
     );
 }

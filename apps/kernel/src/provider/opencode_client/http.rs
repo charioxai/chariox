@@ -123,7 +123,7 @@ impl OpenCodeClient {
             .map_err(|error| OpenCodeHttpFailure::protocol(error.to_string()))?
             .unwrap_or_default();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Arroba-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Chariox-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body_bytes.len()
         );
         stream
@@ -220,12 +220,12 @@ fn is_retryable_opencode_http_error(
 
 fn is_retryable_request(method: &'static str, path: &str) -> bool {
     method == "GET"
-        // OpenCode prompt submission is retried because the body carries Arroba's stable
+        // OpenCode prompt submission is retried because the body carries Chariox's stable
         // messageID, so a retry can be deduplicated by the provider side.
         || (method == "POST" && path.ends_with("/prompt_async"))
         // OpenCode can briefly accept TCP connections before the app server is ready
         // to complete MCP connect requests. Connecting an already-connected MCP is
-        // idempotent for Arroba's runtime initialization path.
+        // idempotent for Chariox's runtime initialization path.
         || (method == "POST" && is_mcp_connect_path(path))
 }
 
@@ -475,18 +475,21 @@ mod tests {
 
         assert!(is_retryable_opencode_http_error(
             "POST",
-            "/mcp/arroba/connect",
+            "/mcp/chariox/connect",
             &error
         ));
         assert_eq!(
-            method_to_operation("POST", "/mcp/arroba/connect"),
+            method_to_operation("POST", "/mcp/chariox/connect"),
             "mcp_connect"
         );
         assert_eq!(
-            read_timeout_for_request("POST", "/mcp/arroba/connect"),
+            read_timeout_for_request("POST", "/mcp/chariox/connect"),
             Duration::from_secs(12)
         );
-        assert_eq!(retry_attempts_for_request("POST", "/mcp/arroba/connect"), 6);
+        assert_eq!(
+            retry_attempts_for_request("POST", "/mcp/chariox/connect"),
+            6
+        );
     }
 
     #[test]

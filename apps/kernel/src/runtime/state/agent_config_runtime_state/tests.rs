@@ -196,7 +196,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
         .await
         .expect("config update should use the connected relay instead of opening metadata sockets")
         .expect("connected relay request should be queued");
-    let arroba_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+    let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
         request_id,
         target,
         encrypted_request,
@@ -294,7 +294,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
         .await
         .expect("profile update should use the connected relay")
         .expect("connected relay profile request should be queued");
-    let arroba_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+    let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
         request_id,
         target: _,
         encrypted_request,

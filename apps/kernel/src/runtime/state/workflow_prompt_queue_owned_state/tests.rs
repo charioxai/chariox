@@ -159,7 +159,7 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
     let test_root = TestRoot(std::env::temp_dir().join(format!(
-        "arroba-owned-workflow-admission-{}-{}",
+        "chariox-owned-workflow-admission-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     )));

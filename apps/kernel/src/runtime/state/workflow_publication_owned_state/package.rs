@@ -489,12 +489,15 @@ fn workflow_publication_env_template(
         "HOST=0.0.0.0",
         "PORT=3000",
         &format!(
-            "ARROBA_KERNEL_URL={}",
+            "CHARIOX_KERNEL_URL={}",
             kernel_url.unwrap_or("ws://127.0.0.1:43118")
         ),
-        "ARROBA_PUBLICATION_PACKAGE=./publication.json",
-        &format!("ARROBA_PUBLICATION_SESSION_ID={}", publication.session_id()),
-        &format!("ARROBA_PUBLICATION_ID={}", publication.id()),
+        "CHARIOX_PUBLICATION_PACKAGE=./publication.json",
+        &format!(
+            "CHARIOX_PUBLICATION_SESSION_ID={}",
+            publication.session_id()
+        ),
+        &format!("CHARIOX_PUBLICATION_ID={}", publication.id()),
         "",
     ]
     .join("\n")
@@ -510,8 +513,8 @@ fn workflow_publication_launcher_script() -> String {
         "  . \"$DIR/.env\"",
         "  set +a",
         "fi",
-        "export ARROBA_PUBLICATION_PACKAGE=\"${ARROBA_PUBLICATION_PACKAGE:-$DIR/publication.json}\"",
-        "exec arroba-workflow-gateway",
+        "export CHARIOX_PUBLICATION_PACKAGE=\"${CHARIOX_PUBLICATION_PACKAGE:-$DIR/publication.json}\"",
+        "exec chariox-workflow-gateway",
         "",
     ]
     .join("\n")
@@ -534,7 +537,7 @@ fn workflow_publication_readme(
     [
         &format!("# Workflow Publication {}", publication.alias().unwrap_or(publication.id())),
         "",
-        "This directory is an Arroba workflow-gateway package. It runs only when an Arroba kernel is reachable.",
+        "This directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.",
         "",
         "## Files",
         "",
@@ -546,7 +549,7 @@ fn workflow_publication_readme(
         "- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route",
         "- `publication.config.json`: gateway config for existing scripts",
         "- `.env.example`: environment template",
-        "- `run.sh`: launcher for `arroba-workflow-gateway`",
+        "- `run.sh`: launcher for `chariox-workflow-gateway`",
         "- `public/`: editable browser assets",
         "",
         "## Invoke",

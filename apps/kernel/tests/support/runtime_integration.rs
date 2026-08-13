@@ -14,11 +14,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arroba_kernel::local::{
+use chariox_kernel::local::{
     GetSessionStateRequest, LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse,
     PumpTerminalOutputRequest,
 };
-use arroba_kernel::DaemonApp;
+use chariox_kernel::DaemonApp;
 use serde_json::{json, Value};
 
 static OPENCODE_ENV_LOCK: Mutex<()> = Mutex::new(());

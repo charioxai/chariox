@@ -25,12 +25,12 @@ fn selected_edge_schema_validation_ignores_unselected_edge_schema() {
         .expect("worker b node should be added");
     let schema_dir = std::env::temp_dir();
     let schema_a = schema_dir.join(format!(
-        "arroba-selected-edge-a-{}-{}.json",
+        "chariox-selected-edge-a-{}-{}.json",
         std::process::id(),
         unix_epoch_ms()
     ));
     let schema_b = schema_dir.join(format!(
-        "arroba-selected-edge-b-{}-{}.json",
+        "chariox-selected-edge-b-{}-{}.json",
         std::process::id(),
         unix_epoch_ms()
     ));
@@ -129,7 +129,7 @@ fn routed_edge_accepts_inline_schema_payload_fields() {
         .add_workflow_node(session.id(), workflow.id(), "worker")
         .expect("worker node should be added");
     let schema = std::env::temp_dir().join(format!(
-        "arroba-inline-routed-schema-{}-{}.json",
+        "chariox-inline-routed-schema-{}-{}.json",
         std::process::id(),
         unix_epoch_ms()
     ));
@@ -221,7 +221,7 @@ fn selected_edge_schema_validation_halts_or_warns_by_policy() {
         &["halt-router", "halt-worker", "warn-router", "warn-worker"],
     );
     let schema = std::env::temp_dir().join(format!(
-        "arroba-selected-edge-invalid-{}-{}.json",
+        "chariox-selected-edge-invalid-{}-{}.json",
         std::process::id(),
         unix_epoch_ms()
     ));
@@ -384,7 +384,7 @@ fn repeated_invalid_handoffs_fail_after_bounded_classifier_corrections() {
         .add_workflow_node(session.id(), workflow.id(), "specialist")
         .expect("specialist should be added");
     let schema = std::env::temp_dir().join(format!(
-        "arroba-bounded-handoff-correction-{}-{}.json",
+        "chariox-bounded-handoff-correction-{}-{}.json",
         std::process::id(),
         unix_epoch_ms()
     ));

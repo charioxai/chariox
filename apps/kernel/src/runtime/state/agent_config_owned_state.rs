@@ -188,7 +188,7 @@ impl KernelRuntimeOwnedState {
         let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) else {
             return Ok(());
         };
-        if run.client_interface().is_arroba() {
+        if run.client_interface().is_chariox() {
             return Ok(());
         }
         Err(DaemonError::LocalTransport {

@@ -130,7 +130,7 @@ fn wait_for_provider_run_ready(
     session_id: &str,
     provider_run_id: &str,
 ) -> Result<(), DaemonError> {
-    let timeout_ms = env::var("ARROBA_HARNESS_PROVIDER_LAUNCH_TIMEOUT_MS")
+    let timeout_ms = env::var("CHARIOX_HARNESS_PROVIDER_LAUNCH_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(2_000);
@@ -165,7 +165,7 @@ fn wait_for_output(
     session_id: &str,
     attachment_id: &str,
 ) -> Result<String, DaemonError> {
-    let timeout_ms = env::var("ARROBA_HARNESS_OUTPUT_TIMEOUT_MS")
+    let timeout_ms = env::var("CHARIOX_HARNESS_OUTPUT_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(2_000);

@@ -6,7 +6,7 @@ use crate::error::DaemonError;
 impl DaemonApp {
     pub fn startup_message(&self) -> String {
         format!(
-            "arroba daemon {} ready on machine {} ({})",
+            "chariox daemon {} ready on machine {} ({})",
             self.config.daemon_id,
             self.config.host_machine_id,
             self.config.kernel_websocket_url()

@@ -29,7 +29,7 @@ fn leased_projection_emits_source_proof_output_once() {
         .expect("leased agent should be created");
     let marker = "REMOTE_DEPLOYED_WORKFLOW_SOURCE_REGRESSION_COMPLETED";
     let prompt = format!(
-        "Reply with exactly {marker} and no other text. The machine-readable drill token is arroba-source-proof:{marker}.\n"
+        "Reply with exactly {marker} and no other text. The machine-readable drill token is chariox-source-proof:{marker}.\n"
     );
     let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
         .submit_leased_prompt(&leased_agent.id, &prompt, Vec::new())
@@ -476,11 +476,11 @@ fn leased_projection_history_dedupe_is_scoped_to_backing_session() {
         )
         .expect("execution lease should be created");
     let first_worktree = std::env::temp_dir().join(format!(
-        "arroba-leased-history-dedupe-a-{}",
+        "chariox-leased-history-dedupe-a-{}",
         crate::session::unix_epoch_ms()
     ));
     let second_worktree = std::env::temp_dir().join(format!(
-        "arroba-leased-history-dedupe-b-{}",
+        "chariox-leased-history-dedupe-b-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&first_worktree).expect("first leased worktree should exist");

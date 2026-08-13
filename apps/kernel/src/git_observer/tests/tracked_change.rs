@@ -29,7 +29,7 @@ fn tracked_workspace_live_sync_change_skips_dirty_start() {
 #[test]
 fn tracked_workspace_live_sync_change_records_dirty_to_dirty_content_delta() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-dirty-delta-{}-{}",
+        "chariox-tracked-sync-dirty-delta-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -93,7 +93,7 @@ fn tracked_workspace_live_sync_change_filters_forced_exclusions() {
     let before = tracked_snapshot(false, "");
     let after = tracked_snapshot(
         true,
-        " M .env\n M .envrc\n M config/.env.local\n M .arroba/state.json\n M .codex/session.json\n M .opencode/state.json\n M .claude/settings.json\n M .cursor/index.json\n M daemon.sock\n M daemon.socket\n M .tmp-arroba/socket\n M .tmp-live-workspace-live-sync-drill/state.json\n M .tmp-live-remote-workspace-live-sync-drill/state.json\n M history/session.jsonl\n M session-history/session.jsonl\n M operational-history/events.db\n M operational-history-1.db\n M node_modules/pkg/index.js\n M target/debug/app\n M .cache/tool/output.json\n M .turbo/cache.json\n M .next/cache/app\n M dist/app.js\n M build/app.js\n M .venv/pyvenv.cfg\n M venv/pyvenv.cfg\n M __pycache__/mod.pyc\n M .pytest_cache/v/cache/nodeids\n M .mypy_cache/module.json\n M .ruff_cache/module.json\n M .gradle/caches/module.bin\n M .m2/repository/artifact.jar\n M .pnpm-store/v3/files/index\n M src/lib.rs",
+        " M .env\n M .envrc\n M config/.env.local\n M .chariox/state.json\n M .codex/session.json\n M .opencode/state.json\n M .claude/settings.json\n M .cursor/index.json\n M daemon.sock\n M daemon.socket\n M .tmp-chariox/socket\n M .tmp-live-workspace-live-sync-drill/state.json\n M .tmp-live-remote-workspace-live-sync-drill/state.json\n M history/session.jsonl\n M session-history/session.jsonl\n M operational-history/events.db\n M operational-history-1.db\n M node_modules/pkg/index.js\n M target/debug/app\n M .cache/tool/output.json\n M .turbo/cache.json\n M .next/cache/app\n M dist/app.js\n M build/app.js\n M .venv/pyvenv.cfg\n M venv/pyvenv.cfg\n M __pycache__/mod.pyc\n M .pytest_cache/v/cache/nodeids\n M .mypy_cache/module.json\n M .ruff_cache/module.json\n M .gradle/caches/module.bin\n M .m2/repository/artifact.jar\n M .pnpm-store/v3/files/index\n M src/lib.rs",
     );
 
     let change = tracked_workspace_live_sync_change_after_turn(&before, &after)
@@ -103,9 +103,9 @@ fn tracked_workspace_live_sync_change_filters_forced_exclusions() {
 }
 
 #[test]
-fn tracked_workspace_live_sync_change_filters_arrobaignore_patterns() {
+fn tracked_workspace_live_sync_change_filters_charioxignore_patterns() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-ignore-{}-{}",
+        "chariox-tracked-sync-ignore-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -124,8 +124,8 @@ fn tracked_workspace_live_sync_change_filters_arrobaignore_patterns() {
 
     assert_eq!(change.changed_paths, vec!["src/lib.rs"]);
     assert_eq!(
-        std::fs::read_to_string(root.join(".arrobaignore"))
-            .expect(".arrobaignore should initialize"),
+        std::fs::read_to_string(root.join(".charioxignore"))
+            .expect(".charioxignore should initialize"),
         "ignored/\n*.secret\n"
     );
 
@@ -133,9 +133,9 @@ fn tracked_workspace_live_sync_change_filters_arrobaignore_patterns() {
 }
 
 #[test]
-fn tracked_workspace_live_sync_change_initializes_empty_arrobaignore_without_gitignore() {
+fn tracked_workspace_live_sync_change_initializes_empty_charioxignore_without_gitignore() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-empty-ignore-{}-{}",
+        "chariox-tracked-sync-empty-ignore-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -152,8 +152,8 @@ fn tracked_workspace_live_sync_change_initializes_empty_arrobaignore_without_git
 
     assert_eq!(change.changed_paths, vec!["src/lib.rs", "token.secret"]);
     assert_eq!(
-        std::fs::read_to_string(root.join(".arrobaignore"))
-            .expect(".arrobaignore should initialize"),
+        std::fs::read_to_string(root.join(".charioxignore"))
+            .expect(".charioxignore should initialize"),
         ""
     );
 
@@ -163,12 +163,12 @@ fn tracked_workspace_live_sync_change_initializes_empty_arrobaignore_without_git
 #[test]
 fn tracked_workspace_live_sync_change_filters_renames_from_ignored_paths() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-ignore-rename-{}-{}",
+        "chariox-tracked-sync-ignore-rename-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("temp worktree should be created");
-    std::fs::write(root.join(".arrobaignore"), "ignored/\n").expect("ignore should write");
+    std::fs::write(root.join(".charioxignore"), "ignored/\n").expect("ignore should write");
     let mut before = tracked_snapshot(false, "");
     before.repo_root = root.display().to_string();
     before.worktree_path = root.display().to_string();
@@ -187,7 +187,7 @@ fn tracked_workspace_live_sync_change_filters_renames_from_ignored_paths() {
 #[test]
 fn tracked_workspace_live_sync_change_captures_file_snapshots() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-{}-{}",
+        "chariox-tracked-sync-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -260,7 +260,7 @@ fn tracked_workspace_live_sync_change_captures_file_snapshots() {
 #[test]
 fn tracked_workspace_live_sync_change_skips_already_synced_status_lines() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-tracked-sync-delta-{}-{}",
+        "chariox-tracked-sync-delta-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -270,7 +270,7 @@ fn tracked_workspace_live_sync_change_skips_already_synced_status_lines() {
     before.worktree_path = root.display().to_string();
     let mut after = tracked_snapshot(
         true,
-        " M tracked.txt\n?? .arrobaignore\n?? outputs/existing.txt",
+        " M tracked.txt\n?? .charioxignore\n?? outputs/existing.txt",
     );
     after.repo_root = root.display().to_string();
     after.worktree_path = root.display().to_string();

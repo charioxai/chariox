@@ -826,7 +826,7 @@ impl DurableStateWriter {
         let health = Arc::new(DurableWriterHealth::default());
         let worker_health = Arc::clone(&health);
         let worker = std::thread::Builder::new()
-            .name("arroba-durable-writer".to_string())
+            .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
             .spawn(move || run_durable_writer(connection, receiver, worker_health))
             .map_err(|error| DaemonError::LocalTransport {
@@ -1242,7 +1242,7 @@ mod tests {
     #[test]
     fn durable_writer_groups_concurrent_acknowledged_events() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-batch-{}-{}.db",
+            "chariox-durable-state-batch-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1286,7 +1286,7 @@ mod tests {
     #[test]
     fn durable_writer_does_not_wait_for_read_connection_mutex() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-read-isolation-{}-{}.db",
+            "chariox-durable-state-read-isolation-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1309,7 +1309,7 @@ mod tests {
     #[test]
     fn entity_checkpoints_are_incremental_atomic_and_supersede_legacy_snapshots() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-entity-checkpoint-{}-{}.db",
+            "chariox-durable-state-entity-checkpoint-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1394,7 +1394,7 @@ mod tests {
     #[test]
     fn entity_checkpoints_are_isolated_by_kernel_owner() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-owner-checkpoint-{}-{}.db",
+            "chariox-durable-state-owner-checkpoint-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1476,7 +1476,7 @@ mod tests {
     #[test]
     fn owner_restore_reuses_compatible_unscoped_checkpoint_during_migration() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-legacy-checkpoint-migration-{}-{}.db",
+            "chariox-durable-state-legacy-checkpoint-migration-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn owner_restore_uses_compatible_snapshot_when_foreign_checkpoint_is_newer() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-compatible-snapshot-{}-{}.db",
+            "chariox-durable-state-compatible-snapshot-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1570,7 +1570,7 @@ mod tests {
     #[test]
     fn newer_legacy_snapshot_supersedes_older_entity_checkpoint() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-newer-legacy-snapshot-{}-{}.db",
+            "chariox-durable-state-newer-legacy-snapshot-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1609,7 +1609,7 @@ mod tests {
     #[test]
     fn entity_checkpoint_recovers_before_during_and_after_transaction_commit() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-checkpoint-crash-{}-{}.db",
+            "chariox-durable-state-checkpoint-crash-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1681,7 +1681,7 @@ mod tests {
     #[test]
     fn durable_state_store_appends_events_and_loads_latest_snapshot() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-{}-{}.db",
+            "chariox-durable-state-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1749,7 +1749,7 @@ mod tests {
     #[test]
     fn durable_state_store_loads_event_replay_in_bounded_batches() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-batched-replay-{}-{}.db",
+            "chariox-durable-state-batched-replay-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1783,7 +1783,7 @@ mod tests {
     #[test]
     fn durable_state_store_loads_only_events_of_requested_kind() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-event-kind-{}-{}.db",
+            "chariox-durable-state-event-kind-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));
@@ -1829,7 +1829,7 @@ mod tests {
     #[test]
     fn durable_state_store_loads_subject_events_by_kind() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-durable-state-kind-{}-{}.db",
+            "chariox-durable-state-kind-{}-{}.db",
             std::process::id(),
             unix_epoch_ms()
         ));

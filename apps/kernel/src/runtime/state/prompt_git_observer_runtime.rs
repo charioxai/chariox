@@ -504,7 +504,7 @@ impl KernelRuntimeState {
         };
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
             config,
-            arroba_relay::protocol::ClientTarget {
+            chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(attachment.kernel_id().to_string()),
                 daemon_alias: None,
             },

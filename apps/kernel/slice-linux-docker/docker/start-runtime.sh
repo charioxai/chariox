@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}"
+ROOT="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}"
 LOGS="$ROOT/logs"
-KERNEL_PORT="${ARROBA_SLICE_KERNEL_PORT:-43119}"
-MCP_PORT="${ARROBA_SLICE_MCP_PORT:-43120}"
-CODEX_PORT_RANGE="${ARROBA_SLICE_CODEX_PORT_RANGE:-43260-43279}"
-OPENCODE_PORT_RANGE="${ARROBA_SLICE_OPENCODE_PORT_RANGE:-43150-43169}"
-PROVIDER_BIND_HOST="${ARROBA_SLICE_PROVIDER_BIND_HOST:-127.0.0.1}"
-RELAY_PORT="${ARROBA_SLICE_RELAY_PORT:-43130}"
-RELAY_URL="${ARROBA_SLICE_RELAY_URL:-ws://127.0.0.1:$RELAY_PORT}"
-RELAY_TOKEN="${ARROBA_SLICE_RELAY_TOKEN:-slice-local}"
-CLOUD_RELAY_CONFIG_JSON="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
-CLOUD_RELAY_CONFIG_PATH="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_PATH:-}"
-DAEMON_ALIAS="${ARROBA_SLICE_DAEMON_ALIAS:-slice:linux}"
-MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
-MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
-CAPABILITY_ISOLATION_ROOT="${ARROBA_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.arroba/managed-capabilities}"
+KERNEL_PORT="${CHARIOX_SLICE_KERNEL_PORT:-43119}"
+MCP_PORT="${CHARIOX_SLICE_MCP_PORT:-43120}"
+CODEX_PORT_RANGE="${CHARIOX_SLICE_CODEX_PORT_RANGE:-43260-43279}"
+OPENCODE_PORT_RANGE="${CHARIOX_SLICE_OPENCODE_PORT_RANGE:-43150-43169}"
+PROVIDER_BIND_HOST="${CHARIOX_SLICE_PROVIDER_BIND_HOST:-127.0.0.1}"
+RELAY_PORT="${CHARIOX_SLICE_RELAY_PORT:-43130}"
+RELAY_URL="${CHARIOX_SLICE_RELAY_URL:-ws://127.0.0.1:$RELAY_PORT}"
+RELAY_TOKEN="${CHARIOX_SLICE_RELAY_TOKEN:-slice-local}"
+CLOUD_RELAY_CONFIG_JSON="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
+CLOUD_RELAY_CONFIG_PATH="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_PATH:-}"
+DAEMON_ALIAS="${CHARIOX_SLICE_DAEMON_ALIAS:-slice:linux}"
+MACHINE_ID="${CHARIOX_SLICE_MACHINE_ID:-slice:linux}"
+MACHINE_ALIAS="${CHARIOX_SLICE_MACHINE_ALIAS:-linux}"
+CAPABILITY_ISOLATION_ROOT="${CHARIOX_SLICE_CAPABILITY_ISOLATION_ROOT:-$HOME/.chariox/managed-capabilities}"
 mkdir -p "$LOGS"
 mkdir -p "$CAPABILITY_ISOLATION_ROOT"
-mkdir -p "$HOME/.arroba" /tmp/arroba-slice-state
-mkdir -p "$HOME/.arroba/daemon"
+mkdir -p "$HOME/.chariox" /tmp/chariox-slice-state
+mkdir -p "$HOME/.chariox/daemon"
 
 wait_for_screen_session() {
   local session="$1"
@@ -37,19 +37,19 @@ wait_for_screen_session() {
   return 1
 }
 
-if [[ ! -f "$HOME/.arroba/config.toml" ]]; then
-  cat >"$HOME/.arroba/config.toml" <<'EOF'
+if [[ ! -f "$HOME/.chariox/config.toml" ]]; then
+  cat >"$HOME/.chariox/config.toml" <<'EOF'
 [state]
-path = "/tmp/arroba-slice-state/kernel.db"
+path = "/tmp/chariox-slice-state/kernel.db"
 
 [credential_vault]
 backend = "process_memory"
 EOF
 fi
 
-screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
-screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
-screen -S arroba-slice-provider-bridge -X quit >/dev/null 2>&1 || true
+screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
+screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
+screen -S chariox-slice-provider-bridge -X quit >/dev/null 2>&1 || true
 # A restored container can retain the provider bridge briefly after its screen
 # socket has already become stale. Kill only that orphan before rebinding the
 # published provider ranges so the first restart is as reliable as a retry.
@@ -60,23 +60,23 @@ if [[ -z "$CLOUD_RELAY_CONFIG_JSON" && -n "$CLOUD_RELAY_CONFIG_PATH" && -f "$CLO
 fi
 
 if [[ -n "$CLOUD_RELAY_CONFIG_JSON" ]]; then
-  printf '%s' "$CLOUD_RELAY_CONFIG_JSON" >"$HOME/.arroba/daemon/config.json"
-  chmod 600 "$HOME/.arroba/daemon/config.json"
+  printf '%s' "$CLOUD_RELAY_CONFIG_JSON" >"$HOME/.chariox/daemon/config.json"
+  chmod 600 "$HOME/.chariox/daemon/config.json"
 fi
 
-PROVIDER_BRIDGE_READY_FILE="/tmp/arroba-slice-provider-bridge-ready.json"
+PROVIDER_BRIDGE_READY_FILE="/tmp/chariox-slice-provider-bridge-ready.json"
 PROVIDER_BRIDGE_LOG="$LOGS/provider-port-bridge.log"
 rm -f "$PROVIDER_BRIDGE_READY_FILE"
 : >"$PROVIDER_BRIDGE_LOG"
-screen -L -Logfile "$PROVIDER_BRIDGE_LOG" -dmS arroba-slice-provider-bridge env \
-  ARROBA_SLICE_PROVIDER_BRIDGE_PORT_RANGES="$CODEX_PORT_RANGE,$OPENCODE_PORT_RANGE" \
-  ARROBA_SLICE_PROVIDER_BRIDGE_READY_FILE="$PROVIDER_BRIDGE_READY_FILE" \
+screen -L -Logfile "$PROVIDER_BRIDGE_LOG" -dmS chariox-slice-provider-bridge env \
+  CHARIOX_SLICE_PROVIDER_BRIDGE_PORT_RANGES="$CODEX_PORT_RANGE,$OPENCODE_PORT_RANGE" \
+  CHARIOX_SLICE_PROVIDER_BRIDGE_READY_FILE="$PROVIDER_BRIDGE_READY_FILE" \
   node "$ROOT/provider-port-bridge.mjs"
 for attempt in $(seq 1 40); do
   if [[ -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
     break
   fi
-  if ! screen -ls | grep -E '[.]arroba-slice-provider-bridge[[:space:]]' >/dev/null; then
+  if ! screen -ls | grep -E '[.]chariox-slice-provider-bridge[[:space:]]' >/dev/null; then
     printf '[slice-runtime] provider bridge exited before becoming ready\n' >&2
     cat "$PROVIDER_BRIDGE_LOG" >&2 || true
     exit 1
@@ -89,36 +89,36 @@ if [[ ! -s "$PROVIDER_BRIDGE_READY_FILE" ]]; then
   exit 1
 fi
 
-if [[ -z "${ARROBA_SLICE_RELAY_URL:-}" ]]; then
-  screen -dmS arroba-slice-relay env ARROBA_RELAY_HOST=0.0.0.0 ARROBA_RELAY_PORT="$RELAY_PORT" ARROBA_RELAY_TOKEN="$RELAY_TOKEN" "$ROOT/bin/arroba-relay"
+if [[ -z "${CHARIOX_SLICE_RELAY_URL:-}" ]]; then
+  screen -dmS chariox-slice-relay env CHARIOX_RELAY_HOST=0.0.0.0 CHARIOX_RELAY_PORT="$RELAY_PORT" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN" "$ROOT/bin/chariox-relay"
   sleep 1
-  wait_for_screen_session arroba-slice-relay relay
+  wait_for_screen_session chariox-slice-relay relay
 fi
 
 kernel_relay_env=()
 if [[ -n "$CLOUD_RELAY_CONFIG_JSON" ]]; then
   kernel_relay_env=()
 else
-  kernel_relay_env=(ARROBA_RELAY_URL="$RELAY_URL" ARROBA_RELAY_TOKEN="$RELAY_TOKEN")
+  kernel_relay_env=(CHARIOX_RELAY_URL="$RELAY_URL" CHARIOX_RELAY_TOKEN="$RELAY_TOKEN")
 fi
 
-screen -dmS arroba-slice-kernel env \
-  ARROBA_KERNEL_PORT="$KERNEL_PORT" \
-  ARROBA_MCP_PORT="$MCP_PORT" \
-  ARROBA_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
-  ARROBA_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
-  ARROBA_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
-  ARROBA_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
-  ARROBA_DAEMON_ALIAS="$DAEMON_ALIAS" \
-  ARROBA_MACHINE_ID="$MACHINE_ID" \
-  ARROBA_MACHINE_ALIAS="$MACHINE_ALIAS" \
-  ARROBA_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
-  ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
-  ARROBA_OS_NAME="Linux slice" \
+screen -dmS chariox-slice-kernel env \
+  CHARIOX_KERNEL_PORT="$KERNEL_PORT" \
+  CHARIOX_MCP_PORT="$MCP_PORT" \
+  CHARIOX_CODEX_PORT_RANGE="$CODEX_PORT_RANGE" \
+  CHARIOX_CODEX_BIND_HOST="$PROVIDER_BIND_HOST" \
+  CHARIOX_OPENCODE_PORT_RANGE="$OPENCODE_PORT_RANGE" \
+  CHARIOX_OPENCODE_BIND_HOST="$PROVIDER_BIND_HOST" \
+  CHARIOX_DAEMON_ALIAS="$DAEMON_ALIAS" \
+  CHARIOX_MACHINE_ID="$MACHINE_ID" \
+  CHARIOX_MACHINE_ALIAS="$MACHINE_ALIAS" \
+  CHARIOX_CAPABILITY_ISOLATION_ROOT="$CAPABILITY_ISOLATION_ROOT" \
+  CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT=1 \
+  CHARIOX_OS_NAME="Linux slice" \
   "${kernel_relay_env[@]}" \
-  ARROBA_ACCEPT_REMOTE_LEASES=1 \
-  "$ROOT/bin/arroba-kernel"
+  CHARIOX_ACCEPT_REMOTE_LEASES=1 \
+  "$ROOT/bin/chariox-kernel"
 
 sleep 1
-wait_for_screen_session arroba-slice-kernel kernel
-screen -ls | sed -n '/arroba-slice-/p'
+wait_for_screen_session chariox-slice-kernel kernel
+screen -ls | sed -n '/chariox-slice-/p'

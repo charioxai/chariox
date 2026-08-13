@@ -2,7 +2,7 @@ use super::*;
 
 fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "arroba-mcp-registry-{name}-{}-{}",
+        "chariox-mcp-registry-{name}-{}-{}",
         std::process::id(),
         std::thread::current().name().unwrap_or("test")
     ));
@@ -14,12 +14,12 @@ fn temp_root(name: &str) -> PathBuf {
 fn registry_roots_can_be_isolated_for_managed_slice_runtime() {
     let _guard = crate::env_lock::lock();
     let isolation_root = temp_root("managed-slice-isolation");
-    std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
 
-    let project_root = ArrobaMcpRegistry::project_root("/workspace");
-    let user_root = ArrobaMcpRegistry::user_root().expect("user root should resolve");
+    let project_root = CharioxMcpRegistry::project_root("/workspace");
+    let user_root = CharioxMcpRegistry::user_root().expect("user root should resolve");
 
-    std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+    std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     let _ = fs::remove_dir_all(&isolation_root);
 
     assert!(project_root.starts_with(isolation_root.join("project")));
@@ -30,10 +30,10 @@ fn registry_roots_can_be_isolated_for_managed_slice_runtime() {
 #[test]
 fn registry_round_trips_stdio_mcp_config() {
     let root = temp_root("round-trip");
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
     let mut config =
-        ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".to_string()]);
-    if let ArrobaMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".to_string()]);
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
         env_vars.push("BROWSER_TOKEN".to_string());
     }
 
@@ -50,11 +50,11 @@ fn registry_round_trips_stdio_mcp_config() {
 #[test]
 fn registry_updates_and_uninstalls_existing_mcp_config() {
     let root = temp_root("update-remove");
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
-    let original = ArrobaMcpServerConfig::stdio("browser", "npx", vec!["old".to_string()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
+    let original = CharioxMcpServerConfig::stdio("browser", "npx", vec!["old".to_string()]);
     registry.install(&original).unwrap();
 
-    let updated = ArrobaMcpServerConfig::stdio("browser", "node", vec!["new".to_string()]);
+    let updated = CharioxMcpServerConfig::stdio("browser", "node", vec!["new".to_string()]);
     let path = registry.update(&updated).expect("update should succeed");
     assert_eq!(path, root.join("browser.json"));
     assert_eq!(registry.get("browser").unwrap(), Some(updated));
@@ -98,7 +98,7 @@ oauth_resource = "unsupported"
     )
     .unwrap();
 
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
     let outcome =
         import_codex_mcp_servers_from_config_path(&registry, &codex_root.join("config.toml"), None)
             .unwrap();
@@ -117,7 +117,7 @@ oauth_resource = "unsupported"
     let docs = registry.get("docs").unwrap().expect("docs import");
     assert_eq!(docs.startup_timeout_sec, Some(3));
     match docs.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env,
@@ -179,7 +179,7 @@ fn imports_opencode_mcp_servers_from_jsonc_config() {
     )
     .unwrap();
 
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
     let outcome = import_opencode_mcp_servers_from_config_path(
         &registry,
         &opencode_root.join("opencode.jsonc"),
@@ -201,7 +201,7 @@ fn imports_opencode_mcp_servers_from_jsonc_config() {
     let docs = registry.get("docs").unwrap().expect("docs import");
     assert_eq!(docs.tool_timeout_sec, Some(3));
     match docs.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env,
@@ -218,7 +218,7 @@ fn imports_opencode_mcp_servers_from_jsonc_config() {
     let web = registry.get("web").unwrap().expect("web import");
     assert!(!web.enabled);
     match web.transport {
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             http_headers,
             env_http_headers,
             ..
@@ -284,7 +284,7 @@ fn imports_claude_mcp_servers_from_config() {
     )
     .unwrap();
 
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
     let outcome = import_claude_mcp_servers_from_config_path(
         &registry,
         &workspace.join(".mcp.json"),
@@ -317,7 +317,7 @@ fn imports_claude_mcp_servers_from_config() {
     assert_eq!(docs.startup_timeout_sec, Some(3));
     assert_eq!(docs.enabled_tools, Some(vec!["search".to_string()]));
     match docs.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env,
@@ -336,7 +336,7 @@ fn imports_claude_mcp_servers_from_config() {
     let web = registry.get("web").unwrap().expect("web import");
     assert_eq!(web.disabled_tools, Some(vec!["write".to_string()]));
     match web.transport {
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             http_headers,
             env_http_headers,
             ..
@@ -393,7 +393,7 @@ fn imports_matching_project_mcp_servers_from_claude_user_config() {
     )
     .unwrap();
 
-    let registry = ArrobaMcpRegistry::new(vec![root.clone()]);
+    let registry = CharioxMcpRegistry::new(vec![root.clone()]);
     let outcome =
         import_claude_mcp_servers_from_config_path(&registry, &config_path, &workspace, None)
             .unwrap();
@@ -415,6 +415,6 @@ fn imports_matching_project_mcp_servers_from_claude_user_config() {
 
 #[test]
 fn rejects_invalid_mcp_names() {
-    let config = ArrobaMcpServerConfig::stdio("../bad", "npx", Vec::new());
+    let config = CharioxMcpServerConfig::stdio("../bad", "npx", Vec::new());
     assert!(config.validate().is_err());
 }

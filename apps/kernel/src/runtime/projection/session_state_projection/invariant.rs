@@ -447,7 +447,7 @@ fn describe_source_attachment(source_attachment_id: Option<&str>) -> &str {
 
 fn prompt_origin_label(prompt_origin: crate::session::PromptOrigin) -> &'static str {
     match prompt_origin {
-        crate::session::PromptOrigin::Arroba => "arroba",
+        crate::session::PromptOrigin::Chariox => "chariox",
         crate::session::PromptOrigin::External => "external",
     }
 }

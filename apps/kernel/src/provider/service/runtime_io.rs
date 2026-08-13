@@ -44,7 +44,7 @@ impl ProviderProcessService {
                 .map(Some);
         }
         if run.adapter_key() == "claude"
-            && run.client_interface().is_arroba()
+            && run.client_interface().is_chariox()
             && !crate::provider::provider_run_uses_claude_native_bridge(run)
         {
             return initialize_claude_runtime(run)
@@ -192,7 +192,7 @@ impl ProviderProcessService {
         }
         let mode = if mode == PromptAssemblyMode::MetaagentProviderTurn {
             mode
-        } else if run.client_interface().is_arroba() {
+        } else if run.client_interface().is_chariox() {
             PromptAssemblyMode::NormalProviderTurn
         } else {
             PromptAssemblyMode::NativeTuiProviderTurn

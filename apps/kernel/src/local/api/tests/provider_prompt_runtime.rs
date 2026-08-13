@@ -15,14 +15,14 @@ fn assert_native_tui_config_error(error: DaemonError, operation: &'static str) {
 
 fn temp_git_repo(label: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "arroba-{label}-{}-{}",
+        "chariox-{label}-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     fs::create_dir_all(&root).expect("temp repo should be created");
     run_git(&root, &["init"]);
     run_git(&root, &["config", "user.email", "tests@example.invalid"]);
-    run_git(&root, &["config", "user.name", "Arroba Tests"]);
+    run_git(&root, &["config", "user.name", "Chariox Tests"]);
     fs::write(root.join("README.md"), "turn actions seed\n").expect("seed file should be written");
     run_git(&root, &["add", "README.md"]);
     run_git(&root, &["commit", "-m", "initial"]);

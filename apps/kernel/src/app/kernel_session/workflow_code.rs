@@ -650,7 +650,7 @@ impl<'a> KernelSessionService<'a> {
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         let agent = self.app.agents.get_agent(agent_id)?;
         if let Some(remote) = agent.remote_execution().cloned() {
-            let target = arroba_relay::protocol::ClientTarget {
+            let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(remote.worker_kernel_id.clone()),
                 daemon_alias: None,
             };

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -10,10 +10,10 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
         limit: Some(500),
     });
     let response = LocalDaemonResponse::DebugBundleExported {
-        bundle_dir: "/state/arroba/debug-bundles/session-1-support".to_string(),
-        manifest_path: "/state/arroba/debug-bundles/session-1-support/manifest.json".to_string(),
-        logs_path: "/state/arroba/debug-bundles/session-1-support/logs.ndjson".to_string(),
-        log_root: "/state/arroba/logs".to_string(),
+        bundle_dir: "/state/chariox/debug-bundles/session-1-support".to_string(),
+        manifest_path: "/state/chariox/debug-bundles/session-1-support/manifest.json".to_string(),
+        logs_path: "/state/chariox/debug-bundles/session-1-support/logs.ndjson".to_string(),
+        log_root: "/state/chariox/logs".to_string(),
         record_count: 12,
         limit: 500,
     };
@@ -35,13 +35,13 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "554ddc4f229fd9eb7249eace067d171a837deebf13029664a75777948bc91171"
+        "84d81368a5adf1e65c8753f837da5eda87a9fff0f3675fdd7d9790078fe13fe8"
     );
 }
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -89,9 +89,9 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
                 next_action: "Assign a resolver agent.".to_string(),
             }],
             ignore: crate::local::WorkspaceLiveSyncIgnoreStatus {
-                ignore_file: Some(".arrobaignore".to_string()),
+                ignore_file: Some(".charioxignore".to_string()),
                 rules: vec!["ignored/**".to_string(), "*.secret".to_string()],
-                force_excludes: vec![".git/**".to_string(), ".arroba/**".to_string()],
+                force_excludes: vec![".git/**".to_string(), ".chariox/**".to_string()],
             },
         },
     };
@@ -164,13 +164,13 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "acf0e648cad3f7de65ace837168643d804c0eab7f38539c79b67c4b83b5358fd"
+        "9532c94456dbfaec1a8ea4ec4c1678d9d84f5187c0fcf845b0a10921c7dd3342"
     );
 }
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -196,7 +196,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
         "prompt",
     );
     user_prompt.entry.attachments = vec![crate::history::SessionHistoryPromptAttachment {
-        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png".to_string(),
+        url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png".to_string(),
         mime: "image/png".to_string(),
         filename: Some("Screenshot.png".to_string()),
         preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
@@ -356,13 +356,13 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "eaa44cc8b07de3124e01f63d15f8f7fa54aa0999df4aa813398f58def574960d"
+        "94157ad720fb4c9c3f38baa8a2e19546f112a8605152dd6a5d5f9b71be193afd"
     );
 }
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -409,7 +409,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -432,7 +432,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
         capabilities: crate::local::ExternalProviderSessionCapabilities {
             can_read_history: true,
         },
-        attached_to_arroba: true,
+        attached_to_chariox: true,
         attached_session_ids: vec!["session-1".to_string()],
         attached_agent_ids: vec!["agent-1".to_string()],
     };
@@ -457,7 +457,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
         Some(&serde_json::json!(true))
     );
     assert_eq!(
-        snapshot.pointer("/1/ExternalProviderSessionsListed/page/sessions/0/attached_to_arroba"),
+        snapshot.pointer("/1/ExternalProviderSessionsListed/page/sessions/0/attached_to_chariox"),
         None
     );
     assert_eq!(
@@ -475,7 +475,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -564,7 +564,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -694,7 +694,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -773,19 +773,19 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d249fdbf3b22f76b7606a17bd40c94031246932a9037ef0a7b7e4e0d11a31da7"
+        "212b2760be69363ed329c2fd5885457517478e5dd60d629da883430083ca8eca"
     );
 }
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),
-        config: crate::mcp::ArrobaMcpServerConfig {
+        config: crate::mcp::CharioxMcpServerConfig {
             name: "github".to_string(),
-            transport: crate::mcp::ArrobaMcpTransportConfig::Stdio {
+            transport: crate::mcp::CharioxMcpTransportConfig::Stdio {
                 command: "npx".to_string(),
                 args: vec![
                     "-y".to_string(),
@@ -794,7 +794,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
                 env: Default::default(),
                 credential_env: std::collections::BTreeMap::from([(
                     "GITHUB_TOKEN".to_string(),
-                    crate::mcp::ArrobaMcpCredentialBinding {
+                    crate::mcp::CharioxMcpCredentialBinding {
                         credential: "github-token".to_string(),
                     },
                 )]),
@@ -817,7 +817,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
         },
     });
     let connector = LocalDaemonRequest::UpsertConnector(crate::local::UpsertConnectorRequest {
-        connector: crate::connector::ArrobaConnectorDefinition {
+        connector: crate::connector::CharioxConnectorDefinition {
             kind: "connector".to_string(),
             name: "status-api".to_string(),
             description: "Read status".to_string(),

@@ -155,7 +155,7 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
         let client_id = request
             .client_id
             .clone()
-            .unwrap_or_else(|| format!("arroba-cli-{}", std::process::id()));
+            .unwrap_or_else(|| format!("chariox-cli-{}", std::process::id()));
         let (_, token) = issue_cloud_relay_client_token(
             runtime_state,
             config_projection,
@@ -277,7 +277,7 @@ async fn issue_cloud_relay_client_token(
 fn resolve_relay_kernel_presence(
     remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
     request: &ResolveKernelClientConnectionRequest,
-) -> Result<arroba_relay::protocol::RelayKernelPresence, DaemonError> {
+) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
     let kernel_ref = request.kernel_ref.trim();
     if kernel_ref.is_empty() || kernel_ref == "local" {
         return Err(DaemonError::LocalTransport {
@@ -324,7 +324,7 @@ fn resolve_relay_kernel_presence(
     Ok(matches.remove(0))
 }
 
-fn relay_kernel_target_alias(kernel: &arroba_relay::protocol::RelayKernelPresence) -> String {
+fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresence) -> String {
     kernel
         .relay_alias
         .clone()

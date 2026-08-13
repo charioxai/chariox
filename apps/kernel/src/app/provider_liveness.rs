@@ -164,7 +164,7 @@ impl ProviderRunLivenessSessionEffects {
     ) -> Result<ProviderRunExitSessionOutcome, DaemonError> {
         let active_prompt_status = app
             .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
-            .and_then(|prompt| prompt.is_arroba_owned().then(|| prompt.status()));
+            .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()));
         let had_active_prompt = active_prompt_status.is_some();
         let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(
             active_prompt_status,
@@ -236,7 +236,7 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 outcome.ended_run.provider(),
                 if session_outcome.had_active_prompt {
                     if session_outcome.started_next_prompt {
-                        "The active prompt was closed and Arroba advanced the queued backlog onto the next available provider run."
+                        "The active prompt was closed and Chariox advanced the queued backlog onto the next available provider run."
                     } else {
                         "The active prompt was closed without starting the queued backlog."
                     }

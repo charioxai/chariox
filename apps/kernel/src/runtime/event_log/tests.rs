@@ -105,7 +105,7 @@ async fn retention_does_not_clone_snapshot_without_persistent_compaction() {
 #[tokio::test]
 async fn persistent_event_ids_resume_above_previous_high_water() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-event-log-test-{}-{}",
+        "chariox-event-log-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -138,7 +138,7 @@ async fn persistent_event_ids_resume_above_previous_high_water() {
 #[tokio::test]
 async fn persistent_event_store_replays_after_restart() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-event-store-test-{}-{}",
+        "chariox-event-store-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -184,7 +184,7 @@ async fn persistent_event_store_replays_after_restart() {
 #[tokio::test]
 async fn persistent_event_store_skips_malformed_lines() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-event-store-malformed-test-{}-{}",
+        "chariox-event-store-malformed-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -222,7 +222,7 @@ async fn persistent_event_store_skips_malformed_lines() {
 #[tokio::test]
 async fn persistent_event_store_compacts_by_total_bytes() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-event-store-bytes-test-{}-{}",
+        "chariox-event-store-bytes-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -285,7 +285,7 @@ async fn persistent_event_store_compacts_by_total_bytes() {
 #[tokio::test]
 async fn persistent_event_store_compacts_by_event_age_on_load() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-event-store-age-test-{}-{}",
+        "chariox-event-store-age-test-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

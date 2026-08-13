@@ -4,7 +4,7 @@ use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, OpenCodeProviderCatalog, ProviderClientInterface};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use super::api::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,

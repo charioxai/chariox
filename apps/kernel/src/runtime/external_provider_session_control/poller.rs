@@ -320,7 +320,7 @@ pub(super) async fn refresh_attached_external_provider_histories(
     runtime_state: Option<&KernelRuntimeState>,
     provider_filter: Option<&str>,
 ) {
-    // Background discovery must never turn every idle Arroba-owned agent into
+    // Background discovery must never turn every idle Chariox-owned agent into
     // provider transcript I/O. Active turns and explicitly imported sessions
     // opt into responsive observation; an attached UI requests its own
     // one-time session catch-up through the session-filtered path below.

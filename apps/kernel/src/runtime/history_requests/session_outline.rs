@@ -161,7 +161,7 @@ fn load_scoped_agent_outline(
     prompts.retain(|prompt| {
         !external_observed_tool_call_prompt(prompt) && !external_recovery_envelope_prompt(prompt)
     });
-    suppress_arroba_owned_external_prompt_echoes(
+    suppress_chariox_owned_external_prompt_echoes(
         &mut prompts,
         operational_history,
         session_id,
@@ -208,8 +208,8 @@ fn load_scoped_agent_outline(
             }
         }
         let lifecycle_events = scoped_history_events(events, agent_import);
-        let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Arroba {
-            suppress_external_observed_events_from_arroba_turn(lifecycle_events.clone())
+        let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
+            suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
         } else {
             lifecycle_events.clone()
         };
@@ -245,7 +245,7 @@ fn outline_prompt_candidate_limit(
     minimum.saturating_mul(8).clamp(32, 128)
 }
 
-fn suppress_external_observed_events_from_arroba_turn(
+fn suppress_external_observed_events_from_chariox_turn(
     events: Vec<HistoryEvent>,
 ) -> Vec<HistoryEvent> {
     events
@@ -260,51 +260,51 @@ fn event_is_external_provider_observed(event: &HistoryEvent) -> bool {
         .is_some_and(|entry| entry.is_external_provider_observed())
 }
 
-fn suppress_arroba_owned_external_prompt_echoes(
+fn suppress_chariox_owned_external_prompt_echoes(
     prompts: &mut Vec<HistoryEvent>,
     operational_history: &OperationalHistoryStore,
     session_id: &str,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let arroba_owned_prompts =
-        operational_history.load_arroba_owned_prompt_texts(session_id, agent_id)?;
-    let arroba_owned_prompt_texts = arroba_owned_prompts
+    let chariox_owned_prompts =
+        operational_history.load_chariox_owned_prompt_texts(session_id, agent_id)?;
+    let chariox_owned_prompt_texts = chariox_owned_prompts
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
         .collect::<BTreeSet<_>>();
-    let arroba_owned_workflow_delivery_tokens = arroba_owned_prompts
+    let chariox_owned_workflow_delivery_tokens = chariox_owned_prompts
         .iter()
         .filter_map(|text| workflow_delivery_token(text))
         .collect::<BTreeSet<_>>();
-    let arroba_owned_workflow_handoff_payloads = arroba_owned_prompts
+    let chariox_owned_workflow_handoff_payloads = chariox_owned_prompts
         .iter()
         .filter_map(|text| workflow_handoff_payload(text))
         .collect::<Vec<_>>();
-    let arroba_owned_workflow_endpoint_prompts = arroba_owned_prompts
+    let chariox_owned_workflow_endpoint_prompts = chariox_owned_prompts
         .iter()
         .filter_map(|text| workflow_endpoint_prompt(text))
         .collect::<BTreeSet<_>>();
-    if arroba_owned_prompt_texts.is_empty() {
+    if chariox_owned_prompt_texts.is_empty() {
         return Ok(());
     }
     prompts.retain(|prompt| {
-        !external_prompt_matches_arroba_owned_text(
+        !external_prompt_matches_chariox_owned_text(
             prompt,
-            &arroba_owned_prompt_texts,
-            &arroba_owned_workflow_delivery_tokens,
-            &arroba_owned_workflow_handoff_payloads,
-            &arroba_owned_workflow_endpoint_prompts,
+            &chariox_owned_prompt_texts,
+            &chariox_owned_workflow_delivery_tokens,
+            &chariox_owned_workflow_handoff_payloads,
+            &chariox_owned_workflow_endpoint_prompts,
         )
     });
     Ok(())
 }
 
-fn external_prompt_matches_arroba_owned_text(
+fn external_prompt_matches_chariox_owned_text(
     prompt: &HistoryEvent,
-    arroba_owned_prompt_texts: &BTreeSet<String>,
-    arroba_owned_workflow_delivery_tokens: &BTreeSet<String>,
-    arroba_owned_workflow_handoff_payloads: &[serde_json::Value],
-    arroba_owned_workflow_endpoint_prompts: &BTreeSet<String>,
+    chariox_owned_prompt_texts: &BTreeSet<String>,
+    chariox_owned_workflow_delivery_tokens: &BTreeSet<String>,
+    chariox_owned_workflow_handoff_payloads: &[serde_json::Value],
+    chariox_owned_workflow_endpoint_prompts: &BTreeSet<String>,
 ) -> bool {
     if prompt.kind != HistoryEventKind::UserPrompt {
         return false;
@@ -318,13 +318,13 @@ fn external_prompt_matches_arroba_owned_text(
     let Some(text) = normalized_observed_prompt_text(&entry.text) else {
         return false;
     };
-    arroba_owned_prompt_texts.contains(&text)
+    chariox_owned_prompt_texts.contains(&text)
         || workflow_delivery_token(&entry.text)
-            .is_some_and(|token| arroba_owned_workflow_delivery_tokens.contains(&token))
+            .is_some_and(|token| chariox_owned_workflow_delivery_tokens.contains(&token))
         || workflow_handoff_payload(&entry.text)
-            .is_some_and(|payload| arroba_owned_workflow_handoff_payloads.contains(&payload))
+            .is_some_and(|payload| chariox_owned_workflow_handoff_payloads.contains(&payload))
         || workflow_endpoint_prompt(&entry.text)
-            .is_some_and(|endpoint| arroba_owned_workflow_endpoint_prompts.contains(&endpoint))
+            .is_some_and(|endpoint| chariox_owned_workflow_endpoint_prompts.contains(&endpoint))
 }
 
 fn workflow_endpoint_prompt(text: &str) -> Option<String> {
@@ -370,7 +370,7 @@ fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
 }
 
 fn external_recovery_envelope_prompt(prompt: &HistoryEvent) -> bool {
-    const RECOVERY_OPERATION_PREFIX: &str = "[Arroba recovery operation arroba-recovery:";
+    const RECOVERY_OPERATION_PREFIX: &str = "[Chariox recovery operation chariox-recovery:";
     const CODEX_TURN_ABORTED_PREFIX: &str = "<turn_aborted>";
 
     prompt.kind == HistoryEventKind::UserPrompt
@@ -606,7 +606,7 @@ fn project_workflow_user_prompt(
     user_prompt: &mut crate::session_history_page::SessionHistoryPageEntry,
     prompt_origin: PromptOrigin,
 ) {
-    if prompt_origin != PromptOrigin::Arroba {
+    if prompt_origin != PromptOrigin::Chariox {
         return;
     }
     let Some(endpoint_prompt) = workflow_endpoint_prompt(&user_prompt.entry.text) else {
@@ -720,7 +720,7 @@ fn outline_turn_completed_at_ms(
             .unwrap_or(prompt.timestamp_ms);
         return Some(settled_at_ms.max(latest_content_at_ms));
     }
-    if prompt_origin == PromptOrigin::Arroba && !has_newer_prompt {
+    if prompt_origin == PromptOrigin::Chariox && !has_newer_prompt {
         return None;
     }
     if prompt_origin == PromptOrigin::External
@@ -816,7 +816,7 @@ fn outline_turn_prompt_origin(prompt: &HistoryEvent) -> PromptOrigin {
             return PromptOrigin::External;
         }
     }
-    PromptOrigin::Arroba
+    PromptOrigin::Chariox
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -7,7 +7,7 @@ fn local_request_api_applies_workflow_code_extensions_to_generated_agents() {
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-extension-{}",
+        "chariox-workflow-code-extension-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
@@ -109,7 +109,7 @@ fn local_request_api_applies_workflow_code_script_extensions_to_generated_agents
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-script-extension-{}",
+        "chariox-workflow-code-script-extension-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
@@ -144,9 +144,9 @@ def test_run():
         .dispatch(LocalDaemonRequest::RegisterEnvironment(
             RegisterEnvironmentRequest {
                 workspace_id: Some(workspace_root.display().to_string()),
-                config: crate::script::ArrobaEnvironmentConfig {
+                config: crate::script::CharioxEnvironmentConfig {
                     name: "workflow-code-python".to_string(),
-                    runtime: crate::script::ArrobaEnvironmentRuntime::Python {
+                    runtime: crate::script::CharioxEnvironmentRuntime::Python {
                         python: python_path,
                     },
                 },
@@ -243,7 +243,7 @@ fn local_request_api_applies_workflow_code_queues_and_watchdogs() {
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-queues-{}",
+        "chariox-workflow-code-queues-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");

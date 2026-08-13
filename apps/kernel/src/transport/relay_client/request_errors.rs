@@ -1,6 +1,6 @@
 //! Relay request classification and error projection.
 
-use arroba_relay::protocol::RelayError;
+use chariox_relay::protocol::RelayError;
 
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;

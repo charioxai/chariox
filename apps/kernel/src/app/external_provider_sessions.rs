@@ -434,7 +434,7 @@ impl ExternalProviderSessionIndexStore {
             .sessions
             .values()
             .filter(|session| {
-                if !session.is_attachable_to_arroba() {
+                if !session.is_attachable_to_chariox() {
                     return false;
                 }
                 request
@@ -480,11 +480,11 @@ fn apply_attachment_marker(
     session: &mut ExternalProviderSessionRecord,
     attachment: &ExternalProviderSessionAttachment,
 ) {
-    session.mark_attached_to_arroba(attachment.session_ids(), attachment.agent_ids());
+    session.mark_attached_to_chariox(attachment.session_ids(), attachment.agent_ids());
 }
 
 fn clear_attachment_marker(session: &mut ExternalProviderSessionRecord) {
-    session.clear_arroba_attachment();
+    session.clear_chariox_attachment();
 }
 
 fn parse_external_provider_session_cursor(cursor: &str) -> Option<usize> {

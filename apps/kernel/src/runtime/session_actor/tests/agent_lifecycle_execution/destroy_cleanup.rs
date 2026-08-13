@@ -131,13 +131,13 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
         vec!["codex:destroyed-agent-thread"],
         "destroying an attached agent should return its provider thread to the unattached list"
     );
-    assert!(page.sessions[0].is_attachable_to_arroba());
+    assert!(page.sessions[0].is_attachable_to_chariox());
     assert_eq!(
         _locked_app
             .attached_provider_transcript_cursor_store()
             .get(&cursor_key),
         crate::provider::ExternalProviderObservedCursor::default(),
-        "destroying an attached agent should prune its Arroba-owned provider transcript cursor"
+        "destroying an attached agent should prune its Chariox-owned provider transcript cursor"
     );
 }
 

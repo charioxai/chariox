@@ -98,7 +98,7 @@ fn outline_turn_restores_provider_fragment_order_when_concurrent_history_writes_
 }
 
 #[test]
-fn outline_latest_arroba_turn_does_not_infer_completion_from_output() {
+fn outline_latest_chariox_turn_does_not_infer_completion_from_output() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
@@ -126,9 +126,9 @@ fn outline_latest_arroba_turn_does_not_infer_completion_from_output() {
     );
 
     let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), output], false)
-        .expect("active Arroba turn should be outlined");
+        .expect("active Chariox turn should be outlined");
 
-    assert_eq!(turn.prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(turn.prompt_origin, PromptOrigin::Chariox);
     assert_eq!(turn.lifecycle, SessionHistoryOutlineTurnLifecycle::Open);
     assert_eq!(turn.completed_at_ms, None);
     assert_eq!(
@@ -138,7 +138,7 @@ fn outline_latest_arroba_turn_does_not_infer_completion_from_output() {
 }
 
 #[test]
-fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
+fn outline_latest_chariox_turn_uses_hidden_prompt_settlement_timestamp() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
@@ -179,7 +179,7 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
     );
 
     let turn = outline_turn_from_events(&prompt, vec![prompt.clone(), output, settlement], false)
-        .expect("settled Arroba turn should be outlined");
+        .expect("settled Chariox turn should be outlined");
 
     assert_eq!(
         turn.lifecycle,
@@ -194,7 +194,7 @@ fn outline_latest_arroba_turn_uses_hidden_prompt_settlement_timestamp() {
 }
 
 #[test]
-fn outline_cancelled_arroba_turn_preserves_cancelled_lifecycle() {
+fn outline_cancelled_chariox_turn_preserves_cancelled_lifecycle() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
@@ -342,9 +342,9 @@ fn outline_completed_turn_ignores_late_notice_without_a_settlement_marker() {
 }
 
 #[test]
-fn agent_outline_uses_suppressed_observer_settlements_for_arroba_owned_turns() {
+fn agent_outline_uses_suppressed_observer_settlements_for_chariox_owned_turns() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-observer-settlement-outline-{}-{}.db",
+        "chariox-observer-settlement-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -507,7 +507,7 @@ fn agent_outline_uses_suppressed_observer_settlements_for_arroba_owned_turns() {
 #[test]
 fn agent_outline_joins_prompt_settlement_that_persisted_before_prompt_history() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-out-of-order-settlement-outline-{}-{}.db",
+        "chariox-out-of-order-settlement-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -692,7 +692,7 @@ fn outline_turn_uses_transcript_admission_for_provider_status() {
     )
     .expect("turn should be outlined");
 
-    assert_eq!(turn.prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(turn.prompt_origin, PromptOrigin::Chariox);
     assert_eq!(turn.external_provider.as_deref(), Some("codex"));
     assert_eq!(
         turn.external_provider_session_id.as_deref(),
@@ -1081,7 +1081,7 @@ fn outline_external_turn_without_settlement_completes_when_newer_prompt_exists()
 fn agent_outline_completes_bounded_external_turns_without_client_repair() {
     let observed_now_ms = crate::session::unix_epoch_ms();
     let path = std::env::temp_dir().join(format!(
-        "arroba-external-bounded-outline-{}-{}.db",
+        "chariox-external-bounded-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1166,9 +1166,9 @@ fn agent_outline_completes_bounded_external_turns_without_client_repair() {
 }
 
 #[test]
-fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
+fn agent_outline_suppresses_chariox_owned_external_prompt_echoes() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-owned-external-echo-outline-{}-{}.db",
+        "chariox-owned-external-echo-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1180,7 +1180,7 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
     let context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
-        turn_id: Some("arroba-turn".to_string()),
+        turn_id: Some("chariox-turn".to_string()),
         prompt_id: Some("prompt-1".to_string()),
         provider_run_id: Some("run-1".to_string()),
         ..HistoryEventTurnContext::default()
@@ -1192,17 +1192,17 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
                 "session-1",
                 "attachment-1",
                 "agent-1",
-                "  same   prompt\nfrom Arroba ",
+                "  same   prompt\nfrom Chariox ",
             ),
             context.clone(),
         ))
-        .expect("Arroba prompt should append");
+        .expect("Chariox prompt should append");
     let external_prompt = SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("run-1"),
         "agent-1",
         SessionHistoryEntryKind::UserPrompt,
-        "same prompt from Arroba",
+        "same prompt from Chariox",
         "codex",
         "thread-1",
         Some("user-echo".to_string()),
@@ -1213,7 +1213,7 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
         Some("run-1"),
         "agent-1",
         SessionHistoryEntryKind::UserPrompt,
-        "same prompt from Arroba <image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>",
+        "same prompt from Chariox <image name=[Image #1] path=\"/tmp/screenshot.png\"> </image>",
         "codex",
         "thread-1",
         Some("user-echo-2".to_string()),
@@ -1225,7 +1225,7 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
             Some("run-1"),
             "agent-1",
             SessionHistoryEntryKind::UserPrompt,
-            "same prompt from ArrobaAttachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8=",
+            "same prompt from CharioxAttachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8=",
             "codex",
             "thread-1",
             Some("user-echo-3".to_string()),
@@ -1291,10 +1291,10 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
         .expect("outline should load");
 
     assert_eq!(outline.turns.len(), 1);
-    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Chariox);
     assert_eq!(
         outline.turns[0].user_prompt.entry.text,
-        "  same   prompt\nfrom Arroba "
+        "  same   prompt\nfrom Chariox "
     );
     assert!(outline.turns[0].external_provider.is_none());
     assert!(outline.turns[0].entries.is_empty());
@@ -1308,7 +1308,7 @@ fn agent_outline_suppresses_arroba_owned_external_prompt_echoes() {
 #[test]
 fn agent_outline_suppresses_reformatted_workflow_prompt_echoes_by_delivery_token() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workflow-external-echo-outline-{}-{}.db",
+        "chariox-workflow-external-echo-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1342,7 +1342,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:workflow-node-run-2"
             ),
             context.clone(),
         ))
-        .expect("Arroba workflow prompt should append");
+        .expect("Chariox workflow prompt should append");
     let observed_prompt = SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("run-1"),
@@ -1381,7 +1381,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:workflow-node-run-2"
 
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "prompt-77");
-    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Chariox);
     assert_eq!(outline.turns[0].user_prompt.entry.text, owned_prompt);
     assert_eq!(
         outline.turns[0]
@@ -1400,7 +1400,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:workflow-node-run-2"
 #[test]
 fn agent_outline_suppresses_endpoint_only_workflow_prompt_echoes() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workflow-endpoint-echo-outline-{}-{}.db",
+        "chariox-workflow-endpoint-echo-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1435,7 +1435,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:node-run-1"}.
             ),
             context.clone(),
         ))
-        .expect("Arroba workflow prompt should append");
+        .expect("Chariox workflow prompt should append");
     let observed_prompt = SessionHistoryEntry::external_provider_observed(
         "session-1",
         Some("run-1"),
@@ -1474,7 +1474,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:node-run-1"}.
 
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "prompt-77");
-    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Chariox);
     assert_eq!(
         outline.turns[0].user_prompt.entry.text,
         "Inspect the lifecycle and report one concise result."
@@ -1500,7 +1500,7 @@ Call ack_workflow_turn with {"delivery_token":"workflow-ack:node-run-1"}.
 #[test]
 fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workflow-handoff-external-echo-outline-{}-{}.db",
+        "chariox-workflow-handoff-external-echo-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1538,7 +1538,7 @@ fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload()
             ),
             owned_context,
         ))
-        .expect("Arroba workflow prompt should append");
+        .expect("Chariox workflow prompt should append");
 
     let observed_prompt = SessionHistoryEntry::external_provider_observed(
         "session-1",
@@ -1574,7 +1574,7 @@ fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload()
 
     assert_eq!(outline.turns.len(), 1);
     assert_eq!(outline.turns[0].turn_id, "prompt-77");
-    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Arroba);
+    assert_eq!(outline.turns[0].prompt_origin, PromptOrigin::Chariox);
     assert_eq!(outline.turns[0].user_prompt.entry.text, owned_prompt);
 
     drop(store);
@@ -1586,7 +1586,7 @@ fn agent_outline_suppresses_legacy_workflow_echo_by_structured_handoff_payload()
 #[test]
 fn scoped_agent_outline_excludes_external_turns_outside_import() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-scoped-external-outline-{}-{}.db",
+        "chariox-scoped-external-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -1922,7 +1922,7 @@ fn outline_external_turn_uses_hidden_state_settlement_without_rendering_it() {
 #[test]
 fn blob_content_hides_external_observer_state_signals() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-hidden-state-blob-content-{}-{}.db",
+        "chariox-hidden-state-blob-content-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

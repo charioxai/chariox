@@ -28,7 +28,7 @@ fn test_record() -> SliceRecord {
 fn test_options() -> LocalDockerSliceOptions {
     LocalDockerSliceOptions {
         root: std::env::temp_dir(),
-        docker_image: "arroba-slice-linux:test".to_string(),
+        docker_image: "chariox-slice-linux:test".to_string(),
         build_image: SliceImageBuildPolicy::Never,
         extension_dockerfile: None,
         allow_unconfined_seccomp: false,
@@ -45,7 +45,7 @@ fn test_root(label: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("time should be available")
         .as_nanos();
-    std::env::temp_dir().join(format!("arroba-{label}-{unique}"))
+    std::env::temp_dir().join(format!("chariox-{label}-{unique}"))
 }
 
 fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
@@ -55,7 +55,7 @@ fn saved_state(manifest_path: String) -> SliceSavedStateRecord {
         source_slice_id: "slice-1".to_string(),
         backend: SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
-        image_ref: "arroba-slice-state:gmail-ready".to_string(),
+        image_ref: "chariox-slice-state:gmail-ready".to_string(),
         home_archive_path: "/tmp/gmail-ready-home.tar.zst".to_string(),
         manifest_path,
         created_at_ms: 1000,
@@ -115,7 +115,7 @@ fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
     .expect("slice screen script should be readable");
 
     assert!(script.contains(
-        "ARROBA_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321"
+        "CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321"
     ));
     assert!(script.contains("--unsafely-treat-insecure-origin-as-secure="));
 }
@@ -132,8 +132,8 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     )
     .expect("slice Dockerfile should be readable");
 
-    assert!(script.contains("io.arroba.relay-peer-protocol-version"));
-    assert!(script.contains("io.arroba.runtime-source-revision"));
+    assert!(script.contains("io.chariox.relay-peer-protocol-version"));
+    assert!(script.contains("io.chariox.runtime-source-revision"));
     assert!(script.contains("refresh_saved_state_runtime"));
     assert!(script.contains("preserving saved state image"));
     assert!(script.contains(
@@ -142,8 +142,8 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
-    assert!(dockerfile.contains("io.arroba.relay-peer-protocol-version"));
-    assert!(dockerfile.contains("io.arroba.runtime-source-revision"));
+    assert!(dockerfile.contains("io.chariox.relay-peer-protocol-version"));
+    assert!(dockerfile.contains("io.chariox.runtime-source-revision"));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let provider_bind_host = command
         .get_envs()
         .find_map(|(key, value)| {
-            (key == "ARROBA_SLICE_PROVIDER_BIND_HOST")
+            (key == "CHARIOX_SLICE_PROVIDER_BIND_HOST")
                 .then(|| value.and_then(|value| value.to_str()))
                 .flatten()
         })
@@ -225,8 +225,8 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
         .get_envs()
         .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
         .collect();
-    assert_eq!(envs.get("ARROBA_SLICE_DISPLAY_MODE"), Some(&"headless"));
-    assert_eq!(envs.get("ARROBA_SLICE_START_DESKTOP"), Some(&"1"));
+    assert_eq!(envs.get("CHARIOX_SLICE_DISPLAY_MODE"), Some(&"headless"));
+    assert_eq!(envs.get("CHARIOX_SLICE_START_DESKTOP"), Some(&"1"));
 }
 
 #[test]
@@ -248,10 +248,10 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
         .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
         .collect();
     assert_eq!(
-        envs.get("ARROBA_SLICE_RELAY_URL"),
+        envs.get("CHARIOX_SLICE_RELAY_URL"),
         Some(&"wss://relay.example.test")
     );
-    assert_eq!(envs.get("ARROBA_SLICE_RELAY_TOKEN"), Some(&"shared-token"));
+    assert_eq!(envs.get("CHARIOX_SLICE_RELAY_TOKEN"), Some(&"shared-token"));
 }
 
 #[test]
@@ -272,9 +272,9 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         .get_envs()
         .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
         .collect();
-    assert!(!envs.contains_key("ARROBA_SLICE_RELAY_URL"));
+    assert!(!envs.contains_key("CHARIOX_SLICE_RELAY_URL"));
     assert_eq!(
-        envs.get("ARROBA_SLICE_RELAY_TOKEN"),
+        envs.get("CHARIOX_SLICE_RELAY_TOKEN"),
         Some(&"slice-local-token")
     );
 }

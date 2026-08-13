@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use arroba_relay::protocol::RelayKernelPresence;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use chariox_relay::protocol::RelayKernelPresence;
 use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
@@ -1180,7 +1180,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
-    use arroba_relay::protocol::RelayKernelPresence;
+    use chariox_relay::protocol::RelayKernelPresence;
 
     use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
     use crate::local::{RelayStatus, RemoteMachineRecord, RemoteMachineTrustStatus, TerminalType};

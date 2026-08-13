@@ -246,7 +246,7 @@ mod tests {
 
     fn temp_history_store(name: &str) -> (OperationalHistoryStore, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
-            "arroba-recall-{name}-{}-{}.db",
+            "chariox-recall-{name}-{}-{}.db",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

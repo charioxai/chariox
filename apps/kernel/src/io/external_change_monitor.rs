@@ -254,7 +254,7 @@ fn external_change_notice_for_path(path: PathBuf) -> ArtifactExternalChangeNotic
     ArtifactExternalChangeNotice {
         path,
         message:
-            "artifact changed outside Arroba workspace live sync after the last managed observation"
+            "artifact changed outside Chariox workspace live sync after the last managed observation"
                 .to_string(),
     }
 }
@@ -319,7 +319,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("arroba-external-monitor-{name}-{nanos}"));
+        let root = std::env::temp_dir().join(format!("chariox-external-monitor-{name}-{nanos}"));
         fs::create_dir_all(&root).expect("create test root");
         root
     }
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(notice.path, std::path::PathBuf::from("src/lib.rs"));
         assert!(notice
             .message
-            .contains("outside Arroba workspace live sync"));
+            .contains("outside Chariox workspace live sync"));
     }
 
     #[test]

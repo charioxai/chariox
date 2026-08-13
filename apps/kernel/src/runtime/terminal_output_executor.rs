@@ -220,7 +220,7 @@ fn provider_run_ids_for_pump_from_projections(
         }
     }
     for run in provider_run_projection.list_for_session(session.id()) {
-        if run.client_interface().is_arroba() {
+        if run.client_interface().is_chariox() {
             continue;
         }
         if matches!(

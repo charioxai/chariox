@@ -88,7 +88,7 @@ impl UserCredentialVaultConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultBackend {
-    ArrobaEncrypted,
+    CharioxEncrypted,
     ProcessMemory,
 }
 
@@ -149,7 +149,7 @@ impl CredentialVaultAgentManagementPolicy {
 impl CredentialVaultBackend {
     pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
         match value.trim() {
-            "arroba_encrypted" => Ok(Self::ArrobaEncrypted),
+            "chariox_encrypted" => Ok(Self::CharioxEncrypted),
             "process_memory" => Ok(Self::ProcessMemory),
             _ => Err(DaemonError::InvalidConfig {
                 field,
@@ -175,15 +175,15 @@ impl CredentialVaultUnlockPolicy {
 }
 
 fn default_credential_vault_backend() -> CredentialVaultBackend {
-    CredentialVaultBackend::ArrobaEncrypted
+    CredentialVaultBackend::CharioxEncrypted
 }
 
 fn default_credential_vault_service() -> String {
-    "arroba".to_string()
+    "chariox".to_string()
 }
 
 fn default_credential_vault_path() -> String {
-    "~/.arroba/vault/vault.json".to_string()
+    "~/.chariox/vault/vault.json".to_string()
 }
 
 fn default_credential_vault_default_ttl_minutes() -> u64 {
@@ -229,11 +229,11 @@ pub enum UserCredentialInjectionConfig {
 }
 
 fn default_hmac_timestamp_header() -> String {
-    "x-arroba-timestamp".to_string()
+    "x-chariox-timestamp".to_string()
 }
 
 fn default_hmac_signature_header() -> String {
-    "x-arroba-signature".to_string()
+    "x-chariox-signature".to_string()
 }
 
 pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), DaemonError> {

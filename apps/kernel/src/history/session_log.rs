@@ -423,7 +423,7 @@ impl SessionHistoryEntry {
             provider_run_id: None,
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(source_attachment_id.to_string()),
-            prompt_origin: Some(PromptOrigin::Arroba),
+            prompt_origin: Some(PromptOrigin::Chariox),
             kind: SessionHistoryEntryKind::UserPrompt,
             merge_key: None,
             source: None,

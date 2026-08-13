@@ -19,7 +19,7 @@ use crate::session::{
 };
 use crate::terminal::TerminalOutputKind;
 use crate::{DaemonApp, DaemonConfig, DaemonError};
-use arroba_relay::protocol::{
+use chariox_relay::protocol::{
     RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
 };
 use sha2::{Digest, Sha256};

@@ -26,7 +26,7 @@ use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
-const CLAUDE_ENV_OVERRIDE: &str = "ARROBA_CLAUDE_BIN";
+const CLAUDE_ENV_OVERRIDE: &str = "CHARIOX_CLAUDE_BIN";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
@@ -121,7 +121,7 @@ fn plan_claude_launch_unlocked(
             "executable": executable.display().to_string(),
         }),
     );
-    if !request.client_interface.is_arroba() && request.provider != CLAUDE_HEADLESS_PROVIDER_ID {
+    if !request.client_interface.is_chariox() && request.provider != CLAUDE_HEADLESS_PROVIDER_ID {
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "preparing Claude native TUI files",
@@ -131,19 +131,19 @@ fn plan_claude_launch_unlocked(
         native.materialize_mcp_config(request)?;
         let mut pty_env = claude_process_env();
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
             native.permission_response_dir.display().to_string(),
         );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
@@ -177,23 +177,23 @@ fn plan_claude_launch_unlocked(
         native.materialize_mcp_config(request)?;
         let mut pty_env = claude_process_env();
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
             native.context_file.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
             native.context_response_dir.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+            "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
             native.permission_response_dir.display().to_string(),
         );
         pty_env.insert(
-            "ARROBA_CLAUDE_SETTINGS_FILE".to_string(),
+            "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
             native.settings_file.display().to_string(),
         );
         crate::logging::info_with_fields(
@@ -228,23 +228,23 @@ fn plan_claude_launch_unlocked(
     let mut native = prepare_claude_native_tui_files(request)?;
     let mut pty_env = claude_process_env();
     pty_env.insert(
-        "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+        "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),
     );
     pty_env.insert(
-        "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+        "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
         native.context_file.display().to_string(),
     );
     pty_env.insert(
-        "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+        "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
         native.context_response_dir.display().to_string(),
     );
     pty_env.insert(
-        "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+        "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
         native.permission_response_dir.display().to_string(),
     );
     pty_env.insert(
-        "ARROBA_CLAUDE_SETTINGS_FILE".to_string(),
+        "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
         native.settings_file.display().to_string(),
     );
     let mut args = claude_launch_args(request)?;
@@ -430,7 +430,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{
         AgentEndpointMode, AgentExecutionMode, AgentPermissionLevel, LaunchProviderRequest,
         ProviderClientInterface, RuntimeMcpBinding,
@@ -460,14 +460,16 @@ mod tests {
     #[test]
     fn resolves_override_path_for_tests() {
         let _guard = env_guard();
-        let path =
-            std::env::temp_dir().join(format!("arroba-claude-resolve-test-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "chariox-claude-resolve-test-{}",
+            std::process::id()
+        ));
         write_executable_fixture(&path, "#!/bin/sh\nexit 0\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let resolved = resolve_claude_executable().expect("override path should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
     }
@@ -475,9 +477,9 @@ mod tests {
     #[test]
     fn resolves_native_binary_when_path_shim_is_non_executable_stub() {
         let _guard = env_guard();
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let root = std::env::temp_dir().join(format!(
-            "arroba-claude-stub-resolve-test-{}",
+            "chariox-claude-stub-resolve-test-{}",
             std::process::id()
         ));
         let bin_dir = root.join("bin");
@@ -519,7 +521,7 @@ mod tests {
     fn catalog_reads_additional_claude_model_options_cache() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-config-models-{}.json",
+            "chariox-claude-config-models-{}.json",
             std::process::id()
         ));
         fs::write(
@@ -537,11 +539,11 @@ mod tests {
             .to_string(),
         )
         .expect("fixture should exist");
-        std::env::set_var("ARROBA_CLAUDE_CONFIG", &path);
+        std::env::set_var("CHARIOX_CLAUDE_CONFIG", &path);
 
         let catalog = claude_provider_catalog();
 
-        std::env::remove_var("ARROBA_CLAUDE_CONFIG");
+        std::env::remove_var("CHARIOX_CLAUDE_CONFIG");
         let _ = fs::remove_file(&path);
 
         assert_eq!(
@@ -580,12 +582,12 @@ mod tests {
     fn plans_structured_stdio_launch_with_permission_mapping() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-launch",
+            "chariox-claude-resolve-test-{}-launch",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
-        std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-arroba");
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
+        std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-chariox");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -599,7 +601,7 @@ mod tests {
         .with_permission_level(AgentPermissionLevel::Yolo);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("ANTHROPIC_API_KEY");
         let _ = fs::remove_file(&path);
 
@@ -637,11 +639,11 @@ mod tests {
     fn plans_claude_print_mode_with_structured_stdio() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-print-mode",
+            "chariox-claude-resolve-test-{}-print-mode",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -652,7 +654,7 @@ mod tests {
         );
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
@@ -678,14 +680,14 @@ mod tests {
     fn plans_claude_headless_mode_without_print_stream_json() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-headless-mode",
+            "chariox-claude-resolve-test-{}-headless-mode",
             std::process::id()
         ));
         let path = root.join("claude");
         let config_dir = root.join("config");
         fs::create_dir_all(&config_dir).expect("config dir should exist");
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
         let previous_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::set_var("CLAUDE_CONFIG_DIR", &config_dir);
 
@@ -698,7 +700,7 @@ mod tests {
         );
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         if let Some(previous_config_dir) = previous_config_dir {
             std::env::set_var("CLAUDE_CONFIG_DIR", previous_config_dir);
         } else {
@@ -714,7 +716,7 @@ mod tests {
             .pty_args
             .windows(2)
             .any(|pair| pair == ["--model", "claude-sonnet-4-6"]));
-        assert!(launch.pty_env.contains_key("ARROBA_CLAUDE_SETTINGS_FILE"));
+        assert!(launch.pty_env.contains_key("CHARIOX_CLAUDE_SETTINGS_FILE"));
         assert_eq!(
             launch
                 .pty_env
@@ -743,7 +745,7 @@ mod tests {
     fn preserves_existing_claude_headless_state() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
-            "arroba-claude-existing-headless-state-{}",
+            "chariox-claude-existing-headless-state-{}",
             std::process::id()
         ));
         let config_dir = root.join("config");
@@ -771,11 +773,11 @@ mod tests {
     fn maps_yolo_build_to_bypass_permissions() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-yolo",
+            "chariox-claude-resolve-test-{}-yolo",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -786,7 +788,7 @@ mod tests {
         );
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         assert!(launch
@@ -803,11 +805,11 @@ mod tests {
     fn injects_runtime_mcp_config_into_launch_args() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-mcp",
+            "chariox-claude-resolve-test-{}-mcp",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -822,7 +824,7 @@ mod tests {
         ));
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         let config_arg = launch
@@ -849,11 +851,11 @@ mod tests {
     fn metaagent_launch_disables_claude_builtin_tools_but_keeps_runtime_mcp() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-meta-tools",
+            "chariox-claude-resolve-test-{}-meta-tools",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let request =
             LaunchProviderRequest::new("session-1", "claude", "claude-p", "default", "haiku")
@@ -862,12 +864,12 @@ mod tests {
                     "token-123",
                 ))
                 .with_provider_config_override(
-                    "arroba.metaagent_tools_only",
+                    "chariox.metaagent_tools_only",
                     serde_json::json!(true),
                 );
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         assert!(launch
@@ -881,11 +883,11 @@ mod tests {
     fn injects_mcp_config_into_native_tui_launch_args() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-claude-resolve-test-{}-native-mcp",
+            "chariox-claude-resolve-test-{}-native-mcp",
             std::process::id()
         ));
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -899,14 +901,14 @@ mod tests {
             "http://127.0.0.1:43120/mcp",
             "token-123",
         ))
-        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+        .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
             "browser",
             "npx",
             vec!["@playwright/mcp@latest".to_string()],
         )]);
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -946,7 +948,7 @@ mod tests {
         )
         .expect("config should be JSON");
         assert_eq!(
-            config.pointer("/mcpServers/arroba/url"),
+            config.pointer("/mcpServers/chariox/url"),
             Some(&serde_json::json!("http://127.0.0.1:43120/mcp"))
         );
         assert!(config.pointer("/mcpServers/browser").is_some());
@@ -957,7 +959,7 @@ mod tests {
         assert!(launch
             .pty_args
             .windows(2)
-            .any(|pair| pair == ["--allowedTools", "mcp__arroba__*"]));
+            .any(|pair| pair == ["--allowedTools", "mcp__chariox__*"]));
         std::fs::remove_dir_all(config_root).expect("test config root should clean up");
     }
 }

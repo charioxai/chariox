@@ -45,7 +45,7 @@ impl ConnectorAdapterProcessPool {
 }
 
 impl WarmConnectorAdapterProcess {
-    async fn spawn(adapter: &ArrobaConnectorAdapterDefinition) -> Result<Self, DaemonError> {
+    async fn spawn(adapter: &CharioxConnectorAdapterDefinition) -> Result<Self, DaemonError> {
         let command = adapter.resolved_command()?;
         let mut child = tokio::process::Command::new(&command)
             .args(&adapter.args)

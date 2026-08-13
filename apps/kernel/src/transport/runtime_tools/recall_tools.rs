@@ -59,7 +59,7 @@ pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: SEARCH_RECALL_TOOL.to_string(),
-            description: "Search Arroba recall events for prior conversation, workflow, Git, and runtime records. Defaults to the current session; set scope to all only when broader recall is needed.".to_string(),
+            description: "Search Chariox recall events for prior conversation, workflow, Git, and runtime records. Defaults to the current session; set scope to all only when broader recall is needed.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
@@ -88,7 +88,7 @@ pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: QUERY_RECALL_TOOL.to_string(),
-            description: "Load structured Arroba recall events by metadata and sequence filters, typically to inspect context around an event returned by arroba.search_recall.".to_string(),
+            description: "Load structured Chariox recall events by metadata and sequence filters, typically to inspect context around an event returned by chariox.search_recall.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -116,13 +116,13 @@ pub fn recall_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 pub fn canonical_recall_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         SEARCH_RECALL_TOOL
-        | "arroba_search_recall"
-        | "mcp__arroba__search_recall"
-        | "mcp__arroba__arroba_search_recall" => Some(SEARCH_RECALL_TOOL),
+        | "chariox_search_recall"
+        | "mcp__chariox__search_recall"
+        | "mcp__chariox__chariox_search_recall" => Some(SEARCH_RECALL_TOOL),
         QUERY_RECALL_TOOL
-        | "arroba_query_recall"
-        | "mcp__arroba__query_recall"
-        | "mcp__arroba__arroba_query_recall" => Some(QUERY_RECALL_TOOL),
+        | "chariox_query_recall"
+        | "mcp__chariox__query_recall"
+        | "mcp__chariox__chariox_query_recall" => Some(QUERY_RECALL_TOOL),
         _ => None,
     }
 }

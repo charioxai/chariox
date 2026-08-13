@@ -33,8 +33,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .get_session(&leased_agent.backing_session_id)?;
-        let registry = crate::skill::ArrobaSkillRegistry::new(
-            crate::skill::ArrobaSkillRegistry::user_root()
+        let registry = crate::skill::CharioxSkillRegistry::new(
+            crate::skill::CharioxSkillRegistry::user_root()
                 .map(|root| vec![root])
                 .unwrap_or_default(),
         );
@@ -85,7 +85,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn ensure_remote_skill_packages(
         &mut self,
         context: RemoteSkillSyncContext,
-        packages: Vec<crate::skill::ArrobaSkillPackage>,
+        packages: Vec<crate::skill::CharioxSkillPackage>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         let leased_agent = self
             .app
@@ -118,11 +118,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .get_session(&leased_agent.backing_session_id)?;
         let base_dir = crate::skill::remote_skill_materialization_base(session.worktree_id())
             .join(&context.home_kernel_id);
-        let install_into_isolated_registry = std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+        let install_into_isolated_registry = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
             .is_some_and(|value| !value.is_empty());
         let registry = install_into_isolated_registry.then(|| {
-            crate::skill::ArrobaSkillRegistry::new(
-                crate::skill::ArrobaSkillRegistry::user_root()
+            crate::skill::CharioxSkillRegistry::new(
+                crate::skill::CharioxSkillRegistry::user_root()
                     .map(|root| vec![root])
                     .unwrap_or_default(),
             )
@@ -186,7 +186,7 @@ mod tests {
     fn required_remote_skills_validate_hash_and_replace_backing_grants() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
-            "arroba-required-remote-skill-test-{}",
+            "chariox-required-remote-skill-test-{}",
             std::process::id()
         ));
         let worktree = root.join("worktree");
@@ -199,9 +199,9 @@ mod tests {
             "---\nname: review\ndescription: Review code.\n---\nFollow the review contract.\n",
         )
         .expect("skill source should write");
-        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
-        let registry = crate::skill::ArrobaSkillRegistry::new(vec![
-            crate::skill::ArrobaSkillRegistry::user_root()
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        let registry = crate::skill::CharioxSkillRegistry::new(vec![
+            crate::skill::CharioxSkillRegistry::user_root()
                 .expect("isolated skill root should resolve"),
         ]);
         registry
@@ -261,7 +261,7 @@ mod tests {
             .skill_grants()
             .is_empty());
 
-        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -269,13 +269,13 @@ mod tests {
     fn required_remote_skills_reject_missing_worker_package() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
-            "arroba-missing-required-remote-skill-test-{}",
+            "chariox-missing-required-remote-skill-test-{}",
             std::process::id()
         ));
         let worktree = root.join("worktree");
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         std::env::set_var(
-            "ARROBA_CAPABILITY_ISOLATION_ROOT",
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
             root.join("capabilities"),
         );
         let mut config = DaemonConfig::for_tests();
@@ -291,7 +291,7 @@ mod tests {
             }],
         );
 
-        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(root);
         assert!(result
             .expect_err("missing worker skill should fail")
@@ -303,7 +303,7 @@ mod tests {
     fn leased_prompt_dispatch_includes_worker_local_required_skill_context() {
         let _guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
-            "arroba-required-remote-skill-prompt-test-{}",
+            "chariox-required-remote-skill-prompt-test-{}",
             std::process::id()
         ));
         let worktree = root.join("worktree");
@@ -316,9 +316,9 @@ mod tests {
             "---\nname: review\ndescription: Review code.\n---\nReply with exactly WORKER_LOCAL_SKILL_CONTEXT.\n",
         )
         .expect("skill source should write");
-        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
-        let registry = crate::skill::ArrobaSkillRegistry::new(vec![
-            crate::skill::ArrobaSkillRegistry::user_root()
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        let registry = crate::skill::CharioxSkillRegistry::new(vec![
+            crate::skill::CharioxSkillRegistry::user_root()
                 .expect("isolated skill root should resolve"),
         ]);
         registry
@@ -353,7 +353,7 @@ mod tests {
             .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
             .unwrap_or_default();
 
-        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(root);
         result.expect("leased prompt should submit");
         assert!(

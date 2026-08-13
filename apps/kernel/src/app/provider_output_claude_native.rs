@@ -91,7 +91,9 @@ pub(crate) struct ProviderOutputClaudeNativeBridge<'a> {
 pub(crate) fn claude_native_recent_terminal_failure(
     provider_run: &RuntimeProviderRun,
 ) -> Option<String> {
-    let context_file = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT")?;
+    let context_file = provider_run
+        .pty_env()
+        .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
     let recent_failure_file = claude_permission_recent_file(context_file)?;
     let recent_failure = fs::read_to_string(recent_failure_file).ok()?;
     crate::provider::classify_provider_terminal_failure_text(
@@ -192,10 +194,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(outcome);
         };
-        let Some(events_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_EVENTS") else {
+        let Some(events_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS") else {
             return Ok(outcome);
         };
-        let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
+        let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(outcome);
         };
 
@@ -300,8 +302,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     // A busy Claude run records steering as a native queue
                     // enqueue instead, but some versions also emit this hook;
                     // only accept that steering hook when its prompt matches
-                    // the exact text Arroba injected. Consume mismatched/stale
-                    // hook events while an Arroba prompt is active, and also
+                    // the exact text Chariox injected. Consume mismatched/stale
+                    // hook events while a Chariox prompt is active, and also
                     // consume an exact late acknowledgement after cancellation
                     // so it cannot resurrect the cancelled managed turn as an
                     // external prompt.
@@ -403,7 +405,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Ok(());
         };
-        let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
+        let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
         let _ = self.process_pending_claude_stop(
@@ -666,7 +668,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(());
         };
-        let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
+        let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
         let visible = claude_rendered_permission_visible(rendered);
@@ -854,11 +856,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         &request_id,
                         allowed,
                         if allowed {
-                            "Approved through Arroba."
+                            "Approved through Chariox."
                         } else if resolution.status == "timed_out" {
-                            "Timed out waiting for Arroba approval."
+                            "Timed out waiting for Chariox approval."
                         } else {
-                            "Denied through Arroba."
+                            "Denied through Chariox."
                         },
                     );
                 }
@@ -876,7 +878,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         &context_file,
                         &request_id,
                         false,
-                        "Arroba permission bridge failed.",
+                        "Chariox permission bridge failed.",
                     );
                 }
             },
@@ -898,7 +900,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
-        let Some(context_file) = provider_run.pty_env().get("ARROBA_CLAUDE_NATIVE_CONTEXT") else {
+        let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(ClaudeNativeDispatchAttempt::Completed);
         };
         let prompt = ClaudeNativePromptInjection {

@@ -280,7 +280,7 @@
           {
             "id": "slice-auth-alias",
             "label": "alias",
-            "description": "Set an Arroba display alias when the provider account label is unclear",
+            "description": "Set a Chariox display alias when the provider account label is unclear",
             "value": "/slice auth alias ",
             "surfaces": ["session", "waiting_room"],
             "searchAliases": [
@@ -418,8 +418,8 @@
             "description": "Open Workspace Live Sync ignore rules",
             "value": "/workspace sync ignore",
             "searchAliases": [
-              "arrobaignore",
-              ".arrobaignore",
+              "charioxignore",
+              ".charioxignore",
               "sync ignore",
               "ignored paths"
             ]

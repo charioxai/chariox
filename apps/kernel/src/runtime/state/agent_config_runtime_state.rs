@@ -95,12 +95,12 @@ impl KernelRuntimeState {
         )?;
         let session = self.owned.session_store.get_session(agent.session_id())?;
         let mut reserved = static_runtime_tool_names();
-        let script_registry = crate::script::ArrobaScriptRegistry::new(
+        let script_registry = crate::script::CharioxScriptRegistry::new(
             crate::runtime::capability_registry::script_registry_roots(Some(
                 session.workspace_id(),
             ))?,
         );
-        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        let connector_registry = crate::connector::CharioxConnectorRegistry::user()?;
         for grant in agent.extension_grants() {
             if grant.kind == proposed.kind && grant.name == proposed.name {
                 continue;

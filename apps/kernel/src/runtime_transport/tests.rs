@@ -330,7 +330,7 @@ impl RuntimeTransportTempDir {
         use std::os::unix::fs::PermissionsExt;
 
         let path = std::env::temp_dir().join(format!(
-            "arroba-runtime-transport-{label}-{}-{}",
+            "chariox-runtime-transport-{label}-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));

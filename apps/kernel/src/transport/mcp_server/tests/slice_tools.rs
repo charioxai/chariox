@@ -82,27 +82,27 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
         .expect("tools should be an array");
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_screenshot"));
+        .any(|tool| tool["name"] == "chariox.slice_screenshot"));
     assert!(tools.iter().any(|tool| tool["name"] == "slice_screenshot"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_find_text"));
+        .any(|tool| tool["name"] == "chariox.slice_find_text"));
     assert!(tools.iter().any(|tool| tool["name"] == "slice_mouse"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_browser_status"));
+        .any(|tool| tool["name"] == "chariox.slice_browser_status"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_status"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_browser_wait_for_text"));
+        .any(|tool| tool["name"] == "chariox.slice_browser_wait_for_text"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_wait_for_idle"));
     assert!(tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_browser_dialog"));
+        .any(|tool| tool["name"] == "chariox.slice_browser_dialog"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_dialog"));
@@ -115,7 +115,7 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
 
     let _guard = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
-        "arroba-slice-mcp-test-{}",
+        "chariox-slice-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before unix epoch")
@@ -133,7 +133,7 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
         .permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&tool, permissions).expect("fake tool should be executable");
-    std::env::set_var("ARROBA_SLICE_SCREEN_TOOL", &tool);
+    std::env::set_var("CHARIOX_SLICE_SCREEN_TOOL", &tool);
 
     let mut config = DaemonConfig::for_tests();
     config.host_machine_id = "slice:slice-test".to_string();
@@ -205,7 +205,7 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
     )
     .await
     .expect("slice status call should succeed");
-    std::env::remove_var("ARROBA_SLICE_SCREEN_TOOL");
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
     let _ = std::fs::remove_dir_all(root);
     assert_eq!(response.status(), StatusCode::OK);
     let body = response

@@ -30,7 +30,7 @@ pub(crate) enum ProviderReloadOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderLaunchFingerprint {
     runtime_mcp_server_url: Option<String>,
-    mcp_servers: Vec<crate::mcp::ArrobaMcpServerConfig>,
+    mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
     provider_env_remove: Vec<String>,
     provider_config_overrides: std::collections::BTreeMap<String, serde_json::Value>,
     write_access_mode: crate::provider::ProviderWriteAccessMode,

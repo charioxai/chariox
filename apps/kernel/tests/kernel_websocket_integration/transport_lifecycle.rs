@@ -1,15 +1,15 @@
 use crate::support::kernel_websocket::*;
-use arroba_kernel::attachment::ClientCapabilityLevel;
-use arroba_kernel::local::{
+use chariox_kernel::attachment::ClientCapabilityLevel;
+use chariox_kernel::local::{
     AttachToSessionRequest, GetDaemonHealthRequest, GetSessionStateRequest, LocalDaemonRequest,
     RunShellCapabilityRequest,
 };
-use arroba_kernel::runtime_transport::{
+use chariox_kernel::runtime_transport::{
     run_kernel_websocket_server_on_listener, CONNECTION_INBOUND_REQUEST_LIMIT,
     KERNEL_RUNTIME_THREAD_STACK_SIZE,
 };
-use arroba_kernel::session::CreateSessionRequest;
-use arroba_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::session::CreateSessionRequest;
+use chariox_kernel::{DaemonApp, DaemonConfig};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::sync::oneshot;

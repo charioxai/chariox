@@ -688,7 +688,7 @@ pub(super) fn meta_extension_request(
                     "usage: {family} install-json <mcp-json>"
                 )));
             }
-            let config = serde_json::from_str::<crate::mcp::ArrobaMcpServerConfig>(json)
+            let config = serde_json::from_str::<crate::mcp::CharioxMcpServerConfig>(json)
                 .map_err(|error| meta_command_error(format!("invalid MCP JSON config: {error}")))?;
             if args.first().map(String::as_str) == Some("install-json") {
                 Ok(LocalDaemonRequest::InstallMcpServer(

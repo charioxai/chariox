@@ -114,7 +114,7 @@ impl<'a> KernelAgentService<'a> {
                 provider_run.id()
             ),
             None => format!(
-                "Arroba requested cancellation of active prompt `{}` on provider run `{}`.",
+                "Chariox requested cancellation of active prompt `{}` on provider run `{}`.",
                 active_prompt.id(),
                 provider_run.id()
             ),

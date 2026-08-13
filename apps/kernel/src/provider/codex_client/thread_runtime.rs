@@ -80,7 +80,7 @@ impl CodexClient {
             "sandbox": policy.sandbox,
             "personality": "pragmatic",
             "persistExtendedHistory": true,
-            "serviceName": "arroba",
+            "serviceName": "chariox",
         });
         let config_overrides = self.thread_config_overrides(&policy)?;
         if !config_overrides.is_empty() {

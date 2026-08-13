@@ -16,7 +16,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_COMMANDS_TOOL.to_string(),
-            description: "Search Arroba commands available to this agent in Meta mode by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or Meta mode policy.".to_string(),
+            description: "Search Chariox commands available to this agent in Meta mode by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or Meta mode policy.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -32,7 +32,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_COMMANDS_TOOL.to_string(),
-            description: "List Arroba commands available to this agent in Meta mode, with optional filtering by tag, scope, mutation behavior, or policy.".to_string(),
+            description: "List Chariox commands available to this agent in Meta mode, with optional filtering by tag, scope, mutation behavior, or policy.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -47,7 +47,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_COMMAND_DOCS_TOOL.to_string(),
-            description: "Return exact usage, examples, tags, scope, mutation behavior, and policy for one Arroba command.".to_string(),
+            description: "Return exact usage, examples, tags, scope, mutation behavior, and policy for one Chariox command.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["command"],
@@ -59,7 +59,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_GUIDES_TOOL.to_string(),
-            description: "Search concise Arroba operational guides for workflows, agent apps, events, supervision, and common failures.".to_string(),
+            description: "Search concise Chariox operational guides for workflows, agent apps, events, supervision, and common failures.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -73,7 +73,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_LIST_GUIDES_TOOL.to_string(),
-            description: "List concise Arroba operational guides, optionally filtered by tag or command reference.".to_string(),
+            description: "List concise Chariox operational guides, optionally filtered by tag or command reference.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -86,7 +86,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_READ_GUIDE_TOOL.to_string(),
-            description: "Read one Arroba operational guide by id or exact title, including its Markdown body.".to_string(),
+            description: "Read one Chariox operational guide by id or exact title, including its Markdown body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["guide"],
@@ -98,7 +98,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_RUN_COMMAND_TOOL.to_string(),
-            description: "Run one allowed Arroba command inside this session as this agent in Meta mode. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
+            description: "Run one allowed Chariox command inside this session as this agent in Meta mode. Session creation, cross-session targeting, and self-approval are denied.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["command"],
@@ -471,7 +471,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "name": {"type": "string"},
                     "source": {"type": "string"},
                     "language": {"type": "string", "enum": ["javascript", "java_script", "typescript", "type_script"]},
-                    "prompt": {"type": "string", "description": "Invocation prompt. When omitted or blank, the workflow-code script-level prompt is used; if the script has no prompt, Arroba uses a generic run instruction."},
+                    "prompt": {"type": "string", "description": "Invocation prompt. When omitted or blank, the workflow-code script-level prompt is used; if the script has no prompt, Chariox uses a generic run instruction."},
                     "endpoint": {"type": "string"},
                     "queue": {"type": "string"},
                     "node_path": {"type": "string"},
@@ -535,7 +535,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL.to_string(),
-            description: "Export a saved workflow-code artifact as a portable workflow-code package. This is the explicit package-named form; arroba.meta.workflow_code.export is kept as a compatibility alias.".to_string(),
+            description: "Export a saved workflow-code artifact as a portable workflow-code package. This is the explicit package-named form; chariox.meta.workflow_code.export is kept as a compatibility alias.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["name"],
@@ -547,7 +547,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL.to_string(),
-            description: "Import a portable workflow-code package after integrity checking and validation. This is the explicit package-named form; arroba.meta.workflow_code.import is kept as a compatibility alias.".to_string(),
+            description: "Import a portable workflow-code package after integrity checking and validation. This is the explicit package-named form; chariox.meta.workflow_code.import is kept as a compatibility alias.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["package"],

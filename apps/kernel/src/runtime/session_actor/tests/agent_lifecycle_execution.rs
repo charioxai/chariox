@@ -7,14 +7,14 @@ mod spawn_validation_and_placement;
 
 fn temp_git_repo(label: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "arroba-{label}-{}-{}",
+        "chariox-{label}-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&root).expect("temp repo should be created");
     run_git(&root, &["init"]);
     run_git(&root, &["config", "user.email", "tests@example.invalid"]);
-    run_git(&root, &["config", "user.name", "Arroba Tests"]);
+    run_git(&root, &["config", "user.name", "Chariox Tests"]);
     std::fs::write(root.join("README.md"), "worktree placement\n")
         .expect("fixture file should be written");
     run_git(&root, &["add", "README.md"]);
@@ -41,7 +41,7 @@ fn external_provider_session_record(
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }

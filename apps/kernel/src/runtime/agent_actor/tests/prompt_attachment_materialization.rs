@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn materializes_inline_prompt_attachments_to_local_files() {
     let attachment = PromptAttachment::new(
-        "arroba-cloud://artifact/art-1",
+        "chariox-cloud://artifact/art-1",
         "text/plain",
         Some("../note.txt".to_string()),
     )

@@ -1,6 +1,6 @@
 use std::{path::PathBuf, time::Duration};
 
-use arroba_relay::protocol::{ClientTarget, RelayKernelPresence};
+use chariox_relay::protocol::{ClientTarget, RelayKernelPresence};
 
 use crate::agent::{AgentInstance, CreateAgentRequest, RemoteAgentBinding};
 use crate::app::DaemonApp;
@@ -32,7 +32,7 @@ impl DaemonApp {
         let mut tools = Vec::new();
 
         let mcp_roots = app_mcp_registry_roots(session.workspace_id());
-        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
+        let mcp_registry = crate::mcp::CharioxMcpRegistry::new(mcp_roots);
         for name in agent.mcp_grants() {
             let Some(config) = mcp_registry.get(&name)? else {
                 return Err(DaemonError::LocalTransport {
@@ -56,7 +56,7 @@ impl DaemonApp {
         }
 
         let script_roots = app_script_registry_roots(session.workspace_id());
-        let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
+        let script_registry = crate::script::CharioxScriptRegistry::new(script_roots);
         for grant in agent.script_grants() {
             let Some(script) = script_registry.get(&grant.name)? else {
                 return Err(DaemonError::LocalTransport {
@@ -86,7 +86,7 @@ impl DaemonApp {
             });
         }
 
-        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        let connector_registry = crate::connector::CharioxConnectorRegistry::user()?;
         for grant in agent.connector_grants() {
             let Some(connector) = connector_registry.get(&grant.name)? else {
                 return Err(DaemonError::LocalTransport {
@@ -134,7 +134,7 @@ impl DaemonApp {
         }
         let session = self.sessions.get_session(agent.session_id())?;
         let registry =
-            crate::mcp::ArrobaMcpRegistry::new(app_mcp_registry_roots(session.workspace_id()));
+            crate::mcp::CharioxMcpRegistry::new(app_mcp_registry_roots(session.workspace_id()));
         mcp_grants
             .iter()
             .map(|grant| {
@@ -161,7 +161,7 @@ impl DaemonApp {
             return Ok(Vec::new());
         }
         let session = self.sessions.get_session(agent.session_id())?;
-        let registry = crate::skill::ArrobaSkillRegistry::new(app_skill_registry_roots(
+        let registry = crate::skill::CharioxSkillRegistry::new(app_skill_registry_roots(
             session.workspace_id(),
         ));
         skill_grants
@@ -197,7 +197,7 @@ impl DaemonApp {
         let native_provider_run = self
             .provider_run_projection
             .get_for_agent(agent.session_id(), agent.id())
-            .is_some_and(|run| !run.client_interface().is_arroba());
+            .is_some_and(|run| !run.client_interface().is_chariox());
         if native_provider_run {
             return Ok((
                 self.required_remote_mcps_for_native_provider_launch(agent)?,
@@ -631,10 +631,10 @@ impl DaemonApp {
             return Ok(());
         }
         let _ = self.sessions.get_session(agent.session_id())?;
-        let roots = crate::skill::ArrobaSkillRegistry::user_root()
+        let roots = crate::skill::CharioxSkillRegistry::user_root()
             .map(|root| vec![root])
             .unwrap_or_default();
-        let registry = crate::skill::ArrobaSkillRegistry::new(roots);
+        let registry = crate::skill::CharioxSkillRegistry::new(roots);
         let packages = skill_grants
             .iter()
             .map(|grant| {
@@ -820,9 +820,9 @@ fn app_mcp_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     let _ = workspace_id;
     #[cfg(test)]
     if !workspace_id.trim().is_empty() {
-        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(workspace_id));
+        roots.push(crate::mcp::CharioxMcpRegistry::project_root(workspace_id));
     }
-    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+    if let Some(root) = crate::mcp::CharioxMcpRegistry::user_root() {
         roots.push(root);
     }
     roots
@@ -834,11 +834,11 @@ fn app_script_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     let _ = workspace_id;
     #[cfg(test)]
     if !workspace_id.trim().is_empty() {
-        roots.push(crate::script::ArrobaScriptRegistry::project_root(
+        roots.push(crate::script::CharioxScriptRegistry::project_root(
             workspace_id,
         ));
     }
-    if let Some(root) = crate::script::ArrobaScriptRegistry::user_root() {
+    if let Some(root) = crate::script::CharioxScriptRegistry::user_root() {
         roots.push(root);
     }
     roots
@@ -850,11 +850,11 @@ fn app_skill_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
     let _ = workspace_id;
     #[cfg(test)]
     if !workspace_id.trim().is_empty() {
-        roots.push(crate::skill::ArrobaSkillRegistry::project_root(
+        roots.push(crate::skill::CharioxSkillRegistry::project_root(
             workspace_id,
         ));
     }
-    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
+    if let Some(root) = crate::skill::CharioxSkillRegistry::user_root() {
         roots.push(root);
     }
     roots
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn native_remote_prompt_routes_granted_mcp_as_worker_requirement_only() {
         let workspace = std::env::temp_dir().join(format!(
-            "arroba-native-remote-prompt-capabilities-{}-{}",
+            "chariox-native-remote-prompt-capabilities-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -905,7 +905,7 @@ mod tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         );
-        let mcp = crate::mcp::ArrobaMcpServerConfig::stdio(
+        let mcp = crate::mcp::CharioxMcpServerConfig::stdio(
             &mcp_name,
             std::env::current_exe()
                 .expect("current test executable should resolve")
@@ -913,7 +913,7 @@ mod tests {
                 .to_string(),
             Vec::new(),
         );
-        crate::mcp::ArrobaMcpRegistry::new(vec![crate::mcp::ArrobaMcpRegistry::project_root(
+        crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
             &workspace,
         )])
         .install(&mcp)
@@ -946,7 +946,7 @@ mod tests {
 
         let (required_mcps, required_skills, manifest) = app
             .remote_prompt_capabilities_for_agent(&agent)
-            .expect("Arroba prompt capabilities should resolve");
+            .expect("Chariox prompt capabilities should resolve");
         assert!(required_mcps.is_empty());
         assert!(required_skills.is_none());
         assert_eq!(

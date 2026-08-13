@@ -635,7 +635,7 @@ impl OperationalHistoryStore {
         let writer_health = Arc::new(OperationalHistoryWriterHealth::default());
         let worker_health = Arc::clone(&writer_health);
         let writer_worker = thread::Builder::new()
-            .name("arroba-history-writer".to_string())
+            .name("chariox-history-writer".to_string())
             .stack_size(512 * 1024)
             .spawn(move || {
                 run_operational_history_writer(writer_connection, writer_receiver, worker_health)

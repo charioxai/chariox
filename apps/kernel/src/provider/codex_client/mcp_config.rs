@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
 pub(super) fn append_runtime_mcp_overrides(
     overrides: &mut BTreeMap<String, Value>,
@@ -12,33 +12,33 @@ pub(super) fn append_runtime_mcp_overrides(
     auth_token: &str,
 ) {
     overrides.insert(
-        "mcp_servers.arroba.transport".to_string(),
+        "mcp_servers.chariox.transport".to_string(),
         json!("streamable_http"),
     );
     overrides.insert(
-        "mcp_servers.arroba.url".to_string(),
+        "mcp_servers.chariox.url".to_string(),
         json!(server_url.to_string()),
     );
     overrides.insert(
-        "mcp_servers.arroba.http_headers.Authorization".to_string(),
+        "mcp_servers.chariox.http_headers.Authorization".to_string(),
         json!(format!("Bearer {auth_token}")),
     );
-    overrides.insert("mcp_servers.arroba.required".to_string(), json!(true));
+    overrides.insert("mcp_servers.chariox.required".to_string(), json!(true));
     overrides.insert(
-        "mcp_servers.arroba.startup_timeout_sec".to_string(),
+        "mcp_servers.chariox.startup_timeout_sec".to_string(),
         json!(90),
     );
     overrides.insert(
-        "mcp_servers.arroba.tool_timeout_sec".to_string(),
+        "mcp_servers.chariox.tool_timeout_sec".to_string(),
         json!(300),
     );
 }
 
 pub(super) fn codex_provider_facing_mcp_proxy_configs(
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
-) -> Result<Vec<ArrobaMcpServerConfig>, crate::error::DaemonError> {
+) -> Result<Vec<CharioxMcpServerConfig>, crate::error::DaemonError> {
     let Some(runtime_mcp_url) = runtime_mcp_url else {
         return Ok(backing_servers.to_vec());
     };
@@ -59,17 +59,17 @@ pub(super) fn codex_provider_facing_mcp_proxy_configs(
 }
 
 fn codex_provider_facing_mcp_proxy_name(name: &str) -> String {
-    format!("arroba_mcp_{name}")
+    format!("chariox_mcp_{name}")
 }
 
 pub(super) fn append_codex_mcp_overrides(
     overrides: &mut BTreeMap<String, Value>,
-    servers: &[ArrobaMcpServerConfig],
+    servers: &[CharioxMcpServerConfig],
 ) {
     for server in servers {
         let prefix = format!("mcp_servers.{}", server.name);
         match &server.transport {
-            ArrobaMcpTransportConfig::Stdio {
+            CharioxMcpTransportConfig::Stdio {
                 command,
                 args,
                 env,
@@ -91,7 +91,7 @@ pub(super) fn append_codex_mcp_overrides(
                     overrides.insert(format!("{prefix}.cwd"), json!(cwd.display().to_string()));
                 }
             }
-            ArrobaMcpTransportConfig::StreamableHttp {
+            CharioxMcpTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var,
                 bearer_token_credential: _,

@@ -1,6 +1,6 @@
 use super::*;
 
-impl ArrobaConnectorDefinition {
+impl CharioxConnectorDefinition {
     pub fn validate(&self) -> Result<(), DaemonError> {
         if self.kind != "connector" {
             return Err(DaemonError::InvalidConfig {
@@ -93,7 +93,7 @@ impl ArrobaConnectorDefinition {
     }
 }
 
-impl ArrobaConnectorAdapterDefinition {
+impl CharioxConnectorAdapterDefinition {
     pub fn validate(&self) -> Result<(), DaemonError> {
         if self.kind != "connector_adapter" {
             return Err(DaemonError::InvalidConfig {

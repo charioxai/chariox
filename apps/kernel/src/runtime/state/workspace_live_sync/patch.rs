@@ -181,7 +181,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_patch_rejected(
                 "path": path.to_string_lossy(),
                 "message": message.into(),
             },
-            "next_action": "Reread the affected artifact with arroba.read_artifact, reconcile with the current content, and retry through Arroba workspace live sync.",
+            "next_action": "Reread the affected artifact with chariox.read_artifact, reconcile with the current content, and retry through Chariox workspace live sync.",
         }),
     }
 }

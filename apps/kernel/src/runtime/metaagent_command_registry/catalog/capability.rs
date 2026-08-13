@@ -17,7 +17,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "List MCP definitions known to Arroba.",
+        description: "List MCP definitions known to Chariox.",
     },
     MetaCommandDoc {
         name: "mcp show",
@@ -167,7 +167,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         ],
         intents: &[
             "import mcp from provider config",
-            "bring existing mcp into arroba",
+            "bring existing mcp into chariox",
             "make a provider mcp grantable",
             "sync local provider mcp tools",
         ],
@@ -176,7 +176,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Import MCP definitions from a local provider configuration into the Arroba registry. Only Arroba-registered MCPs can be granted to workers, so list or show MCPs after importing before using `mcp grant`.",
+        description: "Import MCP definitions from a local provider configuration into the Chariox registry. Only Chariox-registered MCPs can be granted to workers, so list or show MCPs after importing before using `mcp grant`.",
     },
     MetaCommandDoc {
         name: "skill list",
@@ -194,7 +194,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "List skills known to Arroba.",
+        description: "List skills known to Chariox.",
     },
     MetaCommandDoc {
         name: "skill show",
@@ -329,7 +329,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         ],
         intents: &[
             "import skill from provider config",
-            "bring existing skill into arroba",
+            "bring existing skill into chariox",
             "make a provider skill grantable",
             "sync local provider skills",
         ],
@@ -338,7 +338,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Import skills from local provider skill directories into the Arroba registry. Only Arroba-registered skills can be granted to workers, so list or show skills after importing before using `skill grant`.",
+        description: "Import skills from local provider skill directories into the Chariox registry. Only Chariox-registered skills can be granted to workers, so list or show skills after importing before using `skill grant`.",
     },
     MetaCommandDoc {
         name: "extension import providers",
@@ -368,7 +368,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         ],
         intents: &[
             "import all provider mcps and skills",
-            "sync local provider capabilities into arroba",
+            "sync local provider capabilities into chariox",
             "deduplicate provider tools before granting",
             "make provider capabilities available to grant",
         ],
@@ -377,6 +377,6 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Discover Codex, OpenCode, and Claude MCPs and skills, deduplicate by capability kind/name/hash, import or update the selected newest definitions in the Arroba registries, and return a compact report. Use this when you are not sure whether a needed MCP or skill is already installed in Arroba; run with `--dry-run` first if you only need discovery.",
+        description: "Discover Codex, OpenCode, and Claude MCPs and skills, deduplicate by capability kind/name/hash, import or update the selected newest definitions in the Chariox registries, and return a compact report. Use this when you are not sure whether a needed MCP or skill is already installed in Chariox; run with `--dry-run` first if you only need discovery.",
     },
 ];

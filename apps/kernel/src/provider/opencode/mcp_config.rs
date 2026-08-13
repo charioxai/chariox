@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 use crate::provider::LaunchProviderRequest;
 
 const OPENCODE_CONFIG_CONTENT_ENV: &str = "OPENCODE_CONFIG_CONTENT";
@@ -32,7 +32,7 @@ pub(super) fn runtime_mcp_env(
     }
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
         mcp.insert(
-            "arroba".to_string(),
+            "chariox".to_string(),
             serde_json::json!({
                 "type": "remote",
                 "url": binding.server_url,
@@ -57,9 +57,9 @@ pub(super) fn runtime_mcp_env(
     Ok(env)
 }
 
-fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
+fn opencode_mcp_config(server: &CharioxMcpServerConfig) -> serde_json::Value {
     match &server.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args,
             env: static_env,
@@ -87,7 +87,7 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
             }
             config
         }
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
             bearer_token_credential: _,
@@ -118,7 +118,7 @@ fn opencode_mcp_config(server: &ArrobaMcpServerConfig) -> serde_json::Value {
     }
 }
 
-fn opencode_mcp_timeout_ms(server: &ArrobaMcpServerConfig) -> u64 {
+fn opencode_mcp_timeout_ms(server: &CharioxMcpServerConfig) -> u64 {
     server
         .tool_timeout_sec
         .or(server.startup_timeout_sec)

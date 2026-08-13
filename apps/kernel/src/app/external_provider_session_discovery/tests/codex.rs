@@ -133,7 +133,7 @@ fn reads_codex_observed_metadata_bounds_large_tool_payloads() {
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].role, ObservedExternalProviderTurnRole::Tool);
     assert!(turns[0].text.len() <= MAX_OBSERVED_METADATA_TEXT_CHARS + 3);
-    assert!(turns[0].text.contains("arroba truncated"));
+    assert!(turns[0].text.contains("chariox truncated"));
     assert!(turns[0].text.contains("call-large"));
 }
 

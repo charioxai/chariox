@@ -115,7 +115,7 @@ pub fn init_process_logger(process_kind: &str) -> std::io::Result<PathBuf> {
 }
 
 pub fn default_log_root() -> PathBuf {
-    if let Some(path) = env::var_os("ARROBA_LOG_DIR")
+    if let Some(path) = env::var_os("CHARIOX_LOG_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
@@ -126,7 +126,7 @@ pub fn default_log_root() -> PathBuf {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
-        return path.join("arroba").join("logs");
+        return path.join("chariox").join("logs");
     }
 
     if let Some(path) = env::var_os("HOME")
@@ -136,13 +136,13 @@ pub fn default_log_root() -> PathBuf {
         return path
             .join(".local")
             .join("state")
-            .join("arroba")
+            .join("chariox")
             .join("logs");
     }
 
     std::env::current_dir()
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join(".arroba")
+        .join(".chariox")
         .join("logs")
 }
 
@@ -217,7 +217,7 @@ fn log(level: LogLevel, component: &str, message: String, fields: Value) {
 }
 
 fn configured_log_level() -> LogLevel {
-    match env::var("ARROBA_LOG_LEVEL")
+    match env::var("CHARIOX_LOG_LEVEL")
         .ok()
         .as_deref()
         .unwrap_or("info")
@@ -351,9 +351,12 @@ fn encode_truncated_log_record(value: Value, original_bytes: usize) -> String {
             record.insert(key.to_string(), value.clone());
         }
     }
-    record.insert("arroba_log_record_truncated".to_string(), Value::from(true));
     record.insert(
-        "arroba_original_record_bytes".to_string(),
+        "chariox_log_record_truncated".to_string(),
+        Value::from(true),
+    );
+    record.insert(
+        "chariox_original_record_bytes".to_string(),
         Value::from(original_bytes as u64),
     );
     let encoded = serde_json::to_string(&Value::Object(record))
@@ -370,7 +373,7 @@ fn fallback_log_record(message: &str) -> String {
         "level": "warn",
         "component": "logging",
         "message": message,
-        "arroba_log_record_truncated": true,
+        "chariox_log_record_truncated": true,
     }))
     .unwrap_or_else(|_| "{\"level\":\"warn\",\"component\":\"logging\"}".to_string())
 }
@@ -386,8 +389,8 @@ fn compact_log_value(value: &mut Value) {
             if original_len > MAX_LOG_ARRAY_ITEMS {
                 items.truncate(MAX_LOG_ARRAY_ITEMS);
                 items.push(json!({
-                    "arroba_truncated": true,
-                    "arroba_original_items": original_len,
+                    "chariox_truncated": true,
+                    "chariox_original_items": original_len,
                 }));
             }
         }
@@ -404,7 +407,7 @@ fn compact_log_value(value: &mut Value) {
                     object.remove(&key);
                 }
                 object.insert(
-                    "arroba_truncated_fields".to_string(),
+                    "chariox_truncated_fields".to_string(),
                     Value::from(original_len.saturating_sub(MAX_LOG_OBJECT_FIELDS) as u64),
                 );
             }
@@ -424,7 +427,7 @@ fn compact_log_string(text: &mut String) {
     }
     text.truncate(end);
     text.push_str(&format!(
-        "\n[arroba log value truncated: original_bytes={original_bytes}, retained_bytes={end}]"
+        "\n[chariox log value truncated: original_bytes={original_bytes}, retained_bytes={end}]"
     ));
 }
 
@@ -500,7 +503,7 @@ mod tests {
     fn temp_log_dir(name: &str) -> PathBuf {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let path = std::env::temp_dir().join(format!(
-            "arroba-logging-{name}-{}-{}",
+            "chariox-logging-{name}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ));
@@ -592,7 +595,7 @@ mod tests {
         let line = encode_log_record(record);
 
         assert!(line.len() <= MAX_LOG_RECORD_BYTES);
-        assert!(line.contains("arroba log value truncated"));
+        assert!(line.contains("chariox log value truncated"));
         assert!(!line.contains(&"x".repeat(MAX_LOG_STRING_BYTES + 1)));
         let parsed: Value = serde_json::from_str(&line).expect("valid compacted log json");
         assert_eq!(
@@ -622,12 +625,12 @@ mod tests {
         assert!(line.len() <= MAX_LOG_RECORD_BYTES);
         let parsed: Value = serde_json::from_str(&line).expect("valid truncated log json");
         assert_eq!(
-            parsed.get("arroba_log_record_truncated"),
+            parsed.get("chariox_log_record_truncated"),
             Some(&Value::Bool(true))
         );
         assert_eq!(
             parsed
-                .get("arroba_original_record_bytes")
+                .get("chariox_original_record_bytes")
                 .and_then(Value::as_u64)
                 .is_some(),
             true

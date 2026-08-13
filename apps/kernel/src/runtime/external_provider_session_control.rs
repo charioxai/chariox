@@ -127,7 +127,7 @@ struct AttachedExternalObserverTarget {
 #[derive(Debug, Clone)]
 enum AttachedExternalObserverCursorSource {
     Imported(ExternalProviderImportMetadata),
-    ArrobaOwned(AttachedProviderTranscriptCursorKey),
+    CharioxOwned(AttachedProviderTranscriptCursorKey),
 }
 
 #[derive(Debug, Clone)]

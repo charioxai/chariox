@@ -97,7 +97,7 @@ fn import_mcp_candidates(
     dry_run: bool,
     workspace_id: Option<&str>,
 ) -> Result<(), DaemonError> {
-    let registry = crate::mcp::ArrobaMcpRegistry::new(
+    let registry = crate::mcp::CharioxMcpRegistry::new(
         super::capability_registry::mcp_registry_roots(workspace_id)?,
     );
     let mut candidates = Vec::new();
@@ -154,18 +154,18 @@ fn import_mcp_candidates(
                 if existing_hash == chosen.definition_hash {
                     (
                         "already_installed".to_string(),
-                        "matching definition already installed in Arroba".to_string(),
+                        "matching definition already installed in Chariox".to_string(),
                     )
                 } else if dry_run {
                     (
                         "would_update".to_string(),
-                        "newer provider definition would update installed Arroba MCP".to_string(),
+                        "newer provider definition would update installed Chariox MCP".to_string(),
                     )
                 } else {
                     registry.update(&chosen.config)?;
                     (
                         "updated".to_string(),
-                        "updated installed Arroba MCP from newest provider definition".to_string(),
+                        "updated installed Chariox MCP from newest provider definition".to_string(),
                     )
                 }
             }
@@ -220,7 +220,7 @@ fn import_skill_candidates(
     dry_run: bool,
     workspace_id: Option<&str>,
 ) -> Result<(), DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(
+    let registry = crate::skill::CharioxSkillRegistry::new(
         super::capability_registry::skill_registry_roots(workspace_id)?,
     );
     let mut candidates = Vec::new();
@@ -280,18 +280,18 @@ fn import_skill_candidates(
                 if existing_hash == chosen.version_hash {
                     (
                         "already_installed".to_string(),
-                        "matching skill package already installed in Arroba".to_string(),
+                        "matching skill package already installed in Chariox".to_string(),
                     )
                 } else if dry_run {
                     (
                         "would_update".to_string(),
-                        "newer provider skill would update installed Arroba skill".to_string(),
+                        "newer provider skill would update installed Chariox skill".to_string(),
                     )
                 } else {
                     registry.update_from_path(&chosen.source_path)?;
                     (
                         "updated".to_string(),
-                        "updated installed Arroba skill from newest provider package".to_string(),
+                        "updated installed Chariox skill from newest provider package".to_string(),
                     )
                 }
             }
@@ -481,7 +481,7 @@ mod tests {
 
     fn temp_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-provider-capability-import-{name}-{}-{}",
+            "chariox-provider-capability-import-{name}-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));

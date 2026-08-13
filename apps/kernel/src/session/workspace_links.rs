@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn workspace_link_attachment_matches_canonical_equivalent_repo_roots() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-workspace-link-canonical-{}-{}",
+            "chariox-workspace-link-canonical-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

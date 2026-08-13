@@ -80,7 +80,7 @@ fn documented_routed_examples_match_execution_policy() {
         for example in command
             .examples
             .iter()
-            .filter(|example| !example.starts_with("arroba.meta."))
+            .filter(|example| !example.starts_with("chariox.meta."))
         {
             let tokens = tokenize_command(example).unwrap_or_else(|error| {
                 panic!("documented example `{example}` should parse: {error:?}")

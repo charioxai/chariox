@@ -70,7 +70,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_snapshot_id_from_arg(
             let snapshot_id = snapshot_id.trim();
             let sentinel = snapshot_id.to_ascii_lowercase();
             !snapshot_id.is_empty()
-                && sentinel != "__arroba_create__"
+                && sentinel != "__chariox_create__"
                 && sentinel != "create"
                 && sentinel != "new"
                 && sentinel != "absent"

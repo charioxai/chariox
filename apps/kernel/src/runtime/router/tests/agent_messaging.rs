@@ -61,7 +61,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &sender_token,
-            "mcp__arroba__list_session_agents",
+            "mcp__chariox__list_session_agents",
             serde_json::json!({}),
         )
         .await
@@ -90,7 +90,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &sender_token,
-            "mcp__arroba__send_agent_message",
+            "mcp__chariox__send_agent_message",
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
@@ -114,7 +114,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &sender_token,
-            "mcp__arroba__send_agent_message",
+            "mcp__chariox__send_agent_message",
             serde_json::json!({
                 "agent": "@REVIEWER",
                 "message": "Inspect package.json and report the package name.",
@@ -209,7 +209,7 @@ async fn runtime_mcp_agents_can_message_and_queue_each_other_by_unique_alias() {
     );
     assert!(reviewer_prompt
         .hidden_system_context()
-        .contains("arroba.send_agent_message"));
+        .contains("chariox.send_agent_message"));
     assert_eq!(
         snapshot
             .queued_prompts_for_agent(reviewer.id())

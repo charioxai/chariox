@@ -69,7 +69,7 @@ impl CodexClient {
 
     fn respond_to_mcp_elicitation(&self, message: &JsonRpcMessage) -> Value {
         let approve = message.params.as_ref().is_some_and(|params| {
-            params.get("serverName").and_then(Value::as_str) == Some("arroba")
+            params.get("serverName").and_then(Value::as_str) == Some("chariox")
                 && params
                     .get("_meta")
                     .and_then(|meta| meta.get("codex_approval_kind"))

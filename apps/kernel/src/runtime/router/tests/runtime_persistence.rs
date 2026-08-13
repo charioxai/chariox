@@ -99,7 +99,7 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
         capabilities: crate::local::ExternalProviderSessionCapabilities {
             ..crate::local::ExternalProviderSessionCapabilities::default()
         },
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     });
@@ -110,7 +110,7 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
     });
     assert_eq!(page.sessions.len(), 1);
     assert!(
-        page.sessions[0].is_attachable_to_arroba(),
+        page.sessions[0].is_attachable_to_chariox(),
         "deleted agents must not restore stale provider-session attachments after restart"
     );
 }

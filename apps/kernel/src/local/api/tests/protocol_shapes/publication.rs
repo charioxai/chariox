@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -248,7 +248,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             "port": 3000,
             "local_url": "http://127.0.0.1:3000/",
             "process_id": 4242,
-            "package_root": "/tmp/arroba-publication-runtimes/session-1/publication-1-sha256_abc123"
+            "package_root": "/tmp/chariox-publication-runtimes/session-1/publication-1-sha256_abc123"
         })),
     );
     runtime_publication.set_runtime_observability(
@@ -608,13 +608,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9649636057408cd3863796b076824ea4d95c0d56518dcf7e3221b6fad72255fc"
+        "512308bc1f2b4f3f26eab5c87e04dfe733913b458d829c0cf7e0ebb0e648784e"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

@@ -24,13 +24,13 @@ where
 
 fn home_extension_script_workspace(label: &str) -> std::path::PathBuf {
     let workspace = std::env::temp_dir().join(format!(
-        "arroba-home-extension-{label}-{}",
+        "chariox-home-extension-{label}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after unix epoch")
             .as_nanos()
     ));
-    let script_dir = workspace.join(".arroba").join("scripts").join("home-tool");
+    let script_dir = workspace.join(".chariox").join("scripts").join("home-tool");
     std::fs::create_dir_all(&script_dir).expect("script dir should be created");
     std::fs::write(
         script_dir.join("metadata.json"),
@@ -51,7 +51,7 @@ fn home_extension_script_workspace(label: &str) -> std::path::PathBuf {
         "def run():\n    return {\"executed\": True}\n",
     )
     .expect("script should be written");
-    let env_dir = workspace.join(".arroba").join("envs");
+    let env_dir = workspace.join(".chariox").join("envs");
     std::fs::create_dir_all(&env_dir).expect("env dir should be created");
     std::fs::write(
         env_dir.join("test-env.json"),

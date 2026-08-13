@@ -26,7 +26,7 @@ pub struct RequestExtensionArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterMcpArgs {
-    pub config: crate::mcp::ArrobaMcpServerConfig,
+    pub config: crate::mcp::CharioxMcpServerConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant_to_current_agent: Option<bool>,
 }
@@ -40,7 +40,7 @@ pub struct RegisterSkillPathArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisterEnvironmentArgs {
-    pub config: crate::script::ArrobaEnvironmentConfig,
+    pub config: crate::script::CharioxEnvironmentConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +73,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: LIST_EXTENSIONS_TOOL.to_string(),
-            description: "List Arroba-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension.".to_string(),
+            description: "List Chariox-managed extensions available in this workspace, including whether they are already granted to the current agent. Use this before requesting an extension.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -87,7 +87,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_EXTENSION_TOOL.to_string(),
-            description: "Request access to an Arroba-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
+            description: "Request access to a Chariox-managed MCP, skill, script, or connector for the current agent. Script requests require an environment. Connector requests may include an allow safety level and credential handle.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["kind", "name"],
@@ -111,7 +111,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_MCP_TOOL.to_string(),
-            description: "Register or update a global Arroba-managed MCP definition. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
+            description: "Register or update a global Chariox-managed MCP definition. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["config"],
@@ -124,7 +124,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_SKILL_PATH_TOOL.to_string(),
-            description: "Register or update a global Arroba skill from a directory containing SKILL.md. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
+            description: "Register or update a global Chariox skill from a directory containing SKILL.md. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -137,7 +137,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_ENVIRONMENT_TOOL.to_string(),
-            description: "Register or update a global Arroba script execution environment.".to_string(),
+            description: "Register or update a global Chariox script execution environment.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["config"],
@@ -149,7 +149,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_SCRIPT_PATH_TOOL.to_string(),
-            description: "Register a global Arroba script extension from a Python or TypeScript file. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
+            description: "Register a global Chariox script extension from a Python or TypeScript file. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path", "environment"],
@@ -164,7 +164,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_CONNECTOR_PATH_TOOL.to_string(),
-            description: "Register or update a global Arroba connector from connector YAML. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
+            description: "Register or update a global Chariox connector from connector YAML. Set grant_to_current_agent to also grant it to this agent in the same operation.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -179,7 +179,7 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REGISTER_CONNECTOR_ADAPTER_PATH_TOOL.to_string(),
-            description: "Register or update a global Arroba connector adapter from an adapter YAML/package.".to_string(),
+            description: "Register or update a global Chariox connector adapter from an adapter YAML/package.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -196,37 +196,37 @@ pub fn extension_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 pub fn canonical_extension_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         LIST_EXTENSIONS_TOOL
-        | "arroba_list_extensions"
-        | "mcp__arroba__list_extensions"
-        | "mcp__arroba__arroba_list_extensions" => Some(LIST_EXTENSIONS_TOOL),
+        | "chariox_list_extensions"
+        | "mcp__chariox__list_extensions"
+        | "mcp__chariox__chariox_list_extensions" => Some(LIST_EXTENSIONS_TOOL),
         REQUEST_EXTENSION_TOOL
-        | "arroba_request_extension"
-        | "mcp__arroba__request_extension"
-        | "mcp__arroba__arroba_request_extension" => Some(REQUEST_EXTENSION_TOOL),
+        | "chariox_request_extension"
+        | "mcp__chariox__request_extension"
+        | "mcp__chariox__chariox_request_extension" => Some(REQUEST_EXTENSION_TOOL),
         REGISTER_MCP_TOOL
-        | "arroba_register_mcp"
-        | "mcp__arroba__register_mcp"
-        | "mcp__arroba__arroba_register_mcp" => Some(REGISTER_MCP_TOOL),
+        | "chariox_register_mcp"
+        | "mcp__chariox__register_mcp"
+        | "mcp__chariox__chariox_register_mcp" => Some(REGISTER_MCP_TOOL),
         REGISTER_SKILL_PATH_TOOL
-        | "arroba_register_skill_path"
-        | "mcp__arroba__register_skill_path"
-        | "mcp__arroba__arroba_register_skill_path" => Some(REGISTER_SKILL_PATH_TOOL),
+        | "chariox_register_skill_path"
+        | "mcp__chariox__register_skill_path"
+        | "mcp__chariox__chariox_register_skill_path" => Some(REGISTER_SKILL_PATH_TOOL),
         REGISTER_ENVIRONMENT_TOOL
-        | "arroba_register_environment"
-        | "mcp__arroba__register_environment"
-        | "mcp__arroba__arroba_register_environment" => Some(REGISTER_ENVIRONMENT_TOOL),
+        | "chariox_register_environment"
+        | "mcp__chariox__register_environment"
+        | "mcp__chariox__chariox_register_environment" => Some(REGISTER_ENVIRONMENT_TOOL),
         REGISTER_SCRIPT_PATH_TOOL
-        | "arroba_register_script_path"
-        | "mcp__arroba__register_script_path"
-        | "mcp__arroba__arroba_register_script_path" => Some(REGISTER_SCRIPT_PATH_TOOL),
+        | "chariox_register_script_path"
+        | "mcp__chariox__register_script_path"
+        | "mcp__chariox__chariox_register_script_path" => Some(REGISTER_SCRIPT_PATH_TOOL),
         REGISTER_CONNECTOR_PATH_TOOL
-        | "arroba_register_connector_path"
-        | "mcp__arroba__register_connector_path"
-        | "mcp__arroba__arroba_register_connector_path" => Some(REGISTER_CONNECTOR_PATH_TOOL),
+        | "chariox_register_connector_path"
+        | "mcp__chariox__register_connector_path"
+        | "mcp__chariox__chariox_register_connector_path" => Some(REGISTER_CONNECTOR_PATH_TOOL),
         REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
-        | "arroba_register_connector_adapter_path"
-        | "mcp__arroba__register_connector_adapter_path"
-        | "mcp__arroba__arroba_register_connector_adapter_path" => {
+        | "chariox_register_connector_adapter_path"
+        | "mcp__chariox__register_connector_adapter_path"
+        | "mcp__chariox__chariox_register_connector_adapter_path" => {
             Some(REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
         }
         _ => None,

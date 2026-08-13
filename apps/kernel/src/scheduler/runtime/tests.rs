@@ -556,13 +556,13 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
 
     let workdir = std::env::temp_dir().join(format!(
-        "arroba-workflow-runtime-test-{}",
+        "chariox-workflow-runtime-test-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&workdir);
     fs::create_dir_all(&workdir).expect("workdir should exist");
-    let previous_arroba_home = std::env::var_os("ARROBA_HOME");
-    std::env::set_var("ARROBA_HOME", workdir.join(".arroba"));
+    let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", workdir.join(".chariox"));
     app.launch_provider(
         LaunchProviderRequest::new(
             session.id(),
@@ -634,7 +634,7 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     .expect("prompt should build");
 
     let prefix = workdir
-        .join(".arroba")
+        .join(".chariox")
         .join("workflow-runtime")
         .join(session.id())
         .join(workflow_run.id())
@@ -649,7 +649,7 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let contents = fs::read_to_string(&expected_file).expect("instruction file should read");
     assert!(contents.contains("Read me from a workspace-local hidden file."));
     let expected_prompt_template = workdir
-        .join(".arroba")
+        .join(".chariox")
         .join("prompts")
         .join("workflow")
         .join("turn.md");
@@ -665,10 +665,10 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
         prompt.contains("If you do not remember them exactly, read that file before continuing.")
     );
     assert!(prompt.contains("Do not ask the user which workflow runtime tool"));
-    if let Some(previous_arroba_home) = previous_arroba_home {
-        std::env::set_var("ARROBA_HOME", previous_arroba_home);
+    if let Some(previous_chariox_home) = previous_chariox_home {
+        std::env::set_var("CHARIOX_HOME", previous_chariox_home);
     } else {
-        std::env::remove_var("ARROBA_HOME");
+        std::env::remove_var("CHARIOX_HOME");
     }
     let _ = fs::remove_dir_all(PathBuf::from(workdir));
 }
@@ -677,13 +677,13 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
 fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     let _guard = crate::env_lock::lock();
     let home = std::env::temp_dir().join(format!(
-        "arroba-workflow-routing-prompt-test-{}",
+        "chariox-workflow-routing-prompt-test-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&home);
     fs::create_dir_all(&home).expect("test home should exist");
-    let previous_arroba_home = std::env::var_os("ARROBA_HOME");
-    std::env::set_var("ARROBA_HOME", &home);
+    let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &home);
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, router_agent_id) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-routing");
@@ -845,10 +845,10 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     assert!(prompt.contains("to_node_id"));
     assert!(prompt.contains("validate only the routed message inside each selected edge entry"));
     assert!(prompt.contains("do not validate the outer routing wrapper"));
-    if let Some(previous_arroba_home) = previous_arroba_home {
-        std::env::set_var("ARROBA_HOME", previous_arroba_home);
+    if let Some(previous_chariox_home) = previous_chariox_home {
+        std::env::set_var("CHARIOX_HOME", previous_chariox_home);
     } else {
-        std::env::remove_var("ARROBA_HOME");
+        std::env::remove_var("CHARIOX_HOME");
     }
     let _ = fs::remove_dir_all(home);
 }

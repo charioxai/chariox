@@ -73,7 +73,7 @@ impl KernelRuntimeOwnedState {
                         self.provider_store.clear_runtime(active_run_id);
                     }
                     crate::provider::ProviderRunState::Starting => {
-                        if active_run.client_interface().is_arroba() {
+                        if active_run.client_interface().is_chariox() {
                             let outcome = self
                                 .provider_store
                                 .terminate_run_provider_only(&session_id, active_run_id)?;
@@ -85,7 +85,7 @@ impl KernelRuntimeOwnedState {
                         }
                     }
                     crate::provider::ProviderRunState::Running => {
-                        if active_run.client_interface().is_arroba()
+                        if active_run.client_interface().is_chariox()
                             && !self.provider_run_has_active_prompt(&session_id, &active_run)?
                         {
                             let outcome = self
@@ -133,7 +133,7 @@ impl KernelRuntimeOwnedState {
                 if locally_owned {
                     match active_run.state() {
                         crate::provider::ProviderRunState::Running => {
-                            if active_run.client_interface().is_arroba()
+                            if active_run.client_interface().is_chariox()
                                 && !self.provider_run_has_active_prompt(session_id, &active_run)?
                             {
                                 let outcome = self

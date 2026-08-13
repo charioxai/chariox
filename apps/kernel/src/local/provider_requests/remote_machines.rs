@@ -1,6 +1,6 @@
 use crate::config::{DaemonConfig, PersistedMachineRegistration};
 use crate::error::DaemonError;
-use arroba_relay::protocol::RelayMachinePresence;
+use chariox_relay::protocol::RelayMachinePresence;
 
 use super::super::api::{RemoteMachineRecord, RemoteMachineTrustStatus};
 

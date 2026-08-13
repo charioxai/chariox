@@ -9,7 +9,7 @@ use crate::transport::relay_peer::{
     RelayPeerEvent, RelayPeerRequest, RelayPeerResponse, RelayProjectedCompletion,
     RelayProjectedOutputChunk, RelayProjectedPrompt,
 };
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use super::RemoteLeaseRuntime;
 
@@ -1414,7 +1414,7 @@ mod explicit_completion_tests {
             &leased_agent.backing_agent_id,
             "managed-dev-stub",
             "managed-dev-stub",
-            ProviderClientInterface::Arroba,
+            ProviderClientInterface::Chariox,
         );
         run.mark_running();
         app.providers_mut().insert_run_for_test(run.clone());
@@ -2083,7 +2083,7 @@ mod explicit_completion_tests {
             "agent-1",
             "claude",
             "claude-headless",
-            ProviderClientInterface::Arroba,
+            ProviderClientInterface::Chariox,
         );
         let structured = provider_run(
             "provider-run-structured-claude",
@@ -2091,7 +2091,7 @@ mod explicit_completion_tests {
             "agent-1",
             "claude",
             "claude",
-            ProviderClientInterface::Arroba,
+            ProviderClientInterface::Chariox,
         );
         assert!(leased_provider_requires_explicit_completion(
             "claude",

@@ -146,7 +146,7 @@ fn cache_test_provider_catalog(app: &mut DaemonApp) {
 
 fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-{name}-{}-{}",
+        "chariox-workflow-code-{name}-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -156,7 +156,7 @@ fn unique_workflow_code_test_workspace(name: &str) -> PathBuf {
 }
 
 fn install_test_skill(workspace: &std::path::Path, name: &str) {
-    let skill_dir = workspace.join(".arroba").join("skills").join(name);
+    let skill_dir = workspace.join(".chariox").join("skills").join(name);
     fs::create_dir_all(&skill_dir).expect("skill dir should be created");
     fs::write(
         skill_dir.join("SKILL.md"),

@@ -19,7 +19,7 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     std::fs::create_dir_all(workspace.join("schemas")).expect("schema directory should be created");
     let skill_dir = workspace
-        .join(".arroba")
+        .join(".chariox")
         .join("skills")
         .join("meta-workflow-code-skill");
     std::fs::create_dir_all(&skill_dir).expect("workflow-code test skill dir should be created");
@@ -55,7 +55,7 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
             serde_json::json!({
                 "query": "workflow code javascript builder",
                 "tag": "workflow-code",
-                "command": "arroba.meta.workflow_code.create",
+                "command": "chariox.meta.workflow_code.create",
                 "limit": 5
             }),
         )
@@ -97,9 +97,9 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
         "workflow.define(options)",
         "workflow.newAgent(options)",
         "workflow.schemaFromFile(options)",
-        "arroba.meta.workflow_code.validate",
-        "arroba.meta.workflow_code.apply",
-        "arroba.meta.workflow_code.run",
+        "chariox.meta.workflow_code.validate",
+        "chariox.meta.workflow_code.apply",
+        "chariox.meta.workflow_code.run",
     ] {
         assert!(
             authoring_body.contains(expected),
@@ -115,7 +115,7 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
             serde_json::json!({
                 "query": "workflow-code tournament adversarial evaluator optimizer",
                 "tag": "workflow-code",
-                "command": "arroba.meta.workflow_code.validate",
+                "command": "chariox.meta.workflow_code.validate",
                 "limit": 5
             }),
         )

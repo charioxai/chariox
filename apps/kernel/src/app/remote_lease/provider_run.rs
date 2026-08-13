@@ -40,10 +40,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_tool_names.insert(spec.name, "worker runtime tool".to_string());
         }
 
-        let mcp_roots = crate::mcp::ArrobaMcpRegistry::user_root()
+        let mcp_roots = crate::mcp::CharioxMcpRegistry::user_root()
             .map(|root| vec![root])
             .unwrap_or_default();
-        let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(mcp_roots);
+        let mcp_registry = crate::mcp::CharioxMcpRegistry::new(mcp_roots);
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if required_mcps
                 .iter()
@@ -59,10 +59,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
 
-        let script_roots = crate::script::ArrobaScriptRegistry::user_root()
+        let script_roots = crate::script::CharioxScriptRegistry::user_root()
             .map(|root| vec![root])
             .unwrap_or_default();
-        let script_registry = crate::script::ArrobaScriptRegistry::new(script_roots);
+        let script_registry = crate::script::CharioxScriptRegistry::new(script_roots);
         for grant in backing_agent.script_grants() {
             if let Some(script) = script_registry.get(&grant.name)? {
                 worker_tool_names
@@ -70,7 +70,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
 
-        let connector_registry = crate::connector::ArrobaConnectorRegistry::user()?;
+        let connector_registry = crate::connector::CharioxConnectorRegistry::user()?;
         for grant in backing_agent.connector_grants() {
             let Some(connector) = connector_registry.get(&grant.name)? else {
                 continue;
@@ -201,7 +201,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let mut mcp_servers = request.mcp_servers.clone();
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if !mcp_servers.iter().any(|server| server.name == name) {
-                mcp_servers.push(crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                mcp_servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
                     name,
                     "http://127.0.0.1/mcp",
                 ));

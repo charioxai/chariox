@@ -49,7 +49,7 @@ pub struct LocalDockerSliceOptions {
 
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
-const SLICE_DOCKER_PROVISIONER_ENV: &str = "ARROBA_SLICE_DOCKER_PROVISIONER";
+const SLICE_DOCKER_PROVISIONER_ENV: &str = "CHARIOX_SLICE_DOCKER_PROVISIONER";
 
 impl LocalDockerSliceOptions {
     pub fn from_config(config: &DaemonConfig) -> Self {
@@ -122,7 +122,7 @@ pub fn run_local_docker_slice_action(
     });
     configure_local_docker_slice_command(&mut command, record, relay, options)?;
     if let Some(provider) = provider {
-        command.env("ARROBA_SLICE_AUTH_PROVIDER", provider);
+        command.env("CHARIOX_SLICE_AUTH_PROVIDER", provider);
     }
 
     let log_path = local_docker_slice_action_log_path(&options.root, record, action);
@@ -209,7 +209,7 @@ pub fn start_local_docker_slice_provider_login(
     let mut command = Command::new(&script);
     command
         .arg("start-provider-login")
-        .env("ARROBA_SLICE_LOGIN_PROVIDER", provider);
+        .env("CHARIOX_SLICE_LOGIN_PROVIDER", provider);
     configure_local_docker_slice_command(&mut command, record, None, options)?;
     let output = command
         .output()
@@ -484,7 +484,7 @@ fn local_docker_runtime_log_entry(record: &SliceRecord, tail_lines: u32) -> Slic
     let script = r#"
 set -eu
 found=0
-for file in /opt/arroba-slice/logs/*.log /home/slice/.local/state/arroba/logs/*.ndjson; do
+for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
   [ -f "$file" ] || continue
   found=1
   printf '\n=== %s ===\n' "$file"
@@ -553,62 +553,62 @@ fn configure_local_docker_slice_command(
 ) -> Result<(), DaemonError> {
     let ports = LocalDockerSlicePorts::for_record(record);
     command
-        .env("ARROBA_SLICE_NAME", local_docker_container_name(record))
-        .env("ARROBA_SLICE_DOCKER_IMAGE", &options.docker_image)
+        .env("CHARIOX_SLICE_NAME", local_docker_container_name(record))
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", &options.docker_image)
         .env(
-            "ARROBA_SLICE_BUILD_IMAGE",
+            "CHARIOX_SLICE_BUILD_IMAGE",
             options.build_image.as_env_value(),
         )
         .env(
-            "ARROBA_SLICE_HOME_VOLUME",
+            "CHARIOX_SLICE_HOME_VOLUME",
             format!("{}-home", local_docker_container_name(record)),
         )
-        .env("ARROBA_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
-        .env("ARROBA_SLICE_CODEX_PORT", ports.codex.to_string())
-        .env("ARROBA_SLICE_OPENCODE_PORT", ports.opencode.to_string())
-        .env("ARROBA_SLICE_CODEX_PORT_RANGE", ports.codex_range())
-        .env("ARROBA_SLICE_OPENCODE_PORT_RANGE", ports.opencode_range())
-        .env("ARROBA_SLICE_KERNEL_PORT", ports.kernel.to_string())
-        .env("ARROBA_SLICE_MCP_PORT", ports.mcp.to_string())
-        .env("ARROBA_SLICE_RELAY_PORT", ports.relay.to_string())
-        .env("ARROBA_SLICE_NOVNC_PORT", ports.novnc.to_string())
+        .env("CHARIOX_SLICE_SCREEN_GEOMETRY", options.screen_geometry())
+        .env("CHARIOX_SLICE_CODEX_PORT", ports.codex.to_string())
+        .env("CHARIOX_SLICE_OPENCODE_PORT", ports.opencode.to_string())
+        .env("CHARIOX_SLICE_CODEX_PORT_RANGE", ports.codex_range())
+        .env("CHARIOX_SLICE_OPENCODE_PORT_RANGE", ports.opencode_range())
+        .env("CHARIOX_SLICE_KERNEL_PORT", ports.kernel.to_string())
+        .env("CHARIOX_SLICE_MCP_PORT", ports.mcp.to_string())
+        .env("CHARIOX_SLICE_RELAY_PORT", ports.relay.to_string())
+        .env("CHARIOX_SLICE_NOVNC_PORT", ports.novnc.to_string())
         .env(
-            "ARROBA_SLICE_DISPLAY_MODE",
+            "CHARIOX_SLICE_DISPLAY_MODE",
             match record.display_mode {
                 SliceDisplayMode::Headed => "headed",
                 SliceDisplayMode::Headless => "headless",
             },
         )
-        .env("ARROBA_SLICE_START_DESKTOP", "1")
-        .env("ARROBA_SLICE_START_PROVIDER_SERVERS", "0")
-        .env("ARROBA_SLICE_START_RUNTIME", "1")
-        .env("ARROBA_SLICE_IMPORT_PROVIDER_AUTH", "0")
+        .env("CHARIOX_SLICE_START_DESKTOP", "1")
+        .env("CHARIOX_SLICE_START_PROVIDER_SERVERS", "0")
+        .env("CHARIOX_SLICE_START_RUNTIME", "1")
+        .env("CHARIOX_SLICE_IMPORT_PROVIDER_AUTH", "0")
         .env(
-            "ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP",
+            "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP",
             if options.allow_unconfined_seccomp {
                 "1"
             } else {
                 "0"
             },
         )
-        .env("ARROBA_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
+        .env("CHARIOX_SLICE_PROVIDER_BIND_HOST", "127.0.0.1")
         .env(
-            "ARROBA_SLICE_DAEMON_ALIAS",
+            "CHARIOX_SLICE_DAEMON_ALIAS",
             record.worker_kernel_ref.clone(),
         )
-        .env("ARROBA_SLICE_MACHINE_ID", format!("slice:{}", record.id))
-        .env("ARROBA_SLICE_MACHINE_ALIAS", record.name.clone());
+        .env("CHARIOX_SLICE_MACHINE_ID", format!("slice:{}", record.id))
+        .env("CHARIOX_SLICE_MACHINE_ALIAS", record.name.clone());
     if let Some(memory_mb) = options.memory_mb {
-        command.env("ARROBA_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
+        command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     }
     if let Some(cpus) = options.cpus.as_deref() {
-        command.env("ARROBA_SLICE_DOCKER_CPUS", cpus);
+        command.env("CHARIOX_SLICE_DOCKER_CPUS", cpus);
     }
     if let Some(extension_dockerfile) = options.extension_dockerfile.as_deref() {
-        command.env("ARROBA_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
+        command.env("CHARIOX_SLICE_EXTENSION_DOCKERFILE", extension_dockerfile);
     }
     if let Some(saved_home_archive) = options.saved_home_archive.as_deref() {
-        command.env("ARROBA_SLICE_SAVED_HOME_ARCHIVE", saved_home_archive);
+        command.env("CHARIOX_SLICE_SAVED_HOME_ARCHIVE", saved_home_archive);
     }
     if let Some(relay) = relay {
         let LocalDockerSliceRelay {
@@ -621,24 +621,24 @@ fn configure_local_docker_slice_command(
             let host_config_path =
                 write_cloud_relay_config_file(record, options, &cloud_relay_config_json)?;
             command.env(
-                "ARROBA_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
+                "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH",
                 host_config_path,
             );
             command.env(
-                "ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON",
+                "CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON",
                 cloud_relay_config_json,
             );
         }
-        command.env("ARROBA_SLICE_RELAY_TOKEN", relay_token);
+        command.env("CHARIOX_SLICE_RELAY_TOKEN", relay_token);
         if let Some(container_relay_url) = container_relay_url {
             command.env(
-                "ARROBA_SLICE_RELAY_URL",
+                "CHARIOX_SLICE_RELAY_URL",
                 relay_url_for_container(&container_relay_url),
             );
         }
     }
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
-        command.env("ARROBA_SLICE_WORKSPACE", workspace_mount);
+        command.env("CHARIOX_SLICE_WORKSPACE", workspace_mount);
     }
     Ok(())
 }
@@ -768,7 +768,7 @@ impl LocalDockerSliceAction {
 }
 
 pub(super) fn local_docker_container_name(record: &SliceRecord) -> String {
-    format!("arroba-slice-{}", record.name)
+    format!("chariox-slice-{}", record.name)
 }
 
 pub(super) fn ensure_local_docker_slice_ports_available(
@@ -823,7 +823,7 @@ pub(super) fn run_local_docker_slice_screen(
             "-u",
             "slice",
             &container,
-            "/opt/arroba-slice/slice-screen.sh",
+            "/opt/chariox-slice/slice-screen.sh",
             action,
         ])
         .status()
@@ -873,7 +873,7 @@ fn expand_user_path_for_slice(value: &str) -> PathBuf {
 }
 
 fn linux_docker_slice_script() -> Result<PathBuf, DaemonError> {
-    if let Some(script) = std::env::var_os("ARROBA_SLICE_DOCKER_PROVISIONER") {
+    if let Some(script) = std::env::var_os("CHARIOX_SLICE_DOCKER_PROVISIONER") {
         let script = expand_user_path_for_slice(&script.to_string_lossy());
         return validate_linux_docker_slice_script(script);
     }

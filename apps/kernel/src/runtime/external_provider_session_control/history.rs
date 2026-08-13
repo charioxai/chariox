@@ -102,15 +102,15 @@ pub(super) fn append_observed_external_turns_for_attached_target(
     let mut import_state = ObservedExternalTurnImportState::new(
         read.target.observed_cursor.clone(),
         &candidate_turns,
-        arroba_owned_prompt_text_counts(
-            &history_index.arroba_owned_prompts,
+        chariox_owned_prompt_text_counts(
+            &history_index.chariox_owned_prompts,
             active_prompt.as_ref(),
             &queued_prompts,
         ),
     );
     for turn in &candidate_turns {
         let observed = import_state.record_turn(turn, &provider, &provider_session_id);
-        if observed.is_arroba_owned {
+        if observed.is_chariox_owned {
             continue;
         }
         let observed_at_ms = turn.observed_at_ms.or_else(|| {
@@ -215,7 +215,7 @@ fn projected_external_active_prompt(
         .find(|turn| turn.role == ObservedExternalProviderTurnRole::User)?;
     let provider_turn_id = user_turn.provider_turn_id_or_fallback();
     if cursor
-        .arroba_owned_observed_prompt_turn_ids
+        .chariox_owned_observed_prompt_turn_ids
         .contains(&provider_turn_id)
     {
         return None;
@@ -232,24 +232,24 @@ fn projected_external_active_prompt(
 struct ObservedExternalTurnImportState {
     cursor: ExternalProviderObservedCursor,
     visible_provider_turn_id: Option<String>,
-    current_observed_turn_is_arroba_owned: bool,
-    arroba_owned_provider_turn_ids: BTreeSet<String>,
+    current_observed_turn_is_chariox_owned: bool,
+    chariox_owned_provider_turn_ids: BTreeSet<String>,
     candidate_user_turn_ids: BTreeSet<String>,
-    arroba_owned_prompt_text_counts: BTreeMap<String, usize>,
+    chariox_owned_prompt_text_counts: BTreeMap<String, usize>,
 }
 
 struct ObservedExternalTurnImportDecision {
     kind: crate::history::SessionHistoryEntryKind,
     provider_turn_id: String,
     merge_key: String,
-    is_arroba_owned: bool,
+    is_chariox_owned: bool,
 }
 
 impl ObservedExternalTurnImportState {
     fn new(
         cursor: ExternalProviderObservedCursor,
         candidate_turns: &[ObservedExternalProviderTurn],
-        arroba_owned_prompt_text_counts: BTreeMap<String, usize>,
+        chariox_owned_prompt_text_counts: BTreeMap<String, usize>,
     ) -> Self {
         let candidate_user_turn_ids = candidate_turns
             .iter()
@@ -257,12 +257,12 @@ impl ObservedExternalTurnImportState {
             .map(ObservedExternalProviderTurn::provider_turn_id_or_fallback)
             .collect::<BTreeSet<_>>();
         Self {
-            arroba_owned_provider_turn_ids: cursor.arroba_owned_observed_prompt_turn_ids.clone(),
+            chariox_owned_provider_turn_ids: cursor.chariox_owned_observed_prompt_turn_ids.clone(),
             cursor,
             visible_provider_turn_id: None,
-            current_observed_turn_is_arroba_owned: false,
+            current_observed_turn_is_chariox_owned: false,
             candidate_user_turn_ids,
-            arroba_owned_prompt_text_counts,
+            chariox_owned_prompt_text_counts,
         }
     }
 
@@ -276,14 +276,15 @@ impl ObservedExternalTurnImportState {
         let merge_turn_id = turn.provider_turn_id_or_fallback();
         if turn.role == ObservedExternalProviderTurnRole::User {
             self.visible_provider_turn_id = Some(merge_turn_id.clone());
-            self.current_observed_turn_is_arroba_owned =
-                self.arroba_owned_provider_turn_ids.contains(&merge_turn_id)
-                    || consume_arroba_owned_prompt_text_match(
-                        &mut self.arroba_owned_prompt_text_counts,
-                        &turn.text,
-                    );
-            if self.current_observed_turn_is_arroba_owned {
-                self.arroba_owned_provider_turn_ids
+            self.current_observed_turn_is_chariox_owned = self
+                .chariox_owned_provider_turn_ids
+                .contains(&merge_turn_id)
+                || consume_chariox_owned_prompt_text_match(
+                    &mut self.chariox_owned_prompt_text_counts,
+                    &turn.text,
+                );
+            if self.current_observed_turn_is_chariox_owned {
+                self.chariox_owned_provider_turn_ids
                     .insert(merge_turn_id.clone());
             }
         }
@@ -295,16 +296,16 @@ impl ObservedExternalTurnImportState {
         self.cursor.last_observed_merge_key = Some(merge_key.clone());
         self.cursor.last_observed_turn_id = Some(merge_turn_id);
         self.cursor.last_observed_at_ms = turn.observed_at_ms.or(self.cursor.last_observed_at_ms);
-        self.cursor.arroba_owned_observed_prompt_turn_ids =
-            observed_arroba_owned_user_turn_ids_in_window(
-                &self.arroba_owned_provider_turn_ids,
+        self.cursor.chariox_owned_observed_prompt_turn_ids =
+            observed_chariox_owned_user_turn_ids_in_window(
+                &self.chariox_owned_provider_turn_ids,
                 &self.candidate_user_turn_ids,
             );
         ObservedExternalTurnImportDecision {
             kind,
             provider_turn_id,
             merge_key,
-            is_arroba_owned: self.current_observed_turn_is_arroba_owned,
+            is_chariox_owned: self.current_observed_turn_is_chariox_owned,
         }
     }
 
@@ -313,7 +314,7 @@ impl ObservedExternalTurnImportState {
     }
 }
 
-fn arroba_owned_prompt_text_counts(
+fn chariox_owned_prompt_text_counts(
     history_prompts: &[String],
     active_prompt: Option<&PromptQueueItem>,
     queued_prompts: &std::collections::VecDeque<PromptQueueItem>,
@@ -326,19 +327,19 @@ fn arroba_owned_prompt_text_counts(
             counts
         });
     if let Some(active_prompt) = active_prompt {
-        add_arroba_owned_prompt_text_count(&mut counts, active_prompt);
+        add_chariox_owned_prompt_text_count(&mut counts, active_prompt);
     }
     for queued_prompt in queued_prompts {
-        add_arroba_owned_prompt_text_count(&mut counts, queued_prompt);
+        add_chariox_owned_prompt_text_count(&mut counts, queued_prompt);
     }
     counts
 }
 
-fn add_arroba_owned_prompt_text_count(
+fn add_chariox_owned_prompt_text_count(
     counts: &mut BTreeMap<String, usize>,
     prompt: &PromptQueueItem,
 ) {
-    if !prompt.is_arroba_owned() {
+    if !prompt.is_chariox_owned() {
         return;
     }
     if let Some(text) = normalized_observed_prompt_text(prompt.prompt()) {
@@ -412,17 +413,17 @@ pub(super) fn external_observed_history_entry_matches(
         && existing.external_observation == next.external_observation
 }
 
-pub(super) fn observed_arroba_owned_user_turn_ids_in_window(
-    arroba_owned_provider_turn_ids: &BTreeSet<String>,
+pub(super) fn observed_chariox_owned_user_turn_ids_in_window(
+    chariox_owned_provider_turn_ids: &BTreeSet<String>,
     candidate_user_turn_ids: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    arroba_owned_provider_turn_ids
+    chariox_owned_provider_turn_ids
         .intersection(candidate_user_turn_ids)
         .cloned()
         .collect()
 }
 
-pub(super) fn consume_arroba_owned_prompt_text_match(
+pub(super) fn consume_chariox_owned_prompt_text_match(
     counts: &mut BTreeMap<String, usize>,
     observed_text: &str,
 ) -> bool {

@@ -167,14 +167,17 @@ pub(super) fn record(
             can_read_history: true,
             ..ExternalProviderSessionCapabilities::default()
         },
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }
 }
 
 pub(super) fn temp_root(name: &str) -> PathBuf {
-    let path = env::temp_dir().join(format!("arroba-{name}-{}", crate::session::unix_epoch_ms()));
+    let path = env::temp_dir().join(format!(
+        "chariox-{name}-{}",
+        crate::session::unix_epoch_ms()
+    ));
     fs::create_dir_all(&path).expect("temp root should create");
     path
 }

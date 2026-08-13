@@ -75,7 +75,7 @@ mod workspace_live_sync_tests {
             .iter()
             .any(|spec| spec.name == AGENT_APP_ACTION_TOOL_QUALIFIED));
         assert_eq!(
-            canonical_workflow_tool_name("mcp__arroba__arroba_agent_app_action"),
+            canonical_workflow_tool_name("mcp__chariox__chariox_agent_app_action"),
             Some(AGENT_APP_ACTION_TOOL)
         );
     }
@@ -119,7 +119,7 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == META_LIST_GUIDES_TOOL));
         assert!(specs.iter().any(|spec| spec.name == META_READ_GUIDE_TOOL));
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__arroba_meta_read_guide"),
+            canonical_meta_tool_name("mcp__chariox__chariox_meta_read_guide"),
             Some(META_READ_GUIDE_TOOL)
         );
     }
@@ -173,55 +173,55 @@ mod workspace_live_sync_tests {
             .iter()
             .any(|spec| spec.name == META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL));
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__arroba_meta_workflow_code_create"),
+            canonical_meta_tool_name("mcp__chariox__chariox_meta_workflow_code_create"),
             Some(META_WORKFLOW_CODE_CREATE_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_list"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_list"),
             Some(META_WORKFLOW_CODE_LIST_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_delete"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_delete"),
             Some(META_WORKFLOW_CODE_DELETE_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_apply"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_apply"),
             Some(META_WORKFLOW_CODE_APPLY_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_run"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_run"),
             Some(META_WORKFLOW_CODE_RUN_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_export"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_export"),
             Some(META_WORKFLOW_CODE_EXPORT_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_import"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_import"),
             Some(META_WORKFLOW_CODE_IMPORT_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_package_export"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_package_export"),
             Some(META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_package_import"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_package_import"),
             Some(META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_source_export"),
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export_directory"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_source_export_directory"),
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_source_export_dir"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_source_export_dir"),
             Some(META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL)
         );
         assert_eq!(
-            canonical_meta_tool_name("mcp__arroba__meta_workflow_code_canvas_contract"),
+            canonical_meta_tool_name("mcp__chariox__meta_workflow_code_canvas_contract"),
             Some(META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL)
         );
     }
@@ -369,19 +369,19 @@ mod workspace_live_sync_tests {
     #[test]
     fn canonical_extension_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_extension_tool_name("mcp__arroba__list_extensions"),
+            canonical_extension_tool_name("mcp__chariox__list_extensions"),
             Some(LIST_EXTENSIONS_TOOL)
         );
         assert_eq!(
-            canonical_extension_tool_name("mcp__arroba__arroba_request_extension"),
+            canonical_extension_tool_name("mcp__chariox__chariox_request_extension"),
             Some(REQUEST_EXTENSION_TOOL)
         );
         assert_eq!(
-            canonical_extension_tool_name("mcp__arroba__register_mcp"),
+            canonical_extension_tool_name("mcp__chariox__register_mcp"),
             Some(REGISTER_MCP_TOOL)
         );
         assert_eq!(
-            canonical_extension_tool_name("mcp__arroba__arroba_register_connector_adapter_path"),
+            canonical_extension_tool_name("mcp__chariox__chariox_register_connector_adapter_path"),
             Some(REGISTER_CONNECTOR_ADAPTER_PATH_TOOL)
         );
         assert_eq!(canonical_extension_tool_name("unknown"), None);
@@ -390,11 +390,11 @@ mod workspace_live_sync_tests {
     #[test]
     fn canonical_recall_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_recall_tool_name("mcp__arroba__search_recall"),
+            canonical_recall_tool_name("mcp__chariox__search_recall"),
             Some(SEARCH_RECALL_TOOL)
         );
         assert_eq!(
-            canonical_recall_tool_name("mcp__arroba__arroba_query_recall"),
+            canonical_recall_tool_name("mcp__chariox__chariox_query_recall"),
             Some(QUERY_RECALL_TOOL)
         );
         assert_eq!(canonical_recall_tool_name("unknown"), None);
@@ -403,11 +403,11 @@ mod workspace_live_sync_tests {
     #[test]
     fn canonical_slice_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_slice_tool_name("mcp__arroba__slice_screenshot"),
+            canonical_slice_tool_name("mcp__chariox__slice_screenshot"),
             Some(SLICE_SCREENSHOT_TOOL)
         );
         assert_eq!(
-            canonical_slice_tool_name("mcp__arroba__arroba_slice_mouse"),
+            canonical_slice_tool_name("mcp__chariox__chariox_slice_mouse"),
             Some(SLICE_MOUSE_TOOL)
         );
         assert_eq!(
@@ -415,7 +415,7 @@ mod workspace_live_sync_tests {
             Some(SLICE_OPEN_URL_TOOL)
         );
         assert_eq!(
-            canonical_slice_tool_name("mcp__arroba__slice_browser_fill"),
+            canonical_slice_tool_name("mcp__chariox__slice_browser_fill"),
             Some(SLICE_BROWSER_FILL_TOOL)
         );
         assert_eq!(
@@ -423,7 +423,7 @@ mod workspace_live_sync_tests {
             Some(SLICE_BROWSER_STATUS_TOOL)
         );
         assert_eq!(
-            canonical_slice_tool_name("mcp__arroba__slice_browser_wait_for_text"),
+            canonical_slice_tool_name("mcp__chariox__slice_browser_wait_for_text"),
             Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
         );
         assert_eq!(
@@ -431,7 +431,7 @@ mod workspace_live_sync_tests {
             Some(SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
         );
         assert_eq!(
-            canonical_slice_tool_name("mcp__arroba__slice_browser_dialog"),
+            canonical_slice_tool_name("mcp__chariox__slice_browser_dialog"),
             Some(SLICE_BROWSER_DIALOG_TOOL)
         );
         assert_eq!(canonical_slice_tool_name("unknown"), None);
@@ -440,7 +440,7 @@ mod workspace_live_sync_tests {
     #[test]
     fn canonical_credential_tool_name_accepts_browser_paste_aliases() {
         assert_eq!(
-            canonical_credential_tool_name("mcp__arroba__arroba_create_generated_credential"),
+            canonical_credential_tool_name("mcp__chariox__chariox_create_generated_credential"),
             Some(CREATE_GENERATED_CREDENTIAL_TOOL)
         );
         assert_eq!(
@@ -452,7 +452,7 @@ mod workspace_live_sync_tests {
             Some(PASTE_SECRET_TO_SLICE_TOOL)
         );
         assert_eq!(
-            canonical_credential_tool_name("mcp__arroba__paste_secret_to_slice"),
+            canonical_credential_tool_name("mcp__chariox__paste_secret_to_slice"),
             Some(PASTE_SECRET_TO_SLICE_TOOL)
         );
         assert_eq!(
@@ -465,11 +465,11 @@ mod workspace_live_sync_tests {
     #[test]
     fn canonical_workspace_live_sync_tool_name_accepts_provider_aliases() {
         assert_eq!(
-            canonical_workspace_live_sync_tool_name("mcp__arroba__read_artifact"),
+            canonical_workspace_live_sync_tool_name("mcp__chariox__read_artifact"),
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
-            canonical_workspace_live_sync_tool_name("mcp__arroba__arroba_read_artifact"),
+            canonical_workspace_live_sync_tool_name("mcp__chariox__chariox_read_artifact"),
             Some(READ_ARTIFACT_TOOL)
         );
         assert_eq!(
@@ -485,11 +485,11 @@ mod workspace_live_sync_tests {
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(
-            canonical_workspace_live_sync_tool_name("arroba_apply_patch"),
+            canonical_workspace_live_sync_tool_name("chariox_apply_patch"),
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(
-            canonical_workspace_live_sync_tool_name("arroba_patch_artifact"),
+            canonical_workspace_live_sync_tool_name("chariox_patch_artifact"),
             Some(APPLY_PATCH_TOOL)
         );
         assert_eq!(canonical_workspace_live_sync_tool_name("unknown"), None);
@@ -638,7 +638,7 @@ mod workspace_live_sync_tests {
     #[test]
     fn workflow_handoff_schema_validator_keeps_schema_ref_contract() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-workflow-schema-{}.json",
+            "chariox-workflow-schema-{}.json",
             crate::session::unix_epoch_ms()
         ));
         std::fs::write(

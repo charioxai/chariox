@@ -3,7 +3,7 @@ use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnCont
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime_transport::WatchResult;
-use crate::skill::ArrobaSkillPackage;
+use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
     RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability,
@@ -13,7 +13,7 @@ use crate::transport::relay_peer::{
 use super::*;
 
 impl KernelRuntimeState {
-    pub(crate) async fn relay_registration(&self) -> arroba_relay::protocol::DaemonRegistration {
+    pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.with_app_side_effect(|app| app.relay_registration())
             .await
     }
@@ -461,7 +461,7 @@ impl KernelRuntimeState {
     pub(crate) async fn ensure_relay_remote_skill_packages(
         &self,
         context: RemoteSkillSyncContext,
-        packages: Vec<ArrobaSkillPackage>,
+        packages: Vec<CharioxSkillPackage>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).ensure_remote_skill_packages(context, packages)

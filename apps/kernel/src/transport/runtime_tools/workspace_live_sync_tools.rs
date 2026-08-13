@@ -3,23 +3,23 @@ use serde::{Deserialize, Serialize};
 use super::RuntimeToolSpec;
 
 #[allow(dead_code)]
-pub const READ_ARTIFACT_TOOL: &str = "arroba.read_artifact";
+pub const READ_ARTIFACT_TOOL: &str = "chariox.read_artifact";
 pub const READ_ARTIFACT_TOOL_ALIAS: &str = "read_artifact";
 #[allow(dead_code)]
-pub const EDIT_ARTIFACT_TOOL: &str = "arroba.edit_artifact";
+pub const EDIT_ARTIFACT_TOOL: &str = "chariox.edit_artifact";
 pub const EDIT_ARTIFACT_TOOL_ALIAS: &str = "edit_artifact";
 #[allow(dead_code)]
-pub const APPLY_PATCH_TOOL: &str = "arroba.apply_patch";
+pub const APPLY_PATCH_TOOL: &str = "chariox.apply_patch";
 pub const APPLY_PATCH_TOOL_ALIAS: &str = "apply_patch";
 pub const PATCH_ARTIFACT_TOOL_ALIAS: &str = "patch_artifact";
 #[allow(dead_code)]
-pub const WRITE_ARTIFACT_TOOL: &str = "arroba.write_artifact";
+pub const WRITE_ARTIFACT_TOOL: &str = "chariox.write_artifact";
 pub const WRITE_ARTIFACT_TOOL_ALIAS: &str = "write_artifact";
 #[allow(dead_code)]
-pub const DELETE_ARTIFACT_TOOL: &str = "arroba.delete_artifact";
+pub const DELETE_ARTIFACT_TOOL: &str = "chariox.delete_artifact";
 pub const DELETE_ARTIFACT_TOOL_ALIAS: &str = "delete_artifact";
 #[allow(dead_code)]
-pub const MOVE_ARTIFACT_TOOL: &str = "arroba.move_artifact";
+pub const MOVE_ARTIFACT_TOOL: &str = "chariox.move_artifact";
 pub const MOVE_ARTIFACT_TOOL_ALIAS: &str = "move_artifact";
 
 #[allow(dead_code)]
@@ -119,7 +119,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: READ_ARTIFACT_TOOL.to_string(),
-            description: "Read a workspace-relative artifact through Arroba workspace live sync and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
+            description: "Read a workspace-relative artifact through Chariox workspace live sync and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -135,7 +135,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: EDIT_ARTIFACT_TOOL.to_string(),
-            description: "Apply a workspace-relative text artifact edit through Arroba workspace live sync. Non-overlapping stale edits may be rebased with a warning; overlapping edits are rejected with conflict metadata.".to_string(),
+            description: "Apply a workspace-relative text artifact edit through Chariox workspace live sync. Non-overlapping stale edits may be rebased with a warning; overlapping edits are rejected with conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path", "new_text"],
@@ -163,7 +163,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PATCH_ARTIFACT_TOOL_ALIAS.to_string(),
-            description: "Apply a text artifact patch through Arroba workspace live sync. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
+            description: "Apply a text artifact patch through Chariox workspace live sync. Supports add, update, delete, and move operations atomically. Conflicting hunks are rejected with structured conflict metadata.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["patch_text"],
@@ -179,7 +179,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: DELETE_ARTIFACT_TOOL.to_string(),
-            description: "Delete a workspace-relative artifact through Arroba workspace live sync. Non-text artifacts are coordinated as whole-file operations.".to_string(),
+            description: "Delete a workspace-relative artifact through Chariox workspace live sync. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -195,7 +195,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MOVE_ARTIFACT_TOOL.to_string(),
-            description: "Move a workspace-relative artifact through Arroba workspace live sync. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
+            description: "Move a workspace-relative artifact through Chariox workspace live sync. Optional old_text/new_text can edit moved text content atomically. Non-text artifacts are moved as whole files without content transforms.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["from_path", "to_path"],
@@ -214,7 +214,7 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: WRITE_ARTIFACT_TOOL.to_string(),
-            description: "Create or overwrite a workspace-relative artifact through Arroba workspace live sync. Use content_text for text/structured artifacts and content_base64 for opaque artifacts. Non-text artifacts are coordinated as whole-file operations.".to_string(),
+            description: "Create or overwrite a workspace-relative artifact through Chariox workspace live sync. Use content_text for text/structured artifacts and content_base64 for opaque artifacts. Non-text artifacts are coordinated as whole-file operations.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
@@ -264,38 +264,38 @@ pub fn canonical_workspace_live_sync_tool_name(tool_name: &str) -> Option<&'stat
     match tool_name {
         READ_ARTIFACT_TOOL
         | READ_ARTIFACT_TOOL_ALIAS
-        | "arroba_read_artifact"
-        | "mcp__arroba__read_artifact"
-        | "mcp__arroba__arroba_read_artifact" => Some(READ_ARTIFACT_TOOL),
+        | "chariox_read_artifact"
+        | "mcp__chariox__read_artifact"
+        | "mcp__chariox__chariox_read_artifact" => Some(READ_ARTIFACT_TOOL),
         EDIT_ARTIFACT_TOOL
         | EDIT_ARTIFACT_TOOL_ALIAS
-        | "arroba_edit_artifact"
-        | "mcp__arroba__edit_artifact"
-        | "mcp__arroba__arroba_edit_artifact" => Some(EDIT_ARTIFACT_TOOL),
+        | "chariox_edit_artifact"
+        | "mcp__chariox__edit_artifact"
+        | "mcp__chariox__chariox_edit_artifact" => Some(EDIT_ARTIFACT_TOOL),
         APPLY_PATCH_TOOL
         | APPLY_PATCH_TOOL_ALIAS
         | PATCH_ARTIFACT_TOOL_ALIAS
-        | "arroba_apply_patch"
-        | "arroba_patch_artifact"
-        | "mcp__arroba__apply_patch"
-        | "mcp__arroba__patch_artifact"
-        | "mcp__arroba__arroba_apply_patch"
-        | "mcp__arroba__arroba_patch_artifact" => Some(APPLY_PATCH_TOOL),
+        | "chariox_apply_patch"
+        | "chariox_patch_artifact"
+        | "mcp__chariox__apply_patch"
+        | "mcp__chariox__patch_artifact"
+        | "mcp__chariox__chariox_apply_patch"
+        | "mcp__chariox__chariox_patch_artifact" => Some(APPLY_PATCH_TOOL),
         DELETE_ARTIFACT_TOOL
         | DELETE_ARTIFACT_TOOL_ALIAS
-        | "arroba_delete_artifact"
-        | "mcp__arroba__delete_artifact"
-        | "mcp__arroba__arroba_delete_artifact" => Some(DELETE_ARTIFACT_TOOL),
+        | "chariox_delete_artifact"
+        | "mcp__chariox__delete_artifact"
+        | "mcp__chariox__chariox_delete_artifact" => Some(DELETE_ARTIFACT_TOOL),
         MOVE_ARTIFACT_TOOL
         | MOVE_ARTIFACT_TOOL_ALIAS
-        | "arroba_move_artifact"
-        | "mcp__arroba__move_artifact"
-        | "mcp__arroba__arroba_move_artifact" => Some(MOVE_ARTIFACT_TOOL),
+        | "chariox_move_artifact"
+        | "mcp__chariox__move_artifact"
+        | "mcp__chariox__chariox_move_artifact" => Some(MOVE_ARTIFACT_TOOL),
         WRITE_ARTIFACT_TOOL
         | WRITE_ARTIFACT_TOOL_ALIAS
-        | "arroba_write_artifact"
-        | "mcp__arroba__write_artifact"
-        | "mcp__arroba__arroba_write_artifact" => Some(WRITE_ARTIFACT_TOOL),
+        | "chariox_write_artifact"
+        | "mcp__chariox__write_artifact"
+        | "mcp__chariox__chariox_write_artifact" => Some(WRITE_ARTIFACT_TOOL),
         _ => None,
     }
 }

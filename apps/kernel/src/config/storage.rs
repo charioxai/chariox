@@ -53,7 +53,7 @@ impl Default for UserOperationalHistoryConfig {
         Self {
             enabled: true,
             backend: HistoryOperationalBackend::Sqlite,
-            path: Some("~/.arroba/history/operational.db".to_string()),
+            path: Some("~/.chariox/history/operational.db".to_string()),
             retention_days: Some(30),
             max_size_mb: Some(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB),
             keep_pinned_sessions: Some(true),
@@ -225,8 +225,8 @@ impl Default for UserOperationalArtifactsConfig {
     fn default() -> Self {
         Self {
             backend: ArtifactOperationalBackend::Filesystem,
-            root: Some("~/.arroba/artifacts".to_string()),
-            index_path: Some("~/.arroba/artifacts/index.db".to_string()),
+            root: Some("~/.chariox/artifacts".to_string()),
+            index_path: Some("~/.chariox/artifacts/index.db".to_string()),
             retention_days: Some(30),
         }
     }
@@ -327,7 +327,7 @@ impl Default for UserStateConfig {
     fn default() -> Self {
         Self {
             backend: StateBackend::Sqlite,
-            path: Some("~/.arroba/state/kernel.db".to_string()),
+            path: Some("~/.chariox/state/kernel.db".to_string()),
             snapshot_interval_events: Some(1_000),
         }
     }

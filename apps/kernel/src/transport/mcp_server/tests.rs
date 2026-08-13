@@ -68,7 +68,7 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
         serde_json::from_slice(&initialize_body).expect("initialize body should be json");
     assert_eq!(
         initialize_value["result"]["serverInfo"]["name"],
-        "arroba-runtime"
+        "chariox-runtime"
     );
 
     let tools_list = handle_json_rpc_value(
@@ -110,36 +110,36 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
         .any(|tool| tool["name"] == "workflow_console_clear"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.read_artifact"));
+        .any(|tool| tool["name"] == "chariox.read_artifact"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.list_extensions"));
+        .any(|tool| tool["name"] == "chariox.list_extensions"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.request_extension"));
+        .any(|tool| tool["name"] == "chariox.request_extension"));
     assert!(!tools.iter().any(|tool| tool["name"] == "list_extensions"));
     assert!(!tools.iter().any(|tool| tool["name"] == "request_extension"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.list_credential_handles"));
+        .any(|tool| tool["name"] == "chariox.list_credential_handles"));
     assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "list_credential_handles"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.http_request_with_credential"));
+        .any(|tool| tool["name"] == "chariox.http_request_with_credential"));
     assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "http_request_with_credential"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.send_secret_to_terminal"));
+        .any(|tool| tool["name"] == "chariox.send_secret_to_terminal"));
     assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "send_secret_to_terminal"));
     assert!(!tools
         .iter()
-        .any(|tool| tool["name"] == "arroba.slice_screenshot"));
+        .any(|tool| tool["name"] == "chariox.slice_screenshot"));
 }
 
 #[tokio::test]
@@ -295,7 +295,7 @@ fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
 
 async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-mcp-test-{}",
+        "chariox-workspace-live-sync-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before unix epoch")
@@ -374,7 +374,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "arroba.read_artifact",
+                "name": "chariox.read_artifact",
                 "arguments": {
                     "path": "notes.txt"
                 }
@@ -411,7 +411,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "arroba.edit_artifact",
+                "name": "chariox.edit_artifact",
                 "arguments": {
                     "path": "notes.txt",
                     "snapshot_id": snapshot_id,
@@ -461,7 +461,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 4,
             "method": "tools/call",
             "params": {
-                "name": "arroba.apply_patch",
+                "name": "chariox.apply_patch",
                 "arguments": {
                     "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n@@\n alpha\n-gamma\n+delta\n*** End Patch"
                 }
@@ -496,10 +496,10 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "arroba.write_artifact",
+                "name": "chariox.write_artifact",
                 "arguments": {
                     "path": "created.txt",
-                    "content_text": "created through arroba\n"
+                    "content_text": "created through chariox\n"
                 }
             }
         }),
@@ -522,10 +522,10 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     assert!(write_value["result"]["structuredContent"]["change"]["diff"]
         .as_str()
         .expect("write diff should be present")
-        .contains("+created through arroba"));
+        .contains("+created through chariox"));
     assert_eq!(
         std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
-        "created through arroba\n"
+        "created through chariox\n"
     );
 
     let move_delete_response = handle_json_rpc_value(
@@ -536,7 +536,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 5,
             "method": "tools/call",
             "params": {
-                "name": "arroba.apply_patch",
+                "name": "chariox.apply_patch",
                 "arguments": {
                     "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: archive/notes.txt\n@@\n-alpha\n+omega\n delta\n*** Delete File: created.txt\n*** End Patch"
                 }
@@ -574,7 +574,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 6,
             "method": "tools/call",
             "params": {
-                "name": "arroba.apply_patch",
+                "name": "chariox.apply_patch",
                 "arguments": {
                     "patch_text": "*** Begin Patch\n*** Add File: should-not-exist.txt\n+nope\n*** Update File: archive/notes.txt\n@@\n-missing\n+bad\n*** End Patch"
                 }
@@ -611,7 +611,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 7,
             "method": "tools/call",
             "params": {
-                "name": "arroba.move_artifact",
+                "name": "chariox.move_artifact",
                 "arguments": {
                     "from_path": "archive/notes.txt",
                     "to_path": "final.txt",
@@ -650,7 +650,7 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
             "id": 8,
             "method": "tools/call",
             "params": {
-                "name": "arroba.delete_artifact",
+                "name": "chariox.delete_artifact",
                 "arguments": {
                     "path": "final.txt"
                 }
@@ -689,25 +689,26 @@ fn mcp_http_tools_call_lists_and_requests_capabilities() {
 
 async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-capability-mcp-test-{}",
+        "chariox-capability-mcp-test-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos()
     ));
-    std::fs::create_dir_all(root.join(".arroba").join("skills").join("browser-qa"))
+    std::fs::create_dir_all(root.join(".chariox").join("skills").join("browser-qa"))
         .expect("skill root should be created");
     std::fs::write(
-        root.join(".arroba")
+        root.join(".chariox")
             .join("skills")
             .join("browser-qa")
             .join("SKILL.md"),
         "---\nname: browser-qa\ndescription: Browser QA\n---\nUse the browser.\n",
     )
     .expect("skill should be written");
-    let mcp_registry = crate::mcp::ArrobaMcpRegistry::new(vec![root.join(".arroba").join("mcps")]);
+    let mcp_registry =
+        crate::mcp::CharioxMcpRegistry::new(vec![root.join(".chariox").join("mcps")]);
     mcp_registry
-        .install(&crate::mcp::ArrobaMcpServerConfig::stdio(
+        .install(&crate::mcp::CharioxMcpServerConfig::stdio(
             "browser",
             "npx",
             vec!["@playwright/mcp".to_string()],
@@ -774,7 +775,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
             "id": 1,
             "method": "tools/call",
             "params": {
-                "name": "arroba.list_extensions",
+                "name": "chariox.list_extensions",
                 "arguments": {"kind": "all"}
             }
         }),
@@ -809,7 +810,7 @@ async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "arroba.request_extension",
+                "name": "chariox.request_extension",
                 "arguments": {"kind": "skill", "name": "browser-qa"}
             }
         }),

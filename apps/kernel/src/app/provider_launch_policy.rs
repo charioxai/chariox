@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::agent::AgentInstance;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::CharioxMcpServerConfig;
 use crate::provider::{
     normalize_provider_resume_model, LaunchProviderRequest, ProviderResumeState, RuntimeProviderRun,
 };
@@ -20,8 +20,8 @@ pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> 
 
 pub(crate) fn resolve_mcp_credentials_for_launch(
     config: &DaemonConfig,
-    servers: Vec<ArrobaMcpServerConfig>,
-) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+    servers: Vec<CharioxMcpServerConfig>,
+) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
     if servers.is_empty() {
         return Ok(servers);
     }
@@ -67,15 +67,15 @@ pub(crate) fn granted_mcp_servers_for_agent_launch(
     operation: &'static str,
     session: &RuntimeSession,
     agent: &AgentInstance,
-) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
     let mcp_grants = agent.mcp_grants();
     if mcp_grants.is_empty() {
         return Ok(Vec::new());
     }
-    let roots = crate::mcp::ArrobaMcpRegistry::user_root()
+    let roots = crate::mcp::CharioxMcpRegistry::user_root()
         .map(|root| vec![root])
         .unwrap_or_default();
-    let registry = crate::mcp::ArrobaMcpRegistry::new(roots);
+    let registry = crate::mcp::CharioxMcpRegistry::new(roots);
     let mut servers = Vec::new();
     for grant in mcp_grants {
         let Some(server) = registry.get(&grant)? else {
@@ -108,7 +108,7 @@ pub(crate) fn apply_metaagent_launch_policy(
     }
     request = request
         .with_provider_config_override("features.multi_agent", serde_json::json!(false))
-        .with_provider_config_override("arroba.metaagent_tools_only", serde_json::json!(true))
+        .with_provider_config_override("chariox.metaagent_tools_only", serde_json::json!(true))
         .with_mcp_servers(Vec::new())
         .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest::default());
     request
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_protected_roots_do_not_include_sibling_repos() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-live-sync-root-scope-{}-{}",
+            "chariox-live-sync-root-scope-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

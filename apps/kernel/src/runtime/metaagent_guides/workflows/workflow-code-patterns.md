@@ -2,11 +2,11 @@
 
 This guide exposes the canonical workflow-code scripts for the dynamic workflow pattern suite. The kernel compiles every script in this guide in the workflow-code unit tests, so these examples are the preferred starting points for metaagents that need to create portable workflows.
 
-Use these as templates, then validate the edited source with `arroba.meta.workflow_code.validate` before applying or running it. If a target kernel lacks a requested provider or model, use apply/run `provider_rebindings` keyed by node handle.
+Use these as templates, then validate the edited source with `chariox.meta.workflow_code.validate` before applying or running it. If a target kernel lacks a requested provider or model, use apply/run `provider_rebindings` keyed by node handle.
 
-The suite maps the Anthropic workflow vocabulary to Arroba workflow-code primitives: prompt chaining, routing, parallelization, orchestrator-workers, and evaluator-optimizer come from Anthropic's "Building effective agents"; adversarial verification, tournament, generate/filter, and loop-until-done cover the Claude Code dynamic-workflow shapes used for wide parallel work, independent verification, comparison, and iterative convergence.
+The suite maps the Anthropic workflow vocabulary to Chariox workflow-code primitives: prompt chaining, routing, parallelization, orchestrator-workers, and evaluator-optimizer come from Anthropic's "Building effective agents"; adversarial verification, tournament, generate/filter, and loop-until-done cover the Claude Code dynamic-workflow shapes used for wide parallel work, independent verification, comparison, and iterative convergence.
 
-All examples follow `workflow-canvas-v1`: nodes are `232 x 96`, endpoints are `180 x 78`, generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28`, and explicit boxes keep at least `36` canvas units of separation. Use `arroba.meta.workflow_code.canvas_contract` for the authoritative runtime contract before designing custom layouts.
+All examples follow `workflow-canvas-v1`: nodes are `232 x 96`, endpoints are `180 x 78`, generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28`, and explicit boxes keep at least `36` canvas units of separation. Use `chariox.meta.workflow_code.canvas_contract` for the authoritative runtime contract before designing custom layouts.
 
 References:
 - https://www.anthropic.com/engineering/building-effective-agents

@@ -75,7 +75,7 @@ impl KernelRuntimeOwnedState {
                 })?;
             if active_run.agent_instance_id() != Some(agent_id)
                 && active_run.state() == crate::provider::ProviderRunState::Running
-                && active_run.client_interface().is_arroba()
+                && active_run.client_interface().is_chariox()
                 && !self.provider_run_has_active_prompt(session_id, &active_run)?
             {
                 let outcome = self
@@ -178,7 +178,7 @@ impl KernelRuntimeOwnedState {
                                     != Some(focused_agent_id.as_str())
                                     && active_run.state()
                                         == crate::provider::ProviderRunState::Running
-                                    && active_run.client_interface().is_arroba()
+                                    && active_run.client_interface().is_chariox()
                                     && !self
                                         .provider_run_has_active_prompt(session_id, &active_run)?
                                 {

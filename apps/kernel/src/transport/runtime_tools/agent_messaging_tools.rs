@@ -21,7 +21,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List the agents in the current Arroba session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
+            description: "List the agents in the current Chariox session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -30,7 +30,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: GET_SESSION_AGENT_TOOL.to_string(),
-            description: "Read the safe configuration and current runtime status of one existing agent in the current Arroba session. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
+            description: "Read the safe configuration and current runtime status of one existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent"],
@@ -45,7 +45,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable prompt to another existing agent in the current Arroba session. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The prompt starts immediately when the target is idle and enters its normal queue when it is busy. This tool never creates agents. Use arroba.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable prompt to another existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. The prompt starts immediately when the target is idle and enters its normal queue when it is busy. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message"],
@@ -99,17 +99,17 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 pub fn canonical_agent_messaging_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         LIST_SESSION_AGENTS_TOOL
-        | "arroba_list_session_agents"
-        | "mcp__arroba__list_session_agents"
-        | "mcp__arroba__arroba_list_session_agents" => Some(LIST_SESSION_AGENTS_TOOL),
+        | "chariox_list_session_agents"
+        | "mcp__chariox__list_session_agents"
+        | "mcp__chariox__chariox_list_session_agents" => Some(LIST_SESSION_AGENTS_TOOL),
         GET_SESSION_AGENT_TOOL
-        | "arroba_get_session_agent"
-        | "mcp__arroba__get_session_agent"
-        | "mcp__arroba__arroba_get_session_agent" => Some(GET_SESSION_AGENT_TOOL),
+        | "chariox_get_session_agent"
+        | "mcp__chariox__get_session_agent"
+        | "mcp__chariox__chariox_get_session_agent" => Some(GET_SESSION_AGENT_TOOL),
         SEND_AGENT_MESSAGE_TOOL
-        | "arroba_send_agent_message"
-        | "mcp__arroba__send_agent_message"
-        | "mcp__arroba__arroba_send_agent_message" => Some(SEND_AGENT_MESSAGE_TOOL),
+        | "chariox_send_agent_message"
+        | "mcp__chariox__send_agent_message"
+        | "mcp__chariox__chariox_send_agent_message" => Some(SEND_AGENT_MESSAGE_TOOL),
         _ => None,
     }
 }

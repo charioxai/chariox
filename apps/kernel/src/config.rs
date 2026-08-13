@@ -61,7 +61,7 @@ pub struct EventGeneratorManagementTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
     pub user_config_path: PathBuf,
-    pub user_config: ArrobaUserConfig,
+    pub user_config: CharioxUserConfig,
     pub daemon_id: String,
     pub host_machine_id: String,
     pub host_machine_alias: Option<String>,
@@ -146,7 +146,7 @@ impl DaemonConfig {
             .unwrap_or_default();
         Self {
             user_config_path: Self::default_user_config_path(),
-            user_config: ArrobaUserConfig::default(),
+            user_config: CharioxUserConfig::default(),
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,
@@ -190,19 +190,19 @@ impl DaemonConfig {
         let index = TEST_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         let mut config = Self::new("daemon-test", "machine-test", "tester");
         config.kernel_websocket_write_delay_ms = 0;
-        config.local_socket_path = std::env::temp_dir().join("arroba-tests").join(format!(
+        config.local_socket_path = std::env::temp_dir().join("chariox-tests").join(format!(
             "daemon-test-{}-{}.sock",
             std::process::id(),
             index
         ));
-        config.session_history_root = std::env::temp_dir().join("arroba-tests").join(format!(
+        config.session_history_root = std::env::temp_dir().join("chariox-tests").join(format!(
             "session-history-{}-{}",
             std::process::id(),
             index
         ));
         config.user_config.history.operational.path = Some(
             std::env::temp_dir()
-                .join("arroba-tests")
+                .join("chariox-tests")
                 .join(format!(
                     "operational-history-{}-{}.db",
                     std::process::id(),
@@ -213,7 +213,7 @@ impl DaemonConfig {
         );
         config.user_config.artifacts.operational.root = Some(
             std::env::temp_dir()
-                .join("arroba-tests")
+                .join("chariox-tests")
                 .join(format!(
                     "operational-artifacts-{}-{}",
                     std::process::id(),
@@ -224,7 +224,7 @@ impl DaemonConfig {
         );
         config.user_config.artifacts.operational.index_path = Some(
             std::env::temp_dir()
-                .join("arroba-tests")
+                .join("chariox-tests")
                 .join(format!(
                     "operational-artifacts-{}-{}.db",
                     std::process::id(),
@@ -235,7 +235,7 @@ impl DaemonConfig {
         );
         config.user_config.state.path = Some(
             std::env::temp_dir()
-                .join("arroba-tests")
+                .join("chariox-tests")
                 .join(format!("kernel-state-{}-{}", std::process::id(), index))
                 .join("state.db")
                 .display()
@@ -370,7 +370,7 @@ fn normalize_relay_url_for_match(relay_url: &str) -> &str {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaUserConfig {
+pub struct CharioxUserConfig {
     #[serde(default = "default_user_config_version")]
     pub version: u32,
     #[serde(default)]
@@ -395,7 +395,7 @@ pub struct ArrobaUserConfig {
     pub credential_vault: UserCredentialVaultConfig,
 }
 
-impl Default for ArrobaUserConfig {
+impl Default for CharioxUserConfig {
     fn default() -> Self {
         Self {
             version: default_user_config_version(),
@@ -569,17 +569,17 @@ fn default_user_config_version() -> u32 {
     1
 }
 
-fn load_user_config_from_path(path: &PathBuf) -> ArrobaUserConfig {
+fn load_user_config_from_path(path: &PathBuf) -> CharioxUserConfig {
     let Some(payload) = fs::read_to_string(path).ok() else {
-        return ArrobaUserConfig::default();
+        return CharioxUserConfig::default();
     };
-    let mut config = toml::from_str::<ArrobaUserConfig>(&payload).unwrap_or_default();
+    let mut config = toml::from_str::<CharioxUserConfig>(&payload).unwrap_or_default();
     clamp_operational_history_config(&mut config);
     reject_test_persistence_paths_in_default_user_config(path, &config);
     config
 }
 
-fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), DaemonError> {
+fn persist_user_config(path: &PathBuf, config: &CharioxUserConfig) -> Result<(), DaemonError> {
     reject_test_persistence_paths_for_persist(path, config)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
@@ -597,19 +597,22 @@ fn persist_user_config(path: &PathBuf, config: &ArrobaUserConfig) -> Result<(), 
     })
 }
 
-fn clamp_operational_history_config(config: &mut ArrobaUserConfig) {
+fn clamp_operational_history_config(config: &mut CharioxUserConfig) {
     if let Some(max_size_mb) = config.history.operational.max_size_mb.as_mut() {
         *max_size_mb = (*max_size_mb).min(crate::history::OPERATIONAL_HISTORY_HARD_MAX_MB);
     }
 }
 
-fn reject_test_persistence_paths_in_default_user_config(path: &PathBuf, config: &ArrobaUserConfig) {
+fn reject_test_persistence_paths_in_default_user_config(
+    path: &PathBuf,
+    config: &CharioxUserConfig,
+) {
     if path != &DaemonConfig::default_user_config_path() {
         return;
     }
     if user_config_has_test_persistence_path(config) {
         panic!(
-            "default Arroba user config contains test persistence paths under arroba-tests; remove history/state test paths from {}",
+            "default Chariox user config contains test persistence paths under chariox-tests; remove history/state test paths from {}",
             path.display()
         );
     }
@@ -617,20 +620,20 @@ fn reject_test_persistence_paths_in_default_user_config(path: &PathBuf, config: 
 
 fn reject_test_persistence_paths_for_persist(
     path: &PathBuf,
-    config: &ArrobaUserConfig,
+    config: &CharioxUserConfig,
 ) -> Result<(), DaemonError> {
     if path == &DaemonConfig::default_user_config_path()
         && user_config_has_test_persistence_path(config)
     {
         return Err(DaemonError::InvalidConfig {
             field: "user_config",
-            message: "default user config must not persist test paths under arroba-tests",
+            message: "default user config must not persist test paths under chariox-tests",
         });
     }
     Ok(())
 }
 
-fn user_config_has_test_persistence_path(config: &ArrobaUserConfig) -> bool {
+fn user_config_has_test_persistence_path(config: &CharioxUserConfig) -> bool {
     [
         config.history.operational.path.as_deref(),
         config.artifacts.operational.root.as_deref(),
@@ -643,7 +646,7 @@ fn user_config_has_test_persistence_path(config: &ArrobaUserConfig) -> bool {
 }
 
 fn is_test_persistence_path(path: &str) -> bool {
-    path.contains("/arroba-tests/") || path.contains("\\arroba-tests\\")
+    path.contains("/chariox-tests/") || path.contains("\\chariox-tests\\")
 }
 
 fn normalized_optional(value: Option<String>) -> Option<String> {

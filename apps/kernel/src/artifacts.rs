@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn stores_artifact_blob_and_loads_archive_outbox() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-artifact-store-{}-{}",
+            "chariox-artifact-store-{}-{}",
             std::process::id(),
             unix_epoch_ms()
         ));

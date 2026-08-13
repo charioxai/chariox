@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn agent_outline_makes_legacy_duplicate_turn_ids_unique() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-duplicate-turn-outline-{}-{}.db",
+        "chariox-duplicate-turn-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -57,7 +57,7 @@ fn agent_outline_makes_legacy_duplicate_turn_ids_unique() {
 #[test]
 fn agent_outline_keeps_steering_prompts_inside_turns() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-steering-outline-{}-{}.db",
+        "chariox-steering-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -151,7 +151,7 @@ fn agent_outline_keeps_steering_prompts_inside_turns() {
 #[test]
 fn agent_outline_pages_older_turns_with_cursor() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-cursor-outline-{}-{}.db",
+        "chariox-cursor-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -241,7 +241,7 @@ fn agent_outline_pages_older_turns_with_cursor() {
 #[test]
 fn agent_outline_rehydrates_file_image_attachment_previews() {
     let image_path = std::env::temp_dir().join(format!(
-        "arroba-outline-preview-{}-{}.png",
+        "chariox-outline-preview-{}-{}.png",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -280,7 +280,7 @@ fn agent_outline_rehydrates_file_image_attachment_previews() {
 #[test]
 fn agent_outline_leaves_promptless_local_provider_activity_empty() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-promptless-outline-{}-{}.db",
+        "chariox-promptless-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -325,7 +325,7 @@ fn agent_outline_leaves_promptless_local_provider_activity_empty() {
 #[test]
 fn agent_outline_omits_persisted_external_recovery_envelopes() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-recovery-envelope-outline-{}-{}.db",
+        "chariox-recovery-envelope-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -346,7 +346,7 @@ fn agent_outline_omits_persisted_external_recovery_envelopes() {
         Some("run-1"),
         "agent-1",
         SessionHistoryEntryKind::UserPrompt,
-        "[Arroba recovery operation arroba-recovery:prompt-1:1] Continue the active task.",
+        "[Chariox recovery operation chariox-recovery:prompt-1:1] Continue the active task.",
         "codex",
         "thread-1",
         Some("observed-recovery".to_string()),
@@ -387,9 +387,9 @@ fn agent_outline_omits_persisted_external_recovery_envelopes() {
 }
 
 #[test]
-fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
+fn agent_outline_keeps_cancelled_chariox_turn_without_codex_abort_echo() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-codex-abort-envelope-outline-{}-{}.db",
+        "chariox-codex-abort-envelope-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -398,7 +398,7 @@ fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
     let store =
         OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
-    let arroba_context = HistoryEventTurnContext {
+    let chariox_context = HistoryEventTurnContext {
         session_id: Some("session-1".to_string()),
         agent_id: Some("agent-1".to_string()),
         turn_id: Some("prompt-1".to_string()),
@@ -409,7 +409,7 @@ fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
     let observed_context = HistoryEventTurnContext {
         turn_id: Some("observed-abort".to_string()),
         prompt_id: None,
-        ..arroba_context.clone()
+        ..chariox_context.clone()
     };
     let prompt = SessionHistoryEntry::user_prompt(
         "session-1",
@@ -449,8 +449,8 @@ fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
     );
     store
         .append_many(&[
-            HistoryEvent::transcript(1, &prompt, arroba_context.clone()),
-            HistoryEvent::transcript(2, &running_tool, arroba_context),
+            HistoryEvent::transcript(1, &prompt, chariox_context.clone()),
+            HistoryEvent::transcript(2, &running_tool, chariox_context),
             HistoryEvent::transcript(3, &abort_echo, observed_context.clone()),
             HistoryEvent::transcript(4, &completed_tool_echo, observed_context),
         ])
@@ -479,7 +479,7 @@ fn agent_outline_keeps_cancelled_arroba_turn_without_codex_abort_echo() {
 #[test]
 fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_store_restart() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-history-restart-outline-{}-{}.db",
+        "chariox-history-restart-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -589,7 +589,7 @@ fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_s
 #[test]
 fn agent_outline_leaves_promptless_imported_provider_activity_empty() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-promptless-outline-pages-{}-{}.db",
+        "chariox-promptless-outline-pages-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -642,7 +642,7 @@ fn agent_outline_leaves_promptless_imported_provider_activity_empty() {
 #[test]
 fn agent_outline_leaves_promptless_observed_activity_empty() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-promptless-external-outline-{}-{}.db",
+        "chariox-promptless-external-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -691,7 +691,7 @@ fn agent_outline_leaves_promptless_observed_activity_empty() {
 #[test]
 fn agent_outline_caps_large_provider_output_inline_payloads() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-large-output-outline-{}-{}.db",
+        "chariox-large-output-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -754,7 +754,7 @@ fn agent_outline_caps_large_provider_output_inline_payloads() {
 #[test]
 fn agent_outline_groups_large_blob_metadata_sets() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-large-blob-metadata-outline-{}-{}.db",
+        "chariox-large-blob-metadata-outline-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

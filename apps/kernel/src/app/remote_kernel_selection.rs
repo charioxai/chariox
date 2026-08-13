@@ -1,4 +1,4 @@
-use arroba_relay::protocol::RelayKernelPresence;
+use chariox_relay::protocol::RelayKernelPresence;
 
 use crate::error::DaemonError;
 

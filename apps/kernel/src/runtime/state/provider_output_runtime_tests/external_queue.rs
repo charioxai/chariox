@@ -187,7 +187,7 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
         .expect("provider run should launch");
     app.update_provider_run_projection(run.clone());
     let (external_prompt_id, queued_prompt_id) =
-        sync_external_active_prompt_and_queue_arroba_prompt(
+        sync_external_active_prompt_and_queue_chariox_prompt(
             &mut app,
             session.id(),
             attachment.id(),
@@ -196,7 +196,7 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    assert_external_active_prompt_and_queued_arroba_prompt(
+    assert_external_active_prompt_and_queued_chariox_prompt(
         &runtime,
         session.id(),
         agent.id(),
@@ -210,7 +210,7 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
         .expect("active external prompt should not error while blocking queue dispatch");
     assert!(
         blocked.is_none(),
-        "queued Arroba prompt must not dispatch while external prompt is active"
+        "queued Chariox prompt must not dispatch while external prompt is active"
     );
 
     {
@@ -229,7 +229,7 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
     assert_eq!(dispatch.session_id, session.id());
     assert_eq!(dispatch.provider_run_id, run.id());
     assert_eq!(dispatch.agent_id, agent.id());
-    assert_eq!(dispatch.prompt, "queued from Arroba\n");
+    assert_eq!(dispatch.prompt, "queued from Chariox\n");
     assert!(!dispatch.steering);
 
     let session_state = runtime
@@ -242,9 +242,9 @@ async fn external_active_prompt_blocks_queue_until_observer_settles_it() {
     assert_eq!(active_prompt.id(), dispatch.prompt_id);
     assert_eq!(
         active_prompt.prompt_origin(),
-        crate::session::PromptOrigin::Arroba
+        crate::session::PromptOrigin::Chariox
     );
-    assert_eq!(active_prompt.prompt(), "queued from Arroba\n");
+    assert_eq!(active_prompt.prompt(), "queued from Chariox\n");
     assert!(
         session_state
             .queued_prompts_for_agent(agent.id())
@@ -285,7 +285,7 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
         .expect("provider run should launch");
     app.update_provider_run_projection(run);
     let (external_prompt_id, queued_prompt_id) =
-        sync_external_active_prompt_and_queue_arroba_prompt(
+        sync_external_active_prompt_and_queue_chariox_prompt(
             &mut app,
             session.id(),
             attachment.id(),
@@ -294,7 +294,7 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    assert_external_active_prompt_and_queued_arroba_prompt(
+    assert_external_active_prompt_and_queued_chariox_prompt(
         &runtime,
         session.id(),
         agent.id(),
@@ -322,7 +322,7 @@ async fn external_active_prompt_rejects_queued_prompt_steering() {
         other => panic!("expected LocalTransport steering error, got {other:?}"),
     }
 
-    assert_external_active_prompt_and_queued_arroba_prompt(
+    assert_external_active_prompt_and_queued_chariox_prompt(
         &runtime,
         session.id(),
         agent.id(),

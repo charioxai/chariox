@@ -17,7 +17,7 @@ impl KernelRuntimeState {
     ) -> Result<
         (
             crate::transport::runtime_tools::RuntimeToolResult,
-            Option<crate::skill::ArrobaSkillPackage>,
+            Option<crate::skill::CharioxSkillPackage>,
         ),
         DaemonError,
     > {
@@ -83,7 +83,7 @@ impl KernelRuntimeState {
                                 )
                             })
                     })
-                    .unwrap_or_else(|| ("arroba-runtime".to_string(), String::new()));
+                    .unwrap_or_else(|| ("chariox-runtime".to_string(), String::new()));
                 self.remember_pending_mcp_continuation(
                     session_id,
                     granted_agent.id(),
@@ -230,7 +230,7 @@ impl KernelRuntimeState {
             "effective": effective_when,
             "requires_provider_restart": requires_provider_restart,
             "note": match effective_when {
-                "after_provider_reload" => "Arroba will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
+                "after_provider_reload" => "Chariox will reload this provider conversation after the current turn and send an automatic continuation prompt once the MCP is available.",
                 "next_provider_launch" => "MCP grants are rendered into provider-native MCP config when the provider run launches; restart/relaunch the agent provider run before using this MCP.",
                 "now" => "The extension grant is persisted and available immediately in this turn.",
                 _ => "The extension grant is persisted."

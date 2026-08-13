@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use arroba_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
+use chariox_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
 use tokio::runtime::{Handle, Runtime, RuntimeFlavor};
 
 use crate::app::DaemonApp;

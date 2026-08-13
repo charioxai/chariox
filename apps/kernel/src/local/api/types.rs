@@ -8,7 +8,7 @@ use crate::slice::{
     SliceBackendKind, SliceDisplayEndpoint, SliceLogEntry, SliceProviderLoginStart, SliceRecord,
 };
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
-use arroba_relay::protocol::RelayKernelPresence;
+use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_lifecycle;
 mod agent_prompt_schedule;
@@ -58,4 +58,4 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 252;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 253;

@@ -519,7 +519,7 @@ fn schedule_mock_response(
                             "state": {
                                 "status": "completed",
                                 "input": {
-                                    "filePath": "./.arroba/mock-instructions.md"
+                                    "filePath": "./.chariox/mock-instructions.md"
                                 },
                                 "output": "<content>mock tool output</content>",
                                 "title": "mock read"
@@ -560,7 +560,7 @@ fn schedule_mock_response(
                             "state": {
                                 "status": "completed",
                                 "input": {
-                                    "filePath": "./.arroba/mock-instructions.md"
+                                    "filePath": "./.chariox/mock-instructions.md"
                                 },
                                 "output": "<content>mock tool output</content>",
                                 "title": "mock read"

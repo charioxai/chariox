@@ -4,12 +4,12 @@ use crate::agent::GitWorktreePlacement;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::history::{HistoryAttributionConfidence, HistoryEventKind, HistoryEventTurnContext};
 use crate::io::WorkspaceIdentity;
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::CharioxMcpServerConfig;
 use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptSubmissionOutcome};
-use crate::skill::ArrobaSkillPackage;
+use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 12;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -87,7 +87,7 @@ pub struct RemoteNativeInteractionContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequiredRemoteMcp {
-    pub config: ArrobaMcpServerConfig,
+    pub config: CharioxMcpServerConfig,
     pub definition_hash: String,
 }
 
@@ -422,7 +422,7 @@ pub enum RelayPeerRequest {
     },
     EnsureRemoteSkillPackages {
         context: RemoteSkillSyncContext,
-        packages: Vec<ArrobaSkillPackage>,
+        packages: Vec<CharioxSkillPackage>,
     },
     CheckRemoteMcpAvailability {
         context: RemoteMcpCheckContext,
@@ -519,7 +519,7 @@ pub enum RelayPeerResponse {
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<ArrobaSkillPackage>,
+        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"

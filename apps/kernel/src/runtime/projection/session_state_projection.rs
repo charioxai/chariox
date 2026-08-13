@@ -889,7 +889,7 @@ mod tests {
         let queued_control = &activity["agent-1"].queued_prompt_controls["queued-1"];
         assert!(
             !queued_control.can_steer,
-            "queued prompts cannot steer a provider turn started outside Arroba"
+            "queued prompts cannot steer a provider turn started outside Chariox"
         );
         assert_eq!(
             queued_control.steer_disabled_reason.as_deref(),

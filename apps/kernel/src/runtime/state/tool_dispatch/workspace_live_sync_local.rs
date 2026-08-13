@@ -688,7 +688,7 @@ mod tests {
 
     fn temp_workspace(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-{name}-{}-{}",
+            "chariox-{name}-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

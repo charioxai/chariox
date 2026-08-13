@@ -896,7 +896,7 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker() {
     };
 
     let source_path = std::env::temp_dir().join(format!(
-        "arroba-remote-attachment-{}.txt",
+        "chariox-remote-attachment-{}.txt",
         crate::session::unix_epoch_ms()
     ));
     std::fs::write(&source_path, b"remote attachment body")

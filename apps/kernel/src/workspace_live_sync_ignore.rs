@@ -2,8 +2,8 @@ use std::path::Path;
 
 pub(crate) const WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_PATTERNS: &[&str] = &[
     ".git/**",
-    ".arroba/**",
-    ".arrobaignore",
+    ".chariox/**",
+    ".charioxignore",
     ".env*",
     ".codex/**",
     ".opencode/**",
@@ -11,7 +11,7 @@ pub(crate) const WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_PATTERNS: &[&str] = &[
     ".cursor/**",
     "*.sock",
     "*.socket",
-    ".tmp-arroba/**",
+    ".tmp-chariox/**",
     ".tmp-live-workspace-live-sync-drill/**",
     ".tmp-live-remote-workspace-live-sync-drill/**",
     "history/**",
@@ -41,7 +41,7 @@ const WORKSPACE_LIVE_SYNC_FORCE_EXCLUDE_DIRS: &[&str] = &[
     ".opencode",
     ".claude",
     ".cursor",
-    ".tmp-arroba",
+    ".tmp-chariox",
     ".tmp-live-workspace-live-sync-drill",
     ".tmp-live-remote-workspace-live-sync-drill",
     "history",
@@ -76,7 +76,7 @@ pub(crate) fn workspace_live_sync_user_ignore_patterns(worktree_path: &Path) -> 
     if !worktree_path.exists() {
         return Vec::new();
     }
-    let ignore_path = worktree_path.join(".arrobaignore");
+    let ignore_path = worktree_path.join(".charioxignore");
     if !ignore_path.exists() {
         let seed = match std::fs::read_to_string(worktree_path.join(".gitignore")) {
             Ok(contents) => contents,
@@ -93,11 +93,11 @@ pub(crate) fn workspace_live_sync_user_ignore_patterns(worktree_path: &Path) -> 
 }
 
 pub(crate) fn workspace_live_sync_force_excluded_path(path: &str) -> bool {
-    if path == ".arrobaignore"
+    if path == ".charioxignore"
         || path == ".git"
         || path.starts_with(".git/")
-        || path == ".arroba"
-        || path.starts_with(".arroba/")
+        || path == ".chariox"
+        || path.starts_with(".chariox/")
     {
         return true;
     }

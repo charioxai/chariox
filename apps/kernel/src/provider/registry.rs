@@ -21,7 +21,7 @@ pub trait AgentEndpointAdapter: Send + Sync {
         false
     }
     fn workspace_live_sync_write_enforcement_unavailable_reason(&self) -> &'static str {
-        "this adapter cannot guarantee that provider-session writes are restricted to Arroba workspace live sync tools"
+        "this adapter cannot guarantee that provider-session writes are restricted to Chariox workspace live sync tools"
     }
     fn supports_turn_scoped_execution_config(&self) -> bool {
         false
@@ -293,12 +293,12 @@ mod tests {
     fn opencode_adapter_resolves_override_and_uses_working_directory() {
         let _guard = crate::env_lock::lock();
         let executable = std::env::temp_dir().join(format!(
-            "arroba-opencode-adapter-test-{}",
+            "chariox-opencode-adapter-test-{}",
             std::process::id()
         ));
         fs::write(&executable, "#!/bin/sh\nsleep 60\n").expect("fixture executable should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &executable);
-        std::env::set_var("ARROBA_OPENCODE_PORT", "43112");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", "43112");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -314,8 +314,8 @@ mod tests {
             .connect(&request)
             .expect("opencode launch should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&executable);
 
         let expected_program = executable.to_string_lossy().to_string();

@@ -392,7 +392,7 @@ fn spawn_persistent_event_writer(
     last_error: Arc<StdMutex<Option<String>>>,
 ) -> io::Result<()> {
     thread::Builder::new()
-        .name("arroba-event-log-writer".to_string())
+        .name("chariox-event-log-writer".to_string())
         .spawn(move || run_persistent_event_writer(path, write_rx, last_error))
         .map(|_| ())
 }

@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, MissedTickBehavior};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use arroba_relay::protocol::{
+use chariox_relay::protocol::{
     ClientTarget, EncryptedRelayPayload, RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest,
     RelayDisplayTunnelResponseStart, RelayDisplayTunnelStreamChunk, RelayEnvelope, RelayError,
 };

@@ -7,7 +7,7 @@ struct TestCapabilityEnv {
 impl TestCapabilityEnv {
     fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
-            "arroba-m16-runtime-extension-{label}-{}-{}",
+            "chariox-m16-runtime-extension-{label}-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -250,7 +250,7 @@ async fn yolo_agent_registers_global_mcp_and_can_grant_it_in_same_provider_sessi
             .and_then(serde_json::Value::as_bool),
         Some(false)
     );
-    let expected_path = crate::mcp::ArrobaMcpRegistry::user_root()
+    let expected_path = crate::mcp::CharioxMcpRegistry::user_root()
         .expect("HOME should resolve MCP registry root")
         .join(format!("{mcp_name}.json"));
     assert_eq!(
@@ -383,7 +383,7 @@ async fn runtime_connector_request_rejects_missing_credential_before_grant() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
     let connector_name = format!("m16-connector-{}", crate::session::unix_epoch_ms());
-    let connector_root = crate::connector::ArrobaConnectorRegistry::user_root()
+    let connector_root = crate::connector::CharioxConnectorRegistry::user_root()
         .expect("HOME should resolve connector registry root");
     std::fs::create_dir_all(&connector_root).expect("connector registry root should be created");
     let connector_path = connector_root.join(format!("{connector_name}.yaml"));
@@ -497,7 +497,7 @@ async fn register_mcp_can_grant_to_current_agent_in_one_runtime_call() {
             .and_then(serde_json::Value::as_str),
         Some("after_provider_reload")
     );
-    let expected_path = crate::mcp::ArrobaMcpRegistry::user_root()
+    let expected_path = crate::mcp::CharioxMcpRegistry::user_root()
         .expect("HOME should resolve MCP registry root")
         .join(format!("{mcp_name}.json"));
     let _ = std::fs::remove_file(expected_path);
@@ -589,7 +589,7 @@ async fn required_permission_agent_gets_registration_approval_before_path_valida
         Some(interaction_id.as_str())
     );
     assert!(
-        !crate::skill::ArrobaSkillRegistry::user_root()
+        !crate::skill::CharioxSkillRegistry::user_root()
             .expect("HOME should resolve skill registry root")
             .join(&missing_source)
             .exists(),

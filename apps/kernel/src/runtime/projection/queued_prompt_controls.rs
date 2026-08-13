@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::session::{AgentPromptState, PromptOrigin, PromptStatus};
 
 pub(crate) const QUEUED_PROMPT_STEER_EXTERNAL_REASON: &str =
-    "Steering is unavailable while the active provider turn was started outside Arroba.";
+    "Steering is unavailable while the active provider turn was started outside Chariox.";
 const QUEUED_PROMPT_STALE_REASON: &str = "This prompt is no longer waiting in the queue.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,7 +79,7 @@ mod tests {
     use crate::session::PromptQueueItem;
 
     #[test]
-    fn queued_prompt_controls_allow_steering_when_arroba_turn_is_active() {
+    fn queued_prompt_controls_allow_steering_when_chariox_turn_is_active() {
         let prompt_state = prompt_state(
             Some(PromptQueueItem::new(
                 "active-1",
@@ -98,7 +98,7 @@ mod tests {
         );
 
         let controls =
-            queued_prompt_controls_projection(Some(&prompt_state), Some(PromptOrigin::Arroba));
+            queued_prompt_controls_projection(Some(&prompt_state), Some(PromptOrigin::Chariox));
         let control = controls
             .get("queued-1")
             .expect("queued prompt control should exist");

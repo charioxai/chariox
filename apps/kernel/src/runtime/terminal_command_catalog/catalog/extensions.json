@@ -2,28 +2,28 @@
   {
     "id": "mcp",
     "label": "/mcp",
-    "description": "Manage Arroba MCP registry and agent grants",
+    "description": "Manage Chariox MCP registry and agent grants",
     "value": "/mcp ",
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "mcp-list",
         "label": "list",
-        "description": "List Arroba-managed MCPs",
+        "description": "List Chariox-managed MCPs",
         "value": "/mcp list",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "mcp-install",
         "label": "install",
-        "description": "Install an MCP into Arroba",
+        "description": "Install an MCP into Chariox",
         "value": "/mcp install ",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "mcp-import",
         "label": "import",
-        "description": "Import provider MCPs into Arroba",
+        "description": "Import provider MCPs into Chariox",
         "value": "/mcp import ",
         "surfaces": ["session", "waiting_room"]
       },
@@ -57,28 +57,28 @@
   {
     "id": "skill",
     "label": "/skill",
-    "description": "Manage Arroba skills and agent grants",
+    "description": "Manage Chariox skills and agent grants",
     "value": "/skill ",
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
         "id": "skill-list",
         "label": "list",
-        "description": "List Arroba-managed skills",
+        "description": "List Chariox-managed skills",
         "value": "/skill list",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "skill-install",
         "label": "install",
-        "description": "Install a skill into Arroba",
+        "description": "Install a skill into Chariox",
         "value": "/skill install ",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "skill-import",
         "label": "import",
-        "description": "Import provider skills into Arroba",
+        "description": "Import provider skills into Chariox",
         "value": "/skill import ",
         "surfaces": ["session", "waiting_room"]
       },
@@ -316,7 +316,7 @@
       {
         "id": "extension-import-providers",
         "label": "import providers",
-        "description": "Import MCPs and skills from provider configs into Arroba",
+        "description": "Import MCPs and skills from provider configs into Chariox",
         "value": "/extension import providers ",
         "searchAliases": [
           "extension import",

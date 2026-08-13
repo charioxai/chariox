@@ -11,9 +11,9 @@ pub(crate) struct AcceptedWorkflowEventDelivery {
 impl KernelRuntimeState {
     pub(crate) fn event_generator_subscription_claims(
         &self,
-    ) -> BTreeMap<String, Vec<arroba_event_protocol::AegsSubscriptionClaim>> {
+    ) -> BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>> {
         let mut generators =
-            BTreeMap::<String, Vec<arroba_event_protocol::AegsSubscriptionClaim>>::new();
+            BTreeMap::<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
         for session in self.owned.session_store.read().list_sessions() {
             for binding in session.workflow_event_bindings() {
                 if binding.status == crate::session::WorkflowEventBindingStatus::Tombstoned {
@@ -22,7 +22,7 @@ impl KernelRuntimeState {
                 generators
                     .entry(binding.generator_id.clone())
                     .or_default()
-                    .push(arroba_event_protocol::AegsSubscriptionClaim {
+                    .push(chariox_event_protocol::AegsSubscriptionClaim {
                         binding_id: binding.id.clone(),
                         generator_id: binding.generator_id.clone(),
                         connection_id: binding.connection_id.clone(),
@@ -45,7 +45,7 @@ impl KernelRuntimeState {
     pub(crate) fn active_event_route_claims(
         &self,
         kernel_id: &str,
-    ) -> Vec<arroba_event_protocol::EnvironmentRouteClaim> {
+    ) -> Vec<chariox_event_protocol::EnvironmentRouteClaim> {
         self.owned
             .session_store
             .read()
@@ -66,11 +66,11 @@ impl KernelRuntimeState {
         &self,
         kernel_id: &str,
         default_environment_id: &str,
-    ) -> Vec<arroba_event_protocol::KernelEnvironmentResume> {
+    ) -> Vec<chariox_event_protocol::KernelEnvironmentResume> {
         let mut environments = BTreeMap::<
             String,
             (
-                Vec<arroba_event_protocol::EnvironmentRouteClaim>,
+                Vec<chariox_event_protocol::EnvironmentRouteClaim>,
                 Option<(u64, String)>,
             ),
         >::new();
@@ -109,7 +109,7 @@ impl KernelRuntimeState {
         environments
             .into_iter()
             .map(|(environment_id, (routes, last_delivery))| {
-                arroba_event_protocol::KernelEnvironmentResume {
+                chariox_event_protocol::KernelEnvironmentResume {
                     environment_id,
                     last_accepted_delivery_id: last_delivery.map(|(_, delivery_id)| delivery_id),
                     routes,
@@ -120,7 +120,7 @@ impl KernelRuntimeState {
 
     pub(crate) fn apply_event_route_conflicts(
         &self,
-        conflicts: &[arroba_event_protocol::EventRouteConflict],
+        conflicts: &[chariox_event_protocol::EventRouteConflict],
     ) {
         let mut changed_session_ids = BTreeSet::new();
         for conflict in conflicts {
@@ -168,7 +168,7 @@ impl KernelRuntimeState {
 
     pub(crate) fn accept_workflow_event_delivery(
         &self,
-        delivery: arroba_event_protocol::EventDeliveryEnvelope,
+        delivery: chariox_event_protocol::EventDeliveryEnvelope,
     ) -> Result<AcceptedWorkflowEventDelivery, DaemonError> {
         let now_ms = crate::session::unix_epoch_ms();
         delivery

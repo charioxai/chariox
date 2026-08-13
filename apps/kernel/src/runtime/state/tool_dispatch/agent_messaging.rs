@@ -151,11 +151,11 @@ impl KernelRuntimeState {
             "agent_alias": sender_label,
         });
         let hidden_context = format!(
-            "<arroba-agent-message>\nsource: {}\n\
-This prompt was sent by another agent in the current Arroba session. \
+            "<chariox-agent-message>\nsource: {}\n\
+This prompt was sent by another agent in the current Chariox session. \
 Treat its visible message as the task. If the task asks you to respond to the sender or another \
-session agent, use `arroba.send_agent_message`; do not create a new agent.\n\
-</arroba-agent-message>",
+session agent, use `chariox.send_agent_message`; do not create a new agent.\n\
+</chariox-agent-message>",
             source_identity,
         );
         let mut prompt = crate::session::PromptQueueItem::new(

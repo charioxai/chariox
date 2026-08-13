@@ -12,7 +12,7 @@ impl CommandRouter {
         self.config_projection.snapshot().relay_private_key
     }
 
-    pub(crate) async fn relay_registration(&self) -> arroba_relay::protocol::DaemonRegistration {
+    pub(crate) async fn relay_registration(&self) -> chariox_relay::protocol::DaemonRegistration {
         self.runtime_state.relay_registration().await
     }
 
@@ -306,7 +306,7 @@ impl CommandRouter {
     pub(crate) async fn relay_ensure_remote_skill_packages(
         &self,
         context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        packages: Vec<crate::skill::ArrobaSkillPackage>,
+        packages: Vec<crate::skill::CharioxSkillPackage>,
     ) -> Result<Vec<crate::transport::relay_peer::RemoteSkillMaterialization>, DaemonError> {
         relay_peer_runtime::ensure_relay_remote_skill_packages(
             &self.runtime_state,

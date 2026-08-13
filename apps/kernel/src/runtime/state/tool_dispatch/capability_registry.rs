@@ -12,37 +12,38 @@ pub(super) fn resolve_registration_path(
     }
 }
 
-pub(super) fn global_skill_registry() -> Result<crate::skill::ArrobaSkillRegistry, DaemonError> {
-    Ok(crate::skill::ArrobaSkillRegistry::new(user_only_root(
-        crate::skill::ArrobaSkillRegistry::user_root(),
+pub(super) fn global_skill_registry() -> Result<crate::skill::CharioxSkillRegistry, DaemonError> {
+    Ok(crate::skill::CharioxSkillRegistry::new(user_only_root(
+        crate::skill::CharioxSkillRegistry::user_root(),
         "skill registry root",
-        "HOME must be set to resolve ~/.arroba/skills",
+        "HOME must be set to resolve ~/.chariox/skills",
     )?))
 }
 
-pub(super) fn global_mcp_registry() -> Result<crate::mcp::ArrobaMcpRegistry, DaemonError> {
-    Ok(crate::mcp::ArrobaMcpRegistry::new(user_only_root(
-        crate::mcp::ArrobaMcpRegistry::user_root(),
+pub(super) fn global_mcp_registry() -> Result<crate::mcp::CharioxMcpRegistry, DaemonError> {
+    Ok(crate::mcp::CharioxMcpRegistry::new(user_only_root(
+        crate::mcp::CharioxMcpRegistry::user_root(),
         "MCP registry root",
-        "HOME must be set to resolve ~/.arroba/mcps",
+        "HOME must be set to resolve ~/.chariox/mcps",
     )?))
 }
 
-pub(super) fn global_script_registry() -> Result<crate::script::ArrobaScriptRegistry, DaemonError> {
-    Ok(crate::script::ArrobaScriptRegistry::new(user_only_root(
-        crate::script::ArrobaScriptRegistry::user_root(),
+pub(super) fn global_script_registry() -> Result<crate::script::CharioxScriptRegistry, DaemonError>
+{
+    Ok(crate::script::CharioxScriptRegistry::new(user_only_root(
+        crate::script::CharioxScriptRegistry::user_root(),
         "script registry root",
-        "HOME must be set to resolve ~/.arroba/scripts",
+        "HOME must be set to resolve ~/.chariox/scripts",
     )?))
 }
 
 pub(super) fn global_environment_registry(
-) -> Result<crate::script::ArrobaEnvironmentRegistry, DaemonError> {
-    Ok(crate::script::ArrobaEnvironmentRegistry::new(
+) -> Result<crate::script::CharioxEnvironmentRegistry, DaemonError> {
+    Ok(crate::script::CharioxEnvironmentRegistry::new(
         user_only_root(
-            crate::script::ArrobaEnvironmentRegistry::user_root(),
+            crate::script::CharioxEnvironmentRegistry::user_root(),
             "environment registry root",
-            "HOME must be set to resolve ~/.arroba/envs",
+            "HOME must be set to resolve ~/.chariox/envs",
         )?,
     ))
 }
@@ -56,80 +57,82 @@ fn user_only_root(
         .ok_or(DaemonError::InvalidConfig { field, message })
 }
 
-pub(super) fn skill_registry_for_workspace(workspace: &str) -> crate::skill::ArrobaSkillRegistry {
+pub(super) fn skill_registry_for_workspace(workspace: &str) -> crate::skill::CharioxSkillRegistry {
     let mut roots = Vec::new();
     #[cfg(not(test))]
     let _ = workspace;
     #[cfg(test)]
     if !workspace.trim().is_empty() {
-        roots.push(crate::skill::ArrobaSkillRegistry::project_root(workspace));
+        roots.push(crate::skill::CharioxSkillRegistry::project_root(workspace));
     }
-    if let Some(root) = crate::skill::ArrobaSkillRegistry::user_root() {
+    if let Some(root) = crate::skill::CharioxSkillRegistry::user_root() {
         roots.push(root);
     }
-    crate::skill::ArrobaSkillRegistry::new(roots)
+    crate::skill::CharioxSkillRegistry::new(roots)
 }
 
-pub(super) fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::ArrobaMcpRegistry {
+pub(super) fn mcp_registry_for_workspace(workspace: &str) -> crate::mcp::CharioxMcpRegistry {
     let mut roots = Vec::new();
     #[cfg(not(test))]
     let _ = workspace;
     #[cfg(test)]
     if !workspace.trim().is_empty() {
-        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(workspace));
+        roots.push(crate::mcp::CharioxMcpRegistry::project_root(workspace));
     }
-    if let Some(root) = crate::mcp::ArrobaMcpRegistry::user_root() {
+    if let Some(root) = crate::mcp::CharioxMcpRegistry::user_root() {
         roots.push(root);
     }
-    crate::mcp::ArrobaMcpRegistry::new(roots)
+    crate::mcp::CharioxMcpRegistry::new(roots)
 }
 
 pub(super) fn script_registry_for_workspace(
     workspace: &str,
-) -> crate::script::ArrobaScriptRegistry {
+) -> crate::script::CharioxScriptRegistry {
     let mut roots = Vec::new();
     #[cfg(not(test))]
     let _ = workspace;
     #[cfg(test)]
     if !workspace.trim().is_empty() {
-        roots.push(crate::script::ArrobaScriptRegistry::project_root(workspace));
+        roots.push(crate::script::CharioxScriptRegistry::project_root(
+            workspace,
+        ));
     }
-    if let Some(root) = crate::script::ArrobaScriptRegistry::user_root() {
+    if let Some(root) = crate::script::CharioxScriptRegistry::user_root() {
         roots.push(root);
     }
-    crate::script::ArrobaScriptRegistry::new(roots)
+    crate::script::CharioxScriptRegistry::new(roots)
 }
 
 pub(super) fn environment_registry_for_workspace(
     workspace: &str,
-) -> crate::script::ArrobaEnvironmentRegistry {
+) -> crate::script::CharioxEnvironmentRegistry {
     let mut roots = Vec::new();
     #[cfg(not(test))]
     let _ = workspace;
     #[cfg(test)]
     if !workspace.trim().is_empty() {
-        roots.push(crate::script::ArrobaEnvironmentRegistry::project_root(
+        roots.push(crate::script::CharioxEnvironmentRegistry::project_root(
             workspace,
         ));
     }
-    if let Some(root) = crate::script::ArrobaEnvironmentRegistry::user_root() {
+    if let Some(root) = crate::script::CharioxEnvironmentRegistry::user_root() {
         roots.push(root);
     }
-    crate::script::ArrobaEnvironmentRegistry::new(roots)
+    crate::script::CharioxEnvironmentRegistry::new(roots)
 }
 
-pub(super) fn connector_registry() -> Result<crate::connector::ArrobaConnectorRegistry, DaemonError>
+pub(super) fn connector_registry() -> Result<crate::connector::CharioxConnectorRegistry, DaemonError>
 {
-    crate::connector::ArrobaConnectorRegistry::user()
+    crate::connector::CharioxConnectorRegistry::user()
 }
 
 pub(super) fn connector_adapter_registry(
-) -> Result<crate::connector::ArrobaConnectorAdapterRegistry, DaemonError> {
-    crate::connector::ArrobaConnectorAdapterRegistry::user()
+) -> Result<crate::connector::CharioxConnectorAdapterRegistry, DaemonError> {
+    crate::connector::CharioxConnectorAdapterRegistry::user()
 }
 
 pub(super) fn required_remote_mcps(
-    registry: &crate::mcp::ArrobaMcpRegistry,
+    registry: &crate::mcp::CharioxMcpRegistry,
     grants: &[String],
 ) -> Result<Vec<crate::transport::relay_peer::RequiredRemoteMcp>, DaemonError> {
     grants
@@ -190,9 +193,9 @@ pub(super) fn format_remote_mcp_unavailable(
 }
 
 pub(super) fn package_granted_skills(
-    registry: &crate::skill::ArrobaSkillRegistry,
+    registry: &crate::skill::CharioxSkillRegistry,
     grants: &[String],
-) -> Result<Vec<crate::skill::ArrobaSkillPackage>, DaemonError> {
+) -> Result<Vec<crate::skill::CharioxSkillPackage>, DaemonError> {
     grants
         .iter()
         .map(|grant| {

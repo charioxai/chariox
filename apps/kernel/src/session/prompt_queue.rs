@@ -16,7 +16,7 @@ pub enum PromptStatus {
 #[serde(rename_all = "snake_case")]
 pub enum PromptOrigin {
     #[default]
-    Arroba,
+    Chariox,
     External,
 }
 
@@ -245,7 +245,7 @@ impl PromptQueueItem {
             updated_at_ms: now,
             private_metadata: None,
             status,
-            prompt_origin: PromptOrigin::Arroba,
+            prompt_origin: PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,
@@ -489,7 +489,7 @@ impl PromptQueueItem {
         }
         metadata.recovery_generation = metadata.recovery_generation.saturating_add(1).max(1);
         let operation_id = format!(
-            "arroba-recovery:{}:{}",
+            "chariox-recovery:{}:{}",
             self.id, metadata.recovery_generation
         );
         metadata.recovery_operation_id = Some(operation_id.clone());
@@ -547,8 +547,8 @@ impl PromptQueueItem {
         self.prompt_origin == PromptOrigin::External
     }
 
-    pub fn is_arroba_owned(&self) -> bool {
-        self.prompt_origin == PromptOrigin::Arroba
+    pub fn is_chariox_owned(&self) -> bool {
+        self.prompt_origin == PromptOrigin::Chariox
     }
 
     pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
@@ -704,21 +704,21 @@ mod tests {
 
     #[test]
     fn prompt_queue_item_classifies_prompt_ownership() {
-        let arroba_prompt = PromptQueueItem::new(
+        let chariox_prompt = PromptQueueItem::new(
             "prompt-1",
             "attachment-1",
             "agent-1",
             "prompt",
             PromptStatus::Queued,
         );
-        let external_prompt = arroba_prompt
+        let external_prompt = chariox_prompt
             .clone()
             .with_prompt_origin(PromptOrigin::External);
 
-        assert!(arroba_prompt.is_arroba_owned());
-        assert!(!arroba_prompt.is_external());
+        assert!(chariox_prompt.is_chariox_owned());
+        assert!(!chariox_prompt.is_external());
         assert!(external_prompt.is_external());
-        assert!(!external_prompt.is_arroba_owned());
+        assert!(!external_prompt.is_chariox_owned());
     }
 
     #[test]
@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(prompt.prompt(), "run this");
         assert_eq!(prompt.status(), PromptStatus::Running);
         assert!(prompt.is_external());
-        assert!(!prompt.is_arroba_owned());
+        assert!(!prompt.is_chariox_owned());
         assert_eq!(
             prompt.external_observed_id(),
             Some(crate::history::ExternalProviderObservedId {

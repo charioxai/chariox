@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 
 use stdio::stdio_mcp_supervisor;
 use streamable_http::forward_streamable_http_mcp_request;
@@ -16,10 +16,10 @@ use streamable_http::forward_streamable_http_mcp_request;
 const PROXY_PATH_PREFIX: &str = "/mcp/proxy/";
 
 pub(crate) fn provider_facing_mcp_proxy_config(
-    backing: &ArrobaMcpServerConfig,
+    backing: &CharioxMcpServerConfig,
     runtime_mcp_url: &str,
     runtime_mcp_auth_token: &str,
-) -> Result<ArrobaMcpServerConfig, DaemonError> {
+) -> Result<CharioxMcpServerConfig, DaemonError> {
     provider_facing_mcp_proxy_config_named(
         backing,
         &backing.name,
@@ -29,14 +29,14 @@ pub(crate) fn provider_facing_mcp_proxy_config(
 }
 
 pub(crate) fn provider_facing_mcp_proxy_config_named(
-    backing: &ArrobaMcpServerConfig,
+    backing: &CharioxMcpServerConfig,
     provider_visible_name: &str,
     runtime_mcp_url: &str,
     runtime_mcp_auth_token: &str,
-) -> Result<ArrobaMcpServerConfig, DaemonError> {
-    let proxy = ArrobaMcpServerConfig {
+) -> Result<CharioxMcpServerConfig, DaemonError> {
+    let proxy = CharioxMcpServerConfig {
         name: provider_visible_name.to_string(),
-        transport: ArrobaMcpTransportConfig::StreamableHttp {
+        transport: CharioxMcpTransportConfig::StreamableHttp {
             url: provider_facing_mcp_proxy_url(runtime_mcp_url, &backing.name)?,
             bearer_token_env_var: None,
             bearer_token_credential: None,
@@ -60,10 +60,10 @@ pub(crate) fn provider_facing_mcp_proxy_config_named(
 }
 
 pub(crate) fn provider_facing_mcp_proxy_configs(
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
-) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
     let Some(runtime_mcp_url) = runtime_mcp_url else {
         return Ok(backing_servers.to_vec());
     };
@@ -79,11 +79,11 @@ pub(crate) fn provider_facing_mcp_proxy_configs(
 }
 
 pub(crate) fn provider_facing_mcp_proxy_configs_with_bearer_env(
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
     bearer_token_env_var: &str,
-) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
     let mut servers = provider_facing_mcp_proxy_configs(
         backing_servers,
         runtime_mcp_url,
@@ -91,7 +91,7 @@ pub(crate) fn provider_facing_mcp_proxy_configs_with_bearer_env(
     )?;
     if runtime_mcp_url.is_some() && runtime_mcp_auth_token.is_some() {
         for server in &mut servers {
-            if let ArrobaMcpTransportConfig::StreamableHttp {
+            if let CharioxMcpTransportConfig::StreamableHttp {
                 bearer_token_env_var: env_var,
                 http_headers,
                 ..
@@ -120,7 +120,7 @@ pub(crate) fn provider_facing_mcp_proxy_url(
 pub(crate) fn dispatch_provider_mcp_proxy_request(
     owner_provider_run_id: &str,
     owner_session_id: &str,
-    backing: &ArrobaMcpServerConfig,
+    backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
     let is_tools_list = payload
@@ -128,7 +128,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
         .and_then(serde_json::Value::as_str)
         .is_some_and(|method| method == "tools/list");
     let mut response = match &backing.transport {
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
             bearer_token_credential: _,
@@ -143,7 +143,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
             payload,
             backing.tool_timeout_sec,
         ),
-        ArrobaMcpTransportConfig::Stdio { .. } => {
+        CharioxMcpTransportConfig::Stdio { .. } => {
             let key = backing.definition_hash()?;
             let process = stdio_mcp_supervisor()
                 .lock()
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn proxy_config_preserves_policy_but_replaces_transport() {
         let mut backing =
-            ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+            CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
         backing.required = true;
         backing.startup_timeout_sec = Some(7);
         backing.tool_timeout_sec = Some(30);
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(proxy.tool_timeout_sec, Some(30));
         assert_eq!(proxy.enabled_tools, Some(vec!["browser_snapshot".into()]));
         match proxy.transport {
-            ArrobaMcpTransportConfig::StreamableHttp {
+            CharioxMcpTransportConfig::StreamableHttp {
                 url, http_headers, ..
             } => {
                 assert_eq!(url, "http://127.0.0.1:43120/mcp/proxy/browser");
@@ -272,19 +272,19 @@ mod tests {
 
     #[test]
     fn proxy_config_can_use_provider_visible_alias() {
-        let backing = ArrobaMcpServerConfig::stdio("node_repl", "node", Vec::new());
+        let backing = CharioxMcpServerConfig::stdio("node_repl", "node", Vec::new());
 
         let proxy = provider_facing_mcp_proxy_config_named(
             &backing,
-            "arroba_mcp_node_repl",
+            "chariox_mcp_node_repl",
             "http://127.0.0.1:43120/mcp",
             "token-123",
         )
         .expect("proxy config should build");
 
-        assert_eq!(proxy.name, "arroba_mcp_node_repl");
+        assert_eq!(proxy.name, "chariox_mcp_node_repl");
         match proxy.transport {
-            ArrobaMcpTransportConfig::StreamableHttp { url, .. } => {
+            CharioxMcpTransportConfig::StreamableHttp { url, .. } => {
                 assert_eq!(url, "http://127.0.0.1:43120/mcp/proxy/node_repl");
             }
             other => panic!("expected streamable HTTP proxy, got {other:?}"),
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn proxy_config_falls_back_when_runtime_binding_is_missing() {
-        let backing = ArrobaMcpServerConfig::stdio("github", "github-mcp-server", Vec::new());
+        let backing = CharioxMcpServerConfig::stdio("github", "github-mcp-server", Vec::new());
         let rendered = provider_facing_mcp_proxy_configs(&[backing.clone()], None, Some("token"))
             .expect("fallback should succeed");
 
@@ -322,9 +322,9 @@ mod tests {
             .expect("response should write");
         });
 
-        let config = ArrobaMcpServerConfig {
+        let config = CharioxMcpServerConfig {
             name: "browser".to_string(),
-            transport: ArrobaMcpTransportConfig::StreamableHttp {
+            transport: CharioxMcpTransportConfig::StreamableHttp {
                 url: format!("http://{address}/mcp"),
                 bearer_token_env_var: None,
                 bearer_token_credential: None,
@@ -383,7 +383,7 @@ mod tests {
         });
 
         let config =
-            ArrobaMcpServerConfig::streamable_http("chunked", format!("http://{address}/mcp"));
+            CharioxMcpServerConfig::streamable_http("chunked", format!("http://{address}/mcp"));
         let response = dispatch_provider_mcp_proxy_request(
             "provider-run-chunked-test",
             "session-chunked-test",
@@ -412,15 +412,15 @@ mod tests {
             .expect("test supervisor lock")
             .stop_all();
         let start_file = std::env::temp_dir().join(format!(
-            "arroba-stdio-mcp-proxy-starts-{}-{}.txt",
+            "chariox-stdio-mcp-proxy-starts-{}-{}.txt",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         let pid_file = start_file.with_extension("pid");
         let script = r#"
 import fs from 'node:fs'
-const startFile = process.env.ARROBA_TEST_START_FILE
-const pidFile = process.env.ARROBA_TEST_PID_FILE
+const startFile = process.env.CHARIOX_TEST_START_FILE
+const pidFile = process.env.CHARIOX_TEST_PID_FILE
 const current = Number(fs.existsSync(startFile) ? fs.readFileSync(startFile, 'utf8') : '0')
 fs.writeFileSync(startFile, String(current + 1))
 fs.writeFileSync(pidFile, String(process.pid))
@@ -466,7 +466,7 @@ function handle(message) {
   write({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `unknown ${message.method}` } })
 }
 "#;
-        let mut config = ArrobaMcpServerConfig::stdio(
+        let mut config = CharioxMcpServerConfig::stdio(
             format!("stdio-test-{}", crate::session::unix_epoch_ms()),
             "node",
             vec![
@@ -475,13 +475,13 @@ function handle(message) {
                 script.to_string(),
             ],
         );
-        if let ArrobaMcpTransportConfig::Stdio { env, .. } = &mut config.transport {
+        if let CharioxMcpTransportConfig::Stdio { env, .. } = &mut config.transport {
             env.insert(
-                "ARROBA_TEST_START_FILE".to_string(),
+                "CHARIOX_TEST_START_FILE".to_string(),
                 start_file.to_string_lossy().to_string(),
             );
             env.insert(
-                "ARROBA_TEST_PID_FILE".to_string(),
+                "CHARIOX_TEST_PID_FILE".to_string(),
                 pid_file.to_string_lossy().to_string(),
             );
         }

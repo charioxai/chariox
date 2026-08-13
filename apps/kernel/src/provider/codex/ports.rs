@@ -4,8 +4,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::error::DaemonError;
 
-const CODEX_PORT_OVERRIDE: &str = "ARROBA_CODEX_PORT";
-const CODEX_PORT_RANGE_OVERRIDE: &str = "ARROBA_CODEX_PORT_RANGE";
+const CODEX_PORT_OVERRIDE: &str = "CHARIOX_CODEX_PORT";
+const CODEX_PORT_RANGE_OVERRIDE: &str = "CHARIOX_CODEX_PORT_RANGE";
 static CODEX_MANAGED_CATALOG_PORT: OnceLock<Mutex<Option<u16>>> = OnceLock::new();
 
 pub(super) fn resolve_codex_launch_port(is_session_launch: bool) -> Result<u16, DaemonError> {
@@ -27,7 +27,7 @@ pub(super) fn resolve_codex_catalog_port() -> Result<u16, DaemonError> {
         return value
             .parse::<u16>()
             .map_err(|_| DaemonError::InvalidConfig {
-                field: "ARROBA_CODEX_PORT",
+                field: "CHARIOX_CODEX_PORT",
                 message: "must be a valid TCP port",
             });
     }

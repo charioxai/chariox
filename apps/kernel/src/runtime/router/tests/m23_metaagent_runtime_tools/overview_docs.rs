@@ -90,7 +90,7 @@ async fn metaagent_runtime_mcp_returns_session_overview_and_command_docs() {
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             &meta_auth_token,
-            "arroba_meta_session_overview",
+            "chariox_meta_session_overview",
             serde_json::json!({
                 "include_workflows": false,
                 "include_events": true

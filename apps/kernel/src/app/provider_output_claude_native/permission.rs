@@ -80,7 +80,7 @@ pub(super) fn write_claude_headless_bypass_selection_marker(context_file: &str) 
 }
 
 pub(super) fn append_claude_headless_debug(context_file: &str, label: &str, value: &str) {
-    if std::env::var_os("ARROBA_CLAUDE_HEADLESS_DEBUG").is_none() {
+    if std::env::var_os("CHARIOX_CLAUDE_HEADLESS_DEBUG").is_none() {
         return;
     }
     let Some(root) = std::path::Path::new(context_file).parent() else {
@@ -298,7 +298,7 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     else {
         return false;
     };
-    if tool_name.starts_with("mcp__arroba__") || tool_name.starts_with("arroba.") {
+    if tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.") {
         return false;
     }
     !(event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")

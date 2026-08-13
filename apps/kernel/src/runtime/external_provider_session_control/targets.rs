@@ -345,7 +345,7 @@ pub(super) fn attached_external_observer_target_from_provider_session(
         provider: provider.to_string(),
         provider_session_id: provider_session_id.to_string(),
         observed_cursor: cursor_store.get(&cursor_key),
-        cursor_source: AttachedExternalObserverCursorSource::ArrobaOwned(cursor_key),
+        cursor_source: AttachedExternalObserverCursorSource::CharioxOwned(cursor_key),
         needs_responsive_refresh,
     })
 }
@@ -372,7 +372,7 @@ pub(super) fn persist_attached_external_observer_cursor(
                 next_import,
             )?;
         }
-        AttachedExternalObserverCursorSource::ArrobaOwned(key) => {
+        AttachedExternalObserverCursorSource::CharioxOwned(key) => {
             app.attached_provider_transcript_cursor_store()
                 .set(key.clone(), cursor);
         }

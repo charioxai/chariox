@@ -3,25 +3,25 @@ use crate::env_lock;
 use std::fs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-fn temp_arroba_home(name: &str) -> PathBuf {
+fn temp_chariox_home(name: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let index = COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
-        .join("arroba-workflow-prompt-tests")
+        .join("chariox-workflow-prompt-tests")
         .join(format!("{}-{}-{index}", name, std::process::id()))
 }
 
-fn set_arroba_home(home: &PathBuf) -> Option<std::ffi::OsString> {
-    let previous = std::env::var_os("ARROBA_HOME");
-    std::env::set_var("ARROBA_HOME", home);
+fn set_chariox_home(home: &PathBuf) -> Option<std::ffi::OsString> {
+    let previous = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", home);
     previous
 }
 
-fn restore_arroba_home(previous: Option<std::ffi::OsString>) {
+fn restore_chariox_home(previous: Option<std::ffi::OsString>) {
     if let Some(previous) = previous {
-        std::env::set_var("ARROBA_HOME", previous);
+        std::env::set_var("CHARIOX_HOME", previous);
     } else {
-        std::env::remove_var("ARROBA_HOME");
+        std::env::remove_var("CHARIOX_HOME");
     }
 }
 
@@ -122,8 +122,8 @@ fn downstream_workflow_handoff_is_the_visible_user_prompt() {
 #[test]
 fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("tagged-subprompts");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("tagged-subprompts");
+    let previous_home = set_chariox_home(&home);
     let mut context = test_context();
     context.instruction_ref = Some("/tmp/node.md".to_string());
     context.handoff_payloads_json = Some("[{\"message\":\"upstream\"}]".to_string());
@@ -141,7 +141,7 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
     });
 
     let assembly = build_workflow_turn_prompt_assembly(context);
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     for tag in [
         "workflow-level-prompt",
@@ -208,8 +208,8 @@ fn workflow_prompt_component_delimiters_are_escaped_and_handoff_extraction_recov
 #[test]
 fn metaagent_event_prompt_is_hidden_from_user_history() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("metaagent-event-tag");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("metaagent-event-tag");
+    let previous_home = set_chariox_home(&home);
 
     let assembly = render_metaagent_event_prompt_assembly(MetaagentEventPromptContext {
         event_id: "event-1".to_string(),
@@ -218,7 +218,7 @@ fn metaagent_event_prompt_is_hidden_from_user_history() {
         title: "Review".to_string(),
         body: "Do not close </metaagent-event> early.".to_string(),
     });
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     assert_eq!(assembly.visible_user_prompt, "<metaagent-event/>");
     assert!(assembly
@@ -324,13 +324,13 @@ fn render_workflow_turn_prompt_reads_workflow_prompt_from_definition() {
 #[test]
 fn workflow_prompt_teaches_selected_edge_routing_contract() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("routing-contract");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("routing-contract");
+    let previous_home = set_chariox_home(&home);
     let mut context = test_context();
     context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt\n\n".to_string();
 
     let assembly = build_workflow_turn_prompt_assembly(context);
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     assert!(assembly
         .hidden_system_context
@@ -361,8 +361,8 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
 #[test]
 fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("intermediate-output-contract");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("intermediate-output-contract");
+    let previous_home = set_chariox_home(&home);
     let mut context = test_context();
     context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json, validation_policy: halt\n\n".to_string();
     context.node_turn = Some(WorkflowNodeTurnPromptContext {
@@ -375,7 +375,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
     });
 
     let assembly = build_workflow_turn_prompt_assembly(context);
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     assert!(assembly
         .hidden_system_context
@@ -496,8 +496,8 @@ fn workflow_run_output_contract_includes_resolved_schema_and_value_guidance() {
 #[test]
 fn workflow_prompt_assembly_reads_user_edited_registry_template() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("registry-edit");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("registry-edit");
+    let previous_home = set_chariox_home(&home);
     let registry = PromptTemplateRegistry::from_env();
     registry
         .materialize_bundled_defaults()
@@ -509,7 +509,7 @@ fn workflow_prompt_assembly_reads_user_edited_registry_template() {
     .expect("template edit should write");
 
     let assembly = build_workflow_turn_prompt_assembly(test_context());
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     assert!(assembly
         .hidden_system_context
@@ -537,8 +537,8 @@ fn workflow_prompt_assembly_reads_user_edited_registry_template() {
 #[test]
 fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
     let _guard = env_lock::lock();
-    let home = temp_arroba_home("node-fragments");
-    let previous_home = set_arroba_home(&home);
+    let home = temp_chariox_home("node-fragments");
+    let previous_home = set_chariox_home(&home);
     let registry = PromptTemplateRegistry::from_env();
     registry
         .materialize_bundled_defaults()
@@ -568,7 +568,7 @@ fn workflow_node_prompt_fragments_read_user_edited_registry_templates() {
         wait_for_all_inputs: false,
     });
     let assembly = build_workflow_turn_prompt_assembly(context);
-    restore_arroba_home(previous_home);
+    restore_chariox_home(previous_home);
 
     assert!(assembly
         .hidden_system_context

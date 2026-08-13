@@ -40,7 +40,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_edit_result(
             let mut payload = serde_json::json!({
                 "applied": false,
                 "reason": workspace_live_sync_error_payload(reason),
-                "next_action": "Reread the artifact with arroba.read_artifact, reconcile with the current content, and retry through arroba.edit_artifact.",
+                "next_action": "Reread the artifact with chariox.read_artifact, reconcile with the current content, and retry through chariox.edit_artifact.",
             });
             add_workspace_live_sync_external_change_notice_payload(
                 &mut payload,
@@ -82,7 +82,7 @@ fn workspace_live_sync_external_change_notice_payload(
         "detected": true,
         "path": notice.path.to_string_lossy(),
         "message": notice.message,
-        "next_action": "This artifact changed outside Arroba workspace live sync after your last read. If the write was rejected, reread and reconcile before retrying; if it was applied with a rebase warning, verify the diff before continuing.",
+        "next_action": "This artifact changed outside Chariox workspace live sync after your last read. If the write was rejected, reread and reconcile before retrying; if it was applied with a rebase warning, verify the diff before continuing.",
     })
 }
 
@@ -91,7 +91,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_external_change_notice_for_
 ) -> crate::io::ArtifactExternalChangeNotice {
     crate::io::ArtifactExternalChangeNotice {
         path,
-        message: "artifact changed outside Arroba workspace live sync while the managed operation was being prepared".to_string(),
+        message: "artifact changed outside Chariox workspace live sync while the managed operation was being prepared".to_string(),
     }
 }
 

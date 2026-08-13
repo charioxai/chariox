@@ -609,7 +609,7 @@ fn javascript_compiler_embeds_schema_from_approved_file() {
         return;
     };
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-schema-import-{}-{}",
+        "chariox-workflow-code-schema-import-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -664,7 +664,7 @@ fn javascript_compiler_rejects_schema_file_escape() {
         return;
     };
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-schema-escape-{}-{}",
+        "chariox-workflow-code-schema-escape-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -691,7 +691,7 @@ fn javascript_compiler_rejects_schema_file_without_json_extension() {
         return;
     };
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-schema-extension-{}-{}",
+        "chariox-workflow-code-schema-extension-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

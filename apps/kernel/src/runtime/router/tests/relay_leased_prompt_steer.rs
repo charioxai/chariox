@@ -8,7 +8,7 @@ fn remote_git_context(home_prompt_id: &str) -> crate::transport::relay_peer::Rem
         home_turn_id: home_prompt_id.to_string(),
         source_attachment_id: None,
         workspace_live_sync_mode: None,
-        prompt_origin: Some(PromptOrigin::Arroba),
+        prompt_origin: Some(PromptOrigin::Chariox),
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,

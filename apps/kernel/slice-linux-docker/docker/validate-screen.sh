@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCREEN="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}/slice-screen.sh"
-CDP="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}/browser-cdp.mjs"
-TEST_PAGE="/tmp/arroba-slice-screen-test.html"
-SHOT="/tmp/arroba-slice-screen-test.png"
-PROFILE="/tmp/arroba-slice-chromium-validation"
+SCREEN="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}/slice-screen.sh"
+CDP="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}/browser-cdp.mjs"
+TEST_PAGE="/tmp/chariox-slice-screen-test.html"
+SHOT="/tmp/chariox-slice-screen-test.png"
+PROFILE="/tmp/chariox-slice-chromium-validation"
 
 find_or_retry() {
   local text="$1"
@@ -28,14 +28,14 @@ write_page() {
 <html>
   <head>
     <meta charset="utf-8">
-    <title>Arroba Slice Screen Test</title>
+    <title>Chariox Slice Screen Test</title>
     <style>
       body { margin: 48px; font: 26px Arial, sans-serif; background: white; color: #111; }
       #status { margin-top: 32px; font-size: 34px; font-weight: 700; }
     </style>
   </head>
   <body>
-    <h1>ARROBA SLICE OCR READY</h1>
+    <h1>CHARIOX SLICE OCR READY</h1>
     <input id="input" autofocus placeholder="type here">
     <button id="button">PRESS SLICE BUTTON</button>
     <div id="status">WAITING FOR INPUT</div>
@@ -46,7 +46,7 @@ write_page() {
         status.textContent = "TYPED " + input.value.toUpperCase();
       });
       document.getElementById("button").addEventListener("click", () => {
-        alert("ARROBA SLICE DIALOG READY");
+        alert("CHARIOX SLICE DIALOG READY");
         status.textContent = "DIALOG ACCEPTED";
       });
       setTimeout(() => input.focus(), 300);
@@ -59,12 +59,12 @@ HTML
 prepare() {
   rm -rf "$PROFILE"
   write_page
-  ARROBA_SLICE_CHROME_PROFILE="$PROFILE" \
-  ARROBA_SLICE_CHROME_URL="file://$TEST_PAGE" \
-    "$SCREEN" start >/tmp/arroba-slice-screen-start.out
+  CHARIOX_SLICE_CHROME_PROFILE="$PROFILE" \
+  CHARIOX_SLICE_CHROME_URL="file://$TEST_PAGE" \
+    "$SCREEN" start >/tmp/chariox-slice-screen-start.out
   sleep 3
-  find_or_retry "ARROBA SLICE OCR READY" /tmp/arroba-slice-find-heading.json
-  printf 'ocr_heading=%s\n' "$(cat /tmp/arroba-slice-find-heading.json)"
+  find_or_retry "CHARIOX SLICE OCR READY" /tmp/chariox-slice-find-heading.json
+  printf 'ocr_heading=%s\n' "$(cat /tmp/chariox-slice-find-heading.json)"
   printf 'browser_opened_url=ok\n'
 }
 

@@ -386,7 +386,7 @@ impl HistoryArchiveClient {
 impl ExternalHistoryArchiveClient {
     fn capabilities(&self) -> Result<HistoryArchiveCapabilities, DaemonError> {
         let request =
-            self.authorized_request(ureq::get(&self.endpoint("/arroba/history/capabilities")))?;
+            self.authorized_request(ureq::get(&self.endpoint("/chariox/history/capabilities")))?;
         let response = request
             .call()
             .map_err(|error| archive_http_error("capabilities", error))?;
@@ -408,7 +408,7 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/arroba/history/events")))?
+            .authorized_request(ureq::post(&self.endpoint("/chariox/history/events")))?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -436,7 +436,7 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/arroba/history/search")))?
+            .authorized_request(ureq::post(&self.endpoint("/chariox/history/search")))?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -459,7 +459,7 @@ impl ExternalHistoryArchiveClient {
         })?;
         let request = self
             .authorized_request(ureq::post(
-                &self.endpoint("/arroba/history/semantic-search"),
+                &self.endpoint("/chariox/history/semantic-search"),
             ))?
             .set("content-type", "application/json");
         let response = request
@@ -493,7 +493,7 @@ impl ExternalHistoryArchiveClient {
             }
         })?;
         let request = self
-            .authorized_request(ureq::post(&self.endpoint("/arroba/artifacts/manifest")))?
+            .authorized_request(ureq::post(&self.endpoint("/chariox/artifacts/manifest")))?
             .set("content-type", "application/json");
         let response = request
             .send_string(&payload)
@@ -516,11 +516,11 @@ impl ExternalHistoryArchiveClient {
         })?;
         let request = self
             .authorized_request(ureq::put(
-                &self.endpoint(&format!("/arroba/artifacts/blobs/{}", record.artifact_id)),
+                &self.endpoint(&format!("/chariox/artifacts/blobs/{}", record.artifact_id)),
             ))?
             .set("content-type", "application/octet-stream")
-            .set("x-arroba-sha256", &record.sha256)
-            .set("x-arroba-size-bytes", &record.size_bytes.to_string());
+            .set("x-chariox-sha256", &record.sha256)
+            .set("x-chariox-size-bytes", &record.size_bytes.to_string());
         let response = request
             .send_bytes(&bytes)
             .map_err(|error| archive_http_error("artifact blob", error))?;
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn external_archive_posts_events_and_requires_acceptance() {
         let (base_url, handle) = spawn_archive_server(
-            "POST /arroba/history/events",
+            "POST /chariox/history/events",
             r#"{"accepted_event_ids":["evt-accepted"],"rejected_events":[]}"#,
         );
         let config = UserArchiveHistoryConfig {
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn external_archive_surfaces_missing_acceptance() {
         let (base_url, handle) = spawn_archive_server(
-            "POST /arroba/history/events",
+            "POST /chariox/history/events",
             r#"{"accepted_event_ids":[],"rejected_events":[{"event_id":"evt-missing","reason":"nope"}]}"#,
         );
         let config = UserArchiveHistoryConfig {
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn exporter_flushes_pending_events_through_adapter() {
         let path = std::env::temp_dir().join(format!(
-            "arroba-archive-exporter-{}-{}.db",
+            "chariox-archive-exporter-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -746,7 +746,7 @@ mod tests {
             .enqueue_archive_events(&[test_event("evt-flush")])
             .expect("event should enqueue");
         let (base_url, handle) = spawn_archive_server(
-            "POST /arroba/history/events",
+            "POST /chariox/history/events",
             r#"{"accepted_event_ids":["evt-flush"],"rejected_events":[]}"#,
         );
         let config = UserArchiveHistoryConfig {

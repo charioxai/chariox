@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn reads_and_edits_file_inside_worktree() {
-        let root = std::env::temp_dir().join("arroba-file-capability-test");
+        let root = std::env::temp_dir().join("chariox-file-capability-test");
         fs::create_dir_all(&root).expect("root should exist");
         let file = root.join("notes.txt");
         fs::write(&file, "before").expect("file should exist");
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn reports_existing_binary_file_as_not_created() {
-        let root = std::env::temp_dir().join("arroba-file-capability-binary-test");
+        let root = std::env::temp_dir().join("chariox-file-capability-binary-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
         let file = root.join("binary.bin");

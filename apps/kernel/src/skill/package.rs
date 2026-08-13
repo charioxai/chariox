@@ -8,17 +8,17 @@ use sha2::{Digest, Sha256};
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
-use super::{managed_capability_root, parse_skill_metadata, ArrobaSkillMetadata};
+use super::{managed_capability_root, parse_skill_metadata, CharioxSkillMetadata};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaSkillPackage {
-    pub metadata: ArrobaSkillMetadata,
+pub struct CharioxSkillPackage {
+    pub metadata: CharioxSkillMetadata,
     pub version_hash: String,
-    pub files: Vec<ArrobaSkillPackageFile>,
+    pub files: Vec<CharioxSkillPackageFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaSkillPackageFile {
+pub struct CharioxSkillPackageFile {
     pub path: String,
     pub sha256: String,
     pub content_base64: String,
@@ -41,7 +41,7 @@ const SKILL_PACKAGE_IGNORED_DIRS: &[&str] = &[
 
 pub fn materialize_skill_package(
     base_dir: &Path,
-    package: &ArrobaSkillPackage,
+    package: &CharioxSkillPackage,
 ) -> Result<PathBuf, DaemonError> {
     validate_registry_name(&package.metadata.name, "skill name")?;
     let destination = base_dir
@@ -146,12 +146,14 @@ pub(crate) fn remote_skill_materialization_base(workspace: impl AsRef<Path>) -> 
     }
     workspace
         .as_ref()
-        .join(".arroba")
+        .join(".chariox")
         .join("remote")
         .join("skills")
 }
 
-pub(super) fn package_skill_directory(skill_dir: &Path) -> Result<ArrobaSkillPackage, DaemonError> {
+pub(super) fn package_skill_directory(
+    skill_dir: &Path,
+) -> Result<CharioxSkillPackage, DaemonError> {
     let metadata = parse_skill_metadata(&skill_dir.join("SKILL.md"))?;
     let mut files = Vec::new();
     let mut total_bytes = 0_u64;
@@ -165,7 +167,7 @@ pub(super) fn package_skill_directory(skill_dir: &Path) -> Result<ArrobaSkillPac
         hasher.update(b"\0");
     }
     let version_hash = hex_digest(hasher.finalize().as_slice());
-    Ok(ArrobaSkillPackage {
+    Ok(CharioxSkillPackage {
         metadata,
         version_hash,
         files,
@@ -175,7 +177,7 @@ pub(super) fn package_skill_directory(skill_dir: &Path) -> Result<ArrobaSkillPac
 fn collect_skill_package_files(
     root: &Path,
     dir: &Path,
-    files: &mut Vec<ArrobaSkillPackageFile>,
+    files: &mut Vec<CharioxSkillPackageFile>,
     total_bytes: &mut u64,
 ) -> Result<(), DaemonError> {
     for entry in fs::read_dir(dir).map_err(|error| DaemonError::LocalTransport {
@@ -247,7 +249,7 @@ fn collect_skill_package_files(
                 ),
             });
         }
-        files.push(ArrobaSkillPackageFile {
+        files.push(CharioxSkillPackageFile {
             path: relative_path.to_string_lossy().replace('\\', "/"),
             sha256: sha256_hex(&bytes),
             content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),

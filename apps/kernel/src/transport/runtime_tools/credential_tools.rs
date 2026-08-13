@@ -285,7 +285,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: LIST_CREDENTIAL_HANDLES_TOOL.to_string(),
-            description: "List Arroba credential handles available to this runtime. Values are never returned; use a handle id with http_request_with_credential when a request needs a secret.".to_string(),
+            description: "List Chariox credential handles available to this runtime. Values are never returned; use a handle id with http_request_with_credential when a request needs a secret.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -294,7 +294,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: CREATE_GENERATED_CREDENTIAL_TOOL.to_string(),
-            description: "Create or update a vault-backed Arroba credential handle with a kernel-generated random password. The generated secret is stored in the vault and is never returned to the model.".to_string(),
+            description: "Create or update a vault-backed Chariox credential handle with a kernel-generated random password. The generated secret is stored in the vault and is never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential"],
@@ -317,7 +317,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Arroba interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -343,7 +343,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
-            description: "Perform an HTTP request using an Arroba credential handle. Arroba resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
+            description: "Perform an HTTP request using a Chariox credential handle. Chariox resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id", "url"],
@@ -389,7 +389,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into an Arroba slice browser field after validating the current browser target. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
+            description: "Paste a browser credential into a Chariox slice browser field after validating the current browser target. The secret value is resolved inside the kernel and is not returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
@@ -406,7 +406,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
-            description: "Check, lock, or request the Arroba Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
+            description: "Check, lock, or request the Chariox Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -421,7 +421,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Request a synchronous Arroba popup in the current agent pane. The tool call blocks until the user answers or the timeout resolves. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
+            description: "Request a synchronous Chariox popup in the current agent pane. The tool call blocks until the user answers or the timeout resolves. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
@@ -548,48 +548,48 @@ pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         LIST_CREDENTIAL_HANDLES_TOOL
         | LIST_CREDENTIAL_HANDLES_TOOL_ALIAS
-        | "arroba_list_credential_handles"
-        | "mcp__arroba__list_credential_handles"
-        | "mcp__arroba__arroba_list_credential_handles" => Some(LIST_CREDENTIAL_HANDLES_TOOL),
+        | "chariox_list_credential_handles"
+        | "mcp__chariox__list_credential_handles"
+        | "mcp__chariox__chariox_list_credential_handles" => Some(LIST_CREDENTIAL_HANDLES_TOOL),
         CREATE_GENERATED_CREDENTIAL_TOOL
         | CREATE_GENERATED_CREDENTIAL_TOOL_ALIAS
-        | "arroba_create_generated_credential"
-        | "mcp__arroba__create_generated_credential"
-        | "mcp__arroba__arroba_create_generated_credential" => {
+        | "chariox_create_generated_credential"
+        | "mcp__chariox__create_generated_credential"
+        | "mcp__chariox__chariox_create_generated_credential" => {
             Some(CREATE_GENERATED_CREDENTIAL_TOOL)
         }
         REQUEST_CREDENTIAL_SECRET_TOOL
         | REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS
-        | "arroba_request_credential_secret"
-        | "mcp__arroba__request_credential_secret"
-        | "mcp__arroba__arroba_request_credential_secret" => Some(REQUEST_CREDENTIAL_SECRET_TOOL),
+        | "chariox_request_credential_secret"
+        | "mcp__chariox__request_credential_secret"
+        | "mcp__chariox__chariox_request_credential_secret" => Some(REQUEST_CREDENTIAL_SECRET_TOOL),
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL
         | HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS
-        | "arroba_http_request_with_credential"
-        | "mcp__arroba__http_request_with_credential"
-        | "mcp__arroba__arroba_http_request_with_credential" => {
+        | "chariox_http_request_with_credential"
+        | "mcp__chariox__http_request_with_credential"
+        | "mcp__chariox__chariox_http_request_with_credential" => {
             Some(HTTP_REQUEST_WITH_CREDENTIAL_TOOL)
         }
         SEND_SECRET_TO_TERMINAL_TOOL
         | SEND_SECRET_TO_TERMINAL_TOOL_ALIAS
-        | "arroba_send_secret_to_terminal"
-        | "mcp__arroba__send_secret_to_terminal"
-        | "mcp__arroba__arroba_send_secret_to_terminal" => Some(SEND_SECRET_TO_TERMINAL_TOOL),
+        | "chariox_send_secret_to_terminal"
+        | "mcp__chariox__send_secret_to_terminal"
+        | "mcp__chariox__chariox_send_secret_to_terminal" => Some(SEND_SECRET_TO_TERMINAL_TOOL),
         PASTE_SECRET_TO_SLICE_TOOL
         | PASTE_SECRET_TO_SLICE_TOOL_ALIAS
-        | "arroba_paste_secret_to_slice"
-        | "mcp__arroba__paste_secret_to_slice"
-        | "mcp__arroba__arroba_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
+        | "chariox_paste_secret_to_slice"
+        | "mcp__chariox__paste_secret_to_slice"
+        | "mcp__chariox__chariox_paste_secret_to_slice" => Some(PASTE_SECRET_TO_SLICE_TOOL),
         MANAGE_CREDENTIAL_VAULT_TOOL
         | MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS
-        | "arroba_manage_credential_vault"
-        | "mcp__arroba__manage_credential_vault"
-        | "mcp__arroba__arroba_manage_credential_vault" => Some(MANAGE_CREDENTIAL_VAULT_TOOL),
+        | "chariox_manage_credential_vault"
+        | "mcp__chariox__manage_credential_vault"
+        | "mcp__chariox__chariox_manage_credential_vault" => Some(MANAGE_CREDENTIAL_VAULT_TOOL),
         REQUEST_POPUP_TOOL
         | REQUEST_POPUP_TOOL_ALIAS
-        | "arroba_request_popup"
-        | "mcp__arroba__request_popup"
-        | "mcp__arroba__arroba_request_popup" => Some(REQUEST_POPUP_TOOL),
+        | "chariox_request_popup"
+        | "mcp__chariox__request_popup"
+        | "mcp__chariox__chariox_request_popup" => Some(REQUEST_POPUP_TOOL),
         _ => None,
     }
 }

@@ -161,7 +161,7 @@ impl KernelRuntimeOwnedState {
                 self.provider_store
                     .get_latest_run_for_agent(session_id, &agent_id)
             })
-            .is_some_and(|run| !run.client_interface().is_arroba())
+            .is_some_and(|run| !run.client_interface().is_chariox())
     }
 
     pub(super) fn workflow_runtime_base_directory(
@@ -197,7 +197,7 @@ impl KernelRuntimeOwnedState {
         node_instructions: Option<&str>,
     ) -> Option<String> {
         let root = base_directory?
-            .join(".arroba")
+            .join(".chariox")
             .join("workflow-runtime")
             .join("kernel")
             .join(workflow_run_id)

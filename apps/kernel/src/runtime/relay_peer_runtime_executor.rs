@@ -8,7 +8,7 @@ use crate::runtime::projection::{
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime_transport::WatchResult;
 use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
-use crate::skill::ArrobaSkillPackage;
+use crate::skill::CharioxSkillPackage;
 use crate::transport::relay_peer::{
     RelayPeerEvent, RelayProjectedCompletion, RelayProjectedOutputChunk, RelayProjectedPrompt,
     RelayPromptAttachment, RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability,
@@ -276,7 +276,7 @@ pub(crate) async fn steer_relay_leased_prompt(
 pub(crate) async fn ensure_relay_remote_skill_packages(
     runtime_state: &KernelRuntimeState,
     context: RemoteSkillSyncContext,
-    packages: Vec<ArrobaSkillPackage>,
+    packages: Vec<CharioxSkillPackage>,
 ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
     runtime_state
         .ensure_relay_remote_skill_packages(context, packages)

@@ -112,7 +112,7 @@ mod tests {
         let error = DaemonError::ProviderProtocol {
             provider_run_id: "provider-run-1".to_string(),
             operation: "thread/start",
-            message: "error creating thread: Fatal error: Failed to initialize session: required MCP servers failed to initialize: arroba: timed out handshaking with MCP server after 30s"
+            message: "error creating thread: Fatal error: Failed to initialize session: required MCP servers failed to initialize: chariox: timed out handshaking with MCP server after 30s"
                 .to_string(),
         };
 

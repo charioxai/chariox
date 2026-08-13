@@ -178,8 +178,8 @@ mod tests {
         KernelCaller, KernelCallerKind, KernelCommand, KernelCommandPriority, KernelCommandSource,
     };
     use crate::session::CreateSessionRequest;
-    use arroba_relay::auth::RelaySubjectKind;
-    use arroba_relay::protocol::RelayCallerIdentity;
+    use chariox_relay::auth::RelaySubjectKind;
+    use chariox_relay::protocol::RelayCallerIdentity;
 
     #[test]
     fn normalizes_prompt_submit_to_interactive_kernel_command() {

@@ -119,9 +119,9 @@ fn provider_run_health_snapshot(
         .collect::<BTreeMap<_, _>>();
 
     let mut active_runs = 0;
-    let mut arroba_active_runs = 0;
+    let mut chariox_active_runs = 0;
     let mut native_tui_active_runs = 0;
-    let mut active_arroba_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut active_chariox_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut active_native_tui_bindings: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut active_agent_bindings: BTreeMap<(String, String), Vec<(String, &'static str)>> =
         BTreeMap::new();
@@ -144,10 +144,10 @@ fn provider_run_health_snapshot(
             });
         }
         match run.client_interface() {
-            ProviderClientInterface::Arroba => {
-                arroba_active_runs += 1;
+            ProviderClientInterface::Chariox => {
+                chariox_active_runs += 1;
                 if let Some(agent_id) = run.agent_instance_id() {
-                    active_arroba_bindings
+                    active_chariox_bindings
                         .entry((run.session_id().to_string(), agent_id.to_string()))
                         .or_default()
                         .push(run.id().to_string());
@@ -195,7 +195,7 @@ fn provider_run_health_snapshot(
         }
     }
 
-    let duplicate_arroba_agent_bindings = active_arroba_bindings
+    let duplicate_chariox_agent_bindings = active_chariox_bindings
         .into_iter()
         .filter_map(|((session_id, agent_id), mut provider_run_ids)| {
             provider_run_ids.sort();
@@ -289,10 +289,10 @@ fn provider_run_health_snapshot(
     ProviderRunHealthSnapshot {
         projected_runs: runs.len(),
         active_runs,
-        arroba_active_runs,
+        chariox_active_runs,
         native_tui_active_runs,
         terminal_diagnostics,
-        duplicate_arroba_agent_bindings,
+        duplicate_chariox_agent_bindings,
         duplicate_native_tui_agent_bindings,
         multi_interface_agent_bindings,
         orphaned_active_runs,
@@ -302,7 +302,7 @@ fn provider_run_health_snapshot(
 
 fn provider_client_interface_key(client_interface: ProviderClientInterface) -> &'static str {
     match client_interface {
-        ProviderClientInterface::Arroba => "arroba",
+        ProviderClientInterface::Chariox => "chariox",
         ProviderClientInterface::NativeTui => "native_tui",
     }
 }

@@ -1,15 +1,15 @@
 use std::time::Duration;
 
 use crate::support::kernel_websocket::*;
-use arroba_kernel::attachment::ClientCapabilityLevel;
-use arroba_kernel::local::{
+use chariox_kernel::attachment::ClientCapabilityLevel;
+use chariox_kernel::local::{
     AttachToSessionRequest, GetProviderCatalogRequest, GetSessionHistoryOutlineRequest,
     GetSessionStateRequest, LaunchProviderRunRequest, ListProviderProcessesRequest,
     LocalDaemonRequest, RunShellCapabilityRequest, SubmitPromptRequest,
 };
-use arroba_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use arroba_kernel::session::CreateSessionRequest;
-use arroba_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use chariox_kernel::session::CreateSessionRequest;
+use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
 use tokio::sync::oneshot;
 use tokio::time::sleep;

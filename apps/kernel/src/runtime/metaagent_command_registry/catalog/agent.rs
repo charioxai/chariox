@@ -6,8 +6,8 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "session overview",
         aliases: &["context", "agent list", "workflow list"],
-        usage: "Use arroba.meta.session_overview for current session state.",
-        examples: &["arroba.meta.session_overview({})"],
+        usage: "Use chariox.meta.session_overview for current session state.",
+        examples: &["chariox.meta.session_overview({})"],
         tags: &["inspect", "session", "agents", "workflows"],
         intents: &[
             "inspect current session",
@@ -39,7 +39,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned regular agents",
         routed: true,
-        description: "Submit a normal Arroba prompt to one of this user's regular agents through the existing prompt path. Do not use `prompt` to steer an agent that is currently running or queued for workflow work; inspect the workflow run and wait for its events instead. Metaagent prompt commands do not support blocking reply flags; use events, turn_overview, and turn_blob for supervision.",
+        description: "Submit a normal Chariox prompt to one of this user's regular agents through the existing prompt path. Do not use `prompt` to steer an agent that is currently running or queued for workflow work; inspect the workflow run and wait for its events instead. Metaagent prompt commands do not support blocking reply flags; use events, turn_overview, and turn_blob for supervision.",
     },
     MetaCommandDoc {
         name: "agent list",

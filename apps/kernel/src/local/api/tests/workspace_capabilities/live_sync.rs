@@ -12,7 +12,7 @@ fn local_request_api_sets_workspace_live_sync_mode_through_dedicated_request_inn
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
-            CreateSessionRequest::new("workspace-1", "/tmp/arroba-worktree-sync-mode"),
+            CreateSessionRequest::new("workspace-1", "/tmp/chariox-worktree-sync-mode"),
         ))
         .expect("session create should succeed")
     {
@@ -98,7 +98,7 @@ fn local_request_api_accepts_managed_workspace_live_sync_config_policy() {
 fn local_request_api_accepts_managed_workspace_live_sync_config_policy_inner() {
     let mut config = DaemonConfig::for_tests();
     config.user_config_path = std::env::temp_dir().join(format!(
-        "arroba-tests/user-config-workspace-live-sync-{}.toml",
+        "chariox-tests/user-config-workspace-live-sync-{}.toml",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock should be after epoch")
@@ -136,7 +136,7 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules() {
 fn local_request_api_reports_workspace_live_sync_ignore_rules_inner() {
     let harness = LocalRouterTestHarness::new();
     let worktree = std::env::temp_dir().join(format!(
-        "arroba-live-sync-ignore-status-{}",
+        "chariox-live-sync-ignore-status-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock should be after epoch")
@@ -172,11 +172,11 @@ fn local_request_api_reports_workspace_live_sync_ignore_rules_inner() {
         _ => panic!("unexpected local response"),
     };
 
-    assert_eq!(status.ignore.ignore_file.as_deref(), Some(".arrobaignore"));
+    assert_eq!(status.ignore.ignore_file.as_deref(), Some(".charioxignore"));
     assert_eq!(status.ignore.rules, vec!["ignored/**", "*.secret"]);
     assert_eq!(
-        std::fs::read_to_string(worktree.join(".arrobaignore"))
-            .expect(".arrobaignore should initialize from .gitignore"),
+        std::fs::read_to_string(worktree.join(".charioxignore"))
+            .expect(".charioxignore should initialize from .gitignore"),
         "ignored/\n*.secret\n# comment\n!keep\n"
     );
     std::fs::remove_dir_all(worktree).expect("worktree should clean up");

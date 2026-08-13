@@ -2,7 +2,7 @@ use super::*;
 
 fn temp_root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
-        "arroba-skill-registry-{name}-{}",
+        "chariox-skill-registry-{name}-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -13,13 +13,13 @@ fn temp_root(name: &str) -> PathBuf {
 fn registry_and_remote_materialization_roots_can_be_isolated_for_managed_slice_runtime() {
     let _guard = crate::env_lock::lock();
     let isolation_root = temp_root("managed-slice-isolation");
-    std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
 
-    let project_root = ArrobaSkillRegistry::project_root("/workspace");
-    let user_root = ArrobaSkillRegistry::user_root().expect("user root should resolve");
+    let project_root = CharioxSkillRegistry::project_root("/workspace");
+    let user_root = CharioxSkillRegistry::user_root().expect("user root should resolve");
     let remote_root = remote_skill_materialization_base("/workspace");
 
-    std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+    std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     let _ = fs::remove_dir_all(&isolation_root);
 
     assert!(project_root.starts_with(isolation_root.join("project")));
@@ -59,7 +59,7 @@ fn parses_codex_style_skill_metadata() {
     )
     .unwrap();
 
-    let registry = ArrobaSkillRegistry::new(vec![root.clone()]);
+    let registry = CharioxSkillRegistry::new(vec![root.clone()]);
     let skills = registry.list().unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].name, "browser-qa");
@@ -82,7 +82,7 @@ fn install_copies_skill_directory_to_primary_root() {
     .unwrap();
     fs::write(skill_dir.join("assets").join("prompt.txt"), "qa checklist").unwrap();
 
-    let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+    let registry = CharioxSkillRegistry::new(vec![registry_root.clone()]);
     let (metadata, destination) = registry.install_from_path(&skill_dir).unwrap();
 
     assert_eq!(metadata.name, "browser-qa");
@@ -118,7 +118,7 @@ fn update_replaces_and_uninstall_removes_existing_skill() {
     .unwrap();
     fs::write(updated_dir.join("assets").join("new.txt"), "new").unwrap();
 
-    let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+    let registry = CharioxSkillRegistry::new(vec![registry_root.clone()]);
     registry.install_from_path(&original_dir).unwrap();
     let (updated, destination) = registry.update_from_path(&updated_dir).unwrap();
     assert_eq!(updated.description, "New QA");
@@ -160,7 +160,7 @@ fn upsert_from_path_replaces_existing_skill_directory_with_assets() {
     .unwrap();
     fs::write(updated_dir.join("assets").join("prompt.txt"), "new prompt").unwrap();
 
-    let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+    let registry = CharioxSkillRegistry::new(vec![registry_root.clone()]);
     registry.upsert_from_path(&original_dir).unwrap();
     let (updated, destination) = registry.upsert_from_path(&updated_dir).unwrap();
 
@@ -206,7 +206,7 @@ fn imports_codex_and_opencode_skill_roots() {
     )
     .unwrap();
 
-    let registry = ArrobaSkillRegistry::new(vec![registry_root.clone()]);
+    let registry = CharioxSkillRegistry::new(vec![registry_root.clone()]);
     let codex = import_codex_skills(&registry, &workspace, Some("codex-qa")).unwrap();
     assert_eq!(codex.imported.len(), 1);
     assert_eq!(codex.imported[0].name, "codex-qa");

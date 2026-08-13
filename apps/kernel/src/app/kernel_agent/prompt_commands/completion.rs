@@ -436,7 +436,7 @@ impl<'a> KernelAgentService<'a> {
         let prompt_id = self.app.sessions_mut().reserve_prompt_id();
         let title = "Metaagent task needs a final decision".to_string();
         let summary = format!(
-            "Your last turn ended while task `{}` is still active and no same-owner regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
+            "Your last turn ended while task `{}` is still active and no same-owner regular agents have active or queued work. Decide the task state now: if it is done, call `chariox.meta.complete_task`; if it cannot be completed after exhausting options, call `chariox.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
             task.task_id()
         );
         let record = self.app.metaagent_event_store().record(

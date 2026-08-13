@@ -202,5 +202,5 @@ pub struct RemoteMachineRecord {
     #[serde(default)]
     pub available_providers: Vec<String>,
     #[serde(default)]
-    pub provider_accounts: Vec<arroba_relay::protocol::RelayProviderAccountSummary>,
+    pub provider_accounts: Vec<chariox_relay::protocol::RelayProviderAccountSummary>,
 }

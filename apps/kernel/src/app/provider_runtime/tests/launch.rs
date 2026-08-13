@@ -301,7 +301,7 @@ fn detached_provider_launch_rejects_agent_from_another_session() {
 }
 
 #[test]
-fn provider_launch_replaces_existing_arroba_run_for_target_agent() {
+fn provider_launch_replaces_existing_chariox_run_for_target_agent() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, first_agent) = crate::app::KernelSessionService::new(&mut app)
@@ -362,7 +362,7 @@ fn provider_launch_replaces_existing_arroba_run_for_target_agent() {
             .expect("first run should remain addressable")
             .state(),
         ProviderRunState::Ended,
-        "normal Arroba relaunch should not leave a second non-ended run for the same agent"
+        "normal Chariox relaunch should not leave a second non-ended run for the same agent"
     );
     assert_eq!(replacement.state(), ProviderRunState::Running);
     assert_eq!(replacement.agent_instance_id(), Some(first_agent.id()));

@@ -148,7 +148,7 @@ pub struct SliceLocalDockerPorts {
 #[serde(rename_all = "snake_case")]
 pub enum SliceDisplayEndpointKind {
     Novnc,
-    ArrobaViewer,
+    CharioxViewer,
     External,
 }
 

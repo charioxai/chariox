@@ -193,7 +193,7 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::TestWorkflowEventBindingRequest,
         caller_user_id: &str,
-    ) -> Result<arroba_event_protocol::EventDeliveryEnvelope, DaemonError> {
+    ) -> Result<chariox_event_protocol::EventDeliveryEnvelope, DaemonError> {
         let binding = self
             .session_store
             .read()
@@ -242,7 +242,7 @@ impl KernelRuntimeOwnedState {
             });
         }
         let now_ms = crate::session::unix_epoch_ms();
-        Ok(arroba_event_protocol::EventDeliveryEnvelope {
+        Ok(chariox_event_protocol::EventDeliveryEnvelope {
             delivery_id: format!("test-delivery-{}-{now_ms}", binding.id),
             binding_id: binding.id,
             event_type: binding.event_type,
@@ -251,7 +251,7 @@ impl KernelRuntimeOwnedState {
             occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             prompt: request
                 .prompt
-                .unwrap_or_else(|| "Process this Arroba event notification test.".to_string()),
+                .unwrap_or_else(|| "Process this Chariox event notification test.".to_string()),
             artifacts: Vec::new(),
             metadata: serde_json::json!({"test": true}),
             expires_at_ms: now_ms.saturating_add(60 * 60 * 1000),

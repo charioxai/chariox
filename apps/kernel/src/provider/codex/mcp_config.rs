@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 
 use crate::error::DaemonError;
-use crate::mcp::{ArrobaMcpServerConfig, ArrobaMcpTransportConfig};
+use crate::mcp::{CharioxMcpServerConfig, CharioxMcpTransportConfig};
 use crate::provider::LaunchProviderRequest;
 
 use super::CODEX_MCP_TOKEN_ENV;
@@ -63,20 +63,20 @@ pub(super) fn runtime_mcp_config(
     if let Some(binding) = request.runtime_mcp_binding.as_ref() {
         args.extend([
             "-c".to_string(),
-            "mcp_servers.arroba.transport=\"streamable_http\"".to_string(),
+            "mcp_servers.chariox.transport=\"streamable_http\"".to_string(),
             "-c".to_string(),
-            format!("mcp_servers.arroba.url={:?}", binding.server_url),
+            format!("mcp_servers.chariox.url={:?}", binding.server_url),
             "-c".to_string(),
             format!(
-                "mcp_servers.arroba.bearer_token_env_var={:?}",
+                "mcp_servers.chariox.bearer_token_env_var={:?}",
                 CODEX_MCP_TOKEN_ENV
             ),
             "-c".to_string(),
-            "mcp_servers.arroba.required=true".to_string(),
+            "mcp_servers.chariox.required=true".to_string(),
             "-c".to_string(),
-            "mcp_servers.arroba.startup_timeout_sec=90".to_string(),
+            "mcp_servers.chariox.startup_timeout_sec=90".to_string(),
             "-c".to_string(),
-            "mcp_servers.arroba.tool_timeout_sec=300".to_string(),
+            "mcp_servers.chariox.tool_timeout_sec=300".to_string(),
         ]);
         env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
     }
@@ -95,15 +95,15 @@ fn inherited_codex_auth_env() -> BTreeMap<String, String> {
 }
 
 pub(super) fn codex_provider_facing_mcp_proxy_name(name: &str) -> String {
-    format!("arroba_mcp_{name}")
+    format!("chariox_mcp_{name}")
 }
 
 fn codex_provider_facing_mcp_proxy_configs_with_bearer_env(
-    backing_servers: &[ArrobaMcpServerConfig],
+    backing_servers: &[CharioxMcpServerConfig],
     runtime_mcp_url: Option<&str>,
     runtime_mcp_auth_token: Option<&str>,
     bearer_token_env_var: &str,
-) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
     let Some(runtime_mcp_url) = runtime_mcp_url else {
         return Ok(backing_servers.to_vec());
     };
@@ -122,7 +122,7 @@ fn codex_provider_facing_mcp_proxy_configs_with_bearer_env(
         })
         .collect::<Result<Vec<_>, _>>()?;
     for server in &mut servers {
-        if let ArrobaMcpTransportConfig::StreamableHttp {
+        if let CharioxMcpTransportConfig::StreamableHttp {
             bearer_token_env_var: env_var,
             http_headers,
             ..
@@ -135,10 +135,10 @@ fn codex_provider_facing_mcp_proxy_configs_with_bearer_env(
     Ok(servers)
 }
 
-fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfig) {
+fn append_codex_mcp_config(args: &mut Vec<String>, server: &CharioxMcpServerConfig) {
     let prefix = format!("mcp_servers.{}", server.name);
     match &server.transport {
-        ArrobaMcpTransportConfig::Stdio {
+        CharioxMcpTransportConfig::Stdio {
             command,
             args: server_args,
             env,
@@ -163,7 +163,7 @@ fn append_codex_mcp_config(args: &mut Vec<String>, server: &ArrobaMcpServerConfi
                 );
             }
         }
-        ArrobaMcpTransportConfig::StreamableHttp {
+        CharioxMcpTransportConfig::StreamableHttp {
             url,
             bearer_token_env_var,
             bearer_token_credential: _,
@@ -239,7 +239,7 @@ fn write_workspace_live_sync_model_catalog(model: &str) -> Result<PathBuf, Daemo
         "models": [{
             "slug": slug,
             "display_name": slug,
-            "description": "Arroba workspace live sync model metadata overlay",
+            "description": "Chariox workspace live sync model metadata overlay",
             "default_reasoning_level": "medium",
             "supported_reasoning_levels": [
                 { "effort": "low", "description": "Fast responses with lighter reasoning" },
@@ -271,7 +271,7 @@ fn write_workspace_live_sync_model_catalog(model: &str) -> Result<PathBuf, Daemo
     let mut hasher = DefaultHasher::new();
     model.hash(&mut hasher);
     let path = env::temp_dir().join(format!(
-        "arroba-codex-workspace-live-sync-models-{:x}.json",
+        "chariox-codex-workspace-live-sync-models-{:x}.json",
         hasher.finish()
     ));
     let content = serde_json::to_string(&catalog).map_err(|error| DaemonError::LocalTransport {

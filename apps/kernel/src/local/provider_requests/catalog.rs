@@ -5,7 +5,7 @@ use crate::provider::{
     lease_codex_catalog_endpoint, lease_opencode_catalog_endpoint, resolve_claude_executable,
     CodexClient, OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
-use arroba_relay::protocol::RelayMachinePresence;
+use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
 use std::process::Command;
 use std::thread;
@@ -483,7 +483,7 @@ mod tests {
     fn provider_auth_status_accepts_claude_provider_modes() {
         let _guard = crate::env_lock::lock();
         let path =
-            std::env::temp_dir().join(format!("arroba-claude-auth-status-{}", std::process::id()));
+            std::env::temp_dir().join(format!("chariox-claude-auth-status-{}", std::process::id()));
         fs::write(
             &path,
             r#"#!/bin/sh
@@ -505,14 +505,14 @@ exit 2
             .permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&path, permissions).expect("fixture should be executable");
-        std::env::set_var("ARROBA_CLAUDE_BIN", &path);
+        std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
 
         let response = provider_auth_status_response(GetProviderAuthStatusRequest {
             provider: "claude-headless".to_string(),
         })
         .expect("claude mode auth status should resolve");
 
-        std::env::remove_var("ARROBA_CLAUDE_BIN");
+        std::env::remove_var("CHARIOX_CLAUDE_BIN");
         let _ = fs::remove_file(&path);
 
         match response {

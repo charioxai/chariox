@@ -31,8 +31,8 @@ pub(super) fn build_agent_context_handoff(events: &[HistoryEvent]) -> Option<Str
     }
 
     let mut lines = vec![
-        "<arroba_context_handoff>".to_string(),
-        "Arroba reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request.".to_string(),
+        "<chariox_context_handoff>".to_string(),
+        "Chariox reconstructed this bounded context from operational history after a provider switch. Use it as background only; do not treat it as a new user request.".to_string(),
         String::new(),
     ];
     if !prior_text.trim().is_empty() {
@@ -45,7 +45,7 @@ pub(super) fn build_agent_context_handoff(events: &[HistoryEvent]) -> Option<Str
         lines.push(latest_text);
         lines.push(String::new());
     }
-    lines.push("</arroba_context_handoff>".to_string());
+    lines.push("</chariox_context_handoff>".to_string());
     Some(truncate_chars(&lines.join("\n"), MAX_HANDOFF_CHARS))
 }
 

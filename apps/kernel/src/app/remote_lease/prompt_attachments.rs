@@ -53,7 +53,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .clone()
                         .unwrap_or_else(|| format!("attachment-{index}"));
                     let root = std::env::temp_dir()
-                        .join("arroba-remote-prompt-attachments")
+                        .join("chariox-remote-prompt-attachments")
                         .join(&leased_agent.backing_session_id)
                         .join(&leased_agent.id);
                     fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {

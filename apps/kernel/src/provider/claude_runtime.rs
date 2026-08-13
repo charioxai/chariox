@@ -56,8 +56,8 @@ pub(crate) fn initialize_claude_runtime(
         args.extend(["--session-id".to_string(), session_id.clone()]);
     }
     let env = run.pty_env().clone();
-    let context_file = env.get("ARROBA_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
-    let settings_file = env.get("ARROBA_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
+    let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
+    let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
     let env_remove = run.pty_env_remove().to_vec();
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
@@ -172,7 +172,7 @@ pub(crate) fn abort_claude_turn(
 ) -> Result<(), DaemonError> {
     let message = json!({
         "type": "control_request",
-        "request_id": format!("arroba-claude-interrupt-{}", run.id()),
+        "request_id": format!("chariox-claude-interrupt-{}", run.id()),
         "request": { "subtype": "interrupt" }
     });
     let _ = write_json_line(&mut state.stdin, &message);
@@ -318,7 +318,7 @@ fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
 }
 
 fn claude_turn_stall_timeout() -> Duration {
-    std::env::var("ARROBA_CLAUDE_TURN_STALL_TIMEOUT_MS")
+    std::env::var("CHARIOX_CLAUDE_TURN_STALL_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -354,7 +354,7 @@ fn handle_claude_tool_uses(
                 "tool_use_id": id,
                 "is_error": true,
                 "content": format!(
-                    "Arroba does not execute Claude stream-json tool `{name}` in this runtime path. If this is an Arroba workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
+                    "Chariox does not execute Claude stream-json tool `{name}` in this runtime path. If this is a Chariox workflow turn, do not search for workflow tools; emit the required fenced JSON fallback directly."
                 ),
             }));
             continue;
@@ -728,7 +728,7 @@ mod tests {
             crate::session::unix_epoch_ms()
         );
         let missing_program = std::env::temp_dir().join(format!(
-            "arroba-missing-claude-{}-{}",
+            "chariox-missing-claude-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -778,7 +778,7 @@ mod tests {
     fn rejects_unmaterialized_mcp_config_argument() {
         let mut args = vec![
             "--mcp-config".to_string(),
-            "{\"mcpServers\":{\"arroba\":{\"token\":\"inline-secret\"}}}".to_string(),
+            "{\"mcpServers\":{\"chariox\":{\"token\":\"inline-secret\"}}}".to_string(),
         ];
 
         let error = super::install_claude_mcp_config_argument(&mut args, None)
@@ -924,7 +924,7 @@ mod tests {
                         "type": "tool_use",
                         "id": "toolu_1",
                         "name": "ToolSearch",
-                        "input": { "query": "arroba workflow tools" }
+                        "input": { "query": "chariox workflow tools" }
                     }]
                 }
             }),

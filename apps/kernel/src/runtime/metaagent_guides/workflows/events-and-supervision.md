@@ -1,6 +1,6 @@
 # Workflow events and supervision
 
-Metaagents can subscribe to workflow events and stop their turn. Arroba will continue them when a subscribed event arrives.
+Metaagents can subscribe to workflow events and stop their turn. Chariox will continue them when a subscribed event arrives.
 
 Useful event kinds:
 

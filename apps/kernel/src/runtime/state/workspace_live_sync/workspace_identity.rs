@@ -28,7 +28,7 @@ pub(in crate::runtime::state) fn workspace_live_sync_workspace_identity_rejected
             "kind": "workspace_identity_changed",
             "message": "The provider run workspace identity changed since workspace live sync coordination started."
         },
-        "next_action": "Stop editing, reread the workspace state, and only retry after Arroba revalidates or rejoins the coordinated workspace.",
+        "next_action": "Stop editing, reread the workspace state, and only retry after Chariox revalidates or rejoins the coordinated workspace.",
     });
     add_workspace_live_sync_workspace_payload(&mut payload, workspace);
     crate::transport::runtime_tools::RuntimeToolResult { ok: false, payload }
@@ -68,7 +68,7 @@ pub(in crate::runtime::state) fn normalize_workspace_live_sync_repo_url(value: &
     value.trim().trim_end_matches(".git").to_ascii_lowercase()
 }
 
-pub(in crate::runtime::state) fn workspace_live_sync_is_arroba_source_workspace(
+pub(in crate::runtime::state) fn workspace_live_sync_is_chariox_source_workspace(
     root: &PathBuf,
 ) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()

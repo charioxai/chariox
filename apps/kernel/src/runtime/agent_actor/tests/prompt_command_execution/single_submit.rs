@@ -199,7 +199,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         prompt
             .hidden_system_context()
             .to_ascii_lowercase()
-            .contains("now operating in arroba meta mode"),
+            .contains("now operating in chariox meta mode"),
         "meta mode boundary context should be hidden on first meta turn"
     );
     assert_eq!(

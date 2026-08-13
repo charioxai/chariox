@@ -573,14 +573,14 @@ mod tests {
                     assert_eq!(
                         request
                             .headers()
-                            .get("x-arroba-caller-claims")
+                            .get("x-chariox-caller-claims")
                             .and_then(|value| value.to_str().ok()),
                         Some("signed-caller-claims")
                     );
                     assert_eq!(
                         request
                             .headers()
-                            .get("x-arroba-invocation-id")
+                            .get("x-chariox-invocation-id")
                             .and_then(|value| value.to_str().ok()),
                         Some("invocation-1")
                     );
@@ -625,11 +625,11 @@ mod tests {
                     value: "websocket".to_string(),
                 },
                 RelayDisplayTunnelHeader {
-                    name: "x-arroba-caller-claims".to_string(),
+                    name: "x-chariox-caller-claims".to_string(),
                     value: "signed-caller-claims".to_string(),
                 },
                 RelayDisplayTunnelHeader {
-                    name: "x-arroba-invocation-id".to_string(),
+                    name: "x-chariox-invocation-id".to_string(),
                     value: "invocation-1".to_string(),
                 },
             ],

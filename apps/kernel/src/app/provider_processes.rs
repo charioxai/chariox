@@ -417,20 +417,20 @@ fn claude_native_tui_cleanup_root(run: &RuntimeProviderRun) -> Option<PathBuf> {
     {
         return None;
     }
-    let events_file = PathBuf::from(run.pty_env().get("ARROBA_CLAUDE_NATIVE_EVENTS")?);
+    let events_file = PathBuf::from(run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS")?);
     let root = events_file.parent()?;
     if root.parent() != Some(std::env::temp_dir().as_path())
         || !root
             .file_name()
             .and_then(|value| value.to_str())
-            .is_some_and(|value| value.starts_with("arroba-claude-remote-native-"))
+            .is_some_and(|value| value.starts_with("chariox-claude-remote-native-"))
     {
         return None;
     }
     for key in [
-        "ARROBA_CLAUDE_NATIVE_CONTEXT",
-        "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES",
-        "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+        "CHARIOX_CLAUDE_NATIVE_CONTEXT",
+        "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+        "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
     ] {
         if Path::new(run.pty_env().get(key)?).parent() != Some(root) {
             return None;
@@ -525,7 +525,7 @@ fn owned_orphan_provider_process_ids_from_ps_output(
                 || has_protected_process_ancestor(process, &processes, tracked_pids, current_pid)
                 || process.age_secs < min_age_secs
                 || !process.command.contains("codex app-server")
-                || !process.command.contains("mcp_servers.arroba.url")
+                || !process.command.contains("mcp_servers.chariox.url")
                 || !process.command.contains(mcp_url)
             {
                 return None;
@@ -619,7 +619,7 @@ mod tests {
 
     fn codex_command(port: u16) -> String {
         format!(
-            "codex app-server -c mcp_servers.arroba.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"
+            "codex app-server -c mcp_servers.chariox.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"
         )
     }
 
@@ -676,7 +676,7 @@ mod tests {
         let ps_output = format!(
             "200 1 200 29 /opt/codex {}\n\
              201 1 201 30 /opt/codex codex app-server --listen ws://127.0.0.1:50002\n\
-             202 1 202 30 /opt/codex codex app-server -c mcp_servers.arroba.url=\"http://127.0.0.1:49998/mcp\"\n\
+             202 1 202 30 /opt/codex codex app-server -c mcp_servers.chariox.url=\"http://127.0.0.1:49998/mcp\"\n\
              203 1 203 30 /opt/codex {}\n",
             codex_command(50001),
             codex_command(50003),

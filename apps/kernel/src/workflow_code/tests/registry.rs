@@ -31,7 +31,7 @@ fn source_export_keeps_component_variable_namespaces_separate() {
 #[test]
 fn workflow_registry_lists_and_resolves_builtin_entries() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-registry-builtin-{}-{}",
+        "chariox-workflow-registry-builtin-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -216,7 +216,7 @@ fn workflow_registry_applies_workspace_user_builtin_precedence() {
         return;
     };
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-registry-precedence-{}-{}",
+        "chariox-workflow-registry-precedence-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -294,7 +294,7 @@ fn workflow_registry_adds_source_directory_and_rejects_hash_mismatch() {
         return;
     };
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-registry-directory-{}-{}",
+        "chariox-workflow-registry-directory-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -370,7 +370,7 @@ fn workflow_registry_adds_source_directory_and_rejects_hash_mismatch() {
 #[test]
 fn registry_saves_lists_reads_updates_and_deletes_artifacts() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-registry-{}-{}",
+        "chariox-workflow-code-registry-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -448,7 +448,7 @@ fn registry_saves_lists_reads_updates_and_deletes_artifacts() {
 #[test]
 fn registry_persists_validation_report_for_invalid_artifact() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-invalid-registry-{}-{}",
+        "chariox-workflow-code-invalid-registry-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

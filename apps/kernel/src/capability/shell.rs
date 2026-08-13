@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn runs_shell_command_in_requested_directory() {
         let service = ShellCommandService::new();
-        let temp_dir = std::env::temp_dir().join("arroba-shell-capability-test");
+        let temp_dir = std::env::temp_dir().join("chariox-shell-capability-test");
         fs::create_dir_all(&temp_dir).expect("temp dir should exist");
 
         let result = service
@@ -211,7 +211,7 @@ mod tests {
         assert!(result
             .stdout
             .trim_end()
-            .ends_with("arroba-shell-capability-test"));
+            .ends_with("chariox-shell-capability-test"));
     }
 
     #[test]
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn rejects_working_directory_outside_worktree() {
         let service = ShellCommandService::new();
-        let worktree_root = std::env::temp_dir().join("arroba-shell-worktree-root");
+        let worktree_root = std::env::temp_dir().join("chariox-shell-worktree-root");
         let outside_dir = std::env::temp_dir();
         fs::create_dir_all(&worktree_root).expect("worktree dir should exist");
 

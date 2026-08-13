@@ -12,7 +12,7 @@ impl KernelRuntimeState {
             let home_session_id = context.home_session_id.clone();
             let home_agent_id = context.home_agent_id.clone();
             let canonical_tool_name = tool_name
-                .strip_prefix("arroba_")
+                .strip_prefix("chariox_")
                 .unwrap_or(&tool_name)
                 .to_string();
             let context = owned.workflow_tool_context(

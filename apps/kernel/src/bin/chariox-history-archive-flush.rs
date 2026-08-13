@@ -1,16 +1,16 @@
 use std::env;
 use std::process::ExitCode;
 
-use arroba_kernel::artifacts::OperationalArtifactStore;
-use arroba_kernel::config::DaemonConfig;
-use arroba_kernel::config::HistoryArchiveMode;
-use arroba_kernel::history::OperationalHistoryStore;
-use arroba_kernel::history_archive::{
+use chariox_kernel::artifacts::OperationalArtifactStore;
+use chariox_kernel::config::DaemonConfig;
+use chariox_kernel::config::HistoryArchiveMode;
+use chariox_kernel::history::OperationalHistoryStore;
+use chariox_kernel::history_archive::{
     ArtifactArchiveExporter, HistoryArchiveClient, HistoryArchiveExporter,
 };
 
 fn main() -> ExitCode {
-    let _ = arroba_kernel::logging::init_process_logger("history-archive-flush");
+    let _ = chariox_kernel::logging::init_process_logger("history-archive-flush");
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -20,37 +20,37 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), arroba_kernel::DaemonError> {
+fn run() -> Result<(), chariox_kernel::DaemonError> {
     let mut limit = 100usize;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--limit" => {
                 let Some(value) = args.next() else {
-                    return Err(arroba_kernel::DaemonError::InvalidConfig {
+                    return Err(chariox_kernel::DaemonError::InvalidConfig {
                         field: "history.archive.flush.limit",
                         message: "missing value for --limit",
                     });
                 };
                 limit = value.parse::<usize>().map_err(|error| {
-                    arroba_kernel::DaemonError::LocalTransport {
+                    chariox_kernel::DaemonError::LocalTransport {
                         operation: "history.archive.flush",
                         message: format!("--limit must be a positive integer: {error}"),
                     }
                 })?;
                 if limit == 0 {
-                    return Err(arroba_kernel::DaemonError::InvalidConfig {
+                    return Err(chariox_kernel::DaemonError::InvalidConfig {
                         field: "history.archive.flush.limit",
                         message: "value must be greater than zero",
                     });
                 }
             }
             "--help" | "-h" => {
-                println!("Usage: arroba-history-archive-flush [--limit N]");
+                println!("Usage: chariox-history-archive-flush [--limit N]");
                 return Ok(());
             }
             _ => {
-                return Err(arroba_kernel::DaemonError::LocalTransport {
+                return Err(chariox_kernel::DaemonError::LocalTransport {
                     operation: "history.archive.flush",
                     message: format!("unknown argument `{arg}`"),
                 });
@@ -70,7 +70,7 @@ fn run() -> Result<(), arroba_kernel::DaemonError> {
             let artifact_exporter = ArtifactArchiveExporter::new(artifact_store, artifact_client);
             artifact_exporter.flush_pending_once(limit)?
         } else {
-            arroba_kernel::history_archive::ArtifactArchiveFlushOutcome {
+            chariox_kernel::history_archive::ArtifactArchiveFlushOutcome {
                 attempted_artifact_ids: Vec::new(),
                 accepted_artifact_ids: Vec::new(),
                 rejected_artifacts: Vec::new(),

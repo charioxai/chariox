@@ -305,7 +305,7 @@ impl KernelRuntimeState {
                                 Some(resumed_run.id()),
                                 recipients,
                                 format!(
-                                    "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+                                    "Provider switch failed for session `{}`. Chariox resumed the previous provider run `{}` automatically.",
                                     run.session_id(),
                                     resumed_run.id()
                                 ),
@@ -317,7 +317,7 @@ impl KernelRuntimeState {
                                 None,
                                 recipients,
                                 format!(
-                                    "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                    "Provider switch failed for session `{}` and Chariox could not resume the previous provider run: {}",
                                     run.session_id(),
                                     resume_error
                                 ),

@@ -138,7 +138,7 @@ fn resume_state_without_attachment_or_running_run_is_not_observed() {
         .get("codex:thread-idle")
         .expect("record should remain indexed");
     assert!(
-        !indexed.is_attached_to_arroba(),
+        !indexed.is_attached_to_chariox(),
         "idle persisted resume state must not mark external sessions attached"
     );
     assert_eq!(indexed.first_attached_session_id(), None);
@@ -171,11 +171,11 @@ fn attached_resume_state_is_observed() {
     assert_eq!(target.provider_session_id, "thread-attached");
     assert!(
         !target.needs_responsive_refresh,
-        "an idle Arroba-owned session only needs explicit attach-time catch-up"
+        "an idle Chariox-owned session only needs explicit attach-time catch-up"
     );
     assert!(
         attached_external_observer_targets(&app, true).is_empty(),
-        "responsive polling must not clone or inspect idle Arroba-owned agents"
+        "responsive polling must not clone or inspect idle Chariox-owned agents"
     );
 }
 
@@ -229,7 +229,7 @@ fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files()
         !store
             .get("codex:thread-on-worker")
             .expect("record should remain indexed")
-            .is_attached_to_arroba(),
+            .is_attached_to_chariox(),
         "remote provider sessions must not be marked as locally attached"
     );
 }

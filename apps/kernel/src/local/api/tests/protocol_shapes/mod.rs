@@ -34,7 +34,7 @@ fn history_page_entry(
             source_attachment_id: Some("attachment-1".to_string()),
             prompt_origin: match kind {
                 crate::history::SessionHistoryEntryKind::UserPrompt => {
-                    Some(crate::session::PromptOrigin::Arroba)
+                    Some(crate::session::PromptOrigin::Chariox)
                 }
                 _ => None,
             },

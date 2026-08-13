@@ -35,7 +35,7 @@ impl AgentEndpointAdapter for DevStubAdapter {
         let pty_args = dev_stub_pty_args(request.model.as_str());
         let pty_env = dev_stub_pty_env(request);
         let pty_target = if request.model == DISTRIBUTED_SCALE_SHARED_PTY_MODEL {
-            // The distributed scale drill measures Arroba's run/lease/relay overhead, not the
+            // The distributed scale drill measures Chariox's run/lease/relay overhead, not the
             // host's PTY limit. Each worker multiplexes its synthetic runs through one process,
             // matching structured providers that multiplex many logical sessions per server.
             "stub-pty:distributed-scale".to_string()

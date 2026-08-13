@@ -191,7 +191,7 @@ impl CodexClient {
             "method": "initialize",
             "params": {
                 "clientInfo": {
-                    "name": "arroba-kernel",
+                    "name": "chariox-kernel",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
                 "capabilities": {

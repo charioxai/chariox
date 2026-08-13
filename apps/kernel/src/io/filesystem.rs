@@ -55,7 +55,7 @@ impl WorkspaceLiveSyncFileIo {
         coordinator: &mut ArtifactEditCoordinator,
         request: WorkspaceLiveSyncFileWriteRequest,
     ) -> Result<EditResult, ArtifactEditError> {
-        reject_arroba_owned_write_path(&request.workspace_root, &request.intent.path)?;
+        reject_chariox_owned_write_path(&request.workspace_root, &request.intent.path)?;
         let full_path = resolve_workspace_path(&request.workspace_root, &request.intent.path)?;
         let allow_missing = matches!(
             request.intent.operation,
@@ -183,14 +183,14 @@ fn normalize_workspace_relative_path(path: &Path) -> Result<PathBuf, ArtifactEdi
     Ok(relative)
 }
 
-fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), ArtifactEditError> {
+fn reject_chariox_owned_write_path(root: &Path, path: &Path) -> Result<(), ArtifactEditError> {
     let relative = normalize_workspace_relative_path(path)?;
     if relative == Path::new(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
-        && is_arroba_source_workspace(root)
+        && is_chariox_source_workspace(root)
     {
         return Err(ArtifactEditError::InvalidOperation {
             message: format!(
-                "the Arroba workspace live sync instruction policy `{}` is owned by Arroba and cannot be edited through Workspace Live Sync managed tools",
+                "the Chariox workspace live sync instruction policy `{}` is owned by Chariox and cannot be edited through Workspace Live Sync managed tools",
                 crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH
             ),
         });
@@ -198,7 +198,7 @@ fn reject_arroba_owned_write_path(root: &Path, path: &Path) -> Result<(), Artifa
     Ok(())
 }
 
-fn is_arroba_source_workspace(root: &Path) -> bool {
+fn is_chariox_source_workspace(root: &Path) -> bool {
     root.join("apps/kernel/Cargo.toml").is_file()
         && root
             .join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH)
@@ -220,8 +220,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system clock before unix epoch")
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("arroba-workspace-live-sync-file-io-{name}-{nanos}"));
+        let root = std::env::temp_dir().join(format!(
+            "chariox-workspace-live-sync-file-io-{name}-{nanos}"
+        ));
         fs::create_dir_all(&root).expect("create test root");
         root
     }
@@ -438,7 +439,7 @@ mod tests {
                     path: PathBuf::from("nested/created.txt"),
                     snapshot_id: None,
                     operation: AgentEditOperation::WriteArtifact {
-                        content: ArtifactContent::Text("created through arroba\n".to_string()),
+                        content: ArtifactContent::Text("created through chariox\n".to_string()),
                     },
                 },
             },
@@ -447,7 +448,7 @@ mod tests {
         assert!(matches!(result, EditResult::Applied { .. }));
         assert_eq!(
             fs::read_to_string(&path).expect("created file should read"),
-            "created through arroba\n"
+            "created through chariox\n"
         );
     }
 
@@ -524,13 +525,13 @@ mod tests {
     }
 
     #[test]
-    fn workspace_live_sync_file_write_rejects_arroba_owned_instruction_policy() {
+    fn workspace_live_sync_file_write_rejects_chariox_owned_instruction_policy() {
         let root = test_root("reject-policy");
         let policy_path = root.join(crate::provider::WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH);
         fs::create_dir_all(policy_path.parent().unwrap()).expect("create policy parent");
         fs::write(
             root.join("apps/kernel/Cargo.toml"),
-            "[package]\nname = \"arroba-kernel\"\n",
+            "[package]\nname = \"chariox-kernel\"\n",
         )
         .expect("write daemon manifest marker");
         fs::write(&policy_path, "original policy\n").expect("write policy marker");

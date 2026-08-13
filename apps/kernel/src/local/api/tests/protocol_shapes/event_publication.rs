@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -12,7 +12,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             crate::local::SearchEventGeneratorCatalogRequest {
                 query: "github".to_string(),
                 category: Some("Developer tools".to_string()),
-                verification: Some("arroba".to_string()),
+                verification: Some("chariox".to_string()),
                 cursor: Some("opaque-cursor".to_string()),
                 limit: 20,
             },
@@ -25,12 +25,12 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             },
         ),
         LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
-            generator_id: "dev.arroba.github".to_string(),
+            generator_id: "dev.chariox.github".to_string(),
             version: Some("1.0.0".to_string()),
         }),
         LocalDaemonRequest::BrowseEventGeneratorEvents(
             crate::local::BrowseEventGeneratorEventsRequest {
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 query: Some("review".to_string()),
                 cursor: Some("opaque-event-cursor".to_string()),
                 limit: 50,
@@ -40,14 +40,14 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             crate::local::CreateWorkflowEventBindingRequest {
                 session_id: "session-1".to_string(),
                 publication_ref: "publication-1".to_string(),
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 generator_version: "1.0.0".to_string(),
                 manifest_digest: format!("sha256:{}", "a".repeat(64)),
                 connection_id: "connection-1".to_string(),
                 connection_scope: "installation:1".to_string(),
                 event_type: "pull_request.opened".to_string(),
                 event_type_version: 1,
-                filter: serde_json::json!({"repository": "arroba"}),
+                filter: serde_json::json!({"repository": "chariox"}),
                 environment_id: Some("environment-1".to_string()),
                 queue_ref: Some("priority".to_string()),
             },
@@ -83,21 +83,21 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonRequest::GetEventDeliveryStatus(crate::local::GetEventDeliveryStatusRequest),
         LocalDaemonRequest::StartEventGeneratorAuthorization(
             crate::local::StartEventGeneratorAuthorizationRequest {
-                generator_id: "dev.arroba.github".to_string(),
-                return_url: Some("https://terminal.arroba.dev/events/callback".to_string()),
+                generator_id: "dev.chariox.github".to_string(),
+                return_url: Some("https://terminal.chariox.com/events/callback".to_string()),
             },
         ),
         LocalDaemonRequest::ListEventGeneratorResources(
             crate::local::ListEventGeneratorResourcesRequest {
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 connection_id: "connection-1".to_string(),
-                query: Some("arroba".to_string()),
+                query: Some("chariox".to_string()),
                 cursor: Some("opaque-resource-cursor".to_string()),
                 limit: 20,
             },
         ),
         LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
-            generator_id: Some("dev.arroba.github".to_string()),
+            generator_id: Some("dev.chariox.github".to_string()),
             cursor: Some("offset-20".to_string()),
             limit: 20,
         }),
@@ -105,8 +105,8 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             connection_id: "connection-1".to_string(),
         }),
         LocalDaemonRequest::InstallEventConnection(crate::local::InstallEventConnectionRequest {
-            generator_id: "dev.arroba.github".to_string(),
-            return_url: Some("https://terminal.arroba.dev/notifications/callback".to_string()),
+            generator_id: "dev.chariox.github".to_string(),
+            return_url: Some("https://terminal.chariox.com/notifications/callback".to_string()),
         }),
         LocalDaemonRequest::ObserveEventConnectionAuthorization(
             crate::local::ObserveEventConnectionAuthorizationRequest {
@@ -119,13 +119,13 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonRequest::ReconnectEventConnection(
             crate::local::ReconnectEventConnectionRequest {
                 connection_id: "connection-1".to_string(),
-                return_url: Some("https://terminal.arroba.dev/notifications/callback".to_string()),
+                return_url: Some("https://terminal.chariox.com/notifications/callback".to_string()),
             },
         ),
         LocalDaemonRequest::ListEventConnectionResources(
             crate::local::ListEventConnectionResourcesRequest {
                 connection_id: "connection-1".to_string(),
-                query: Some("arroba".to_string()),
+                query: Some("chariox".to_string()),
                 cursor: None,
                 limit: 20,
             },
@@ -158,24 +158,24 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             page: crate::local::EventGeneratorCatalogPage {
                 services: vec![crate::local::EventGeneratorCatalogSummary {
                     schema_version: 1,
-                    generator_id: "dev.arroba.github".to_string(),
+                    generator_id: "dev.chariox.github".to_string(),
                     version: "1.0.0".to_string(),
                     name: "GitHub".to_string(),
                     summary: "GitHub events.".to_string(),
                     provider: "GitHub".to_string(),
                     publisher: crate::local::EventGeneratorParty {
-                        id: "dev.arroba".to_string(),
-                        name: "Arroba".to_string(),
-                        url: Some("https://arroba.dev".to_string()),
+                        id: "dev.chariox".to_string(),
+                        name: "Chariox".to_string(),
+                        url: Some("https://chariox.com".to_string()),
                     },
                     operator: crate::local::EventGeneratorParty {
-                        id: "hosted.arroba".to_string(),
-                        name: "Arroba hosted service".to_string(),
-                        url: Some("https://arroba.dev".to_string()),
+                        id: "hosted.chariox".to_string(),
+                        name: "Chariox hosted service".to_string(),
+                        url: Some("https://chariox.com".to_string()),
                     },
-                    verification: "arroba".to_string(),
+                    verification: "chariox".to_string(),
                     manifest_digest: format!("sha256:{}", "b".repeat(64)),
-                    protocol_version: 1,
+                    protocol_version: 2,
                     categories: vec!["developer-tools".to_string()],
                     installed_count: 0,
                     recommended: true,
@@ -189,11 +189,11 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         },
         LocalDaemonResponse::EventGeneratorAuthorizationStarted {
             flow: crate::local::EventGeneratorAuthorizationFlow {
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 status: "user_action_required".to_string(),
                 connection_id: Some("connection-pending-1".to_string()),
                 authorization_url: Some(
-                    "https://github.com/apps/arroba/installations/new".to_string(),
+                    "https://github.com/apps/chariox/installations/new".to_string(),
                 ),
                 user_code: None,
                 expires_at_ms: Some(1_800_000),
@@ -203,9 +203,9 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             page: crate::local::EventGeneratorResourcePage {
                 resources: vec![crate::local::EventGeneratorResource {
                     id: "repository-1".to_string(),
-                    name: "arroba/arroba".to_string(),
+                    name: "charioxai/chariox".to_string(),
                     kind: "repository".to_string(),
-                    connection_scope: "arroba/arroba".to_string(),
+                    connection_scope: "charioxai/chariox".to_string(),
                 }],
                 next_cursor: Some("opaque-next-resource-cursor".to_string()),
             },
@@ -213,10 +213,10 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonResponse::EventConnectionsPage {
             page: crate::local::EventConnectionPage {
                 connections: vec![crate::local::EventConnection {
-                    generator_id: "dev.arroba.github".to_string(),
+                    generator_id: "dev.chariox.github".to_string(),
                     connection_id: "connection-1".to_string(),
                     status: crate::local::EventConnectionStatus::Ready,
-                    metadata: serde_json::json!({"account": "arroba"}),
+                    metadata: serde_json::json!({"account": "chariox"}),
                     expires_at_ms: None,
                     created_at_ms: 1_700_000,
                     updated_at_ms: 1_800_000,
@@ -228,11 +228,11 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonResponse::EventConnectionAuthorizationStarted {
             authorization: crate::local::EventConnectionAuthorization {
                 authorization_id: "event-authorization-1".to_string(),
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 connection_id: Some("connection-1".to_string()),
                 status: "user_action_required".to_string(),
                 authorization_url: Some(
-                    "https://github.com/apps/arroba/installations/new".to_string(),
+                    "https://github.com/apps/chariox/installations/new".to_string(),
                 ),
                 user_code: None,
                 expires_at_ms: Some(1_900_000),
@@ -241,10 +241,10 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         },
         LocalDaemonResponse::EventConnection {
             connection: crate::local::EventConnection {
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 connection_id: "connection-1".to_string(),
                 status: crate::local::EventConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "arroba"}),
+                metadata: serde_json::json!({"account": "chariox"}),
                 expires_at_ms: None,
                 created_at_ms: 1_700_000,
                 updated_at_ms: 1_800_000,
@@ -254,7 +254,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonResponse::EventConnectionAuthorizationObserved {
             authorization: crate::local::EventConnectionAuthorization {
                 authorization_id: "event-authorization-1".to_string(),
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 connection_id: Some("connection-1".to_string()),
                 status: "ready".to_string(),
                 authorization_url: None,
@@ -268,9 +268,9 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             page: crate::local::EventGeneratorResourcePage {
                 resources: vec![crate::local::EventGeneratorResource {
                     id: "repository-1".to_string(),
-                    name: "arroba/arroba".to_string(),
+                    name: "charioxai/chariox".to_string(),
                     kind: "repository".to_string(),
-                    connection_scope: "arroba/arroba".to_string(),
+                    connection_scope: "charioxai/chariox".to_string(),
                 }],
                 next_cursor: None,
             },
@@ -286,10 +286,10 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         },
         LocalDaemonResponse::EventConnectionRemoved {
             connection: crate::local::EventConnection {
-                generator_id: "dev.arroba.github".to_string(),
+                generator_id: "dev.chariox.github".to_string(),
                 connection_id: "connection-1".to_string(),
                 status: crate::local::EventConnectionStatus::Revoked,
-                metadata: serde_json::json!({"account": "arroba"}),
+                metadata: serde_json::json!({"account": "chariox"}),
                 expires_at_ms: None,
                 created_at_ms: 1_700_000,
                 updated_at_ms: 1_800_000,
@@ -308,7 +308,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/requests/5/CreateWorkflowEventBinding/filter/repository"),
-        Some(&serde_json::json!("arroba"))
+        Some(&serde_json::json!("chariox"))
     );
     assert_eq!(
         snapshot.pointer("/requests/7/SetWorkflowEventBindingStatus/status"),
@@ -333,18 +333,18 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/responses/2/EventGeneratorAuthorizationStarted/flow/authorization_url"),
         Some(&serde_json::json!(
-            "https://github.com/apps/arroba/installations/new"
+            "https://github.com/apps/chariox/installations/new"
         ))
     );
     assert_eq!(
         snapshot
             .pointer("/responses/3/EventGeneratorResourcesPage/page/resources/0/connection_scope"),
-        Some(&serde_json::json!("arroba/arroba"))
+        Some(&serde_json::json!("charioxai/chariox"))
     );
     let serialized = serde_json::to_string(&snapshot).unwrap();
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "79498ab1751810a2194c0ea4f23b137db54a25e9417dfb04c9a8735c837ebc1b"
+        "b78f2b53b0810def76157366385e29abe22539a272867494ab920f73f52687ad"
     );
 }

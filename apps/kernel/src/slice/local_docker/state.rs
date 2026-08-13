@@ -111,7 +111,7 @@ fn create_local_docker_slice_backup_inner(
     ensure_host_docker_ready()?;
     let backup_id = backup_id(record, name);
     let state_id = active_state_id(record);
-    let image_ref = format!("arroba-slice-backup:{backup_id}");
+    let image_ref = format!("chariox-slice-backup:{backup_id}");
     let backup_dir = options.root.join("backups").join(&backup_id);
     let manifest_path = backup_dir.join("manifest.json");
     let home_archive_path = backup_dir.join("home.tar.zst");
@@ -298,7 +298,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
             &container,
             "bash",
             "-lc",
-            "screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true; screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true",
+            "screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true; screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true; pkill -f 'codex app-server' >/dev/null 2>&1 || true; pkill -f 'opencode serve' >/dev/null 2>&1 || true",
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -552,7 +552,7 @@ fn active_state_id(record: &SliceRecord) -> String {
 }
 
 fn active_state_image_ref(state_id: &str) -> String {
-    format!("arroba-slice-state:{state_id}")
+    format!("chariox-slice-state:{state_id}")
 }
 
 fn backup_id(record: &SliceRecord, name: Option<&str>) -> String {

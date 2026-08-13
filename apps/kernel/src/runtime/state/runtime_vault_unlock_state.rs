@@ -34,7 +34,7 @@ impl Drop for VaultUnlockGuard {
             return;
         }
         if let Some(path) = self.path.as_ref() {
-            let _ = crate::secret::lock_arroba_encrypted_vault(path);
+            let _ = crate::secret::lock_chariox_encrypted_vault(path);
             let _ = crate::secret::clear_vault_secret_process_cache();
         }
     }
@@ -50,12 +50,12 @@ impl KernelRuntimeState {
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         if user_config.credential_vault.backend
-            != crate::config::CredentialVaultBackend::ArrobaEncrypted
+            != crate::config::CredentialVaultBackend::CharioxEncrypted
         {
             return Ok(VaultUnlockGuard::not_required());
         }
         let vault_path = expand_vault_path(&user_config.credential_vault.path);
-        if crate::secret::arroba_encrypted_vault_status(&vault_path)?.unlocked {
+        if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry());
         }
         let session_id = session_id
@@ -63,7 +63,7 @@ impl KernelRuntimeState {
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation,
                 message:
-                    "encrypted Arroba vault access requires a session_id so the unlock popup can be shown"
+                    "encrypted Chariox vault access requires a session_id so the unlock popup can be shown"
                         .to_string(),
             })?;
         let agent_id = agent_id.or(command.agent_id.as_deref()).unwrap_or("vault");
@@ -95,7 +95,7 @@ impl KernelRuntimeState {
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
-        if vault_config.backend != crate::config::CredentialVaultBackend::ArrobaEncrypted {
+        if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
             return Ok(VaultUnlockGuard::not_required());
         }
         let vault_path = expand_vault_path(&vault_config.path);
@@ -103,12 +103,12 @@ impl KernelRuntimeState {
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::Always
         );
-        if !force_prompt && crate::secret::arroba_encrypted_vault_status(&vault_path)?.unlocked {
+        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry());
         }
         let unlock_request_lock = vault_unlock_request_lock(&vault_path);
         let _dedupe_guard = unlock_request_lock.lock().await;
-        if !force_prompt && crate::secret::arroba_encrypted_vault_status(&vault_path)?.unlocked {
+        if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry());
         }
 
@@ -139,34 +139,34 @@ impl KernelRuntimeState {
         if resolution.status == "timed_out" {
             return Err(DaemonError::LocalTransport {
                 operation,
-                message: "Arroba vault unlock timed out".to_string(),
+                message: "Chariox vault unlock timed out".to_string(),
             });
         }
         let Some(choice_id) = resolution.choice_id.as_deref() else {
             return Err(DaemonError::LocalTransport {
                 operation,
-                message: "Arroba vault unlock was cancelled".to_string(),
+                message: "Chariox vault unlock was cancelled".to_string(),
             });
         };
         if choice_id == "cancel" {
             return Err(DaemonError::LocalTransport {
                 operation,
-                message: "Arroba vault unlock was cancelled".to_string(),
+                message: "Chariox vault unlock was cancelled".to_string(),
             });
         }
         let passphrase = zeroize::Zeroizing::new(resolution.reply.ok_or_else(|| {
             DaemonError::LocalTransport {
                 operation,
-                message: "Arroba vault unlock resolved without a passphrase".to_string(),
+                message: "Chariox vault unlock resolved without a passphrase".to_string(),
             }
         })?);
         let (lease, lock_after_operation) =
             unlock_lease_for_choice(choice_id, &vault_config, force_prompt);
         let status =
-            crate::secret::unlock_arroba_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
+            crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
         crate::logging::info_with_fields(
             "credential_vault",
-            "Arroba vault unlocked",
+            "Chariox vault unlocked",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
@@ -187,22 +187,22 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<(crate::secret::ArrobaVaultUnlockStatus, String), DaemonError> {
+    ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
-        if vault_config.backend != crate::config::CredentialVaultBackend::ArrobaEncrypted {
-            let status = crate::secret::arroba_encrypted_vault_status(expand_vault_path(
+        if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
+            let status = crate::secret::chariox_encrypted_vault_status(expand_vault_path(
                 &vault_config.path,
             ))?;
             return Ok((status, "not_required".to_string()));
         }
         let vault_path = expand_vault_path(&vault_config.path);
-        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+        let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
         if !status.unlocked {
             let _guard = self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
                 .await?;
-            let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+            let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
             return Ok((status, "unlocked".to_string()));
         }
 
@@ -295,9 +295,9 @@ fn vault_unlock_interaction(
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
-        Some("Unlock Arroba Vault".to_string()),
+        Some("Unlock Chariox Vault".to_string()),
         format!(
-            "Agent `{agent_id}` in session `{session_id}` needs Arroba Vault access for `{operation}`. Enter the vault passphrase and choose how long to keep it unlocked."
+            "Agent `{agent_id}` in session `{session_id}` needs Chariox Vault access for `{operation}`. Enter the vault passphrase and choose how long to keep it unlocked."
         ),
         choices,
         Some(crate::session::RuntimeInteractionCustomChoice::secret(
@@ -359,9 +359,9 @@ fn vault_manage_interaction(
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Info,
-        Some("Arroba Vault Unlocked".to_string()),
+        Some("Chariox Vault Unlocked".to_string()),
         format!(
-            "The Arroba Vault is unlocked for session `{session_id}`. Extend the unlock window or lock it now."
+            "The Chariox Vault is unlocked for session `{session_id}`. Extend the unlock window or lock it now."
         ),
         vec![
             crate::session::RuntimeInteractionChoice::new(
@@ -399,30 +399,30 @@ fn apply_vault_manage_choice(
     vault_path: &std::path::Path,
     choice_id: &str,
     config: &crate::config::UserCredentialVaultConfig,
-) -> Result<(crate::secret::ArrobaVaultUnlockStatus, String), DaemonError> {
+) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
     match choice_id {
         "extend_30m" => {
-            let status = crate::secret::extend_arroba_encrypted_vault(
+            let status = crate::secret::extend_chariox_encrypted_vault(
                 vault_path,
                 crate::secret::VaultUnlockLease::TtlMinutes(30.min(config.max_ttl_minutes)),
             )?;
             Ok((status, "extended_30m".to_string()))
         }
         "extend_60m" => {
-            let status = crate::secret::extend_arroba_encrypted_vault(
+            let status = crate::secret::extend_chariox_encrypted_vault(
                 vault_path,
                 crate::secret::VaultUnlockLease::TtlMinutes(60.min(config.max_ttl_minutes)),
             )?;
             Ok((status, "extended_60m".to_string()))
         }
         "lock_now" => {
-            crate::secret::lock_arroba_encrypted_vault(vault_path)?;
+            crate::secret::lock_chariox_encrypted_vault(vault_path)?;
             crate::secret::clear_vault_secret_process_cache()?;
-            let status = crate::secret::arroba_encrypted_vault_status(vault_path)?;
+            let status = crate::secret::chariox_encrypted_vault_status(vault_path)?;
             Ok((status, "locked".to_string()))
         }
         _ => {
-            let status = crate::secret::arroba_encrypted_vault_status(vault_path)?;
+            let status = crate::secret::chariox_encrypted_vault_status(vault_path)?;
             Ok((status, "dismissed".to_string()))
         }
     }

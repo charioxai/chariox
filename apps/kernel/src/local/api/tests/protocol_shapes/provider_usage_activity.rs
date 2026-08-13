@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -48,7 +48,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
                 source: "/repo/.codex/skills/qa".to_string(),
                 hash: Some("hash-2".to_string()),
                 action: "already_installed".to_string(),
-                reason: "matching skill package already installed in Arroba".to_string(),
+                reason: "matching skill package already installed in Chariox".to_string(),
                 duplicates: Vec::new(),
             }],
         },
@@ -76,13 +76,13 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a215c9f199de50f93814a59df2fb0029b59dc3cd34359403584faf2b296555b0"
+        "431b8a8d30850209aad51fab65d31ffb9e8d9ff6ced4533fbc92f96c12ba6060"
     );
 }
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -535,7 +535,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
         Some("Add secret".to_string()),
-        "Enter a password to store in Arroba Vault.",
+        "Enter a password to store in Chariox Vault.",
         vec![crate::session::RuntimeInteractionChoice::new(
             "cancel",
             "Cancel",
@@ -564,7 +564,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "0f5a200755e3df0e6b30984acdb4b176c0f52261ff2a6c6479ab6e3e97c152ff"
+        "75d5e3e796965d9d5fbf104bfd875c37d9ba01016f3147c4a79740f5ee30ff43"
     );
 
     let content = WorkspaceFileContent {
@@ -694,7 +694,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -749,7 +749,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -757,7 +757,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
         can_steer: false,
         can_cancel: true,
         steer_disabled_reason: Some(
-            "Steering is unavailable while the active provider turn was started outside Arroba."
+            "Steering is unavailable while the active provider turn was started outside Chariox."
                 .to_string(),
         ),
         cancel_disabled_reason: None,
@@ -783,7 +783,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/steer_disabled_reason"),
         Some(&serde_json::json!(
-            "Steering is unavailable while the active provider turn was started outside Arroba."
+            "Steering is unavailable while the active provider turn was started outside Chariox."
         ))
     );
     assert_eq!(snapshot.pointer("/cancel_disabled_reason"), None);
@@ -793,13 +793,13 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "890fdad8280a9818bf145b72c3ef81f4426797d228cd3e47759e8465f3360f9a"
+        "6ef6a1741e0f45d8a34f5ef8207c4fd7f2d663ed6b7da51bcc4e161e45a2f022"
     );
 }
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -856,7 +856,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

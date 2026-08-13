@@ -254,7 +254,7 @@ fn normalized_observed_prompt_text_ignores_provider_native_attachment_suffixes()
 }
 
 #[test]
-fn observed_prompt_text_ignores_arroba_generated_runtime_context() {
+fn observed_prompt_text_ignores_chariox_generated_runtime_context() {
     let observed = "run the check <runtime-instructions>generated</runtime-instructions> \
         <native-permission-instructions>generated</native-permission-instructions>";
     assert_eq!(

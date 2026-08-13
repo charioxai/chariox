@@ -8,10 +8,10 @@ const DEFAULT_TERMINAL_TURN_TRACE_MAX_MB: u64 = 100;
 const DEFAULT_TERMINAL_TURN_TRACE_DIR_MAX_MB: u64 = 500;
 
 pub(crate) fn record_terminal_turn(session_id: &str, source: &str, payload: impl Serialize) {
-    if std::env::var_os("ARROBA_DISABLE_TERMINAL_TURN_TRACE").is_some() {
+    if std::env::var_os("CHARIOX_DISABLE_TERMINAL_TURN_TRACE").is_some() {
         return;
     }
-    if std::env::var("ARROBA_TERMINAL_TURN_TRACE").ok().as_deref() != Some("1") {
+    if std::env::var("CHARIOX_TERMINAL_TURN_TRACE").ok().as_deref() != Some("1") {
         return;
     }
     let Some(path) = terminal_turn_trace_path(session_id) else {
@@ -42,12 +42,12 @@ pub(crate) fn record_terminal_turn(session_id: &str, source: &str, payload: impl
 }
 
 fn terminal_turn_trace_path(session_id: &str) -> Option<PathBuf> {
-    let base = std::env::var_os("ARROBA_TERMINAL_TURN_TRACE_DIR")
+    let base = std::env::var_os("CHARIOX_TERMINAL_TURN_TRACE_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|home| home.join(".arroba").join("debug").join("terminal-turns"))
+                .map(|home| home.join(".chariox").join("debug").join("terminal-turns"))
         })?;
     Some(base.join(format!(
         "{}.jsonl",
@@ -69,7 +69,7 @@ fn sanitize_trace_file_component(value: &str) -> String {
 }
 
 fn terminal_turn_trace_max_bytes() -> u64 {
-    let max_mb = std::env::var("ARROBA_TERMINAL_TURN_TRACE_MAX_MB")
+    let max_mb = std::env::var("CHARIOX_TERMINAL_TURN_TRACE_MAX_MB")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -79,7 +79,7 @@ fn terminal_turn_trace_max_bytes() -> u64 {
 }
 
 fn terminal_turn_trace_dir_max_bytes() -> u64 {
-    let max_mb = std::env::var("ARROBA_TERMINAL_TURN_TRACE_DIR_MAX_MB")
+    let max_mb = std::env::var("CHARIOX_TERMINAL_TURN_TRACE_DIR_MAX_MB")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -145,13 +145,13 @@ mod tests {
     fn terminal_turn_trace_is_disabled_by_default() {
         let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!(
-            "arroba-terminal-turn-trace-disabled-{}",
+            "chariox-terminal-turn-trace-disabled-{}",
             crate::session::unix_epoch_ms()
         ));
         let _ = fs::remove_dir_all(&dir);
-        std::env::remove_var("ARROBA_DISABLE_TERMINAL_TURN_TRACE");
-        std::env::remove_var("ARROBA_TERMINAL_TURN_TRACE");
-        std::env::set_var("ARROBA_TERMINAL_TURN_TRACE_DIR", &dir);
+        std::env::remove_var("CHARIOX_DISABLE_TERMINAL_TURN_TRACE");
+        std::env::remove_var("CHARIOX_TERMINAL_TURN_TRACE");
+        std::env::set_var("CHARIOX_TERMINAL_TURN_TRACE_DIR", &dir);
 
         record_terminal_turn("session-1", "test", serde_json::json!({"ok": true}));
 
@@ -159,7 +159,7 @@ mod tests {
             !dir.exists(),
             "terminal turn traces should not be created unless explicitly enabled"
         );
-        std::env::remove_var("ARROBA_TERMINAL_TURN_TRACE_DIR");
+        std::env::remove_var("CHARIOX_TERMINAL_TURN_TRACE_DIR");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -167,13 +167,13 @@ mod tests {
     fn terminal_turn_trace_writes_when_enabled() {
         let _guard = env_lock();
         let dir = std::env::temp_dir().join(format!(
-            "arroba-terminal-turn-trace-enabled-{}",
+            "chariox-terminal-turn-trace-enabled-{}",
             crate::session::unix_epoch_ms()
         ));
         let _ = fs::remove_dir_all(&dir);
-        std::env::remove_var("ARROBA_DISABLE_TERMINAL_TURN_TRACE");
-        std::env::set_var("ARROBA_TERMINAL_TURN_TRACE", "1");
-        std::env::set_var("ARROBA_TERMINAL_TURN_TRACE_DIR", &dir);
+        std::env::remove_var("CHARIOX_DISABLE_TERMINAL_TURN_TRACE");
+        std::env::set_var("CHARIOX_TERMINAL_TURN_TRACE", "1");
+        std::env::set_var("CHARIOX_TERMINAL_TURN_TRACE_DIR", &dir);
 
         record_terminal_turn("session-1", "test", serde_json::json!({"ok": true}));
 
@@ -181,15 +181,15 @@ mod tests {
             dir.join("session-1.jsonl").exists(),
             "enabled terminal turn tracing should write a session trace"
         );
-        std::env::remove_var("ARROBA_TERMINAL_TURN_TRACE");
-        std::env::remove_var("ARROBA_TERMINAL_TURN_TRACE_DIR");
+        std::env::remove_var("CHARIOX_TERMINAL_TURN_TRACE");
+        std::env::remove_var("CHARIOX_TERMINAL_TURN_TRACE_DIR");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn terminal_turn_trace_dir_budget_removes_old_files() {
         let dir = std::env::temp_dir().join(format!(
-            "arroba-terminal-turn-trace-budget-{}",
+            "chariox-terminal-turn-trace-budget-{}",
             crate::session::unix_epoch_ms()
         ));
         let _ = fs::remove_dir_all(&dir);

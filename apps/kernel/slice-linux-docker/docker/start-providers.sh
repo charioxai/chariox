@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}"
+ROOT="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}"
 LOGS="$ROOT/logs"
-CODEX_PORT="${ARROBA_SLICE_CODEX_PORT:-43252}"
-OPENCODE_PORT="${ARROBA_SLICE_OPENCODE_PORT:-43140}"
+CODEX_PORT="${CHARIOX_SLICE_CODEX_PORT:-43252}"
+OPENCODE_PORT="${CHARIOX_SLICE_OPENCODE_PORT:-43140}"
 mkdir -p "$LOGS"
 
 pkill -f "codex app-server.*$CODEX_PORT" >/dev/null 2>&1 || true

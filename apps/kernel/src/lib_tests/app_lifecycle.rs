@@ -15,7 +15,7 @@ fn daemon_app_bootstrap_wires_runtime_services() {
     assert_eq!(
         app.startup_message(),
         format!(
-            "arroba daemon daemon-test ready on machine machine-test ({})",
+            "chariox daemon daemon-test ready on machine machine-test ({})",
             config.kernel_websocket_url()
         )
     );

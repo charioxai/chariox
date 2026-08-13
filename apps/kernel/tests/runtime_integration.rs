@@ -2,19 +2,19 @@ use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
 
-use arroba_kernel::agent::CreateAgentRequest;
-use arroba_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
-use arroba_kernel::local::{
+use chariox_kernel::agent::CreateAgentRequest;
+use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
+use chariox_kernel::local::{
     AttachToSessionRequest, EndSessionRequest, LaunchProviderRunRequest, LocalDaemonClient,
     LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest, UpdateSessionConfigRequest,
 };
-use arroba_kernel::provider::{LaunchProviderRequest, ProviderRunState};
-use arroba_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
-use arroba_kernel::session::{
+use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
+use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use chariox_kernel::session::{
     CreateSessionRequest, PromptSubmissionOutcome, SessionStatus, WorkflowNodeRunStatus,
     WorkflowRunStatus,
 };
-use arroba_kernel::{DaemonApp, DaemonConfig};
+use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 mod support;
@@ -98,7 +98,7 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
         ))
         .expect("provider run should launch");
 
-    let first_outcome = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let first_outcome = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         first.id(),
@@ -106,7 +106,7 @@ fn attachments_can_queue_prompts_and_receive_queue_notifications() {
         Vec::new(),
     )
     .expect("first prompt should start");
-    let second_outcome = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let second_outcome = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         second.id(),
@@ -168,7 +168,7 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         first.id(),
@@ -176,7 +176,7 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
         Vec::new(),
     )
     .expect("first prompt should start");
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         second.id(),
@@ -188,7 +188,7 @@ fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_atta
     app.detach(second.id())
         .expect("queued prompt source should detach cleanly");
     let completion =
-        arroba_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
+        chariox_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
             .expect("active prompt should complete");
 
     let started_next = completion
@@ -239,7 +239,7 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -249,7 +249,7 @@ fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_comple
     .expect("prompt should start");
 
     let completion =
-        arroba_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
+        chariox_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
             .expect("active prompt should complete");
 
     let terminal = app.terminal().clone();
@@ -626,7 +626,7 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
         ))
         .expect("provider run should launch");
 
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -634,7 +634,7 @@ fn prompt_queue_advances_after_provider_output_goes_idle() {
         Vec::new(),
     )
     .expect("first prompt should start");
-    let _ = arroba_kernel::transport::TransportService::schedule_direct_prompt(
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
         &mut app,
         session.id(),
         attachment.id(),
@@ -677,7 +677,7 @@ fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
 
     // Create first agent and launch provider run
     let first_agent = app
-        .spawn_agent(arroba_kernel::agent::CreateAgentRequest::new(
+        .spawn_agent(chariox_kernel::agent::CreateAgentRequest::new(
             session.id(),
             "dev-stub",
         ))
@@ -698,7 +698,7 @@ fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
     // Create second agent and launch provider run (this parks the first run)
     let second_agent = app
         .spawn_agent(
-            arroba_kernel::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+            chariox_kernel::agent::CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("second"),
         )
         .expect("second agent should spawn");
@@ -735,7 +735,7 @@ fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
 
     // Pump output from the parked run - this should NOT produce unexpected exit notices
     let recipients = app.attachments().list_session_attachment_ids(session.id());
-    let records = arroba_kernel::transport::TransportService::pump_provider_output(
+    let records = chariox_kernel::transport::TransportService::pump_provider_output(
         &mut app,
         session.id(),
         first_run.id(),

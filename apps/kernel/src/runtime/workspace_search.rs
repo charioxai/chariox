@@ -280,22 +280,22 @@ mod tests {
     #[test]
     fn directory_completion_keeps_sibling_prefix_matches_for_existing_path() {
         let root = unique_test_dir("workspace-directory-completion-siblings");
-        create_test_dir(root.join("arroba"));
-        create_test_dir(root.join("arroba-cloud"));
-        create_test_dir(root.join("arroba-feature"));
-        create_test_dir(root.join(".arroba"));
-        create_test_dir(root.join("bar-arroba"));
+        create_test_dir(root.join("chariox"));
+        create_test_dir(root.join("chariox-cloud"));
+        create_test_dir(root.join("chariox-feature"));
+        create_test_dir(root.join(".chariox"));
+        create_test_dir(root.join("bar-chariox"));
 
         let results =
-            search_workspace_directories(&root.join("arroba").display().to_string(), 20, None)
+            search_workspace_directories(&root.join("chariox").display().to_string(), 20, None)
                 .expect("workspace directory search should succeed");
         remove_test_dir(&root);
 
-        let exact = root.join("arroba").display().to_string();
-        let cloud = root.join("arroba-cloud").display().to_string();
-        let feature = root.join("arroba-feature").display().to_string();
-        let hidden = root.join(".arroba").display().to_string();
-        let contains = root.join("bar-arroba").display().to_string();
+        let exact = root.join("chariox").display().to_string();
+        let cloud = root.join("chariox-cloud").display().to_string();
+        let feature = root.join("chariox-feature").display().to_string();
+        let hidden = root.join(".chariox").display().to_string();
+        let contains = root.join("bar-chariox").display().to_string();
 
         assert!(results.contains(&exact), "missing exact match: {results:?}");
         assert!(
@@ -326,20 +326,20 @@ mod tests {
     #[test]
     fn directory_completion_lists_children_only_after_trailing_separator() {
         let root = unique_test_dir("workspace-directory-completion-children");
-        create_test_dir(root.join("arroba").join("child"));
-        create_test_dir(root.join("arroba-cloud"));
+        create_test_dir(root.join("chariox").join("child"));
+        create_test_dir(root.join("chariox-cloud"));
 
-        let query = format!("{}/", root.join("arroba").display());
+        let query = format!("{}/", root.join("chariox").display());
         let results = search_workspace_directories(&query, 20, None)
             .expect("workspace directory search should succeed");
         remove_test_dir(&root);
 
         assert!(
-            results.contains(&root.join("arroba").join("child").display().to_string()),
+            results.contains(&root.join("chariox").join("child").display().to_string()),
             "missing child directory: {results:?}",
         );
         assert!(
-            !results.contains(&root.join("arroba-cloud").display().to_string()),
+            !results.contains(&root.join("chariox-cloud").display().to_string()),
             "trailing slash should not include siblings: {results:?}",
         );
     }
@@ -347,18 +347,18 @@ mod tests {
     #[test]
     fn directory_completion_prioritizes_hidden_dirs_when_query_starts_hidden() {
         let root = unique_test_dir("workspace-directory-completion-hidden");
-        create_test_dir(root.join(".arroba"));
-        create_test_dir(root.join(".arroba-cache"));
-        create_test_dir(root.join("my-.arroba"));
+        create_test_dir(root.join(".chariox"));
+        create_test_dir(root.join(".chariox-cache"));
+        create_test_dir(root.join("my-.chariox"));
 
         let results =
-            search_workspace_directories(&root.join(".arroba").display().to_string(), 20, None)
+            search_workspace_directories(&root.join(".chariox").display().to_string(), 20, None)
                 .expect("workspace directory search should succeed");
         remove_test_dir(&root);
 
-        let exact = root.join(".arroba").display().to_string();
-        let hidden_prefix = root.join(".arroba-cache").display().to_string();
-        let contains = root.join("my-.arroba").display().to_string();
+        let exact = root.join(".chariox").display().to_string();
+        let hidden_prefix = root.join(".chariox-cache").display().to_string();
+        let contains = root.join("my-.chariox").display().to_string();
         assert!(result_index(&results, &exact) < result_index(&results, &hidden_prefix));
         assert!(result_index(&results, &hidden_prefix) < result_index(&results, &contains));
     }
@@ -368,7 +368,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("arroba-{label}-{}-{nanos}", std::process::id()))
+        std::env::temp_dir().join(format!("chariox-{label}-{}-{nanos}", std::process::id()))
     }
 
     fn create_test_dir(path: PathBuf) {

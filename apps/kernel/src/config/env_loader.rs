@@ -18,8 +18,8 @@ impl DaemonConfig {
         let user_config_path = Self::default_user_config_path();
         let user_config = load_user_config_from_path(&user_config_path);
         let kernel_websocket_host =
-            env::var("ARROBA_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-        let kernel_websocket_port = env::var("ARROBA_KERNEL_PORT")
+            env::var("CHARIOX_KERNEL_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let kernel_websocket_port = env::var("CHARIOX_KERNEL_PORT")
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(43118);
@@ -35,32 +35,32 @@ impl DaemonConfig {
         } else {
             None
         };
-        let env_relay_url = env::var("ARROBA_RELAY_URL")
+        let env_relay_url = env::var("CHARIOX_RELAY_URL")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let env_relay_token = env::var("ARROBA_RELAY_TOKEN")
+        let env_relay_token = env::var("CHARIOX_RELAY_TOKEN")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
-        let daemon_id = env::var("ARROBA_DAEMON_ID")
+        let daemon_id = env::var("CHARIOX_DAEMON_ID")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| runtime_identity.daemon_id.clone());
-        let event_delivery_environment_id = env::var("ARROBA_EVENT_ENVIRONMENT_ID")
+        let event_delivery_environment_id = env::var("CHARIOX_EVENT_ENVIRONMENT_ID")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| daemon_id.clone());
         let default_machine_alias = runtime_display_machine_name();
-        let host_machine_alias = env::var("ARROBA_MACHINE_ALIAS")
+        let host_machine_alias = env::var("CHARIOX_MACHINE_ALIAS")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .or(runtime_identity.machine_alias)
             .or(default_machine_alias.clone());
-        let daemon_alias = env::var("ARROBA_DAEMON_ALIAS")
+        let daemon_alias = env::var("CHARIOX_DAEMON_ALIAS")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
@@ -72,7 +72,7 @@ impl DaemonConfig {
             host_machine_alias.as_deref(),
             daemon_alias.as_deref(),
         );
-        let accept_remote_leases = env::var("ARROBA_ACCEPT_REMOTE_LEASES")
+        let accept_remote_leases = env::var("CHARIOX_ACCEPT_REMOTE_LEASES")
             .ok()
             .map(|value| {
                 matches!(
@@ -85,64 +85,66 @@ impl DaemonConfig {
         Self {
             user_config_path,
             user_config,
-            local_socket_path: env::var_os("ARROBA_DAEMON_SOCKET")
+            local_socket_path: env::var_os("CHARIOX_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),
             kernel_websocket_host,
             kernel_websocket_port,
-            kernel_websocket_queue_capacity: env::var("ARROBA_KERNEL_QUEUE_CAPACITY")
+            kernel_websocket_queue_capacity: env::var("CHARIOX_KERNEL_QUEUE_CAPACITY")
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(128),
-            kernel_websocket_write_delay_ms: env::var("ARROBA_KERNEL_WRITE_DELAY_MS")
+            kernel_websocket_write_delay_ms: env::var("CHARIOX_KERNEL_WRITE_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(super::DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS),
-            runtime_mcp_host: env::var("ARROBA_MCP_HOST")
+            runtime_mcp_host: env::var("CHARIOX_MCP_HOST")
                 .unwrap_or_else(|_| "127.0.0.1".to_string()),
-            runtime_mcp_port: env::var("ARROBA_MCP_PORT")
+            runtime_mcp_port: env::var("CHARIOX_MCP_PORT")
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43120),
-            session_history_root: env::var_os("ARROBA_SESSION_HISTORY_DIR")
+            session_history_root: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
-            session_history_read_delay_ms: env::var("ARROBA_SESSION_HISTORY_READ_DELAY_MS")
+            session_history_read_delay_ms: env::var("CHARIOX_SESSION_HISTORY_READ_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
-            operational_history_read_delay_ms: env::var("ARROBA_OPERATIONAL_HISTORY_READ_DELAY_MS")
+            operational_history_read_delay_ms: env::var(
+                "CHARIOX_OPERATIONAL_HISTORY_READ_DELAY_MS",
+            )
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+            provider_catalog_read_delay_ms: env::var("CHARIOX_PROVIDER_CATALOG_READ_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
-            provider_catalog_read_delay_ms: env::var("ARROBA_PROVIDER_CATALOG_READ_DELAY_MS")
+            provider_process_list_delay_ms: env::var("CHARIOX_PROVIDER_PROCESS_LIST_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
-            provider_process_list_delay_ms: env::var("ARROBA_PROVIDER_PROCESS_LIST_DELAY_MS")
-                .ok()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0),
-            provider_process_idle_ttl_ms: env::var("ARROBA_PROVIDER_PROCESS_IDLE_TTL_MS")
+            provider_process_idle_ttl_ms: env::var("CHARIOX_PROVIDER_PROCESS_IDLE_TTL_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(300_000),
-            provider_process_orphan_ttl_ms: env::var("ARROBA_PROVIDER_PROCESS_ORPHAN_TTL_MS")
+            provider_process_orphan_ttl_ms: env::var("CHARIOX_PROVIDER_PROCESS_ORPHAN_TTL_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(30_000),
-            provider_runtime_init_delay_ms: env::var("ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS")
+            provider_runtime_init_delay_ms: env::var("CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
             daemon_id,
-            host_machine_id: env::var("ARROBA_MACHINE_ID")
+            host_machine_id: env::var("CHARIOX_MACHINE_ID")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| runtime_identity.machine_id.clone()),
             host_machine_alias,
-            os_name: env::var("ARROBA_OS_NAME")
+            os_name: env::var("CHARIOX_OS_NAME")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
@@ -164,26 +166,26 @@ impl DaemonConfig {
             },
             relay_public_key: runtime_identity.relay_public_key,
             relay_private_key: runtime_identity.relay_private_key,
-            relay_heartbeat_ms: env::var("ARROBA_RELAY_HEARTBEAT_MS")
+            relay_heartbeat_ms: env::var("CHARIOX_RELAY_HEARTBEAT_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(DEFAULT_RELAY_HEARTBEAT_MS),
-            event_delivery_url: env::var("ARROBA_AEDS_URL")
+            event_delivery_url: env::var("CHARIOX_AEDS_URL")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-            event_delivery_token: env::var("ARROBA_AEDS_TOKEN")
+            event_delivery_token: env::var("CHARIOX_AEDS_TOKEN")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
             event_delivery_environment_id,
-            event_registry_url: env::var("ARROBA_EVENT_REGISTRY_URL")
+            event_registry_url: env::var("CHARIOX_EVENT_REGISTRY_URL")
                 .ok()
                 .map(|value| value.trim().trim_end_matches('/').to_string())
                 .filter(|value| !value.is_empty()),
             event_generator_management_targets: load_event_generator_management_targets(),
-            relay_request_timeout_ms: env::var("ARROBA_RELAY_REQUEST_TIMEOUT_MS")
+            relay_request_timeout_ms: env::var("CHARIOX_RELAY_REQUEST_TIMEOUT_MS")
                 .ok()
                 .and_then(|value| value.parse::<u64>().ok())
                 .filter(|value| *value > 0)
@@ -207,17 +209,17 @@ struct EventGeneratorManagementTargetInput {
 
 fn load_event_generator_management_targets(
 ) -> BTreeMap<String, super::EventGeneratorManagementTarget> {
-    let encoded = env::var("ARROBA_AEGS_MANAGEMENT_TARGETS_JSON")
+    let encoded = env::var("CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            env::var_os("ARROBA_AEGS_MANAGEMENT_TARGETS_FILE")
+            env::var_os("CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .map(|path| {
                     fs::read_to_string(&path).unwrap_or_else(|error| {
                         panic!(
-                            "failed to read ARROBA_AEGS_MANAGEMENT_TARGETS_FILE {}: {error}",
+                            "failed to read CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE {}: {error}",
                             path.display()
                         )
                     })
@@ -361,21 +363,21 @@ mod tests {
     fn event_generator_management_targets_allow_https_and_loopback_http() {
         let targets = parse_event_generator_management_targets(
             r#"{
-                "dev.arroba.dummy": {
+                "dev.chariox.dummy": {
                     "url": "http://127.0.0.1:43132/",
                     "token": " local-token "
                 },
-                "dev.arroba.github": {
+                "dev.chariox.github": {
                     "url": "https://events.example.test/github",
                     "token": "remote-token"
                 }
             }"#,
         )
         .unwrap();
-        assert_eq!(targets["dev.arroba.dummy"].url, "http://127.0.0.1:43132");
-        assert_eq!(targets["dev.arroba.dummy"].token, "local-token");
+        assert_eq!(targets["dev.chariox.dummy"].url, "http://127.0.0.1:43132");
+        assert_eq!(targets["dev.chariox.dummy"].token, "local-token");
         assert_eq!(
-            targets["dev.arroba.github"].url,
+            targets["dev.chariox.github"].url,
             "https://events.example.test/github"
         );
     }
@@ -384,7 +386,7 @@ mod tests {
     fn event_generator_management_targets_reject_remote_plaintext() {
         let error = parse_event_generator_management_targets(
             r#"{
-                "dev.arroba.github": {
+                "dev.chariox.github": {
                     "url": "http://events.example.test:43132",
                     "token": "token"
                 }
@@ -398,7 +400,7 @@ mod tests {
     fn event_generator_management_targets_require_credentials() {
         let error = parse_event_generator_management_targets(
             r#"{
-                "dev.arroba.github": {
+                "dev.chariox.github": {
                     "url": "https://events.example.test/github"
                 }
             }"#,
@@ -409,7 +411,7 @@ mod tests {
 }
 
 fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {
-    let payload = env::var("ARROBA_CLOUD_RELAY_CONFIG_JSON").ok()?;
+    let payload = env::var("CHARIOX_CLOUD_RELAY_CONFIG_JSON").ok()?;
     let value = serde_json::from_str::<serde_json::Value>(&payload).ok()?;
     let profile_value = value.get("cloud_relay").cloned().unwrap_or(value);
     serde_json::from_value::<PersistedCloudRelayProfile>(profile_value)

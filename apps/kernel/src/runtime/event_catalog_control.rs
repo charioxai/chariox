@@ -22,7 +22,7 @@ const CATALOG_CACHE_STALE_TTL: Duration = Duration::from_secs(5 * 60);
 const CATALOG_CACHE_MAX_ENTRIES: usize = 128;
 const CATALOG_RESPONSE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const BUILTIN_DUMMY_MANIFEST_DIGEST: &str =
-    "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718";
+    "sha256:01b50f68fdc4cdcbb3c50efb906d743fb90e636cb8ae861f4fcf4823ebc97d6e";
 
 #[derive(Clone)]
 struct CatalogCacheEntry {
@@ -362,7 +362,7 @@ async fn execute_event_connection_request(
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
             let owner_id = owner_id.clone();
-            let reconnect = arroba_event_protocol::AegsConnectionReconnectRequest {
+            let reconnect = chariox_event_protocol::AegsConnectionReconnectRequest {
                 generator_id: connection.generator_id.clone(),
                 owner_id,
                 connection_id: connection.connection_id,
@@ -651,7 +651,7 @@ fn aegs_management_request(
         LocalDaemonRequest::StartEventGeneratorAuthorization(request) => (
             request.generator_id.as_str(),
             "/v1/authorizations",
-            serde_json::to_string(&arroba_event_protocol::AegsAuthorizationStartRequest {
+            serde_json::to_string(&chariox_event_protocol::AegsAuthorizationStartRequest {
                 generator_id: request.generator_id.clone(),
                 owner_id: owner_id.to_string(),
                 return_url: request.return_url.clone(),
@@ -661,7 +661,7 @@ fn aegs_management_request(
         LocalDaemonRequest::ListEventGeneratorResources(request) => (
             request.generator_id.as_str(),
             "/v1/resources/query",
-            serde_json::to_string(&arroba_event_protocol::AegsProviderResourceQuery {
+            serde_json::to_string(&chariox_event_protocol::AegsProviderResourceQuery {
                 generator_id: request.generator_id.clone(),
                 owner_id: owner_id.to_string(),
                 connection_id: request.connection_id.clone(),
@@ -717,8 +717,8 @@ fn start_aegs_authorization(
     owner_id: &str,
     generator_id: &str,
     return_url: Option<String>,
-) -> Result<arroba_event_protocol::AegsAuthorizationFlow, DaemonError> {
-    let request = arroba_event_protocol::AegsAuthorizationStartRequest {
+) -> Result<chariox_event_protocol::AegsAuthorizationFlow, DaemonError> {
+    let request = chariox_event_protocol::AegsAuthorizationStartRequest {
         generator_id: generator_id.to_string(),
         owner_id: owner_id.to_string(),
         return_url,
@@ -731,8 +731,8 @@ fn query_aegs_connections(
     owner_id: &str,
     generator_id: &str,
     connection_id: Option<&str>,
-) -> Result<arroba_event_protocol::AegsConnectionPage, DaemonError> {
-    let request = arroba_event_protocol::AegsConnectionQuery {
+) -> Result<chariox_event_protocol::AegsConnectionPage, DaemonError> {
+    let request = chariox_event_protocol::AegsConnectionQuery {
         generator_id: generator_id.to_string(),
         owner_id: owner_id.to_string(),
         connection_id: connection_id.map(str::to_string),
@@ -750,8 +750,8 @@ fn query_aegs_resources(
     query: Option<String>,
     cursor: Option<String>,
     limit: u32,
-) -> Result<arroba_event_protocol::AegsProviderResourcePage, DaemonError> {
-    let request = arroba_event_protocol::AegsProviderResourceQuery {
+) -> Result<chariox_event_protocol::AegsProviderResourcePage, DaemonError> {
+    let request = chariox_event_protocol::AegsProviderResourceQuery {
         generator_id: generator_id.to_string(),
         owner_id: owner_id.to_string(),
         connection_id: connection_id.to_string(),
@@ -767,13 +767,13 @@ fn revoke_aegs_connection(
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
-) -> Result<arroba_event_protocol::AegsConnectionRevokeResponse, DaemonError> {
-    let request = arroba_event_protocol::AegsConnectionRevokeRequest {
+) -> Result<chariox_event_protocol::AegsConnectionRevokeResponse, DaemonError> {
+    let request = chariox_event_protocol::AegsConnectionRevokeRequest {
         generator_id: generator_id.to_string(),
         owner_id: owner_id.to_string(),
         connection_id: connection_id.to_string(),
     };
-    post_aegs_json::<_, arroba_event_protocol::AegsConnectionRevokeResponse>(
+    post_aegs_json::<_, chariox_event_protocol::AegsConnectionRevokeResponse>(
         targets,
         generator_id,
         "/v1/connections/revoke",
@@ -830,7 +830,7 @@ fn cached_remote_catalog_request(
     let key = format!(
         "{}|protocol={}|{}",
         registry_url,
-        arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
+        chariox_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
         serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?
     );
     let cache = CATALOG_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -1099,7 +1099,7 @@ fn builtin_page(
         facets: vec![EventCatalogFacet {
             id: "verification".to_string(),
             values: vec![EventCatalogFacetValue {
-                value: "arroba".to_string(),
+                value: "chariox".to_string(),
                 count: 1,
             }],
         }],
@@ -1110,24 +1110,24 @@ fn builtin_page(
 fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
     vec![EventGeneratorCatalogSummary {
         schema_version: 1,
-        generator_id: "dev.arroba.dummy".to_string(),
+        generator_id: "dev.chariox.dummy".to_string(),
         version: "1.0.0".to_string(),
         name: "Dummy Events".to_string(),
         summary: "Deterministic event source for local and deployment validation.".to_string(),
-        provider: "Arroba test harness".to_string(),
+        provider: "Chariox test harness".to_string(),
         publisher: EventGeneratorParty {
-            id: "dev.arroba".to_string(),
-            name: "Arroba".to_string(),
-            url: Some("https://arroba.dev".to_string()),
+            id: "dev.chariox".to_string(),
+            name: "Chariox".to_string(),
+            url: Some("https://chariox.com".to_string()),
         },
         operator: EventGeneratorParty {
             id: "local".to_string(),
             name: "Local operator".to_string(),
             url: None,
         },
-        verification: "arroba".to_string(),
+        verification: "chariox".to_string(),
         manifest_digest: BUILTIN_DUMMY_MANIFEST_DIGEST.to_string(),
-        protocol_version: arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
+        protocol_version: chariox_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
         categories: vec!["Developer tools".to_string(), "Testing".to_string()],
         installed_count: 0,
         recommended: true,
@@ -1161,10 +1161,10 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             required_scopes: Vec::new(),
         }],
         signature: serde_json::json!({
-            "key_id": "dev.arroba.fixture.2026-07-v2",
+            "key_id": "dev.chariox.fixture.2026-07-v2",
             "algorithm": "ed25519",
             "digest": BUILTIN_DUMMY_MANIFEST_DIGEST,
-            "value": "gsy1flHq1+l4uYdal/3/B1z4r16ETwukdeLdPAMZ4aMNHMwWiY9gCJEHZMm2rPCUky0z9DjFP1oTL/9JK0dSDw=="
+            "value": "3qQ1kctslV8otFbfOzoeqIqzh/erN+VrE+/suey+2tKKTo5nHfk0IHNZDhoKbXxNT15LetVdgs6f68Q/QTAtAg=="
         }),
         deprecation: None,
     })
@@ -1198,8 +1198,8 @@ fn fetch_json<T: serde::de::DeserializeOwned>(url: url::Url) -> Result<T, Daemon
     let response = agent
         .get(url.as_str())
         .set(
-            "x-arroba-event-protocol-version",
-            &arroba_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION.to_string(),
+            "x-chariox-event-protocol-version",
+            &chariox_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION.to_string(),
         )
         .call()
         .map_err(|error| catalog_error(format!("registry request failed: {error}")))?;
@@ -1256,7 +1256,7 @@ mod tests {
             "../../../../docs/fixtures/event-generators/dummy/manifest.json"
         ))
         .expect("dummy manifest fixture must be valid JSON");
-        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
 
         assert_eq!(
             detail.summary.manifest_digest,
@@ -1272,7 +1272,7 @@ mod tests {
 
     #[test]
     fn event_binding_contract_rejects_undeclared_event_type() {
-        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
         let error = validate_event_binding_detail(
             &detail,
             &detail.summary.generator_id,
@@ -1287,7 +1287,7 @@ mod tests {
 
     #[test]
     fn event_binding_contract_accepts_declared_event_type() {
-        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
         validate_event_binding_detail(
             &detail,
             &detail.summary.generator_id,
@@ -1301,10 +1301,10 @@ mod tests {
 
     #[test]
     fn event_binding_contract_rejects_mismatched_generator_identity() {
-        let detail = builtin_detail("dev.arroba.dummy").expect("dummy catalog detail");
+        let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
         let error = validate_event_binding_detail(
             &detail,
-            "dev.arroba.other",
+            "dev.chariox.other",
             &detail.summary.version,
             &detail.summary.manifest_digest,
             "dummy.test",

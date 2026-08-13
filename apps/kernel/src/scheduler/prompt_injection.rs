@@ -564,7 +564,7 @@ fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> O
         return None;
     }
     Some(format!(
-        "This is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Arroba runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
+        "This is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Chariox runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
         turn_index = context.turn_index
     ))
 }
@@ -751,7 +751,7 @@ fn workflow_runtime_artifact_root(
         workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
     Some(
         base_directory
-            .join(".arroba")
+            .join(".chariox")
             .join("workflow-runtime")
             .join(session_id)
             .join(workflow_run_id)

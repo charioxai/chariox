@@ -142,7 +142,7 @@ fn workflow_runtime_artifact_root(
         workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
     Some(
         base_directory
-            .join(".arroba")
+            .join(".chariox")
             .join("workflow-runtime")
             .join(session_id)
             .join(workflow_run_id)

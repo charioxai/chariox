@@ -10,7 +10,7 @@ use crate::error::DaemonError;
 use crate::local::{LocalDaemonResponse, RegisterWorkflowPublicationEndpointRequest};
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget};
-use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
+use chariox_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 use super::KernelRuntimeState;
 

@@ -33,52 +33,52 @@ runtime_source_revision() {
   ) | hash_stdin
 }
 
-SLICE_NAME="${ARROBA_SLICE_NAME:-arroba-slice-linux}"
-SLICE_IMAGE="${ARROBA_SLICE_DOCKER_IMAGE:-arroba-slice-linux:0.1.0}"
-SLICE_BASE_IMAGE="${ARROBA_SLICE_BASE_IMAGE:-arroba-slice-linux:0.1.0}"
-SLICE_BUILD_IMAGE="${ARROBA_SLICE_BUILD_IMAGE:-auto}"
-SLICE_EXTENSION_DOCKERFILE="${ARROBA_SLICE_EXTENSION_DOCKERFILE:-}"
-SLICE_DOCKER_MEMORY="${ARROBA_SLICE_DOCKER_MEMORY:-}"
-SLICE_DOCKER_CPUS="${ARROBA_SLICE_DOCKER_CPUS:-}"
-SLICE_HOME_VOLUME="${ARROBA_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
-SLICE_SAVED_HOME_ARCHIVE="${ARROBA_SLICE_SAVED_HOME_ARCHIVE:-}"
-SLICE_WORKSPACE="${ARROBA_SLICE_WORKSPACE:-$REPO_ROOT}"
-SLICE_WORKSPACE_MOUNT_MODE="${ARROBA_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
-SLICE_ALLOW_UNCONFINED_SECCOMP="${ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
-SLICE_RECREATE="${ARROBA_SLICE_RECREATE:-0}"
-SLICE_START_DESKTOP="${ARROBA_SLICE_START_DESKTOP:-1}"
-SLICE_START_PROVIDER_SERVERS="${ARROBA_SLICE_START_PROVIDER_SERVERS:-1}"
-SLICE_START_RUNTIME="${ARROBA_SLICE_START_RUNTIME:-0}"
-SLICE_IMPORT_PROVIDER_AUTH="${ARROBA_SLICE_IMPORT_PROVIDER_AUTH:-0}"
-SLICE_MIN_FREE_MB="${ARROBA_SLICE_MIN_FREE_MB:-256}"
-SLICE_CODEX_PORT="${ARROBA_SLICE_CODEX_PORT:-43252}"
-SLICE_OPENCODE_PORT="${ARROBA_SLICE_OPENCODE_PORT:-43140}"
-SLICE_CODEX_PORT_RANGE="${ARROBA_SLICE_CODEX_PORT_RANGE:-43260-43279}"
-SLICE_OPENCODE_PORT_RANGE="${ARROBA_SLICE_OPENCODE_PORT_RANGE:-43150-43169}"
-SLICE_PROVIDER_BIND_HOST="${ARROBA_SLICE_PROVIDER_BIND_HOST:-127.0.0.1}"
-SLICE_KERNEL_PORT="${ARROBA_SLICE_KERNEL_PORT:-43119}"
-SLICE_MCP_PORT="${ARROBA_SLICE_MCP_PORT:-43120}"
-SLICE_RELAY_PORT="${ARROBA_SLICE_RELAY_PORT:-43130}"
-SLICE_NOVNC_PORT="${ARROBA_SLICE_NOVNC_PORT:-6080}"
-SLICE_RELAY_URL="${ARROBA_SLICE_RELAY_URL:-}"
-SLICE_RELAY_TOKEN="${ARROBA_SLICE_RELAY_TOKEN:-slice-local}"
-SLICE_CLOUD_RELAY_CONFIG_JSON="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
-SLICE_CLOUD_RELAY_CONFIG_HOST_PATH="${ARROBA_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH:-}"
-SLICE_DAEMON_ALIAS="${ARROBA_SLICE_DAEMON_ALIAS:-slice:linux}"
-SLICE_MACHINE_ID="${ARROBA_SLICE_MACHINE_ID:-slice:linux}"
-SLICE_MACHINE_ALIAS="${ARROBA_SLICE_MACHINE_ALIAS:-linux}"
-SLICE_CODEX_AUTH="${ARROBA_SLICE_CODEX_AUTH:-$HOME/.codex/auth.json}"
-SLICE_OPENCODE_AUTH="${ARROBA_SLICE_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
-SLICE_CLAUDE_JSON="${ARROBA_SLICE_CLAUDE_JSON:-$HOME/.claude.json}"
-SLICE_CLAUDE_SETTINGS="${ARROBA_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
-SLICE_CLAUDE_STATS="${ARROBA_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
-SLICE_CLAUDE_CREDENTIALS="${ARROBA_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
-SLICE_CLAUDE_KEYCHAIN_SERVICE="${ARROBA_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
-SLICE_GITHUB_HOST="${ARROBA_SLICE_GITHUB_HOST:-github.com}"
-SLICE_OPENCODE_PROVIDER="${ARROBA_SLICE_OPENCODE_PROVIDER:-openai}"
-SLICE_OPENCODE_LOGIN_METHOD="${ARROBA_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
-SLICE_LOGIN_PROVIDER="${ARROBA_SLICE_LOGIN_PROVIDER:-codex}"
-SLICE_AUTH_PROVIDER="${ARROBA_SLICE_AUTH_PROVIDER:-all}"
+SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
+SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
+SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
+SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
+SLICE_DOCKER_MEMORY="${CHARIOX_SLICE_DOCKER_MEMORY:-}"
+SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
+SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
+SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
+SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
+SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
+SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
+SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
+SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
+SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
+SLICE_START_RUNTIME="${CHARIOX_SLICE_START_RUNTIME:-0}"
+SLICE_IMPORT_PROVIDER_AUTH="${CHARIOX_SLICE_IMPORT_PROVIDER_AUTH:-0}"
+SLICE_MIN_FREE_MB="${CHARIOX_SLICE_MIN_FREE_MB:-256}"
+SLICE_CODEX_PORT="${CHARIOX_SLICE_CODEX_PORT:-43252}"
+SLICE_OPENCODE_PORT="${CHARIOX_SLICE_OPENCODE_PORT:-43140}"
+SLICE_CODEX_PORT_RANGE="${CHARIOX_SLICE_CODEX_PORT_RANGE:-43260-43279}"
+SLICE_OPENCODE_PORT_RANGE="${CHARIOX_SLICE_OPENCODE_PORT_RANGE:-43150-43169}"
+SLICE_PROVIDER_BIND_HOST="${CHARIOX_SLICE_PROVIDER_BIND_HOST:-127.0.0.1}"
+SLICE_KERNEL_PORT="${CHARIOX_SLICE_KERNEL_PORT:-43119}"
+SLICE_MCP_PORT="${CHARIOX_SLICE_MCP_PORT:-43120}"
+SLICE_RELAY_PORT="${CHARIOX_SLICE_RELAY_PORT:-43130}"
+SLICE_NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
+SLICE_RELAY_URL="${CHARIOX_SLICE_RELAY_URL:-}"
+SLICE_RELAY_TOKEN="${CHARIOX_SLICE_RELAY_TOKEN:-slice-local}"
+SLICE_CLOUD_RELAY_CONFIG_JSON="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_JSON:-}"
+SLICE_CLOUD_RELAY_CONFIG_HOST_PATH="${CHARIOX_SLICE_CLOUD_RELAY_CONFIG_HOST_PATH:-}"
+SLICE_DAEMON_ALIAS="${CHARIOX_SLICE_DAEMON_ALIAS:-slice:linux}"
+SLICE_MACHINE_ID="${CHARIOX_SLICE_MACHINE_ID:-slice:linux}"
+SLICE_MACHINE_ALIAS="${CHARIOX_SLICE_MACHINE_ALIAS:-linux}"
+SLICE_CODEX_AUTH="${CHARIOX_SLICE_CODEX_AUTH:-$HOME/.codex/auth.json}"
+SLICE_OPENCODE_AUTH="${CHARIOX_SLICE_OPENCODE_AUTH:-$HOME/.local/share/opencode/auth.json}"
+SLICE_CLAUDE_JSON="${CHARIOX_SLICE_CLAUDE_JSON:-$HOME/.claude.json}"
+SLICE_CLAUDE_SETTINGS="${CHARIOX_SLICE_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+SLICE_CLAUDE_STATS="${CHARIOX_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json}"
+SLICE_CLAUDE_CREDENTIALS="${CHARIOX_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
+SLICE_CLAUDE_KEYCHAIN_SERVICE="${CHARIOX_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
+SLICE_GITHUB_HOST="${CHARIOX_SLICE_GITHUB_HOST:-github.com}"
+SLICE_OPENCODE_PROVIDER="${CHARIOX_SLICE_OPENCODE_PROVIDER:-openai}"
+SLICE_OPENCODE_LOGIN_METHOD="${CHARIOX_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
+SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
+SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -95,7 +95,7 @@ run_with_timeout() {
   local seconds="$1"
   shift
   local command_display="$*"
-  local timeout_marker="${TMPDIR:-/tmp}/arroba-slice-timeout.$$.$RANDOM"
+  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
   rm -f "$timeout_marker"
   "$@" &
   local child=$!
@@ -131,7 +131,7 @@ run_with_file_stdin_timeout() {
   local input_file="$2"
   shift 2
   local command_display="$* < $input_file"
-  local timeout_marker="${TMPDIR:-/tmp}/arroba-slice-timeout.$$.$RANDOM"
+  local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
   rm -f "$timeout_marker"
   "$@" <"$input_file" &
   local child=$!
@@ -226,10 +226,10 @@ configure_chromium_browser_policy() {
     set -euo pipefail
     for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
       mkdir -p \"\$dir\"
-      cat > \"\$dir/arroba-slice.json\" <<'JSON'
+      cat > \"\$dir/chariox-slice.json\" <<'JSON'
 {\"BrowserSignin\":0}
 JSON
-      chmod 0644 \"\$dir/arroba-slice.json\"
+      chmod 0644 \"\$dir/chariox-slice.json\"
     done
   " || log "Chromium browser policy refresh unavailable; continuing"
 }
@@ -237,26 +237,26 @@ JSON
 configure_slice_state_directory() {
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    mkdir -p /tmp/arroba-slice-state
-    chown slice:slice /tmp/arroba-slice-state
-    chmod 700 /tmp/arroba-slice-state
+    mkdir -p /tmp/chariox-slice-state
+    chown slice:slice /tmp/chariox-slice-state
+    chmod 700 /tmp/chariox-slice-state
   " || log "slice state directory ownership refresh unavailable; continuing"
 }
 
 refresh_slice_support_files() {
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/arroba-slice/start-runtime.sh" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-runtime.sh" "$SLICE_NAME:/opt/chariox-slice/start-runtime.sh" \
     || log "runtime script overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/arroba-slice/start-providers.sh" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/start-providers.sh" "$SLICE_NAME:/opt/chariox-slice/start-providers.sh" \
     || log "provider server script overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/arroba-slice/slice-screen.sh" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-screen.sh" "$SLICE_NAME:/opt/chariox-slice/slice-screen.sh" \
     || log "screen script overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/arroba-slice/browser-cdp.mjs" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/arroba-slice/provider-port-bridge.mjs" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/chariox-slice/provider-port-bridge.mjs" \
     || log "provider bridge overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/arroba-slice/validate-screen.sh" \
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" \
     || log "screen validator overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/arroba-slice/start-runtime.sh /opt/arroba-slice/start-providers.sh /opt/arroba-slice/slice-screen.sh /opt/arroba-slice/browser-cdp.mjs /opt/arroba-slice/provider-port-bridge.mjs /opt/arroba-slice/validate-screen.sh \
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 
@@ -283,7 +283,7 @@ available_mb_for_path() {
 require_slice_free_space() {
   local phase="$1"
   shift
-  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]+$ ]] || fail "ARROBA_SLICE_MIN_FREE_MB must be a non-negative integer"
+  [[ "$SLICE_MIN_FREE_MB" =~ ^[0-9]+$ ]] || fail "CHARIOX_SLICE_MIN_FREE_MB must be a non-negative integer"
   local paths=("$@")
   local path
   for path in "${paths[@]}"; do
@@ -306,8 +306,8 @@ image_runtime_compatible() {
   local image="$1"
   local image_protocol_version
   local image_runtime_revision
-  image_protocol_version="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.relay-peer-protocol-version" }}' "$image" 2>/dev/null || true)"
-  image_runtime_revision="$(docker image inspect -f '{{ index .Config.Labels "io.arroba.runtime-source-revision" }}' "$image" 2>/dev/null || true)"
+  image_protocol_version="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.relay-peer-protocol-version" }}' "$image" 2>/dev/null || true)"
+  image_runtime_revision="$(docker image inspect -f '{{ index .Config.Labels "io.chariox.runtime-source-revision" }}' "$image" 2>/dev/null || true)"
   [[ "$image_protocol_version" == "$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     && "$image_runtime_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]
 }
@@ -316,8 +316,8 @@ build_standard_runtime_image() {
   local image="$1"
   log "building $image"
   docker build \
-    --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
-    --build-arg "ARROBA_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
+    --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+    --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
     -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
     -t "$image" \
     "$REPO_ROOT"
@@ -340,7 +340,7 @@ build_image() {
     || fail "could not fingerprint the kernel and relay runtime source"
   case "$SLICE_BUILD_IMAGE" in
     auto|always|never) ;;
-    *) fail "ARROBA_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
+    *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
   esac
 
   if [[ "$SLICE_BUILD_IMAGE" == "never" ]]; then
@@ -374,9 +374,9 @@ build_image() {
     log "building $SLICE_IMAGE"
     [[ -f "$SLICE_EXTENSION_DOCKERFILE" ]] || fail "extension Dockerfile not found: $SLICE_EXTENSION_DOCKERFILE"
     docker build \
-      --build-arg "ARROBA_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
-      --build-arg "ARROBA_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
-      --build-arg "ARROBA_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
+      --build-arg "CHARIOX_SLICE_BASE_IMAGE=$SLICE_BASE_IMAGE" \
+      --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+      --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
       -f "$SLICE_EXTENSION_DOCKERFILE" \
       -t "$SLICE_IMAGE" \
       "$(dirname "$SLICE_EXTENSION_DOCKERFILE")"
@@ -388,7 +388,7 @@ build_image() {
 refresh_saved_state_runtime() {
   [[ -n "$SLICE_SAVED_HOME_ARCHIVE" ]] || return 0
   local installed_revision=""
-  installed_revision="$(run_with_timeout 20 docker exec -u slice "$SLICE_NAME" cat /opt/arroba-slice/runtime-source-revision 2>/dev/null || true)"
+  installed_revision="$(run_with_timeout 20 docker exec -u slice "$SLICE_NAME" cat /opt/chariox-slice/runtime-source-revision 2>/dev/null || true)"
   if [[ "$installed_revision" == "$SLICE_RUNTIME_SOURCE_REVISION" ]]; then
     return 0
   fi
@@ -396,17 +396,17 @@ refresh_saved_state_runtime() {
   ensure_runtime_base_image
   local helper="${SLICE_NAME}-runtime-refresh-$$"
   local runtime_dir
-  runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/arroba-slice-runtime.XXXXXX")"
+  runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/chariox-slice-runtime.XXXXXX")"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
   if ! run_with_timeout 60 docker create --name "$helper" "$SLICE_BASE_IMAGE" sleep infinity >/dev/null \
-    || ! run_with_timeout 60 docker cp "$helper:/opt/arroba-slice/bin/." "$runtime_dir/" \
-    || ! run_with_timeout 60 docker cp "$runtime_dir/." "$SLICE_NAME:/opt/arroba-slice/bin/"; then
+    || ! run_with_timeout 60 docker cp "$helper:/opt/chariox-slice/bin/." "$runtime_dir/" \
+    || ! run_with_timeout 60 docker cp "$runtime_dir/." "$SLICE_NAME:/opt/chariox-slice/bin/"; then
     run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
     rm -rf "$runtime_dir"
     fail "failed to refresh the saved slice worker runtime from $SLICE_BASE_IMAGE"
   fi
   if ! run_with_timeout 30 docker exec -u root "$SLICE_NAME" \
-    sh -lc "chown -R slice:slice /opt/arroba-slice/bin && chmod 0755 /opt/arroba-slice/bin/arroba-kernel /opt/arroba-slice/bin/arroba-relay && printf '%s\n' '$SLICE_RUNTIME_SOURCE_REVISION' > /opt/arroba-slice/runtime-source-revision && chown slice:slice /opt/arroba-slice/runtime-source-revision"; then
+    sh -lc "chown -R slice:slice /opt/chariox-slice/bin && chmod 0755 /opt/chariox-slice/bin/chariox-kernel /opt/chariox-slice/bin/chariox-relay && printf '%s\n' '$SLICE_RUNTIME_SOURCE_REVISION' > /opt/chariox-slice/runtime-source-revision && chown slice:slice /opt/chariox-slice/runtime-source-revision"; then
     run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
     rm -rf "$runtime_dir"
     fail "failed to activate the refreshed saved slice worker runtime"
@@ -433,11 +433,11 @@ ensure_container() {
   fi
   case "$SLICE_WORKSPACE_MOUNT_MODE" in
     rw|ro) ;;
-    *) fail "ARROBA_SLICE_WORKSPACE_MOUNT_MODE must be rw or ro" ;;
+    *) fail "CHARIOX_SLICE_WORKSPACE_MOUNT_MODE must be rw or ro" ;;
   esac
   case "$SLICE_ALLOW_UNCONFINED_SECCOMP" in
     0|1) ;;
-    *) fail "ARROBA_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
+    *) fail "CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP must be 0 or 1" ;;
   esac
 
   if container_exists; then
@@ -532,36 +532,36 @@ exec_slice_with_timeout() {
   shift
   local relay_env_args=()
   if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" || -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
-    local cloud_relay_config_path="/tmp/arroba-slice-state/cloud-relay-config.json"
+    local cloud_relay_config_path="/tmp/chariox-slice-state/cloud-relay-config.json"
     if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" && -f "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" ]]; then
-      run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /tmp/arroba-slice-state
+      run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /tmp/chariox-slice-state
       run_with_timeout 30 docker cp "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" "$SLICE_NAME:$cloud_relay_config_path"
       run_with_timeout 30 docker exec -u root "$SLICE_NAME" chown slice:slice "$cloud_relay_config_path"
       run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 600 "$cloud_relay_config_path"
     else
-      run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/arroba-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
+      run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/chariox-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
     fi
-    relay_env_args+=(-e ARROBA_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
+    relay_env_args+=(-e CHARIOX_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
   fi
-  relay_env_args+=(-e ARROBA_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")
+  relay_env_args+=(-e CHARIOX_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")
   if [[ -n "$SLICE_RELAY_URL" ]]; then
-    relay_env_args+=(-e ARROBA_SLICE_RELAY_URL="$SLICE_RELAY_URL")
+    relay_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
   run_with_timeout "$seconds" docker exec \
-    -e ARROBA_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
-    -e ARROBA_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
-    -e ARROBA_SLICE_CODEX_PORT_RANGE="$SLICE_CODEX_PORT_RANGE" \
-    -e ARROBA_SLICE_OPENCODE_PORT_RANGE="$SLICE_OPENCODE_PORT_RANGE" \
-    -e ARROBA_SLICE_PROVIDER_BIND_HOST="$SLICE_PROVIDER_BIND_HOST" \
-    -e ARROBA_SLICE_KERNEL_PORT="$SLICE_KERNEL_PORT" \
-    -e ARROBA_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
-    -e ARROBA_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
-    -e ARROBA_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
+    -e CHARIOX_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
+    -e CHARIOX_SLICE_OPENCODE_PORT="$SLICE_OPENCODE_PORT" \
+    -e CHARIOX_SLICE_CODEX_PORT_RANGE="$SLICE_CODEX_PORT_RANGE" \
+    -e CHARIOX_SLICE_OPENCODE_PORT_RANGE="$SLICE_OPENCODE_PORT_RANGE" \
+    -e CHARIOX_SLICE_PROVIDER_BIND_HOST="$SLICE_PROVIDER_BIND_HOST" \
+    -e CHARIOX_SLICE_KERNEL_PORT="$SLICE_KERNEL_PORT" \
+    -e CHARIOX_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
+    -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
+    -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
     "${relay_env_args[@]}" \
-    -e ARROBA_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
-    -e ARROBA_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
-    -e ARROBA_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
-    -e ARROBA_SLICE_SCREEN_GEOMETRY="${ARROBA_SLICE_SCREEN_GEOMETRY:-1280x800x24}" \
+    -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
+    -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
+    -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
+    -e CHARIOX_SLICE_SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}" \
     -u slice \
     "$SLICE_NAME" \
     "$@"
@@ -575,11 +575,11 @@ slice_screen_diagnostics() {
   log "slice screen diagnostics"
   run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set +e
-    /opt/arroba-slice/slice-screen.sh status
+    /opt/chariox-slice/slice-screen.sh status
     echo '--- processes'
     pgrep -af 'Xvfb|openbox|x11vnc|websockify|chromium' || true
     echo '--- logs'
-    for log_file in /opt/arroba-slice/logs/xvfb.log /opt/arroba-slice/logs/openbox.log /opt/arroba-slice/logs/x11vnc.log /opt/arroba-slice/logs/novnc.log /opt/arroba-slice/logs/chromium-gui.log; do
+    for log_file in /opt/chariox-slice/logs/xvfb.log /opt/chariox-slice/logs/openbox.log /opt/chariox-slice/logs/x11vnc.log /opt/chariox-slice/logs/novnc.log /opt/chariox-slice/logs/chromium-gui.log; do
       echo \"==== \${log_file}\"
       tail -n 40 \"\${log_file}\" 2>/dev/null || true
     done
@@ -632,7 +632,7 @@ copy_provider_auth_file() {
 }
 
 trust_claude_slice_workspace() {
-  if ! run_with_timeout 30 docker exec -e "ARROBA_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
+  if ! run_with_timeout 30 docker exec -e "CHARIOX_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
 const fs = require('fs')
 const file = '/home/slice/.claude.json'
 let data = {}
@@ -645,7 +645,7 @@ const projects = data.projects && typeof data.projects === 'object' ? data.proje
 const template = Object.values(projects).find((value) =>
   value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
 ) || {}
-for (const workspace of new Set(['/workspace', process.env.ARROBA_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
+for (const workspace of new Set(['/workspace', process.env.CHARIOX_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
   projects[workspace] = {
     ...template,
     allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
@@ -745,7 +745,7 @@ import_claude_auth() {
   local imported_credentials=0
   if command -v security >/dev/null 2>&1; then
     local credentials_tmp
-    credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-claude-credentials.XXXXXX")"
+    credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/chariox-claude-credentials.XXXXXX")"
     chmod 600 "$credentials_tmp"
     if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
       copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
@@ -775,7 +775,7 @@ import_github_auth() {
   fi
 
   local token_tmp
-  token_tmp="$(mktemp "${TMPDIR:-/tmp}/arroba-github-token.XXXXXX")"
+  token_tmp="$(mktemp "${TMPDIR:-/tmp}/chariox-github-token.XXXXXX")"
   chmod 600 "$token_tmp"
   if ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
     rm -f "$token_tmp"
@@ -864,17 +864,17 @@ start_provider_login() {
   require_slice_free_space "provider-login" /home/slice /tmp
   local safe_provider
   safe_provider="$(printf '%s' "$SLICE_LOGIN_PROVIDER" | tr -c 'A-Za-z0-9_.-' '-')"
-  local session_name="arroba-slice-login-${safe_provider}"
-  local log_file="/opt/arroba-slice/logs/provider-login-${safe_provider}.log"
+  local session_name="chariox-slice-login-${safe_provider}"
+  local log_file="/opt/chariox-slice/logs/provider-login-${safe_provider}.log"
   local command_text
   command_text="$(provider_login_command)"
   log "starting $SLICE_LOGIN_PROVIDER login in $session_name"
   run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
-    mkdir -p /opt/arroba-slice/logs
+    mkdir -p /opt/chariox-slice/logs
     rm -f '$log_file'
     screen -S '$session_name' -X quit >/dev/null 2>&1 || true
-    screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[arroba] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
+    screen -dmS '$session_name' bash -lc \"set +e; $command_text 2>&1 | tee -a '$log_file'; printf '\\n[chariox] provider login exited with status %s\\n' \\\${PIPESTATUS[0]} | tee -a '$log_file'; exec bash\"
   " || log "provider login start command did not confirm; continuing with screen fallback"
   sleep 3
   local login_output=""
@@ -882,7 +882,7 @@ start_provider_login() {
   if [[ -n "$login_output" ]]; then
     printf '%s\n' "$login_output"
   else
-    printf '[arroba] provider login started in screen session %s; open the slice screen or slice logs to continue\n' "$session_name"
+    printf '[chariox] provider login started in screen session %s; open the slice screen or slice logs to continue\n' "$session_name"
   fi
 }
 
@@ -920,13 +920,13 @@ print_status() {
       echo chromium=headless-unavailable
     fi
     echo '--- desktop'
-    probe slice-screen /opt/arroba-slice/slice-screen.sh status || true
+    probe slice-screen /opt/chariox-slice/slice-screen.sh status || true
     echo '--- binaries'
-    probe binaries ls -l /opt/arroba-slice/bin || true
+    probe binaries ls -l /opt/chariox-slice/bin || true
     echo '--- processes'
-    probe processes pgrep -af 'arroba-kernel|arroba-relay|codex app-server|opencode serve' || true
+    probe processes pgrep -af 'chariox-kernel|chariox-relay|codex app-server|opencode serve' || true
     echo '--- logs'
-    probe logs ls -1 /opt/arroba-slice/logs || true
+    probe logs ls -1 /opt/chariox-slice/logs || true
   "; then
     log "status diagnostics unavailable"
   fi
@@ -941,9 +941,9 @@ stop_container() {
   if docker ps --format '{{.Names}}' | grep -Fxq "$SLICE_NAME"; then
     log "stopping slice processes in $SLICE_NAME"
     docker exec -u slice "$SLICE_NAME" bash -lc "
-      screen -S arroba-slice-relay -X quit >/dev/null 2>&1 || true
-      screen -S arroba-slice-kernel -X quit >/dev/null 2>&1 || true
-      /opt/arroba-slice/slice-screen.sh stop >/dev/null 2>&1 || true
+      screen -S chariox-slice-relay -X quit >/dev/null 2>&1 || true
+      screen -S chariox-slice-kernel -X quit >/dev/null 2>&1 || true
+      /opt/chariox-slice/slice-screen.sh stop >/dev/null 2>&1 || true
       pkill -f 'codex app-server' >/dev/null 2>&1 || true
       pkill -f 'opencode serve' >/dev/null 2>&1 || true
     " || true
@@ -980,14 +980,14 @@ main() {
       fi
       if [[ "$SLICE_START_DESKTOP" == "1" ]]; then
         require_slice_free_space "desktop" /home/slice /tmp
-        run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
+        run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
       fi
       if [[ "$SLICE_START_RUNTIME" == "1" ]]; then
         require_slice_free_space "runtime" /home/slice /tmp
-        run_required_phase runtime exec_slice /opt/arroba-slice/start-runtime.sh
+        run_required_phase runtime exec_slice /opt/chariox-slice/start-runtime.sh
       fi
       if [[ "$SLICE_START_PROVIDER_SERVERS" == "1" ]]; then
-        run_required_phase provider-servers exec_slice /opt/arroba-slice/start-providers.sh
+        run_required_phase provider-servers exec_slice /opt/chariox-slice/start-providers.sh
       fi
       log "provision completed; use status or logs actions for diagnostics"
       ;;
@@ -1043,25 +1043,25 @@ main() {
       require_docker
       ensure_container
       require_slice_free_space "desktop" /home/slice /tmp
-      run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/arroba-slice/slice-screen.sh start"
+      run_required_phase desktop exec_slice_with_timeout 60 bash -lc "/opt/chariox-slice/slice-screen.sh start"
       ;;
     validate-screen)
       require_docker
       ensure_container
-      exec_slice /opt/arroba-slice/validate-screen.sh prepare
-      exec_slice /opt/arroba-slice/validate-screen.sh interact
+      exec_slice /opt/chariox-slice/validate-screen.sh prepare
+      exec_slice /opt/chariox-slice/validate-screen.sh interact
       ;;
     start-runtime)
       require_docker
       ensure_container
       require_slice_free_space "runtime" /home/slice /tmp
-      exec_slice /opt/arroba-slice/start-runtime.sh
+      exec_slice /opt/chariox-slice/start-runtime.sh
       ;;
     start-providers)
       require_docker
       ensure_container
       require_slice_free_space "provider-servers" /home/slice /tmp
-      exec_slice /opt/arroba-slice/start-providers.sh
+      exec_slice /opt/chariox-slice/start-providers.sh
       ;;
     shell)
       require_docker

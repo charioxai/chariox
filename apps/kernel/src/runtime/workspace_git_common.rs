@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn canonical_workspace_uses_the_main_checkout_for_a_linked_worktree() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-canonical-workspace-{}-{}",
+            "chariox-canonical-workspace-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
@@ -271,7 +271,7 @@ mod tests {
         std::fs::create_dir_all(&root).expect("temp repo should be created");
         run_git(&root, &["init"]);
         run_git(&root, &["config", "user.email", "tests@example.invalid"]);
-        run_git(&root, &["config", "user.name", "Arroba Tests"]);
+        run_git(&root, &["config", "user.name", "Chariox Tests"]);
         std::fs::write(root.join("README.md"), "workspace\n").expect("fixture should be written");
         run_git(&root, &["add", "README.md"]);
         run_git(&root, &["commit", "-m", "initial"]);
@@ -328,7 +328,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("arroba-worktree-label-{nonce}"));
+        let root = std::env::temp_dir().join(format!("chariox-worktree-label-{nonce}"));
         let workspace = root.join("workspace");
         let feature = root.join("feature");
         std::fs::create_dir_all(&workspace).expect("workspace test directory should be created");

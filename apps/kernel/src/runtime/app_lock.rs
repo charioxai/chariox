@@ -104,7 +104,7 @@ fn performance_diagnostics_enabled() -> bool {
     }
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var("ARROBA_PERF_DIAGNOSTICS")
+        std::env::var("CHARIOX_PERF_DIAGNOSTICS")
             .ok()
             .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
     })

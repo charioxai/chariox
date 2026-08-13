@@ -473,7 +473,7 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         _ => panic!("unexpected local response"),
     };
     let schema_path = std::env::temp_dir().join(format!(
-        "arroba-mailbox-schema-{}.json",
+        "chariox-mailbox-schema-{}.json",
         crate::session::unix_epoch_ms()
     ));
     fs::write(

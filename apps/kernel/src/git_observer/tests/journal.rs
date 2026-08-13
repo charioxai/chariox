@@ -30,7 +30,7 @@ fn workspace_live_sync_journal_assigns_ordered_sequences_per_link() {
 #[test]
 fn workspace_live_sync_journal_restores_durable_events_and_next_sequence() {
     let path = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-journal-{}-{}.db",
+        "chariox-workspace-live-sync-journal-{}-{}.db",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

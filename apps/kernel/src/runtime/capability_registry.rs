@@ -100,7 +100,7 @@ pub(crate) fn execute_import_provider_capabilities_request(
 pub(crate) fn execute_register_credential_request(
     request: RegisterCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let (credential, path) = registry.install_from_file(&request.source_path)?;
     Ok(LocalDaemonResponse::CredentialRegistered { credential, path })
 }
@@ -108,7 +108,7 @@ pub(crate) fn execute_register_credential_request(
 pub(crate) fn execute_upsert_credential_request(
     request: UpsertCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let (credential, path) = registry.upsert(request.credential)?;
     Ok(LocalDaemonResponse::CredentialUpserted { credential, path })
 }
@@ -116,7 +116,7 @@ pub(crate) fn execute_upsert_credential_request(
 pub(crate) fn execute_remove_credential_request(
     request: RemoveCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let (credential, path) = registry.remove(&request.id)?;
     Ok(LocalDaemonResponse::CredentialRemoved { credential, path })
 }
@@ -124,7 +124,7 @@ pub(crate) fn execute_remove_credential_request(
 pub(crate) fn execute_get_credential_request(
     request: GetCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     let Some(credential) = registry.get(&request.id)? else {
         return Err(DaemonError::LocalTransport {
             operation: "credential.get",
@@ -137,7 +137,7 @@ pub(crate) fn execute_get_credential_request(
 pub(crate) fn execute_list_credentials_request(
     _request: ListCredentialsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     Ok(LocalDaemonResponse::CredentialsListed {
         credentials: registry.list()?,
     })
@@ -146,8 +146,8 @@ pub(crate) fn execute_list_credentials_request(
 pub(crate) fn execute_register_connector_request(
     request: RegisterConnectorRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
-    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
+    let adapters = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let (connector, path) = registry.install_from_file(&request.source_path, &adapters)?;
     Ok(LocalDaemonResponse::ConnectorRegistered { connector, path })
 }
@@ -155,8 +155,8 @@ pub(crate) fn execute_register_connector_request(
 pub(crate) fn execute_upsert_connector_request(
     request: UpsertConnectorRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
-    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
+    let adapters = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let (connector, path) = registry.upsert_definition(&request.connector, &adapters)?;
     Ok(LocalDaemonResponse::ConnectorUpserted { connector, path })
 }
@@ -164,7 +164,7 @@ pub(crate) fn execute_upsert_connector_request(
 pub(crate) fn execute_register_connector_adapter_request(
     request: RegisterConnectorAdapterRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let (adapter, path) = registry.install_from_file(&request.source_path)?;
     Ok(LocalDaemonResponse::ConnectorAdapterRegistered { adapter, path })
 }
@@ -172,7 +172,7 @@ pub(crate) fn execute_register_connector_adapter_request(
 pub(crate) fn execute_remove_connector_adapter_request(
     request: RemoveConnectorAdapterRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let (adapter, path) = registry.remove(&request.name)?;
     Ok(LocalDaemonResponse::ConnectorAdapterRemoved { adapter, path })
 }
@@ -180,7 +180,7 @@ pub(crate) fn execute_remove_connector_adapter_request(
 pub(crate) fn execute_get_connector_adapter_request(
     request: GetConnectorAdapterRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let Some(adapter) = registry.get(&request.name)? else {
         return Err(DaemonError::LocalTransport {
             operation: "connector.adapter.get",
@@ -193,7 +193,7 @@ pub(crate) fn execute_get_connector_adapter_request(
 pub(crate) fn execute_list_connector_adapters_request(
     _request: ListConnectorAdaptersRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     Ok(LocalDaemonResponse::ConnectorAdaptersListed {
         adapters: registry.list()?,
     })
@@ -202,7 +202,7 @@ pub(crate) fn execute_list_connector_adapters_request(
 pub(crate) fn execute_remove_connector_request(
     request: RemoveConnectorRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
     let (connector, path) = registry.remove(&request.name)?;
     Ok(LocalDaemonResponse::ConnectorRemoved { connector, path })
 }
@@ -210,7 +210,7 @@ pub(crate) fn execute_remove_connector_request(
 pub(crate) fn execute_get_connector_request(
     request: GetConnectorRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
     let Some(connector) = registry.get(&request.name)? else {
         return Err(DaemonError::LocalTransport {
             operation: "connector.get",
@@ -223,7 +223,7 @@ pub(crate) fn execute_get_connector_request(
 pub(crate) fn execute_list_connectors_request(
     _request: ListConnectorsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
     Ok(LocalDaemonResponse::ConnectorsListed {
         connectors: registry.list()?,
     })
@@ -233,8 +233,8 @@ pub(crate) fn execute_test_connector_request(
     request: TestConnectorRequest,
     vault_config: crate::config::UserCredentialVaultConfig,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
-    let adapters = crate::connector::ArrobaConnectorAdapterRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
+    let adapters = crate::connector::CharioxConnectorAdapterRegistry::user()?;
     let max_safety = crate::connector::ConnectorSafety::parse(request.allow.as_deref())?;
     let execution = registry.execute_once(
         &adapters,
@@ -252,7 +252,7 @@ pub(crate) fn execute_install_mcp_server_request(
     request: InstallMcpServerRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     let path = registry.install(&request.config)?;
     Ok(LocalDaemonResponse::McpServerInstalled {
         mcp: request.config,
@@ -264,7 +264,7 @@ pub(crate) fn execute_update_mcp_server_request(
     request: UpdateMcpServerRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     let path = registry.update(&request.config)?;
     Ok(LocalDaemonResponse::McpServerUpdated {
         mcp: request.config,
@@ -276,7 +276,7 @@ pub(crate) fn execute_uninstall_mcp_server_request(
     request: UninstallMcpServerRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     let path = registry.uninstall(&request.name)?;
     Ok(LocalDaemonResponse::McpServerUninstalled {
         name: request.name,
@@ -288,7 +288,7 @@ pub(crate) fn execute_import_mcp_servers_request(
     request: ImportMcpServersRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     let Some(provider) = crate::provider::canonical_provider_family(&request.provider) else {
         return Err(DaemonError::InvalidConfig {
             field: "provider",
@@ -319,7 +319,7 @@ pub(crate) fn execute_get_mcp_server_request(
     request: GetMcpServerRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     let Some(mcp) = registry.get(&request.name)? else {
         return Err(DaemonError::LocalTransport {
             operation: "mcp.get",
@@ -333,7 +333,7 @@ pub(crate) fn execute_list_mcp_servers_request(
     request: ListMcpServersRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry =
-        crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
+        crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(request.workspace_id.as_deref())?);
     Ok(LocalDaemonResponse::McpServersListed {
         mcps: registry.list()?,
     })
@@ -342,7 +342,7 @@ pub(crate) fn execute_list_mcp_servers_request(
 pub(crate) fn execute_register_environment_request(
     request: RegisterEnvironmentRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+    let registry = crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let path = registry.install(&request.config)?;
@@ -355,7 +355,7 @@ pub(crate) fn execute_register_environment_request(
 pub(crate) fn execute_remove_environment_request(
     request: RemoveEnvironmentRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+    let registry = crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let path = registry.uninstall(&request.name)?;
@@ -368,7 +368,7 @@ pub(crate) fn execute_remove_environment_request(
 pub(crate) fn execute_get_environment_request(
     request: GetEnvironmentRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+    let registry = crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let Some(environment) = registry.get(&request.name)? else {
@@ -383,7 +383,7 @@ pub(crate) fn execute_get_environment_request(
 pub(crate) fn execute_list_environments_request(
     request: ListEnvironmentsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(
+    let registry = crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     Ok(LocalDaemonResponse::EnvironmentsListed {
@@ -418,7 +418,7 @@ pub(crate) fn execute_register_script_request(
 pub(crate) fn execute_remove_script_request(
     request: RemoveScriptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+    let registry = crate::script::CharioxScriptRegistry::new(script_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let (script, path) = registry.uninstall(&request.name)?;
@@ -428,7 +428,7 @@ pub(crate) fn execute_remove_script_request(
 pub(crate) fn execute_get_script_request(
     request: GetScriptRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+    let registry = crate::script::CharioxScriptRegistry::new(script_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let Some(script) = registry.get(&request.name)? else {
@@ -443,7 +443,7 @@ pub(crate) fn execute_get_script_request(
 pub(crate) fn execute_list_scripts_request(
     request: ListScriptsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(
+    let registry = crate::script::CharioxScriptRegistry::new(script_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     Ok(LocalDaemonResponse::ScriptsListed {
@@ -460,7 +460,7 @@ pub(crate) fn execute_install_skill_request(
     } else {
         workspace.join(request.source_path)
     };
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let (skill, path) = registry.install_from_path(&source_path)?;
@@ -470,7 +470,7 @@ pub(crate) fn execute_install_skill_request(
 pub(crate) fn execute_upsert_skill_request(
     request: UpsertSkillRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let (skill, path) = match request.source {
@@ -491,7 +491,7 @@ pub(crate) fn execute_update_skill_request(
     } else {
         workspace.join(request.source_path)
     };
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let (skill, path) = registry.update_from_path(&source_path)?;
@@ -501,7 +501,7 @@ pub(crate) fn execute_update_skill_request(
 pub(crate) fn execute_uninstall_skill_request(
     request: UninstallSkillRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let (skill, path) = registry.uninstall(&request.name)?;
@@ -512,7 +512,7 @@ pub(crate) fn execute_import_skills_request(
     request: ImportSkillsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let workspace = registry_workspace_root(request.workspace_id.as_deref())?;
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let Some(provider) = crate::provider::canonical_provider_family(&request.provider) else {
@@ -544,7 +544,7 @@ pub(crate) fn execute_import_skills_request(
 pub(crate) fn execute_get_skill_request(
     request: GetSkillRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     let Some(skill) = registry.get(&request.name)? else {
@@ -559,7 +559,7 @@ pub(crate) fn execute_get_skill_request(
 pub(crate) fn execute_list_skills_request(
     request: ListSkillsRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(
         request.workspace_id.as_deref(),
     )?);
     Ok(LocalDaemonResponse::SkillsListed {
@@ -568,7 +568,7 @@ pub(crate) fn execute_list_skills_request(
 }
 
 pub(crate) fn ensure_mcp_exists(workspace_id: Option<&str>, name: &str) -> Result<(), DaemonError> {
-    let registry = crate::mcp::ArrobaMcpRegistry::new(mcp_registry_roots(workspace_id)?);
+    let registry = crate::mcp::CharioxMcpRegistry::new(mcp_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -582,7 +582,7 @@ pub(crate) fn ensure_skill_exists(
     workspace_id: Option<&str>,
     name: &str,
 ) -> Result<(), DaemonError> {
-    let registry = crate::skill::ArrobaSkillRegistry::new(skill_registry_roots(workspace_id)?);
+    let registry = crate::skill::CharioxSkillRegistry::new(skill_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -596,7 +596,7 @@ pub(crate) fn ensure_script_exists(
     workspace_id: Option<&str>,
     name: &str,
 ) -> Result<(), DaemonError> {
-    let registry = crate::script::ArrobaScriptRegistry::new(script_registry_roots(workspace_id)?);
+    let registry = crate::script::CharioxScriptRegistry::new(script_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -607,7 +607,7 @@ pub(crate) fn ensure_script_exists(
 }
 
 pub(crate) fn ensure_connector_exists(name: &str) -> Result<(), DaemonError> {
-    let registry = crate::connector::ArrobaConnectorRegistry::user()?;
+    let registry = crate::connector::CharioxConnectorRegistry::user()?;
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -618,7 +618,7 @@ pub(crate) fn ensure_connector_exists(name: &str) -> Result<(), DaemonError> {
 }
 
 pub(crate) fn ensure_credential_exists(name: &str) -> Result<(), DaemonError> {
-    let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -633,7 +633,7 @@ pub(crate) fn ensure_environment_exists(
     name: &str,
 ) -> Result<(), DaemonError> {
     let registry =
-        crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
+        crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
     if registry.get(name)?.is_none() {
         return Err(DaemonError::LocalTransport {
             operation: "agent.extension.grant",
@@ -650,12 +650,12 @@ pub(super) fn mcp_registry_roots(workspace_id: Option<&str>) -> Result<Vec<PathB
     let _ = workspace;
     #[cfg(test)]
     if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
-        roots.push(crate::mcp::ArrobaMcpRegistry::project_root(&workspace));
+        roots.push(crate::mcp::CharioxMcpRegistry::project_root(&workspace));
     }
     roots.extend(user_only_root(
-        crate::mcp::ArrobaMcpRegistry::user_root(),
+        crate::mcp::CharioxMcpRegistry::user_root(),
         "MCP registry root",
-        "HOME must be set to resolve ~/.arroba/mcps",
+        "HOME must be set to resolve ~/.chariox/mcps",
     )?);
     Ok(roots)
 }
@@ -669,14 +669,14 @@ pub(crate) fn script_registry_roots(
     let _ = workspace;
     #[cfg(test)]
     if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
-        roots.push(crate::script::ArrobaScriptRegistry::project_root(
+        roots.push(crate::script::CharioxScriptRegistry::project_root(
             &workspace,
         ));
     }
     roots.extend(user_only_root(
-        crate::script::ArrobaScriptRegistry::user_root(),
+        crate::script::CharioxScriptRegistry::user_root(),
         "script registry root",
-        "HOME must be set to resolve ~/.arroba/scripts",
+        "HOME must be set to resolve ~/.chariox/scripts",
     )?);
     Ok(roots)
 }
@@ -690,14 +690,14 @@ pub(crate) fn environment_registry_roots(
     let _ = workspace;
     #[cfg(test)]
     if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
-        roots.push(crate::script::ArrobaEnvironmentRegistry::project_root(
+        roots.push(crate::script::CharioxEnvironmentRegistry::project_root(
             &workspace,
         ));
     }
     roots.extend(user_only_root(
-        crate::script::ArrobaEnvironmentRegistry::user_root(),
+        crate::script::CharioxEnvironmentRegistry::user_root(),
         "environment registry root",
-        "HOME must be set to resolve ~/.arroba/envs",
+        "HOME must be set to resolve ~/.chariox/envs",
     )?);
     Ok(roots)
 }
@@ -708,8 +708,8 @@ fn script_validation_context(
     source_path: PathBuf,
 ) -> Result<
     (
-        crate::script::ArrobaScriptRegistry,
-        crate::script::ArrobaEnvironmentConfig,
+        crate::script::CharioxScriptRegistry,
+        crate::script::CharioxEnvironmentConfig,
         PathBuf,
     ),
     DaemonError,
@@ -721,7 +721,7 @@ fn script_validation_context(
         workspace.join(source_path)
     };
     let env_registry =
-        crate::script::ArrobaEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
+        crate::script::CharioxEnvironmentRegistry::new(environment_registry_roots(workspace_id)?);
     let env = env_registry
         .get(environment)?
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -729,7 +729,7 @@ fn script_validation_context(
             message: format!("environment `{environment}` is not registered"),
         })?;
     let script_registry =
-        crate::script::ArrobaScriptRegistry::new(script_registry_roots(workspace_id)?);
+        crate::script::CharioxScriptRegistry::new(script_registry_roots(workspace_id)?);
     Ok((script_registry, env, source_path))
 }
 
@@ -742,12 +742,12 @@ pub(super) fn skill_registry_roots(
     let _ = workspace;
     #[cfg(test)]
     if workspace_id.is_some_and(|value| !value.trim().is_empty()) {
-        roots.push(crate::skill::ArrobaSkillRegistry::project_root(&workspace));
+        roots.push(crate::skill::CharioxSkillRegistry::project_root(&workspace));
     }
     roots.extend(user_only_root(
-        crate::skill::ArrobaSkillRegistry::user_root(),
+        crate::skill::CharioxSkillRegistry::user_root(),
         "skill registry root",
-        "HOME must be set to resolve ~/.arroba/skills",
+        "HOME must be set to resolve ~/.chariox/skills",
     )?);
     Ok(roots)
 }
@@ -777,7 +777,7 @@ mod tests {
 
     #[test]
     fn registry_roots_use_global_user_roots() {
-        let workspace = PathBuf::from("/tmp/arroba-capability-registry-workspace");
+        let workspace = PathBuf::from("/tmp/chariox-capability-registry-workspace");
         let workspace_id = workspace.to_string_lossy();
 
         let mcp_roots = mcp_registry_roots(Some(workspace_id.as_ref())).unwrap();
@@ -785,19 +785,21 @@ mod tests {
 
         assert_eq!(
             mcp_roots.first(),
-            Some(&crate::mcp::ArrobaMcpRegistry::project_root(&workspace))
+            Some(&crate::mcp::CharioxMcpRegistry::project_root(&workspace))
         );
         assert_eq!(
             mcp_roots.get(1),
-            crate::mcp::ArrobaMcpRegistry::user_root().as_ref()
+            crate::mcp::CharioxMcpRegistry::user_root().as_ref()
         );
         assert_eq!(
             skill_roots.first(),
-            Some(&crate::skill::ArrobaSkillRegistry::project_root(&workspace))
+            Some(&crate::skill::CharioxSkillRegistry::project_root(
+                &workspace
+            ))
         );
         assert_eq!(
             skill_roots.get(1),
-            crate::skill::ArrobaSkillRegistry::user_root().as_ref()
+            crate::skill::CharioxSkillRegistry::user_root().as_ref()
         );
     }
 

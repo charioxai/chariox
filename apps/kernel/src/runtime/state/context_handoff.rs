@@ -403,7 +403,7 @@ mod tests {
                 target_provider_run_id: Some("run-new".to_string()),
                 target_provider: "codex".to_string(),
                 target_model: Some("model-new".to_string()),
-                context: "<arroba_context_handoff>prior context</arroba_context_handoff>"
+                context: "<chariox_context_handoff>prior context</chariox_context_handoff>"
                     .to_string(),
             },
         );
@@ -549,7 +549,7 @@ mod tests {
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
                 target_model: None,
-                context: "<arroba_context_handoff>workflow context</arroba_context_handoff>"
+                context: "<chariox_context_handoff>workflow context</chariox_context_handoff>"
                     .to_string(),
             },
         );
@@ -574,7 +574,7 @@ mod tests {
             target_provider_run_id: None,
             target_provider: "claude-headless".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
-            context: "<arroba_context_handoff>prior context</arroba_context_handoff>".to_string(),
+            context: "<chariox_context_handoff>prior context</chariox_context_handoff>".to_string(),
         };
         let hidden = join_context_sections(
             "existing hidden context",
@@ -585,7 +585,7 @@ mod tests {
         );
 
         assert!(hidden.contains("existing hidden context"));
-        assert!(hidden.contains("<arroba_context_handoff>prior context</arroba_context_handoff>"));
+        assert!(hidden.contains("<chariox_context_handoff>prior context</chariox_context_handoff>"));
         assert!(hidden.contains("Provider switch: codex (gpt-5.5)"));
         assert!(hidden.contains("The active user request is supplied separately."));
         assert!(!hidden.contains("<user_request>"));
@@ -604,7 +604,7 @@ mod tests {
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
                 target_model: Some("gpt-5".to_string()),
-                context: "<arroba_context_handoff>prior context</arroba_context_handoff>"
+                context: "<chariox_context_handoff>prior context</chariox_context_handoff>"
                     .to_string(),
             },
         );

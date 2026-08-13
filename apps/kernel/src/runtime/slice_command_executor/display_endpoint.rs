@@ -10,7 +10,7 @@ use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::slice::{SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind};
 use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget};
-use arroba_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
+use chariox_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 const DISPLAY_TUNNEL_TTL_MS: u64 = 60_000;
 const DISPLAY_TUNNEL_RENEWAL_WINDOW_MS: u64 = 10_000;
@@ -335,7 +335,7 @@ mod tests {
             .await
             .resolve_display_tunnel_registration(
                 &tunnel_id,
-                Some(arroba_relay::protocol::RelayError {
+                Some(chariox_relay::protocol::RelayError {
                     code: "invalid_display_tunnel".to_string(),
                     message: "registration rejected".to_string(),
                     retryable: false,

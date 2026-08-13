@@ -9,18 +9,18 @@ use crate::capability::{
     CaptureScreenshotResult, EditFileResult, InspectGitResult, ReadDirectoryTreeResult,
     ReadFileResult, RunShellCommandResult, StoredTransferArtifact,
 };
-use crate::config::{ArrobaUserConfig, UserCredentialConfig};
+use crate::config::{CharioxUserConfig, UserCredentialConfig};
 use crate::connector::{
-    ArrobaConnectorAdapterDefinition, ArrobaConnectorDefinition, ConnectorExecution,
+    CharioxConnectorAdapterDefinition, CharioxConnectorDefinition, ConnectorExecution,
 };
 use crate::history::{HistoryEvent, SessionHistoryEntryKind};
-use crate::mcp::{ArrobaMcpServerConfig, McpImportOutcome};
+use crate::mcp::{CharioxMcpServerConfig, McpImportOutcome};
 use crate::provider::{
     OpenCodeProviderCatalog, ProviderAuthStatus, ProviderCommandCatalog, ProviderLoginStart,
     ProviderProcessInfo, RuntimeProviderRun,
 };
 use crate::runtime::projection::DaemonHealthProjection;
-use crate::script::{ArrobaEnvironmentConfig, ArrobaScriptMetadata};
+use crate::script::{CharioxEnvironmentConfig, CharioxScriptMetadata};
 use crate::session::{
     CreateSessionRequest, PromptAttachment, PromptCancellation, PromptCompletion,
     PromptSubmissionOutcome, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
@@ -32,7 +32,7 @@ use crate::session::{
 };
 pub use crate::session::{WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot};
 use crate::session_history_page::SessionHistoryPageEntry;
-use crate::skill::{ArrobaSkillMetadata, SkillImportOutcome};
+use crate::skill::{CharioxSkillMetadata, SkillImportOutcome};
 #[cfg(test)]
 mod tests;
 mod types;

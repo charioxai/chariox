@@ -126,9 +126,9 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_hidden_system_context(format!(
-            "<arroba-scheduled-prompt schedule_id=\"{}\">\n\
-This continuation prompt was scheduled by the user through Arroba.\n\
-</arroba-scheduled-prompt>",
+            "<chariox-scheduled-prompt schedule_id=\"{}\">\n\
+This continuation prompt was scheduled by the user through Chariox.\n\
+</chariox-scheduled-prompt>",
             dispatch.schedule_id
         ));
         let mut submission = self

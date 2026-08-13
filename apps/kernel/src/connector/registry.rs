@@ -1,18 +1,18 @@
 use super::*;
 
-impl ArrobaConnectorRegistry {
+impl CharioxConnectorRegistry {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("connectors").join("definitions"))
+        chariox_home().map(|home| home.join("connectors").join("definitions"))
     }
 
     pub fn user() -> Result<Self, DaemonError> {
         let root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
             field: "connector registry root",
-            message: "HOME must be set to resolve ~/.arroba/connectors/definitions",
+            message: "HOME must be set to resolve ~/.chariox/connectors/definitions",
         })?;
         Ok(Self::new(root))
     }
@@ -20,8 +20,8 @@ impl ArrobaConnectorRegistry {
     pub fn install_from_file(
         &self,
         source: &Path,
-        adapters: &ArrobaConnectorAdapterRegistry,
-    ) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
+        adapters: &CharioxConnectorAdapterRegistry,
+    ) -> Result<(CharioxConnectorDefinition, PathBuf), DaemonError> {
         if !source.is_file() {
             return Err(DaemonError::InvalidConfig {
                 field: "connector file",
@@ -56,9 +56,9 @@ impl ArrobaConnectorRegistry {
 
     pub fn upsert_definition(
         &self,
-        definition: &ArrobaConnectorDefinition,
-        adapters: &ArrobaConnectorAdapterRegistry,
-    ) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
+        definition: &CharioxConnectorDefinition,
+        adapters: &CharioxConnectorAdapterRegistry,
+    ) -> Result<(CharioxConnectorDefinition, PathBuf), DaemonError> {
         definition.validate()?;
         let adapter = adapters.get(&definition.adapter)?.ok_or_else(|| {
             connector_error(
@@ -84,7 +84,7 @@ impl ArrobaConnectorRegistry {
         Ok((definition.clone(), path))
     }
 
-    pub fn remove(&self, name: &str) -> Result<(ArrobaConnectorDefinition, PathBuf), DaemonError> {
+    pub fn remove(&self, name: &str) -> Result<(CharioxConnectorDefinition, PathBuf), DaemonError> {
         let path = self
             .find_path(name)?
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -96,7 +96,7 @@ impl ArrobaConnectorRegistry {
         Ok((definition, path))
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaConnectorDefinition>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxConnectorDefinition>, DaemonError> {
         let mut entries = BTreeMap::new();
         if !self.root.exists() {
             return Ok(Vec::new());
@@ -112,7 +112,7 @@ impl ArrobaConnectorRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaConnectorDefinition>, DaemonError> {
+    pub fn get(&self, name: &str) -> Result<Option<CharioxConnectorDefinition>, DaemonError> {
         let Some(path) = self.find_path(name)? else {
             return Ok(None);
         };
@@ -121,7 +121,7 @@ impl ArrobaConnectorRegistry {
 
     pub fn prepare_call(
         &self,
-        adapters: &ArrobaConnectorAdapterRegistry,
+        adapters: &CharioxConnectorAdapterRegistry,
         connector_name: &str,
         operation_name: &str,
         credential_id: Option<&str>,
@@ -205,7 +205,7 @@ impl ArrobaConnectorRegistry {
 
     pub fn execute_once(
         &self,
-        adapters: &ArrobaConnectorAdapterRegistry,
+        adapters: &CharioxConnectorAdapterRegistry,
         connector_name: &str,
         operation_name: &str,
         credential_id: Option<&str>,
@@ -236,10 +236,10 @@ impl ArrobaConnectorRegistry {
         Ok(path.exists().then_some(path))
     }
 
-    fn read_yaml(path: &Path) -> Result<ArrobaConnectorDefinition, DaemonError> {
+    fn read_yaml(path: &Path) -> Result<CharioxConnectorDefinition, DaemonError> {
         let contents = fs::read_to_string(path).map_err(io_error("connector.read"))?;
         let definition =
-            serde_yaml::from_str::<ArrobaConnectorDefinition>(&contents).map_err(|error| {
+            serde_yaml::from_str::<CharioxConnectorDefinition>(&contents).map_err(|error| {
                 DaemonError::LocalTransport {
                     operation: "connector.read",
                     message: format!("failed to parse connector `{}`: {error}", path.display()),

@@ -998,7 +998,7 @@ async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
         .add_workflow_node(session.id(), workflow.id(), specialist_agent.id())
         .expect("specialist node should be added");
     let schema = std::env::temp_dir().join(format!(
-        "arroba-runtime-owned-handoff-{}-{}.json",
+        "chariox-runtime-owned-handoff-{}-{}.json",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

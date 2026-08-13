@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
-use arroba_relay::protocol::RelayKernelPresence;
+use chariox_relay::protocol::RelayKernelPresence;
 
 use crate::local::RemoteMachineRecord;
 use crate::session::unix_epoch_ms;
@@ -178,7 +178,7 @@ mod tests {
                 available_providers: vec!["dev-stub".to_string()],
                 provider_accounts: Vec::new(),
             }],
-            vec![arroba_relay::protocol::RelayKernelPresence {
+            vec![chariox_relay::protocol::RelayKernelPresence {
                 kernel_id: "kernel-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("builder".to_string()),
@@ -235,7 +235,7 @@ mod tests {
                 available_providers: Vec::new(),
                 provider_accounts: Vec::new(),
             }],
-            vec![arroba_relay::protocol::RelayKernelPresence {
+            vec![chariox_relay::protocol::RelayKernelPresence {
                 kernel_id: "kernel-1".to_string(),
                 machine_id: "machine-1".to_string(),
                 machine_alias: Some("builder".to_string()),

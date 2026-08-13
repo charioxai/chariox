@@ -8,7 +8,7 @@ const HISTORY_BASELINE_TOOL_BYTES: usize = 4_096;
 #[tokio::test]
 async fn performance_drill_session_history_outline() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-history-baseline-{}-{}",
+        "chariox-history-baseline-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

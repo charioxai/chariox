@@ -61,7 +61,7 @@ mod tests {
             source_slice_id: "slice-source".to_string(),
             backend: SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
-            image_ref: "arroba-slice-state:gmail-ready".to_string(),
+            image_ref: "chariox-slice-state:gmail-ready".to_string(),
             home_archive_path: "/tmp/gmail-ready-home.tar.zst".to_string(),
             manifest_path: "/tmp/gmail-ready-manifest.json".to_string(),
             created_at_ms: 1,
@@ -425,11 +425,11 @@ mod tests {
             .create("kernel-1", "machine-1", create_input("dev"))
             .expect("slice should create");
         let root =
-            std::env::temp_dir().join(format!("arroba-slice-logs-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("chariox-slice-logs-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let options = LocalDockerSliceOptions {
             root: root.clone(),
-            docker_image: "arroba-slice-linux:test".to_string(),
+            docker_image: "chariox-slice-linux:test".to_string(),
             build_image: SliceImageBuildPolicy::Never,
             extension_dockerfile: None,
             allow_unconfined_seccomp: false,

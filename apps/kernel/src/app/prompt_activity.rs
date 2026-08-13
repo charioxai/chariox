@@ -281,7 +281,7 @@ fn record_active_turn_event(turn: &ActiveTurnState, event: &str, settlement_requ
 
 fn prompt_origin_label(prompt_origin: PromptOrigin) -> &'static str {
     match prompt_origin {
-        PromptOrigin::Arroba => "arroba",
+        PromptOrigin::Chariox => "chariox",
         PromptOrigin::External => "external",
     }
 }

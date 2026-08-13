@@ -540,7 +540,7 @@ async fn publication_runtime_status_snapshot(
         .await
         .map_err(|error| format!("failed to connect to publication status endpoint: {error}"))?;
     let request = format!(
-        "GET /.well-known/arroba/publication/status HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        "GET /.well-known/chariox/publication/status HTTP/1.1\r\nHost: {}:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
         host, port,
     );
     stream
@@ -713,7 +713,7 @@ async fn start_publication_runtime_claimed(
     } else {
         Some(publication_local_url(&host, port))
     };
-    let mut command = Command::new(resolve_arroba_cli_bin()?);
+    let mut command = Command::new(resolve_chariox_cli_bin()?);
     command
         .arg("serve")
         .arg(&package_root)
@@ -728,7 +728,7 @@ async fn start_publication_runtime_claimed(
         command.arg("--cloud-deployment").arg(deployment_id);
     }
     let mut child = command.spawn().map_err(|error| {
-        let message = format!("failed to launch arroba publication gateway: {error}");
+        let message = format!("failed to launch chariox publication gateway: {error}");
         let _ = mark_publication_runtime_error(
             runtime_state,
             &request.session_id,
@@ -1200,13 +1200,13 @@ fn safe_relative_package_path(value: &str) -> Result<PathBuf, DaemonError> {
 }
 
 fn publication_runtime_root() -> PathBuf {
-    std::env::var_os("ARROBA_PUBLICATION_RUNTIME_ROOT")
+    std::env::var_os("CHARIOX_PUBLICATION_RUNTIME_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("arroba-publication-runtimes"))
+        .unwrap_or_else(|| std::env::temp_dir().join("chariox-publication-runtimes"))
 }
 
-fn resolve_arroba_cli_bin() -> Result<PathBuf, DaemonError> {
-    if let Some(value) = std::env::var_os("ARROBA_CLI_BIN") {
+fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
+    if let Some(value) = std::env::var_os("CHARIOX_CLI_BIN") {
         return Ok(PathBuf::from(value));
     }
     let current = std::env::current_exe().map_err(|error| DaemonError::LocalTransport {
@@ -1223,9 +1223,9 @@ fn resolve_arroba_cli_bin() -> Result<PathBuf, DaemonError> {
             ),
         })?;
     let candidate = dir.join(if cfg!(windows) {
-        "arroba-cli.exe"
+        "chariox-cli.exe"
     } else {
-        "arroba-cli"
+        "chariox-cli"
     });
     if candidate.exists() {
         return Ok(candidate);
@@ -1233,7 +1233,7 @@ fn resolve_arroba_cli_bin() -> Result<PathBuf, DaemonError> {
     Err(DaemonError::LocalTransport {
         operation: "start workflow publication runtime",
         message: format!(
-            "arroba-cli was not found beside `{}`; set ARROBA_CLI_BIN to enable publication runtime lifecycle",
+            "chariox-cli was not found beside `{}`; set CHARIOX_CLI_BIN to enable publication runtime lifecycle",
             current.display()
         ),
     })

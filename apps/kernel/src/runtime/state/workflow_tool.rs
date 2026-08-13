@@ -19,7 +19,7 @@ impl KernelRuntimeOwnedState {
         DaemonError,
     > {
         let canonical_tool_name = tool_name
-            .strip_prefix("arroba_")
+            .strip_prefix("chariox_")
             .unwrap_or(tool_name.as_str())
             .to_string();
         let arguments_json = serde_json::to_string(&arguments)
@@ -631,12 +631,12 @@ fn call_agent_app_http_action(
             .set("accept", "application/json"),
         other => return Err(format!("unsupported HTTP method `{other}`")),
     };
-    request = request.set("x-arroba-agent-app-action-id", &context.action_id);
+    request = request.set("x-chariox-agent-app-action-id", &context.action_id);
     if let Some(session) = context.session.as_deref() {
-        request = request.set("x-arroba-agent-app-session", session);
+        request = request.set("x-chariox-agent-app-session", session);
     }
     if let Some(invocation_request_id) = context.invocation_request_id.as_deref() {
-        request = request.set("x-arroba-publication-invocation", invocation_request_id);
+        request = request.set("x-chariox-publication-invocation", invocation_request_id);
     }
     let response = match method {
         "GET" => request.call(),

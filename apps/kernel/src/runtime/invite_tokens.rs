@@ -26,7 +26,7 @@ pub(crate) fn encode_session_invite_token(
         message: error.to_string(),
     })?;
     Ok(format!(
-        "arroba-session-invite-v1.{}",
+        "chariox-session-invite-v1.{}",
         URL_SAFE_NO_PAD.encode(payload)
     ))
 }
@@ -34,7 +34,7 @@ pub(crate) fn encode_session_invite_token(
 pub(crate) fn decode_session_invite_token(token: &str) -> Result<SessionInviteToken, DaemonError> {
     let payload = token
         .trim()
-        .strip_prefix("arroba-session-invite-v1.")
+        .strip_prefix("chariox-session-invite-v1.")
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "decode session invite",
             message: "session invite token has an unsupported format".to_string(),
@@ -84,13 +84,13 @@ pub(crate) struct PairingInviteToken {
 pub(crate) fn encode_pairing_invite_token(
     token: &PairingInviteToken,
 ) -> Result<String, DaemonError> {
-    encode_pairing_invite_token_with_prefix("arroba-invite-v1", token)
+    encode_pairing_invite_token_with_prefix("chariox-invite-v1", token)
 }
 
 pub(crate) fn encode_terminal_pairing_link(
     token: &PairingInviteToken,
 ) -> Result<String, DaemonError> {
-    encode_pairing_invite_token_with_prefix("arroba-terminal-pair-v1", token)
+    encode_pairing_invite_token_with_prefix("chariox-terminal-pair-v1", token)
 }
 
 fn encode_pairing_invite_token_with_prefix(
@@ -107,8 +107,8 @@ fn encode_pairing_invite_token_with_prefix(
 pub(crate) fn decode_pairing_invite_token(token: &str) -> Result<PairingInviteToken, DaemonError> {
     let trimmed = token.trim();
     let payload = trimmed
-        .strip_prefix("arroba-invite-v1.")
-        .or_else(|| trimmed.strip_prefix("arroba-terminal-pair-v1."))
+        .strip_prefix("chariox-invite-v1.")
+        .or_else(|| trimmed.strip_prefix("chariox-terminal-pair-v1."))
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "decode pairing invite",
             message: "pairing invite token has an unsupported format".to_string(),

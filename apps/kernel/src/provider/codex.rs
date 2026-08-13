@@ -17,11 +17,11 @@ mod ports;
 pub(crate) use catalog_endpoint::lease_codex_catalog_endpoint;
 pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
 
-const CODEX_ENV_OVERRIDE: &str = "ARROBA_CODEX_BIN";
+const CODEX_ENV_OVERRIDE: &str = "CHARIOX_CODEX_BIN";
 static CODEX_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("codex");
-const CODEX_BIND_HOST_OVERRIDE: &str = "ARROBA_CODEX_BIND_HOST";
-pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "ARROBA_MCP_TOKEN";
+const CODEX_BIND_HOST_OVERRIDE: &str = "CHARIOX_CODEX_BIND_HOST";
+pub(crate) const CODEX_MCP_TOKEN_ENV: &str = "CHARIOX_MCP_TOKEN";
 const CODEX_SESSION_ENV_VARS: &[&str] = &[
     "CODEX_THREAD_ID",
     "CODEX_TURN_METADATA_HEADER",
@@ -166,7 +166,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
 
     use super::{logout_codex, plan_codex_launch, resolve_codex_executable};
@@ -179,13 +179,13 @@ mod tests {
     fn resolves_override_path_for_tests() {
         let _guard = env_guard();
         let path =
-            std::env::temp_dir().join(format!("arroba-codex-resolve-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("chariox-codex-resolve-test-{}", std::process::id()));
         fs::write(&path, "#!/bin/sh\nexit 0\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
 
         let resolved = resolve_codex_executable().expect("override path should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
     }
@@ -194,17 +194,17 @@ mod tests {
     fn plans_codex_app_server_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-serve",
+            "chariox-codex-resolve-test-{}-serve",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43142");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43142");
 
         let launch = plan_codex_launch(None).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -230,20 +230,20 @@ mod tests {
     fn plans_codex_launch_scrubs_inherited_session_env() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-env-remove",
+            "chariox-codex-resolve-test-{}-env-remove",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43142");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43142");
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
                 .with_provider_env_remove(vec!["OPENAI_API_KEY".to_string()]);
 
         let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert!(launch
@@ -269,17 +269,17 @@ mod tests {
     fn plans_codex_catalog_launch_without_explicit_port_override() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-managed-catalog-port",
+            "chariox-codex-resolve-test-{}-managed-catalog-port",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::remove_var("CHARIOX_CODEX_PORT");
 
         let launch = plan_codex_launch(None).expect("managed catalog port should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -293,12 +293,12 @@ mod tests {
     fn injects_runtime_mcp_config_into_managed_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-mcp",
+            "chariox-codex-resolve-test-{}-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43143");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43143");
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
@@ -309,38 +309,38 @@ mod tests {
                 ));
         let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(
-            launch.pty_env.get("ARROBA_MCP_TOKEN").map(String::as_str),
+            launch.pty_env.get("CHARIOX_MCP_TOKEN").map(String::as_str),
             Some("token-123")
         );
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.url")));
+            .any(|arg| arg.contains("mcp_servers.chariox.url")));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "mcp_servers.arroba.transport=\"streamable_http\""));
+            .any(|arg| arg == "mcp_servers.chariox.transport=\"streamable_http\""));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.bearer_token_env_var")));
+            .any(|arg| arg.contains("mcp_servers.chariox.bearer_token_env_var")));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "mcp_servers.arroba.required=true"));
+            .any(|arg| arg == "mcp_servers.chariox.required=true"));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "mcp_servers.arroba.startup_timeout_sec=90"));
+            .any(|arg| arg == "mcp_servers.chariox.startup_timeout_sec=90"));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "mcp_servers.arroba.tool_timeout_sec=300"));
+            .any(|arg| arg == "mcp_servers.chariox.tool_timeout_sec=300"));
         assert!(launch
             .pty_args
             .iter()
@@ -363,12 +363,12 @@ mod tests {
     fn runtime_mcp_config_does_not_force_workspace_live_sync_overrides_for_unrestricted_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-runtime-mcp-unrestricted",
+            "chariox-codex-resolve-test-{}-runtime-mcp-unrestricted",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43143");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43143");
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
@@ -378,18 +378,18 @@ mod tests {
                 ));
         let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.url")));
+            .any(|arg| arg.contains("mcp_servers.chariox.url")));
         assert!(launch
             .pty_args
             .iter()
-            .any(|arg| arg == "mcp_servers.arroba.transport=\"streamable_http\""));
+            .any(|arg| arg == "mcp_servers.chariox.transport=\"streamable_http\""));
         assert!(!launch
             .pty_args
             .iter()
@@ -412,24 +412,24 @@ mod tests {
     fn injects_granted_mcp_config_into_managed_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-granted-mcp",
+            "chariox-codex-resolve-test-{}-granted-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43144");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43144");
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
-                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+                .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
                     "browser",
                     "npx",
                     vec!["@playwright/mcp@latest".to_string()],
                 )]);
         let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert!(launch
@@ -443,19 +443,19 @@ mod tests {
         assert!(!launch
             .pty_args
             .iter()
-            .any(|arg| arg.contains("mcp_servers.arroba.url")));
+            .any(|arg| arg.contains("mcp_servers.chariox.url")));
     }
 
     #[test]
     fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-proxied-mcp",
+            "chariox-codex-resolve-test-{}-proxied-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43144");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43144");
 
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
@@ -463,25 +463,25 @@ mod tests {
                     "http://127.0.0.1:43120/mcp",
                     "token-123",
                 ))
-                .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+                .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
                     "browser",
                     "npx",
                     vec!["@playwright/mcp@latest".to_string()],
                 )]);
         let launch = plan_codex_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         let browser_config = launch
             .pty_args
             .iter()
-            .find(|arg| arg.starts_with("mcp_servers.arroba_mcp_browser={"))
+            .find(|arg| arg.starts_with("mcp_servers.chariox_mcp_browser={"))
             .expect("browser MCP should be rendered as one streamable HTTP table");
         assert!(browser_config.contains("transport=\"streamable_http\""));
         assert!(browser_config.contains("url=\"http://127.0.0.1:43120/mcp/proxy/browser\""));
-        assert!(browser_config.contains("bearer_token_env_var=\"ARROBA_MCP_TOKEN\""));
+        assert!(browser_config.contains("bearer_token_env_var=\"CHARIOX_MCP_TOKEN\""));
         assert!(!browser_config.contains("http_headers"));
         assert!(!launch
             .pty_args
@@ -493,12 +493,12 @@ mod tests {
     fn plans_managed_workspace_live_sync_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-codex-resolve-test-{}-workspace-live-sync",
+            "chariox-codex-resolve-test-{}-workspace-live-sync",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
-        std::env::set_var("ARROBA_CODEX_PORT", "43144");
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_PORT", "43144");
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "codex-mini")
                 .with_workspace_live_sync_managed();
@@ -506,8 +506,8 @@ mod tests {
         let launch =
             plan_codex_launch(Some(&request)).expect("workspace live sync launch should resolve");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
-        std::env::remove_var("ARROBA_CODEX_PORT");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -521,9 +521,11 @@ mod tests {
     fn logout_codex_invokes_the_configured_executable() {
         let _guard = env_guard();
         let path =
-            std::env::temp_dir().join(format!("arroba-codex-logout-test-{}", std::process::id()));
-        let marker =
-            std::env::temp_dir().join(format!("arroba-codex-logout-marker-{}", std::process::id()));
+            std::env::temp_dir().join(format!("chariox-codex-logout-test-{}", std::process::id()));
+        let marker = std::env::temp_dir().join(format!(
+            "chariox-codex-logout-marker-{}",
+            std::process::id()
+        ));
         fs::write(
             &path,
             format!(
@@ -535,11 +537,11 @@ mod tests {
         #[cfg(unix)]
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
             .expect("fixture should be executable");
-        std::env::set_var("ARROBA_CODEX_BIN", &path);
+        std::env::set_var("CHARIOX_CODEX_BIN", &path);
 
         logout_codex().expect("logout should succeed");
 
-        std::env::remove_var("ARROBA_CODEX_BIN");
+        std::env::remove_var("CHARIOX_CODEX_BIN");
         let logged = fs::read_to_string(&marker).expect("marker should be written");
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&marker);

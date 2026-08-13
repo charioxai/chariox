@@ -158,12 +158,12 @@ impl PtyManager {
 
         let mut env = run.pty_env().clone();
         env.insert(
-            "ARROBA_MANAGED_PROVIDER_PROCESS".to_string(),
+            "CHARIOX_MANAGED_PROVIDER_PROCESS".to_string(),
             "1".to_string(),
         );
-        env.insert("ARROBA_PROVIDER_RUN_ID".to_string(), run.id().to_string());
+        env.insert("CHARIOX_PROVIDER_RUN_ID".to_string(), run.id().to_string());
         env.insert(
-            "ARROBA_PROVIDER_PROCESS_KEY".to_string(),
+            "CHARIOX_PROVIDER_PROCESS_KEY".to_string(),
             process_key.clone(),
         );
 
@@ -255,7 +255,7 @@ impl PtyManager {
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let writer_provider_run_id = request.provider_run_id.clone();
         let writer_thread = thread::Builder::new()
-            .name(format!("arroba-pty-writer-{}", request.provider_run_id))
+            .name(format!("chariox-pty-writer-{}", request.provider_run_id))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || run_pty_writer(writer, input_rx));
         if let Err(error) = writer_thread {
@@ -278,7 +278,7 @@ impl PtyManager {
         let output_signal = self.output_signal.clone();
         let output_process_key = request.process_key.clone();
         let reader_thread = thread::Builder::new()
-            .name(format!("arroba-pty-reader-{}", request.provider_run_id))
+            .name(format!("chariox-pty-reader-{}", request.provider_run_id))
             .stack_size(PTY_READER_STACK_BYTES)
             .spawn(move || {
                 let mut buffer = [0_u8; 4096];

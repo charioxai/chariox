@@ -84,7 +84,7 @@ impl DaemonApp {
                                 Some(resumed_run.id()),
                                 recipients,
                                 format!(
-                                    "Provider switch failed for session `{}`. Arroba resumed the previous provider run `{}` automatically.",
+                                    "Provider switch failed for session `{}`. Chariox resumed the previous provider run `{}` automatically.",
                                     run.session_id(),
                                     resumed_run.id()
                                 ),
@@ -96,7 +96,7 @@ impl DaemonApp {
                                 None,
                                 recipients,
                                 format!(
-                                    "Provider switch failed for session `{}` and Arroba could not resume the previous provider run: {}",
+                                    "Provider switch failed for session `{}` and Chariox could not resume the previous provider run: {}",
                                     run.session_id(),
                                     resume_error
                                 ),
@@ -260,7 +260,7 @@ impl DaemonApp {
             crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
                 .unwrap_or_else(|| {
                     format!(
-                        "Provider session `{stale_provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable provider session."
+                        "Provider session `{stale_provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable provider session."
                     )
                 }),
         );

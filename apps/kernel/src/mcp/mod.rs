@@ -23,9 +23,9 @@ pub use provider_import::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaMcpServerConfig {
+pub struct CharioxMcpServerConfig {
     pub name: String,
-    pub transport: ArrobaMcpTransportConfig,
+    pub transport: CharioxMcpTransportConfig,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -39,17 +39,17 @@ pub struct ArrobaMcpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub tools: BTreeMap<String, ArrobaMcpToolConfig>,
+    pub tools: BTreeMap<String, CharioxMcpToolConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaMcpCredentialBinding {
+pub struct CharioxMcpCredentialBinding {
     pub credential: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ArrobaMcpTransportConfig {
+pub enum CharioxMcpTransportConfig {
     Stdio {
         command: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -57,7 +57,7 @@ pub enum ArrobaMcpTransportConfig {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credential_env: BTreeMap<String, ArrobaMcpCredentialBinding>,
+        credential_env: BTreeMap<String, CharioxMcpCredentialBinding>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         env_vars: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,28 +72,28 @@ pub enum ArrobaMcpTransportConfig {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         http_headers: BTreeMap<String, String>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-        credential_http_headers: BTreeMap<String, ArrobaMcpCredentialBinding>,
+        credential_http_headers: BTreeMap<String, CharioxMcpCredentialBinding>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env_http_headers: BTreeMap<String, String>,
     },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaMcpToolConfig {
+pub struct CharioxMcpToolConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArrobaMcpRegistry {
+pub struct CharioxMcpRegistry {
     roots: Vec<PathBuf>,
 }
 
-impl ArrobaMcpServerConfig {
+impl CharioxMcpServerConfig {
     pub fn stdio(name: impl Into<String>, command: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             name: name.into(),
-            transport: ArrobaMcpTransportConfig::Stdio {
+            transport: CharioxMcpTransportConfig::Stdio {
                 command: command.into(),
                 args,
                 env: BTreeMap::new(),
@@ -114,7 +114,7 @@ impl ArrobaMcpServerConfig {
     pub fn streamable_http(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            transport: ArrobaMcpTransportConfig::StreamableHttp {
+            transport: CharioxMcpTransportConfig::StreamableHttp {
                 url: url.into(),
                 bearer_token_env_var: None,
                 bearer_token_credential: None,
@@ -135,12 +135,12 @@ impl ArrobaMcpServerConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_registry_name(&self.name, "mcp name")?;
         match &self.transport {
-            ArrobaMcpTransportConfig::Stdio { command, .. } => {
+            CharioxMcpTransportConfig::Stdio { command, .. } => {
                 if command.trim().is_empty() {
                     return invalid("mcp command", "must not be empty");
                 }
             }
-            ArrobaMcpTransportConfig::StreamableHttp { url, .. } => {
+            CharioxMcpTransportConfig::StreamableHttp { url, .. } => {
                 if !(url.starts_with("http://") || url.starts_with("https://")) {
                     return invalid("mcp url", "must start with http:// or https://");
                 }
@@ -164,7 +164,7 @@ impl ArrobaMcpServerConfig {
     ) -> Result<Self, DaemonError> {
         let mut resolved = self.clone();
         match &mut resolved.transport {
-            ArrobaMcpTransportConfig::Stdio {
+            CharioxMcpTransportConfig::Stdio {
                 env,
                 credential_env,
                 ..
@@ -176,7 +176,7 @@ impl ArrobaMcpServerConfig {
                     );
                 }
             }
-            ArrobaMcpTransportConfig::StreamableHttp {
+            CharioxMcpTransportConfig::StreamableHttp {
                 bearer_token_credential,
                 http_headers,
                 credential_http_headers,
@@ -199,7 +199,7 @@ impl ArrobaMcpServerConfig {
     }
 }
 
-impl ArrobaMcpRegistry {
+impl CharioxMcpRegistry {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self { roots }
     }
@@ -211,17 +211,17 @@ impl ArrobaMcpRegistry {
                 .join(workspace_registry_hash(workspace.as_ref()))
                 .join("mcps");
         }
-        workspace.as_ref().join(".arroba").join("mcps")
+        workspace.as_ref().join(".chariox").join("mcps")
     }
 
     pub fn user_root() -> Option<PathBuf> {
         if let Some(root) = managed_capability_root() {
             return Some(root.join("user").join("mcps"));
         }
-        home_dir().map(|home| home.join(".arroba").join("mcps"))
+        home_dir().map(|home| home.join(".chariox").join("mcps"))
     }
 
-    pub fn install(&self, config: &ArrobaMcpServerConfig) -> Result<PathBuf, DaemonError> {
+    pub fn install(&self, config: &CharioxMcpServerConfig) -> Result<PathBuf, DaemonError> {
         config.validate()?;
         let root = self.primary_root()?;
         fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
@@ -241,7 +241,7 @@ impl ArrobaMcpRegistry {
         Ok(path)
     }
 
-    pub fn update(&self, config: &ArrobaMcpServerConfig) -> Result<PathBuf, DaemonError> {
+    pub fn update(&self, config: &CharioxMcpServerConfig) -> Result<PathBuf, DaemonError> {
         config.validate()?;
         let path =
             self.find_config_path(&config.name)?
@@ -273,7 +273,7 @@ impl ArrobaMcpRegistry {
         Ok(path)
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaMcpServerConfig>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxMcpServerConfig>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
             if !root.exists() {
@@ -299,7 +299,7 @@ impl ArrobaMcpRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaMcpServerConfig>, DaemonError> {
+    pub fn get(&self, name: &str) -> Result<Option<CharioxMcpServerConfig>, DaemonError> {
         validate_registry_name(name, "mcp name")?;
         let Some(path) = self.find_config_path(name)? else {
             return Ok(None);
@@ -327,12 +327,12 @@ impl ArrobaMcpRegistry {
             })
     }
 
-    fn read_config(path: &Path) -> Result<ArrobaMcpServerConfig, DaemonError> {
+    fn read_config(path: &Path) -> Result<CharioxMcpServerConfig, DaemonError> {
         let payload = fs::read_to_string(path).map_err(|error| DaemonError::LocalTransport {
             operation: "mcp.read",
             message: format!("failed to read MCP `{}`: {error}", path.display()),
         })?;
-        let config: ArrobaMcpServerConfig =
+        let config: CharioxMcpServerConfig =
             serde_json::from_str(&payload).map_err(|error| DaemonError::LocalTransport {
                 operation: "mcp.read",
                 message: format!("failed to parse MCP `{}`: {error}", path.display()),
@@ -408,7 +408,7 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn managed_capability_root() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+    std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }

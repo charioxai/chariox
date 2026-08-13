@@ -1,5 +1,5 @@
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
-use arroba_relay::protocol::DaemonRegistration;
+use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
@@ -132,7 +132,7 @@ pub(crate) fn cloud_kernel_presence_body(
 mod tests {
     use std::path::PathBuf;
 
-    use crate::config::ArrobaUserConfig;
+    use crate::config::CharioxUserConfig;
 
     use super::*;
 
@@ -160,7 +160,7 @@ mod tests {
     fn config(profile: Option<PersistedCloudRelayProfile>) -> DaemonConfig {
         DaemonConfig {
             user_config_path: PathBuf::from("user.toml"),
-            user_config: ArrobaUserConfig::default(),
+            user_config: CharioxUserConfig::default(),
             daemon_id: "kernel-1".to_string(),
             host_machine_id: "host-1".to_string(),
             host_machine_alias: None,
@@ -299,7 +299,7 @@ mod tests {
             public_key: "public".to_string(),
             capabilities: Vec::new(),
             available_providers: vec!["opencode".to_string()],
-            provider_accounts: vec![arroba_relay::protocol::RelayProviderAccountSummary {
+            provider_accounts: vec![chariox_relay::protocol::RelayProviderAccountSummary {
                 provider: "opencode:openai".to_string(),
                 state: "configured".to_string(),
                 auth_type: Some("oauth".to_string()),

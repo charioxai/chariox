@@ -6,7 +6,7 @@ use base64::Engine;
 use crate::error::DaemonError;
 use crate::session::PromptAttachment;
 
-pub(super) const INLINE_PROMPT_ATTACHMENT_DIR: &str = "arroba-terminal-prompt-attachments";
+pub(super) const INLINE_PROMPT_ATTACHMENT_DIR: &str = "chariox-terminal-prompt-attachments";
 
 pub(super) fn materialize_inline_prompt_attachments(
     session_id: &str,

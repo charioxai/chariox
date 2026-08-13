@@ -1,4 +1,4 @@
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
@@ -57,7 +57,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
-                let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
@@ -245,7 +245,7 @@ impl KernelRuntimeState {
                             .to_string(),
                     }
                 })?);
-                let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
@@ -350,7 +350,7 @@ impl KernelRuntimeState {
                 let vault_path = user_config.credential_vault.path.clone();
                 match action {
                     "status" => {
-                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
                             payload: serde_json::json!({
@@ -360,9 +360,9 @@ impl KernelRuntimeState {
                         })
                     }
                     "lock" => {
-                        crate::secret::lock_arroba_encrypted_vault(&vault_path)?;
+                        crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
                         crate::secret::clear_vault_secret_process_cache()?;
-                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
                             payload: serde_json::json!({
@@ -638,7 +638,7 @@ impl KernelRuntimeState {
                     agent.primary_provider(),
                     Some(&context.worker_provider_run_id),
                 );
-                let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
                     &registry,
                     credential,
@@ -732,7 +732,7 @@ impl KernelRuntimeState {
                 let vault_path = user_config.credential_vault.path.clone();
                 match action {
                     "status" => {
-                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
                             payload: serde_json::json!({
@@ -742,9 +742,9 @@ impl KernelRuntimeState {
                         })
                     }
                     "lock" => {
-                        crate::secret::lock_arroba_encrypted_vault(&vault_path)?;
+                        crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
                         crate::secret::clear_vault_secret_process_cache()?;
-                        let status = crate::secret::arroba_encrypted_vault_status(&vault_path)?;
+                        let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
                             payload: serde_json::json!({
@@ -943,7 +943,7 @@ impl KernelRuntimeState {
                 message: "credential secret interaction resolved without a secret".to_string(),
             }
         })?);
-        let registry = crate::credential::ArrobaCredentialRegistry::user()?;
+        let registry = crate::credential::CharioxCredentialRegistry::user()?;
         let result = service.upsert_vault_backed_credential_with_secret(
             &registry,
             credential,

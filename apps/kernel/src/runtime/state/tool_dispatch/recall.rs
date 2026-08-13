@@ -269,11 +269,11 @@ fn bound_recall_event(event: &mut crate::history::HistoryEvent, remaining: &mut 
     if allowed == 0 {
         event.content = None;
         event.metadata.insert(
-            "arroba_content_omitted".to_string(),
+            "chariox_content_omitted".to_string(),
             serde_json::Value::Bool(true),
         );
         event.metadata.insert(
-            "arroba_original_content_bytes".to_string(),
+            "chariox_original_content_bytes".to_string(),
             serde_json::json!(original_bytes),
         );
         return;
@@ -282,11 +282,11 @@ fn bound_recall_event(event: &mut crate::history::HistoryEvent, remaining: &mut 
     *remaining = remaining.saturating_sub(bounded.len());
     if bounded.len() < original_bytes {
         event.metadata.insert(
-            "arroba_content_truncated".to_string(),
+            "chariox_content_truncated".to_string(),
             serde_json::Value::Bool(true),
         );
         event.metadata.insert(
-            "arroba_original_content_bytes".to_string(),
+            "chariox_original_content_bytes".to_string(),
             serde_json::json!(original_bytes),
         );
     }
@@ -367,10 +367,10 @@ mod tests {
             .as_ref()
             .is_none_or(|content| content.len() <= MAX_RECALL_EVENT_CONTENT_BYTES)));
         assert!(events.iter().any(|event| {
-            event.metadata.get("arroba_content_truncated") == Some(&serde_json::Value::Bool(true))
+            event.metadata.get("chariox_content_truncated") == Some(&serde_json::Value::Bool(true))
         }));
         assert!(events.iter().any(|event| {
-            event.metadata.get("arroba_content_omitted") == Some(&serde_json::Value::Bool(true))
+            event.metadata.get("chariox_content_omitted") == Some(&serde_json::Value::Bool(true))
         }));
     }
 

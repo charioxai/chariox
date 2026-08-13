@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_slice_logs_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::GetSliceLogs(crate::local::GetSliceLogsRequest {
         slice_ref: "linux-dev".to_string(),
@@ -44,7 +44,7 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
         },
         entries: vec![crate::slice::SliceLogEntry {
             source: "provision".to_string(),
-            path: Some("/tmp/arroba-slice.log".to_string()),
+            path: Some("/tmp/chariox-slice.log".to_string()),
             text: "slice booted".to_string(),
             truncated: false,
         }],
@@ -62,13 +62,13 @@ fn local_daemon_protocol_slice_logs_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "258b21b42d5b468b610fd895ff58ee043afb80b253e95e8e2daf733515d0b472"
+        "97a4ba681305ac1b2b7c020966e7ae4bce04bb0f2c24967ddd7cf03755f63859"
     );
 }
 
 #[test]
 fn local_daemon_protocol_slice_audit_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 252);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
 
     let request = LocalDaemonRequest::ListSliceAudit(crate::local::ListSliceAuditRequest {
         slice_ref: "linux-dev".to_string(),

@@ -16,10 +16,10 @@ mod ports;
 pub(crate) use catalog_endpoint::lease_opencode_catalog_endpoint;
 pub use catalog_endpoint::{ensure_opencode_catalog_endpoint, opencode_catalog_endpoint};
 
-const OPENCODE_ENV_OVERRIDE: &str = "ARROBA_OPENCODE_BIN";
+const OPENCODE_ENV_OVERRIDE: &str = "CHARIOX_OPENCODE_BIN";
 static OPENCODE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("opencode");
-const OPENCODE_BIND_HOST_OVERRIDE: &str = "ARROBA_OPENCODE_BIND_HOST";
+const OPENCODE_BIND_HOST_OVERRIDE: &str = "CHARIOX_OPENCODE_BIND_HOST";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
@@ -165,7 +165,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
     use std::fs;
     use std::io::{Read, Write};
@@ -210,15 +210,15 @@ mod tests {
     fn resolves_override_path_for_tests() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}",
+            "chariox-opencode-resolve-test-{}",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nexit 0\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
 
         let resolved = resolve_opencode_executable().expect("override path should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
         let _ = fs::remove_file(&path);
         assert_eq!(resolved, path);
     }
@@ -227,7 +227,7 @@ mod tests {
     fn resolves_standard_installer_path_when_daemon_path_omits_it() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
-            "arroba-opencode-standard-install-test-{}",
+            "chariox-opencode-standard-install-test-{}",
             std::process::id()
         ));
         let executable = root
@@ -242,10 +242,10 @@ mod tests {
 
         let previous_home = std::env::var_os("HOME");
         let previous_path = std::env::var_os("PATH");
-        let previous_override = std::env::var_os("ARROBA_OPENCODE_BIN");
+        let previous_override = std::env::var_os("CHARIOX_OPENCODE_BIN");
         std::env::set_var("HOME", &root);
         std::env::set_var("PATH", &empty_path);
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
 
         let resolved = resolve_opencode_executable().expect("standard install should resolve");
 
@@ -258,8 +258,8 @@ mod tests {
             None => std::env::remove_var("PATH"),
         }
         match previous_override {
-            Some(value) => std::env::set_var("ARROBA_OPENCODE_BIN", value),
-            None => std::env::remove_var("ARROBA_OPENCODE_BIN"),
+            Some(value) => std::env::set_var("CHARIOX_OPENCODE_BIN", value),
+            None => std::env::remove_var("CHARIOX_OPENCODE_BIN"),
         }
         let _ = fs::remove_dir_all(&root);
 
@@ -270,18 +270,18 @@ mod tests {
     fn plans_opencode_serve_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-serve",
+            "chariox-opencode-resolve-test-{}-serve",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
         let port = reserve_unused_port();
-        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+        std::env::set_var("CHARIOX_OPENCODE_PORT", port.to_string());
 
         let launch = plan_opencode_launch(None).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -325,12 +325,12 @@ mod tests {
     fn injects_runtime_mcp_config_into_managed_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-mcp",
+            "chariox-opencode-resolve-test-{}-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        std::env::set_var("ARROBA_OPENCODE_PORT", reserve_unused_port().to_string());
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", reserve_unused_port().to_string());
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -345,8 +345,8 @@ mod tests {
         ));
         let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
         let config = launch
@@ -364,13 +364,13 @@ mod tests {
     fn runtime_mcp_launch_uses_isolated_opencode_server() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-isolated-mcp",
+            "chariox-opencode-resolve-test-{}-isolated-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        std::env::remove_var("CHARIOX_OPENCODE_ENDPOINT");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -385,7 +385,7 @@ mod tests {
         ));
         let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -404,13 +404,13 @@ mod tests {
     fn provider_runs_ignore_external_opencode_endpoint_override() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-ignore-endpoint",
+            "chariox-opencode-resolve-test-{}-ignore-endpoint",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_ENDPOINT", "http://127.0.0.1:43119");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::set_var("CHARIOX_OPENCODE_ENDPOINT", "http://127.0.0.1:43119");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -425,8 +425,8 @@ mod tests {
         ));
         let launch = plan_opencode_launch(Some(&request)).expect("provider run should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_ENDPOINT");
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_ENDPOINT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -440,13 +440,13 @@ mod tests {
     fn injects_granted_mcp_config_into_managed_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-granted-mcp",
+            "chariox-opencode-resolve-test-{}-granted-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
         let port = reserve_unused_port();
-        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+        std::env::set_var("CHARIOX_OPENCODE_PORT", port.to_string());
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -455,15 +455,15 @@ mod tests {
             "default",
             "openai/gpt-5.3",
         )
-        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+        .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
             "browser",
             "npx",
             vec!["@playwright/mcp@latest".to_string()],
         )]);
         let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
         let config = launch
@@ -473,20 +473,20 @@ mod tests {
         assert!(config.contains("\"browser\""));
         assert!(config.contains("\"type\":\"local\""));
         assert!(config.contains("@playwright/mcp@latest"));
-        assert!(!config.contains("\"arroba\""));
+        assert!(!config.contains("\"chariox\""));
     }
 
     #[test]
     fn renders_granted_mcp_as_provider_facing_proxy_when_runtime_mcp_is_bound() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-proxied-mcp",
+            "chariox-opencode-resolve-test-{}-proxied-mcp",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
         let port = reserve_unused_port();
-        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+        std::env::set_var("CHARIOX_OPENCODE_PORT", port.to_string());
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -499,15 +499,15 @@ mod tests {
             "http://127.0.0.1:43120/mcp",
             "token-123",
         ))
-        .with_mcp_servers(vec![ArrobaMcpServerConfig::stdio(
+        .with_mcp_servers(vec![CharioxMcpServerConfig::stdio(
             "browser",
             "npx",
             vec!["@playwright/mcp@latest".to_string()],
         )]);
         let launch = plan_opencode_launch(Some(&request)).expect("launch plan should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
         let config = launch
@@ -527,13 +527,13 @@ mod tests {
     fn plans_managed_workspace_live_sync_launch() {
         let _guard = env_guard();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-workspace-live-sync",
+            "chariox-opencode-resolve-test-{}-workspace-live-sync",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
         let port = reserve_unused_port();
-        std::env::set_var("ARROBA_OPENCODE_PORT", port.to_string());
+        std::env::set_var("CHARIOX_OPENCODE_PORT", port.to_string());
         let request = LaunchProviderRequest::new(
             "session-1",
             "opencode",
@@ -546,8 +546,8 @@ mod tests {
         let launch = plan_opencode_launch(Some(&request))
             .expect("workspace live sync launch should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -563,28 +563,28 @@ mod tests {
     #[test]
     fn plans_catalog_launch_without_explicit_opencode_port_override() {
         let _guard = env_guard();
-        let previous_bin = std::env::var_os("ARROBA_OPENCODE_BIN");
+        let previous_bin = std::env::var_os("CHARIOX_OPENCODE_BIN");
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-managed-catalog-port",
+            "chariox-opencode-resolve-test-{}-managed-catalog-port",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        let previous_port = std::env::var_os("ARROBA_OPENCODE_PORT");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        let previous_port = std::env::var_os("CHARIOX_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
 
         let launch = plan_opencode_launch(None).expect("managed catalog port should resolve");
 
         if let Some(previous_bin) = previous_bin {
-            std::env::set_var("ARROBA_OPENCODE_BIN", previous_bin);
+            std::env::set_var("CHARIOX_OPENCODE_BIN", previous_bin);
         } else {
-            std::env::remove_var("ARROBA_OPENCODE_BIN");
+            std::env::remove_var("CHARIOX_OPENCODE_BIN");
         }
         let _ = fs::remove_file(&path);
         if let Some(previous_port) = previous_port {
-            std::env::set_var("ARROBA_OPENCODE_PORT", previous_port);
+            std::env::set_var("CHARIOX_OPENCODE_PORT", previous_port);
         } else {
-            std::env::remove_var("ARROBA_OPENCODE_PORT");
+            std::env::remove_var("CHARIOX_OPENCODE_PORT");
         }
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::Managed);
@@ -604,18 +604,18 @@ mod tests {
             .expect("endpoint should include a port")
             .to_string();
         let path = std::env::temp_dir().join(format!(
-            "arroba-opencode-resolve-test-{}-healthy-catalog",
+            "chariox-opencode-resolve-test-{}-healthy-catalog",
             std::process::id()
         ));
         fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("ARROBA_OPENCODE_BIN", &path);
-        std::env::set_var("ARROBA_OPENCODE_PORT", &port);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
+        std::env::set_var("CHARIOX_OPENCODE_PORT", &port);
 
         let resolved =
             ensure_opencode_catalog_endpoint().expect("healthy catalog endpoint should resolve");
 
-        std::env::remove_var("ARROBA_OPENCODE_BIN");
-        std::env::remove_var("ARROBA_OPENCODE_PORT");
+        std::env::remove_var("CHARIOX_OPENCODE_BIN");
+        std::env::remove_var("CHARIOX_OPENCODE_PORT");
         let _ = fs::remove_file(&path);
         let _ = server.join();
 

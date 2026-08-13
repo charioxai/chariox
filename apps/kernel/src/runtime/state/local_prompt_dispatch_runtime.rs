@@ -20,7 +20,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<bool, DaemonError> {
         let session = self.session_store.get_session(&dispatch.session_id)?;
         let prompt_is_dispatch_prompt = |prompt: &crate::session::PromptQueueItem| {
-            if !prompt.is_arroba_owned() {
+            if !prompt.is_chariox_owned() {
                 return false;
             }
             if dispatch.steering {
@@ -86,7 +86,7 @@ mod tests {
                 pty_program: None,
                 pty_args: Vec::new(),
                 pty_env: std::collections::BTreeMap::from([(
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                     context_file.display().to_string(),
                 )]),
                 pty_env_remove: Vec::new(),
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn claude_native_dispatch_prefers_classified_terminal_failure() {
         let fixture_root = std::env::temp_dir().join(format!(
-            "arroba-claude-native-dispatch-failure-{}",
+            "chariox-claude-native-dispatch-failure-{}",
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn claude_native_dispatch_ignores_interactive_permission_request() {
         let fixture_root = std::env::temp_dir().join(format!(
-            "arroba-claude-native-dispatch-permission-{}",
+            "chariox-claude-native-dispatch-permission-{}",
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn claude_native_dispatch_detects_compact_model_credit_dialog() {
         let fixture_root = std::env::temp_dir().join(format!(
-            "arroba-claude-native-dispatch-credit-{}",
+            "chariox-claude-native-dispatch-credit-{}",
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&fixture_root).expect("fixture root should create");
@@ -754,7 +754,7 @@ mod tests {
             prompt: prompt.to_string(),
             hidden_system_context: String::new(),
             attachments: Vec::new(),
-            prompt_origin: crate::session::PromptOrigin::Arroba,
+            prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,

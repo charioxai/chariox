@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use super::{LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun};
 
-pub(crate) const WORKSPACE_WRITE_FENCE_ENV: &str = "ARROBA_WORKSPACE_WRITE_FENCE";
+pub(crate) const WORKSPACE_WRITE_FENCE_ENV: &str = "CHARIOX_WORKSPACE_WRITE_FENCE";
 pub(crate) const MACOS_SEATBELT_BACKEND: &str = "macos-seatbelt";
 pub(crate) const WORKSPACE_WRITE_FENCE_UNSUPPORTED_REASON: &str = "workspace live sync managed mode needs selective write fencing, which is only implemented on macOS; use tracked mode on this worker or run the managed provider on a supported host";
 
@@ -55,7 +55,7 @@ pub(crate) fn apply_workspace_write_fence(
     let Some(program) = launch.pty_program.clone() else {
         return Err(DaemonError::LocalTransport {
             operation: "workspace_write_fence",
-            message: "workspace live sync provider runs require an Arroba-owned provider process"
+            message: "workspace live sync provider runs require a Chariox-owned provider process"
                 .to_string(),
         });
     };
@@ -149,7 +149,7 @@ fn write_macos_seatbelt_profile(
     canonical_roots: &[PathBuf],
     exception_roots: &[PathBuf],
 ) -> Result<PathBuf, DaemonError> {
-    let profile_dir = std::env::temp_dir().join("arroba-workspace-write-fences");
+    let profile_dir = std::env::temp_dir().join("chariox-workspace-write-fences");
     fs::create_dir_all(&profile_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "workspace_write_fence",
         message: format!(
@@ -254,7 +254,7 @@ fn collect_nested_git_repository_exception_roots(
     for entry in entries.flatten() {
         let name = entry.file_name();
         if name == ".git"
-            || name == ".arroba"
+            || name == ".chariox"
             || name == "node_modules"
             || name == "target"
             || name == ".next"
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn workspace_live_sync_launch_is_wrapped_with_macos_seatbelt() {
         let workspace = std::env::temp_dir().join(format!(
-            "arroba-workspace-write-fence-test-{}",
+            "chariox-workspace-write-fence-test-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&workspace).expect("workspace fixture should exist");
@@ -403,7 +403,7 @@ mod tests {
             Some("/usr/bin/sandbox-exec")
         );
         assert_eq!(wrapped.pty_args[0], "-f");
-        assert!(wrapped.pty_args[1].contains("arroba-workspace-write-fences"));
+        assert!(wrapped.pty_args[1].contains("chariox-workspace-write-fences"));
         assert_eq!(wrapped.pty_args[2], "/bin/echo");
         assert_eq!(wrapped.pty_args[3], "hello");
         assert_eq!(
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn macos_workspace_write_fence_blocks_only_protected_roots_at_runtime() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-workspace-write-fence-runtime-test-{}",
+            "chariox-workspace-write-fence-runtime-test-{}",
             std::process::id()
         ));
         let protected_root = base.join("selected");
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn macos_workspace_write_fence_allows_nested_unsynced_git_repo_at_runtime() {
         let base = std::env::temp_dir().join(format!(
-            "arroba-workspace-write-fence-nested-repo-test-{}",
+            "chariox-workspace-write-fence-nested-repo-test-{}",
             std::process::id()
         ));
         let protected_root = base.join("selected");

@@ -27,7 +27,7 @@ pub(super) fn claude_launch_args(
 pub(super) fn request_uses_metaagent_tools_only(request: &LaunchProviderRequest) -> bool {
     request
         .provider_config_overrides
-        .get("arroba.metaagent_tools_only")
+        .get("chariox.metaagent_tools_only")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
 }

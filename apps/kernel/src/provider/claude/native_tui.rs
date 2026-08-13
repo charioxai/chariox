@@ -121,7 +121,7 @@ fn claude_native_hook_command(
             .expect("serializing a filesystem path should not fail")
     };
     format!(
-        "ARROBA_CLAUDE_NATIVE_EVENTS={} ARROBA_CLAUDE_NATIVE_CONTEXT={} ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES={} ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES={} node {}",
+        "CHARIOX_CLAUDE_NATIVE_EVENTS={} CHARIOX_CLAUDE_NATIVE_CONTEXT={} CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES={} CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES={} node {}",
         quoted(events_file),
         quoted(context_file),
         quoted(context_response_dir),
@@ -139,7 +139,7 @@ import { setTimeout as sleep } from "node:timers/promises"
 
 const hookWatchdog = setCallbackTimeout(() => {
   try {
-    appendFileSync(`${process.env.ARROBA_CLAUDE_NATIVE_EVENTS}.watchdog`, JSON.stringify({
+    appendFileSync(`${process.env.CHARIOX_CLAUDE_NATIVE_EVENTS}.watchdog`, JSON.stringify({
       at: new Date().toISOString(),
       reason: "hook_event_not_resolved"
     }) + "\n")
@@ -178,7 +178,7 @@ if (eventName === "SessionStart") {
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
-appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   at: new Date().toISOString(),
   hook_event_name: eventName,
   hook_context_request_id: hookContextRequestId,
@@ -194,10 +194,10 @@ appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
 if (eventName === "UserPromptSubmit") {
   let additionalContext = ""
   try {
-    additionalContext = readFileSync(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT, "utf8")
+    additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
-  if (!additionalContext && hookContextRequestId && process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
-    const responseFile = join(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
+  if (!additionalContext && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+    const responseFile = join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
@@ -217,15 +217,15 @@ if (eventName === "UserPromptSubmit") {
   process.exit(0)
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
   const toolName = String(input.tool_name ?? "")
-  const isArrobaRuntimeTool = toolName.startsWith("mcp__arroba__") || toolName.startsWith("arroba.")
-  if (isArrobaRuntimeTool || (eventName === "PreToolUse" && input.permission_mode === "bypassPermissions")) {
+  const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
+  if (isCharioxRuntimeTool || (eventName === "PreToolUse" && input.permission_mode === "bypassPermissions")) {
     process.exit(0)
   }
   if (!toolName) {
     process.exit(0)
   }
   clearTimeout(hookWatchdog)
-  const responseDir = process.env.ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES
+  const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES
   const responseFile = responseDir && hookContextRequestId
     ? join(responseDir, `${hookContextRequestId}.json`)
     : null
@@ -241,7 +241,7 @@ if (eventName === "UserPromptSubmit") {
               hookSpecificOutput: {
                 hookEventName: eventName,
                 permissionDecision: decision.permissionDecision,
-                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Arroba."
+                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
               }
             }))
           }
@@ -305,7 +305,7 @@ pub(super) fn claude_native_tui_args(
         ]);
         args.push("--strict-mcp-config".to_string());
         if request.runtime_mcp_binding.is_some() {
-            args.extend(["--allowedTools".to_string(), "mcp__arroba__*".to_string()]);
+            args.extend(["--allowedTools".to_string(), "mcp__chariox__*".to_string()]);
         }
     }
     if request_uses_metaagent_tools_only(request) {
@@ -330,12 +330,12 @@ mod tests {
     };
 
     #[test]
-    fn hook_does_not_block_bypass_or_arroba_runtime_pre_tool_use() {
+    fn hook_does_not_block_bypass_or_chariox_runtime_pre_tool_use() {
         let handler = claude_native_hook_handler();
 
         assert!(handler.contains("input.permission_mode === \"bypassPermissions\""));
-        assert!(handler.contains("toolName.startsWith(\"mcp__arroba__\")"));
-        assert!(handler.contains("toolName.startsWith(\"arroba.\")"));
+        assert!(handler.contains("toolName.startsWith(\"mcp__chariox__\")"));
+        assert!(handler.contains("toolName.startsWith(\"chariox.\")"));
         assert!(handler.contains("process.exit(0)"));
     }
 
@@ -371,7 +371,7 @@ mod tests {
             .join("hook-handler.mjs");
         let mut child = Command::new("node")
             .arg(hook_handler)
-            .env("ARROBA_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -455,9 +455,9 @@ mod tests {
         let yolo_hook = yolo_settings["hooks"]["Stop"][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
-        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_EVENTS="));
-        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT="));
-        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES="));
-        assert!(yolo_hook.contains("ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES="));
+        assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_EVENTS="));
+        assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_CONTEXT="));
+        assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES="));
+        assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES="));
     }
 }

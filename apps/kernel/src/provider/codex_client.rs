@@ -1,5 +1,5 @@
 use crate::error::DaemonError;
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::CharioxMcpServerConfig;
 use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -43,7 +43,7 @@ pub struct CodexClient {
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
-    mcp_servers: Vec<ArrobaMcpServerConfig>,
+    mcp_servers: Vec<CharioxMcpServerConfig>,
     provider_config_overrides: BTreeMap<String, Value>,
     write_access_mode: ProviderWriteAccessMode,
     workspace_live_sync_roots: Vec<PathBuf>,
@@ -95,7 +95,7 @@ impl CodexClient {
         self
     }
 
-    pub fn with_mcp_servers(mut self, mcp_servers: &[ArrobaMcpServerConfig]) -> Self {
+    pub fn with_mcp_servers(mut self, mcp_servers: &[CharioxMcpServerConfig]) -> Self {
         self.mcp_servers = mcp_servers.to_vec();
         self
     }
@@ -136,7 +136,7 @@ impl CodexClient {
 mod tests {
     use serde_json::json;
 
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{
         AgentExecutionMode, AgentPermissionLevel, ProviderRunTokenUsage, ProviderWriteAccessMode,
     };
@@ -367,7 +367,7 @@ mod tests {
 
         assert_eq!(params.get("ephemeral"), None);
         assert_eq!(params.get("persistExtendedHistory"), Some(&json!(true)));
-        assert_eq!(params.get("serviceName"), Some(&json!("arroba")));
+        assert_eq!(params.get("serviceName"), Some(&json!("chariox")));
         assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));
         assert_eq!(params.get("model"), Some(&json!("gpt-5.5")));
         assert_eq!(
@@ -579,27 +579,27 @@ mod tests {
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(
-            overrides.get("mcp_servers.arroba.url"),
+            overrides.get("mcp_servers.chariox.url"),
             Some(&json!("http://127.0.0.1:43120/mcp"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.transport"),
+            overrides.get("mcp_servers.chariox.transport"),
             Some(&json!("streamable_http"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.http_headers.Authorization"),
+            overrides.get("mcp_servers.chariox.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.bearer_token_env_var"),
+            overrides.get("mcp_servers.chariox.bearer_token_env_var"),
             None
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.required"),
+            overrides.get("mcp_servers.chariox.required"),
             Some(&json!(true))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba.tool_timeout_sec"),
+            overrides.get("mcp_servers.chariox.tool_timeout_sec"),
             Some(&json!(300))
         );
         assert_eq!(overrides.get("features.shell_tool"), None);
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn thread_config_overrides_include_granted_mcp_servers() {
         let mut server =
-            ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+            CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
         server.required = true;
         server.tool_timeout_sec = Some(25);
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
@@ -643,7 +643,7 @@ mod tests {
     #[test]
     fn thread_config_overrides_proxy_granted_mcp_servers_when_runtime_mcp_is_bound() {
         let mut server =
-            ArrobaMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+            CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
         server.required = true;
         server.tool_timeout_sec = Some(25);
         let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
@@ -659,29 +659,29 @@ mod tests {
         let overrides = client.thread_config_overrides(&policy).unwrap();
 
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.url"),
+            overrides.get("mcp_servers.chariox_mcp_browser.url"),
             Some(&json!("http://127.0.0.1:43120/mcp/proxy/browser"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.transport"),
+            overrides.get("mcp_servers.chariox_mcp_browser.transport"),
             Some(&json!("streamable_http"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.http_headers.Authorization"),
+            overrides.get("mcp_servers.chariox_mcp_browser.http_headers.Authorization"),
             Some(&json!("Bearer token-123"))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.bearer_token_env_var"),
+            overrides.get("mcp_servers.chariox_mcp_browser.bearer_token_env_var"),
             None
         );
         assert_eq!(overrides.get("mcp_servers.browser.command"), None);
         assert_eq!(overrides.get("mcp_servers.browser.args"), None);
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.required"),
+            overrides.get("mcp_servers.chariox_mcp_browser.required"),
             Some(&json!(true))
         );
         assert_eq!(
-            overrides.get("mcp_servers.arroba_mcp_browser.tool_timeout_sec"),
+            overrides.get("mcp_servers.chariox_mcp_browser.tool_timeout_sec"),
             Some(&json!(25))
         );
     }

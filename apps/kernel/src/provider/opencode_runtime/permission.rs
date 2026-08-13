@@ -427,7 +427,7 @@ mod tests {
         let mut pty_env = BTreeMap::new();
         if fenced {
             pty_env.insert(
-                "ARROBA_WORKSPACE_WRITE_FENCE".to_string(),
+                "CHARIOX_WORKSPACE_WRITE_FENCE".to_string(),
                 "macos-seatbelt".to_string(),
             );
         }
@@ -454,10 +454,10 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_rejects_native_bash_into_protected_root() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "bash",
-            Some("printf x > /tmp/arroba-workspace/src/main.rs"),
+            Some("printf x > /tmp/chariox-workspace/src/main.rs"),
             None,
             &[],
         );
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_allows_native_bash_outside_protected_root() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "bash",
             Some("printf x > /tmp/outside-repo/file.txt"),
@@ -484,11 +484,11 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_allows_explicit_outside_bash_from_protected_cwd() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "bash",
             Some("printf x > /tmp/outside-repo/file.txt"),
-            Some("/tmp/arroba-workspace"),
+            Some("/tmp/chariox-workspace"),
             &[],
         );
 
@@ -499,11 +499,11 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_rejects_relative_bash_write_from_protected_cwd() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "bash",
             Some("printf x > src/main.rs"),
-            Some("/tmp/arroba-workspace"),
+            Some("/tmp/chariox-workspace"),
             &[],
         );
 
@@ -514,11 +514,11 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_rejects_relative_edit_pattern_from_protected_cwd() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "edit",
             None,
-            Some("/tmp/arroba-workspace"),
+            Some("/tmp/chariox-workspace"),
             &["src/main.rs"],
         );
 
@@ -529,12 +529,12 @@ mod tests {
 
     #[test]
     fn unfenced_workspace_live_sync_does_not_match_sibling_prefix() {
-        let run = run("/tmp/arroba-workspace", false);
+        let run = run("/tmp/chariox-workspace", false);
         let request = request(
             "bash",
-            Some("printf x > /tmp/arroba-workspace-copy/file.txt"),
+            Some("printf x > /tmp/chariox-workspace-copy/file.txt"),
             None,
-            &["/tmp/arroba-workspace-copy/*"],
+            &["/tmp/chariox-workspace-copy/*"],
         );
 
         assert!(!request_touches_unfenced_workspace_live_sync_root(
@@ -544,10 +544,10 @@ mod tests {
 
     #[test]
     fn fenced_workspace_live_sync_defers_native_bash_policy_to_platform_fence() {
-        let run = run("/tmp/arroba-workspace", true);
+        let run = run("/tmp/chariox-workspace", true);
         let request = request(
             "bash",
-            Some("printf x > /tmp/arroba-workspace/src/main.rs"),
+            Some("printf x > /tmp/chariox-workspace/src/main.rs"),
             None,
             &[],
         );

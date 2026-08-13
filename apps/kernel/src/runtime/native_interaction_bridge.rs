@@ -45,7 +45,7 @@ impl ProviderNativeInteractionBridge for RuntimeStateNativeInteractionBridge {
             let response = self.handle.block_on(async move {
                 crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
                     &config,
-                    arroba_relay::protocol::ClientTarget {
+                    chariox_relay::protocol::ClientTarget {
                         daemon_id: Some(target_daemon_id),
                         daemon_alias: None,
                     },

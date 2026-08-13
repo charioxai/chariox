@@ -1,5 +1,5 @@
 [package]
-name = "arroba-kernel"
+name = "chariox-kernel"
 version = "0.1.0"
 edition = "2021"
 
@@ -26,7 +26,7 @@ bytes = "1.10.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 chrono-tz = "0.10.4"
 croner = "3.0.1"
-arroba-relay = { path = "../relay" }
+chariox-relay = { path = "../relay" }
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"
@@ -39,16 +39,16 @@ tar = "0.4.43"
 ureq = "2.12.1"
 url = "2.5.4"
 zeroize = "1.8.1"
-arroba-event-protocol = { path = "../../packages/event-protocol" }
+chariox-event-protocol = { path = "../../packages/event-protocol" }
 
 [lib]
-name = "arroba_kernel"
+name = "chariox_kernel"
 path = "src/lib.rs"
 
 [[bin]]
-name = "arroba-kernel"
+name = "chariox-kernel"
 path = "src/main.rs"
 
 [[bin]]
-name = "arroba-cli"
-path = "src/bin/arroba-cli.rs"
+name = "chariox-cli"
+path = "src/bin/chariox-cli.rs"

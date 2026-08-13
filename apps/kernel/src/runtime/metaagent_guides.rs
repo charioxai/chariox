@@ -77,8 +77,8 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         commands: &[
             "workflow runs",
             "workflow get-run",
-            "arroba.meta.subscribe_events",
-            "arroba.meta.list_events",
+            "chariox.meta.subscribe_events",
+            "chariox.meta.list_events",
         ],
         body: include_str!("metaagent_guides/workflows/events-and-supervision.md"),
     },
@@ -103,26 +103,26 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         summary: "Exact JavaScript builder API for creating, validating, applying, running, exporting, and importing workflow-code artifacts.",
         tags: &["workflow", "workflow-code", "script", "metaagent"],
         commands: &[
-            "arroba.meta.workflow_code.create",
-            "arroba.meta.workflow_code.read",
-            "arroba.meta.workflow_code.list",
-            "arroba.meta.workflow_code.update",
-            "arroba.meta.workflow_code.delete",
-            "arroba.meta.workflow_code.validate",
-            "arroba.meta.workflow_code.apply",
-            "arroba.meta.workflow_code.run",
-            "arroba.meta.workflow_code.export",
-            "arroba.meta.workflow_code.import",
-            "arroba.meta.workflow_code.package_export",
-            "arroba.meta.workflow_code.package_import",
-            "arroba.meta.workflow_code.source_export",
-            "arroba.meta.workflow_code.source_export_directory",
-            "arroba.meta.workflow_registry.list",
-            "arroba.meta.workflow_registry.get",
-            "arroba.meta.workflow_registry.add",
-            "arroba.meta.workflow_registry.add_from_workflow",
-            "arroba.meta.workflow_registry.load",
-            "arroba.meta.workflow_registry.run",
+            "chariox.meta.workflow_code.create",
+            "chariox.meta.workflow_code.read",
+            "chariox.meta.workflow_code.list",
+            "chariox.meta.workflow_code.update",
+            "chariox.meta.workflow_code.delete",
+            "chariox.meta.workflow_code.validate",
+            "chariox.meta.workflow_code.apply",
+            "chariox.meta.workflow_code.run",
+            "chariox.meta.workflow_code.export",
+            "chariox.meta.workflow_code.import",
+            "chariox.meta.workflow_code.package_export",
+            "chariox.meta.workflow_code.package_import",
+            "chariox.meta.workflow_code.source_export",
+            "chariox.meta.workflow_code.source_export_directory",
+            "chariox.meta.workflow_registry.list",
+            "chariox.meta.workflow_registry.get",
+            "chariox.meta.workflow_registry.add",
+            "chariox.meta.workflow_registry.add_from_workflow",
+            "chariox.meta.workflow_registry.load",
+            "chariox.meta.workflow_registry.run",
         ],
         body: include_str!("metaagent_guides/workflows/workflow-code-authoring.md"),
     },
@@ -132,15 +132,15 @@ pub(crate) const METAAGENT_GUIDES: &[MetaagentGuide] = &[
         summary: "Canonical, kernel-compiled workflow-code scripts for the dynamic workflow pattern suite.",
         tags: &["workflow", "workflow-code", "examples", "patterns"],
         commands: &[
-            "arroba.meta.workflow_code.validate",
-            "arroba.meta.workflow_code.apply",
-            "arroba.meta.workflow_code.run",
-            "arroba.meta.workflow_code.export",
-            "arroba.meta.workflow_code.import",
-            "arroba.meta.workflow_code.package_export",
-            "arroba.meta.workflow_code.package_import",
-            "arroba.meta.workflow_code.source_export",
-            "arroba.meta.workflow_code.source_export_directory",
+            "chariox.meta.workflow_code.validate",
+            "chariox.meta.workflow_code.apply",
+            "chariox.meta.workflow_code.run",
+            "chariox.meta.workflow_code.export",
+            "chariox.meta.workflow_code.import",
+            "chariox.meta.workflow_code.package_export",
+            "chariox.meta.workflow_code.package_import",
+            "chariox.meta.workflow_code.source_export",
+            "chariox.meta.workflow_code.source_export_directory",
         ],
         body: include_str!("metaagent_guides/workflows/workflow-code-patterns.md"),
     },
@@ -202,7 +202,7 @@ impl MetaagentGuideContext {
     pub(crate) fn for_workspace(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: Some(workspace.into()),
-            user_root: arroba_home().map(|home| home.join(METAAGENT_GUIDE_DIR)),
+            user_root: chariox_home().map(|home| home.join(METAAGENT_GUIDE_DIR)),
             seed_builtin_copies: true,
         }
     }
@@ -372,7 +372,7 @@ fn effective_guides(context: &MetaagentGuideContext) -> Vec<EffectiveMetaagentGu
     }
     if let Some(workspace) = &context.workspace {
         for guide in read_guides_from_root(
-            &workspace.join(".arroba").join(METAAGENT_GUIDE_DIR),
+            &workspace.join(".chariox").join(METAAGENT_GUIDE_DIR),
             MetaagentGuideSourceScope::Workspace,
             true,
         ) {
@@ -605,10 +605,10 @@ fn yaml_string(value: &str) -> String {
         .to_string()
 }
 
-fn arroba_home() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_HOME")
+fn chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".chariox")))
 }
 
 fn normalize_search_text(value: &str) -> String {
@@ -645,16 +645,16 @@ mod tests {
     #[test]
     fn workflow_code_guide_is_searchable_by_meta_tool_command() {
         for command in [
-            "arroba.meta.workflow_code.create",
-            "arroba.meta.workflow_code.read",
-            "arroba.meta.workflow_code.list",
-            "arroba.meta.workflow_code.update",
-            "arroba.meta.workflow_code.delete",
-            "arroba.meta.workflow_code.validate",
-            "arroba.meta.workflow_code.apply",
-            "arroba.meta.workflow_code.run",
-            "arroba.meta.workflow_code.export",
-            "arroba.meta.workflow_code.import",
+            "chariox.meta.workflow_code.create",
+            "chariox.meta.workflow_code.read",
+            "chariox.meta.workflow_code.list",
+            "chariox.meta.workflow_code.update",
+            "chariox.meta.workflow_code.delete",
+            "chariox.meta.workflow_code.validate",
+            "chariox.meta.workflow_code.apply",
+            "chariox.meta.workflow_code.run",
+            "chariox.meta.workflow_code.export",
+            "chariox.meta.workflow_code.import",
         ] {
             let guides = search_guides(MetaagentGuideSearchArgs {
                 query: Some("workflow code javascript builder".to_string()),
@@ -720,7 +720,7 @@ mod tests {
             "Use `queue: \"default\"`",
             "with `endpoint`, optional `queue`, and `prompt`",
             "`run` may pass `endpoint`, `queue`, and `prompt`",
-            "arroba.meta.workflow_code.source_export_directory",
+            "chariox.meta.workflow_code.source_export_directory",
             "`workflow.js`, `schemas/*.json`, and `manifest.json`",
             "endpoint and queue values may be script handles",
             "`validationPolicy` (`\"warn\"` or `\"halt\"`)",
@@ -766,7 +766,7 @@ mod tests {
             let guides = search_guides(MetaagentGuideSearchArgs {
                 query: Some(query.to_string()),
                 tag: Some("workflow-code".to_string()),
-                command: Some("arroba.meta.workflow_code.validate".to_string()),
+                command: Some("chariox.meta.workflow_code.validate".to_string()),
                 limit: Some(5),
             });
             assert!(
@@ -799,7 +799,7 @@ mod tests {
         );
         write_test_guide(
             &workspace
-                .join(".arroba")
+                .join(".chariox")
                 .join(METAAGENT_GUIDE_DIR)
                 .join(guide_rel),
             "workflows/basic-components",
@@ -823,7 +823,7 @@ mod tests {
 
         std::fs::remove_file(
             workspace
-                .join(".arroba")
+                .join(".chariox")
                 .join(METAAGENT_GUIDE_DIR)
                 .join(guide_rel),
         )
@@ -949,7 +949,7 @@ mod tests {
 
     fn temp_guide_root(name: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
-            "arroba-metaagent-guide-{name}-{}-{}",
+            "chariox-metaagent-guide-{name}-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));

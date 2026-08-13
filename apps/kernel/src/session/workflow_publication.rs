@@ -62,8 +62,8 @@ impl WorkflowEventBinding {
     pub fn route_claim(
         &self,
         kernel_id: impl Into<String>,
-    ) -> arroba_event_protocol::EnvironmentRouteClaim {
-        arroba_event_protocol::EnvironmentRouteClaim {
+    ) -> chariox_event_protocol::EnvironmentRouteClaim {
+        chariox_event_protocol::EnvironmentRouteClaim {
             environment_id: self.environment_id.clone(),
             event_interest_key: self.event_interest_key.clone(),
             kernel_id: kernel_id.into(),

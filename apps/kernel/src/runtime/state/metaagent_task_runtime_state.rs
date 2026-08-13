@@ -225,7 +225,7 @@ impl KernelRuntimeState {
             std::time::Duration::from_secs(5),
             crate::transport::relay_client::send_peer_request_via_temporary_connection(
                 &config,
-                arroba_relay::protocol::ClientTarget {
+                chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(remote_execution.worker_kernel_id.clone()),
                     daemon_alias: None,
                 },
@@ -330,7 +330,7 @@ impl KernelRuntimeState {
             ));
         let title = "Metaagent task needs a final decision".to_string();
         let summary = format!(
-            "Your last turn ended while task `{}` is still active and no controlled regular agents have active or queued work. Decide the task state now: if it is done, call `arroba.meta.complete_task`; if it cannot be completed after exhausting options, call `arroba.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
+            "Your last turn ended while task `{}` is still active and no controlled regular agents have active or queued work. Decide the task state now: if it is done, call `chariox.meta.complete_task`; if it cannot be completed after exhausting options, call `chariox.meta.mark_blocked`; otherwise update your plan and continue/delegate the remaining work. Do not answer only in natural language; update the kernel-managed task state through the metaagent runtime tools.",
             task.task_id()
         );
         let dispatches = self.owned.metaagent_event_prompt_for_metaagent(

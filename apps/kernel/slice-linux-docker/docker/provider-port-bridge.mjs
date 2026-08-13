@@ -91,14 +91,14 @@ export async function startProviderPortBridge({
 }
 
 async function main() {
-  const ports = parsePortRanges(process.env.ARROBA_SLICE_PROVIDER_BRIDGE_PORT_RANGES)
+  const ports = parsePortRanges(process.env.CHARIOX_SLICE_PROVIDER_BRIDGE_PORT_RANGES)
   const route = defaultRouteFromProc(await readFile("/proc/net/route", "utf8"))
-  const bindHost = process.env.ARROBA_SLICE_PROVIDER_BRIDGE_BIND_HOST?.trim()
+  const bindHost = process.env.CHARIOX_SLICE_PROVIDER_BRIDGE_BIND_HOST?.trim()
     || interfaceIpv4(route.interfaceName)
-  const allowedSource = process.env.ARROBA_SLICE_PROVIDER_BRIDGE_ALLOWED_SOURCE?.trim()
+  const allowedSource = process.env.CHARIOX_SLICE_PROVIDER_BRIDGE_ALLOWED_SOURCE?.trim()
     || route.gateway
   const bridge = await startProviderPortBridge({ ports, bindHost, allowedSource })
-  const readyFile = process.env.ARROBA_SLICE_PROVIDER_BRIDGE_READY_FILE?.trim()
+  const readyFile = process.env.CHARIOX_SLICE_PROVIDER_BRIDGE_READY_FILE?.trim()
   if (readyFile) {
     await writeFile(readyFile, `${JSON.stringify({ bindHost, allowedSource, ports })}\n`, { mode: 0o600 })
   }

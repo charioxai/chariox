@@ -946,7 +946,7 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         .iter()
         .find(|session| session.external_session_id == "codex:ended-session-thread")
         .expect("ending a session with an attached external provider agent should return its provider thread to the unattached list");
-    assert!(ended_record.is_attachable_to_arroba());
+    assert!(ended_record.is_attachable_to_chariox());
     assert_eq!(
         ended_record.attached_agent_ids,
         Vec::<String>::new(),
@@ -1006,7 +1006,7 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         .iter()
         .find(|session| session.external_session_id == "codex:deleted-session-thread")
         .expect("deleted provider thread should be listed as unattached");
-    assert!(deleted_record.is_attachable_to_arroba());
+    assert!(deleted_record.is_attachable_to_chariox());
     assert_eq!(
         deleted_record.attached_agent_ids,
         Vec::<String>::new(),
@@ -1220,7 +1220,7 @@ fn session_command_external_provider_session_record(
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },
-        attached_to_arroba: false,
+        attached_to_chariox: false,
         attached_session_ids: Vec::new(),
         attached_agent_ids: Vec::new(),
     }

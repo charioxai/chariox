@@ -410,7 +410,7 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
         TEMPORARY_PEER_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let register = RelayEnvelope::DaemonRegister {
-        registration: arroba_relay::protocol::DaemonRegistration {
+        registration: chariox_relay::protocol::DaemonRegistration {
             auth_token: relay_token,
             daemon_id: format!("{}:peer-tmp:{}", config.daemon_id, request_id),
             machine_id: config.host_machine_id.clone(),

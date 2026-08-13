@@ -130,13 +130,13 @@ pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool 
 
 pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
-        && (!run.client_interface().is_arroba() || provider_run_is_claude_headless(run))
+        && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "codex"
         || (run.adapter_key() == "claude"
-            && run.client_interface().is_arroba()
+            && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
         || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
@@ -147,7 +147,7 @@ pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> 
 }
 
 pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun) -> bool {
-    provider_run_supports_selection_sync(run) && run.client_interface().is_arroba()
+    provider_run_supports_selection_sync(run) && run.client_interface().is_chariox()
 }
 
 pub(crate) fn provider_run_waits_for_workflow_publication_completion(
@@ -191,7 +191,7 @@ pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
 }
 
 pub(crate) fn dev_stub_public_inventory_enabled() -> bool {
-    std::env::var("ARROBA_PROVIDER_DEV_STUB")
+    std::env::var("CHARIOX_PROVIDER_DEV_STUB")
         .ok()
         .is_some_and(|value| {
             matches!(
@@ -217,7 +217,7 @@ pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> b
 pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && run.client_interface().is_arroba()
+    run.adapter_key() == "claude" && run.client_interface().is_chariox()
 }
 
 pub(crate) fn run_blocking_provider_utility_prompt(
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn opencode_selection_refresh_is_provider_policy() {
-        let arroba_opencode = provider_run("opencode", "opencode");
+        let chariox_opencode = provider_run("opencode", "opencode");
         let native_opencode = provider_run_with_client_interface(
             "opencode",
             "opencode",
@@ -309,11 +309,11 @@ mod tests {
         );
         let codex = provider_run("codex", "codex");
 
-        assert!(provider_run_supports_selection_sync(&arroba_opencode));
+        assert!(provider_run_supports_selection_sync(&chariox_opencode));
         assert!(provider_run_supports_selection_sync(&native_opencode));
         assert!(!provider_run_supports_selection_sync(&codex));
 
-        assert!(provider_run_refreshes_selection_on_read(&arroba_opencode));
+        assert!(provider_run_refreshes_selection_on_read(&chariox_opencode));
         assert!(!provider_run_refreshes_selection_on_read(&native_opencode));
         assert!(!provider_run_refreshes_selection_on_read(&codex));
     }
@@ -469,7 +469,7 @@ mod tests {
     }
 
     fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
-        provider_run_with_client_interface(adapter_key, provider, ProviderClientInterface::Arroba)
+        provider_run_with_client_interface(adapter_key, provider, ProviderClientInterface::Chariox)
     }
 
     fn provider_run_with_client_interface(

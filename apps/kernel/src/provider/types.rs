@@ -88,20 +88,20 @@ impl fmt::Display for AgentEndpointMode {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderClientInterface {
     #[default]
-    Arroba,
+    Chariox,
     NativeTui,
 }
 
 impl ProviderClientInterface {
-    pub fn is_arroba(&self) -> bool {
-        matches!(self, Self::Arroba)
+    pub fn is_chariox(&self) -> bool {
+        matches!(self, Self::Chariox)
     }
 }
 
 impl fmt::Display for ProviderClientInterface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            Self::Arroba => "arroba",
+            Self::Chariox => "chariox",
             Self::NativeTui => "native_tui",
         };
         write!(f, "{value}")

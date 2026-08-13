@@ -74,7 +74,7 @@ fn removing_claude_native_process_cleans_hook_files() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let root = std::env::temp_dir().join(format!(
-        "arroba-claude-remote-native-cleanup-test-{}-{}",
+        "chariox-claude-remote-native-cleanup-test-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms(),
     ));
@@ -105,19 +105,19 @@ fn removing_claude_native_process_cleans_hook_files() {
             pty_args: vec!["-lc".to_string(), "cat".to_string()],
             pty_env: std::collections::BTreeMap::from([
                 (
-                    "ARROBA_CLAUDE_NATIVE_EVENTS".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
                     events_file.display().to_string(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
                     context_file.display().to_string(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES".to_string(),
                     context_response_dir.display().to_string(),
                 ),
                 (
-                    "ARROBA_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
                     permission_response_dir.display().to_string(),
                 ),
             ]),
@@ -757,17 +757,17 @@ fn provider_launch_runtime_profile_survives_kernel_restart() {
 fn provider_launch_scrubs_configured_credential_env_names() {
     let _guard = crate::env_lock::lock();
     let old_home = std::env::var_os("HOME");
-    let temp_home = std::env::temp_dir().join("arroba-provider-env-credential-test");
+    let temp_home = std::env::temp_dir().join("chariox-provider-env-credential-test");
     let _ = std::fs::remove_dir_all(&temp_home);
     std::env::set_var("HOME", &temp_home);
     let source = temp_home.join("credential.yaml");
     std::fs::create_dir_all(&temp_home).unwrap();
-    let registry = crate::credential::ArrobaCredentialRegistry::user().unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
     let credential = UserCredentialConfig {
         id: "github".to_string(),
         description: None,
         source: UserCredentialSourceConfig::Env {
-            name: "ARROBA_TEST_GH_TOKEN".to_string(),
+            name: "CHARIOX_TEST_GH_TOKEN".to_string(),
         },
         allowed_hosts: Vec::new(),
         allowed_uses: vec![UserCredentialUse::Http],
@@ -797,7 +797,7 @@ fn provider_launch_scrubs_configured_credential_env_names() {
 
     assert!(run
         .pty_env_remove()
-        .contains(&"ARROBA_TEST_GH_TOKEN".to_string()));
+        .contains(&"CHARIOX_TEST_GH_TOKEN".to_string()));
     match old_home {
         Some(value) => std::env::set_var("HOME", value),
         None => std::env::remove_var("HOME"),

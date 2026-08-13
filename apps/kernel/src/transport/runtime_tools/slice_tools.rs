@@ -4,7 +4,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: SLICE_SCREEN_STATUS_TOOL.to_string(),
-            description: "Return the Arroba slice display status, including screen size and the local noVNC viewer URL when available.".to_string(),
+            description: "Return the Chariox slice display status, including screen size and the local noVNC viewer URL when available.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -13,7 +13,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_SCREENSHOT_TOOL.to_string(),
-            description: "Capture the current Arroba slice screen to a PNG file. Use return_image_base64 only when the image bytes are needed in the tool result.".to_string(),
+            description: "Capture the current Chariox slice screen to a PNG file. Use return_image_base64 only when the image bytes are needed in the tool result.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -25,7 +25,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_OCR_TOOL.to_string(),
-            description: "Extract visible text from a slice screenshot with the slice OCR engine. If image_path is omitted, Arroba captures a fresh screenshot first.".to_string(),
+            description: "Extract visible text from a slice screenshot with the slice OCR engine. If image_path is omitted, Chariox captures a fresh screenshot first.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -36,7 +36,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_FIND_TEXT_TOOL.to_string(),
-            description: "Locate text on the slice screen and return its bounding box and center point. If image_path is omitted, Arroba captures a fresh screenshot first.".to_string(),
+            description: "Locate text on the slice screen and return its bounding box and center point. If image_path is omitted, Chariox captures a fresh screenshot first.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["query"],
@@ -49,7 +49,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_MOUSE_TOOL.to_string(),
-            description: "Control the Arroba slice virtual mouse. Actions: move, click, double_click, scroll, drag.".to_string(),
+            description: "Control the Chariox slice virtual mouse. Actions: move, click, double_click, scroll, drag.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -69,7 +69,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_KEYBOARD_TOOL.to_string(),
-            description: "Control the Arroba slice virtual keyboard. Use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
+            description: "Control the Chariox slice virtual keyboard. Use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -86,7 +86,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_OPEN_URL_TOOL.to_string(),
-            description: "Open a URL in the Arroba slice browser.".to_string(),
+            description: "Open a URL in the Chariox slice browser.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["url"],
@@ -98,7 +98,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_STATUS_TOOL.to_string(),
-            description: "Return DOM-level browser status for the Arroba slice browser, including URL, title, focused element, and visible fields/buttons/links.".to_string(),
+            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, and visible fields/buttons/links.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -158,7 +158,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_DIALOG_TOOL.to_string(),
-            description: "Accept or dismiss the currently open native JavaScript alert, confirm, or prompt in the Arroba slice browser.".to_string(),
+            description: "Accept or dismiss the currently open native JavaScript alert, confirm, or prompt in the Chariox slice browser.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -260,93 +260,93 @@ pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         SLICE_SCREEN_STATUS_TOOL
         | SLICE_SCREEN_STATUS_TOOL_ALIAS
-        | "arroba_slice_screen_status"
-        | "mcp__arroba__slice_screen_status"
-        | "mcp__arroba__arroba_slice_screen_status" => Some(SLICE_SCREEN_STATUS_TOOL),
+        | "chariox_slice_screen_status"
+        | "mcp__chariox__slice_screen_status"
+        | "mcp__chariox__chariox_slice_screen_status" => Some(SLICE_SCREEN_STATUS_TOOL),
         SLICE_SCREENSHOT_TOOL
         | SLICE_SCREENSHOT_TOOL_ALIAS
-        | "arroba_slice_screenshot"
-        | "mcp__arroba__slice_screenshot"
-        | "mcp__arroba__arroba_slice_screenshot" => Some(SLICE_SCREENSHOT_TOOL),
+        | "chariox_slice_screenshot"
+        | "mcp__chariox__slice_screenshot"
+        | "mcp__chariox__chariox_slice_screenshot" => Some(SLICE_SCREENSHOT_TOOL),
         SLICE_OCR_TOOL
         | SLICE_OCR_TOOL_ALIAS
-        | "arroba_slice_ocr"
-        | "mcp__arroba__slice_ocr"
-        | "mcp__arroba__arroba_slice_ocr" => Some(SLICE_OCR_TOOL),
+        | "chariox_slice_ocr"
+        | "mcp__chariox__slice_ocr"
+        | "mcp__chariox__chariox_slice_ocr" => Some(SLICE_OCR_TOOL),
         SLICE_FIND_TEXT_TOOL
         | SLICE_FIND_TEXT_TOOL_ALIAS
-        | "arroba_slice_find_text"
-        | "mcp__arroba__slice_find_text"
-        | "mcp__arroba__arroba_slice_find_text" => Some(SLICE_FIND_TEXT_TOOL),
+        | "chariox_slice_find_text"
+        | "mcp__chariox__slice_find_text"
+        | "mcp__chariox__chariox_slice_find_text" => Some(SLICE_FIND_TEXT_TOOL),
         SLICE_MOUSE_TOOL
         | SLICE_MOUSE_TOOL_ALIAS
-        | "arroba_slice_mouse"
-        | "mcp__arroba__slice_mouse"
-        | "mcp__arroba__arroba_slice_mouse" => Some(SLICE_MOUSE_TOOL),
+        | "chariox_slice_mouse"
+        | "mcp__chariox__slice_mouse"
+        | "mcp__chariox__chariox_slice_mouse" => Some(SLICE_MOUSE_TOOL),
         SLICE_KEYBOARD_TOOL
         | SLICE_KEYBOARD_TOOL_ALIAS
-        | "arroba_slice_keyboard"
-        | "mcp__arroba__slice_keyboard"
-        | "mcp__arroba__arroba_slice_keyboard" => Some(SLICE_KEYBOARD_TOOL),
+        | "chariox_slice_keyboard"
+        | "mcp__chariox__slice_keyboard"
+        | "mcp__chariox__chariox_slice_keyboard" => Some(SLICE_KEYBOARD_TOOL),
         SLICE_OPEN_URL_TOOL
         | SLICE_OPEN_URL_TOOL_ALIAS
-        | "arroba_slice_open_url"
-        | "mcp__arroba__slice_open_url"
-        | "mcp__arroba__arroba_slice_open_url" => Some(SLICE_OPEN_URL_TOOL),
+        | "chariox_slice_open_url"
+        | "mcp__chariox__slice_open_url"
+        | "mcp__chariox__chariox_slice_open_url" => Some(SLICE_OPEN_URL_TOOL),
         SLICE_BROWSER_STATUS_TOOL
         | SLICE_BROWSER_STATUS_TOOL_ALIAS
-        | "arroba_slice_browser_status"
-        | "mcp__arroba__slice_browser_status"
-        | "mcp__arroba__arroba_slice_browser_status" => Some(SLICE_BROWSER_STATUS_TOOL),
+        | "chariox_slice_browser_status"
+        | "mcp__chariox__slice_browser_status"
+        | "mcp__chariox__chariox_slice_browser_status" => Some(SLICE_BROWSER_STATUS_TOOL),
         SLICE_BROWSER_FIND_TOOL
         | SLICE_BROWSER_FIND_TOOL_ALIAS
-        | "arroba_slice_browser_find"
-        | "mcp__arroba__slice_browser_find"
-        | "mcp__arroba__arroba_slice_browser_find" => Some(SLICE_BROWSER_FIND_TOOL),
+        | "chariox_slice_browser_find"
+        | "mcp__chariox__slice_browser_find"
+        | "mcp__chariox__chariox_slice_browser_find" => Some(SLICE_BROWSER_FIND_TOOL),
         SLICE_BROWSER_FILL_TOOL
         | SLICE_BROWSER_FILL_TOOL_ALIAS
-        | "arroba_slice_browser_fill"
-        | "mcp__arroba__slice_browser_fill"
-        | "mcp__arroba__arroba_slice_browser_fill" => Some(SLICE_BROWSER_FILL_TOOL),
+        | "chariox_slice_browser_fill"
+        | "mcp__chariox__slice_browser_fill"
+        | "mcp__chariox__chariox_slice_browser_fill" => Some(SLICE_BROWSER_FILL_TOOL),
         SLICE_BROWSER_CLICK_TOOL
         | SLICE_BROWSER_CLICK_TOOL_ALIAS
-        | "arroba_slice_browser_click"
-        | "mcp__arroba__slice_browser_click"
-        | "mcp__arroba__arroba_slice_browser_click" => Some(SLICE_BROWSER_CLICK_TOOL),
+        | "chariox_slice_browser_click"
+        | "mcp__chariox__slice_browser_click"
+        | "mcp__chariox__chariox_slice_browser_click" => Some(SLICE_BROWSER_CLICK_TOOL),
         SLICE_BROWSER_SUBMIT_TOOL
         | SLICE_BROWSER_SUBMIT_TOOL_ALIAS
-        | "arroba_slice_browser_submit"
-        | "mcp__arroba__slice_browser_submit"
-        | "mcp__arroba__arroba_slice_browser_submit" => Some(SLICE_BROWSER_SUBMIT_TOOL),
+        | "chariox_slice_browser_submit"
+        | "mcp__chariox__slice_browser_submit"
+        | "mcp__chariox__chariox_slice_browser_submit" => Some(SLICE_BROWSER_SUBMIT_TOOL),
         SLICE_BROWSER_DIALOG_TOOL
         | SLICE_BROWSER_DIALOG_TOOL_ALIAS
-        | "arroba_slice_browser_dialog"
-        | "mcp__arroba__slice_browser_dialog"
-        | "mcp__arroba__arroba_slice_browser_dialog" => Some(SLICE_BROWSER_DIALOG_TOOL),
+        | "chariox_slice_browser_dialog"
+        | "mcp__chariox__slice_browser_dialog"
+        | "mcp__chariox__chariox_slice_browser_dialog" => Some(SLICE_BROWSER_DIALOG_TOOL),
         SLICE_BROWSER_TEXT_TOOL
         | SLICE_BROWSER_TEXT_TOOL_ALIAS
-        | "arroba_slice_browser_text"
-        | "mcp__arroba__slice_browser_text"
-        | "mcp__arroba__arroba_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
+        | "chariox_slice_browser_text"
+        | "mcp__chariox__slice_browser_text"
+        | "mcp__chariox__chariox_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
         SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
         | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS
-        | "arroba_slice_browser_wait_for_text"
-        | "mcp__arroba__slice_browser_wait_for_text"
-        | "mcp__arroba__arroba_slice_browser_wait_for_text" => {
+        | "chariox_slice_browser_wait_for_text"
+        | "mcp__chariox__slice_browser_wait_for_text"
+        | "mcp__chariox__chariox_slice_browser_wait_for_text" => {
             Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
         }
         SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
         | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS
-        | "arroba_slice_browser_wait_for_selector"
-        | "mcp__arroba__slice_browser_wait_for_selector"
-        | "mcp__arroba__arroba_slice_browser_wait_for_selector" => {
+        | "chariox_slice_browser_wait_for_selector"
+        | "mcp__chariox__slice_browser_wait_for_selector"
+        | "mcp__chariox__chariox_slice_browser_wait_for_selector" => {
             Some(SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL)
         }
         SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
         | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS
-        | "arroba_slice_browser_wait_for_idle"
-        | "mcp__arroba__slice_browser_wait_for_idle"
-        | "mcp__arroba__arroba_slice_browser_wait_for_idle" => {
+        | "chariox_slice_browser_wait_for_idle"
+        | "mcp__chariox__slice_browser_wait_for_idle"
+        | "mcp__chariox__chariox_slice_browser_wait_for_idle" => {
             Some(SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
         }
         _ => None,

@@ -123,7 +123,7 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavaila
     let body = if request.starts_with("POST /v1/connections/query HTTP/1.1") {
         serde_json::json!({
             "connections": [{
-                "generator_id": "dev.arroba.dummy",
+                "generator_id": "dev.chariox.dummy",
                 "connection_id": "connection-local",
                 "status": if revoked.load(Ordering::Relaxed) { "revoked" } else { "ready" },
                 "metadata": {"account": "local"},
@@ -136,7 +136,7 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavaila
         serde_json::json!({"revoked": true}).to_string()
     } else if request.starts_with("POST /v1/connections/reconnect HTTP/1.1") {
         serde_json::json!({
-            "generator_id": "dev.arroba.dummy",
+            "generator_id": "dev.chariox.dummy",
             "status": "pending",
             "connection_id": "connection-local",
             "authorization_url": "https://example.test/reconnect",
@@ -161,7 +161,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     let mut config = crate::DaemonConfig::for_tests();
     config
         .event_generator_management_targets
-        .insert("dev.arroba.dummy".to_string(), server.target());
+        .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
     let graph = create_publication_test_graph(&harness, "event-publication");
     let create_publication = |alias: &str| match harness
@@ -196,7 +196,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     let binding_request = |publication_ref: &str| CreateWorkflowEventBindingRequest {
         session_id: graph.session_id.clone(),
         publication_ref: publication_ref.to_string(),
-        generator_id: "dev.arroba.dummy".to_string(),
+        generator_id: "dev.chariox.dummy".to_string(),
         generator_version: "1.0.0".to_string(),
         manifest_digest: crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
             .to_string(),
@@ -330,7 +330,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     };
     assert_eq!(active_route_count(), 1);
     harness.runtime_state().apply_event_route_conflicts(&[
-        arroba_event_protocol::EventRouteConflict {
+        chariox_event_protocol::EventRouteConflict {
             environment_id: binding.environment_id.clone(),
             event_interest_key: binding.event_interest_key.clone(),
             requested_binding_id: binding.id.clone(),
@@ -438,15 +438,15 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
     let mut config = crate::DaemonConfig::for_tests();
     config
         .event_generator_management_targets
-        .insert("dev.arroba.dummy".to_string(), server.target());
+        .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
     let authorization = harness
         .runtime_state()
         .event_connection_registry()
         .start_authorization(
             crate::session::DEFAULT_LOCAL_USER_ID,
-            arroba_event_protocol::AegsAuthorizationFlow {
-                generator_id: "dev.arroba.dummy".to_string(),
+            chariox_event_protocol::AegsAuthorizationFlow {
+                generator_id: "dev.chariox.dummy".to_string(),
                 status: "user_action_required".to_string(),
                 connection_id: Some("connection-local".to_string()),
                 authorization_url: Some("https://example.test/authorize".to_string()),
@@ -504,17 +504,17 @@ fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
     let mut config = crate::DaemonConfig::for_tests();
     config
         .event_generator_management_targets
-        .insert("dev.arroba.dummy".to_string(), server.target());
+        .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
     harness
         .runtime_state()
         .event_connection_registry()
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
-            arroba_event_protocol::AegsConnectionSummary {
-                generator_id: "dev.arroba.dummy".to_string(),
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
                 connection_id: "connection-local".to_string(),
-                status: arroba_event_protocol::AegsConnectionStatus::Ready,
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
                 metadata: serde_json::json!({"account": "local"}),
                 expires_at_ms: None,
                 updated_at_ms: 1,
@@ -569,7 +569,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
     let mut config = crate::DaemonConfig::for_tests();
     config
         .event_generator_management_targets
-        .insert("dev.arroba.dummy".to_string(), server.target());
+        .insert("dev.chariox.dummy".to_string(), server.target());
     let harness = LocalRouterTestHarness::with_config(config);
     let graph = create_publication_test_graph(&harness, "event-connection-removal");
     let publication = match harness
@@ -605,7 +605,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                 CreateWorkflowEventBindingRequest {
                     session_id: graph.session_id.clone(),
                     publication_ref: publication.id().to_string(),
-                    generator_id: "dev.arroba.dummy".to_string(),
+                    generator_id: "dev.chariox.dummy".to_string(),
                     generator_version: "1.0.0".to_string(),
                     manifest_digest:
                         crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
@@ -730,7 +730,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                 CreateWorkflowEventBindingRequest {
                     session_id: graph.session_id.clone(),
                     publication_ref: publication.id().to_string(),
-                    generator_id: "dev.arroba.dummy".to_string(),
+                    generator_id: "dev.chariox.dummy".to_string(),
                     generator_version: "1.0.0".to_string(),
                     manifest_digest:
                         crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST

@@ -469,9 +469,9 @@ fn remote_workspace_not_coordinated_result() -> (
             "applied": false,
             "reason": {
                 "kind": "remote_workspace_not_coordinated",
-                "message": "The remote agent workspace does not match the home session repo/branch and is not attached to the same workspace link, so Arroba will not coordinate this workspace live sync operation through the home kernel."
+                "message": "The remote agent workspace does not match the home session repo/branch and is not attached to the same workspace link, so Chariox will not coordinate this workspace live sync operation through the home kernel."
             },
-            "next_action": "Move the remote agent to the same repo/branch as the home session or attach both worktrees to the same workspace link, then retry through Arroba workspace live sync.",
+            "next_action": "Move the remote agent to the same repo/branch as the home session or attach both worktrees to the same workspace link, then retry through Chariox workspace live sync.",
         }),
     };
     (result, Vec::new())
@@ -492,7 +492,7 @@ fn unsupported_remote_workspace_live_sync_tool(
                     "kind": "unsupported_remote_workspace_live_sync_tool",
                     "message": format!("remote coordinated workspace live sync does not yet support `{tool_name}`")
                 },
-                "next_action": "Use arroba.read_artifact, arroba.edit_artifact, arroba.write_artifact, arroba.apply_patch, arroba.move_artifact, or arroba.delete_artifact for remote coordinated workspace live sync.",
+                "next_action": "Use chariox.read_artifact, chariox.edit_artifact, chariox.write_artifact, chariox.apply_patch, chariox.move_artifact, or chariox.delete_artifact for remote coordinated workspace live sync.",
             }),
         },
         Vec::new(),

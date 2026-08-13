@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="${ARROBA_SLICE_ROOT:-/opt/arroba-slice}"
+ROOT="${CHARIOX_SLICE_ROOT:-/opt/chariox-slice}"
 LOGS="$ROOT/logs"
-DISPLAY_ID="${ARROBA_SLICE_DISPLAY:-:99}"
-DISPLAY_MODE="${ARROBA_SLICE_DISPLAY_MODE:-unknown}"
-SCREEN_GEOMETRY="${ARROBA_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
+DISPLAY_ID="${CHARIOX_SLICE_DISPLAY:-:99}"
+DISPLAY_MODE="${CHARIOX_SLICE_DISPLAY_MODE:-unknown}"
+SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
-VNC_PORT="${ARROBA_SLICE_VNC_PORT:-5900}"
-NOVNC_PORT="${ARROBA_SLICE_NOVNC_PORT:-6080}"
-CHROME_URL="${ARROBA_SLICE_CHROME_URL:-about:blank}"
-CHROME_PROFILE="${ARROBA_SLICE_CHROME_PROFILE:-$HOME/.config/arroba-slice-chromium}"
-CHROME_TRUSTED_INSECURE_ORIGINS="${ARROBA_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
+VNC_PORT="${CHARIOX_SLICE_VNC_PORT:-5900}"
+NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
+CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
+CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.config/chariox-slice-chromium}"
+CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
 
 export DISPLAY="$DISPLAY_ID"
 
@@ -301,7 +301,7 @@ stop_desktop() {
 
 screenshot() {
   require_screen_available
-  local path="${1:-/tmp/arroba-slice-screenshot.png}"
+  local path="${1:-/tmp/chariox-slice-screenshot.png}"
   scrot -z "$path"
   printf '%s\n' "$path"
 }
@@ -514,7 +514,7 @@ browser_wait_idle() {
 
 ocr() {
   require_screen_available
-  local image="${1:-/tmp/arroba-slice-screenshot.png}"
+  local image="${1:-/tmp/chariox-slice-screenshot.png}"
   if [[ ! -f "$image" ]]; then
     screenshot "$image" >/dev/null
   fi
@@ -524,8 +524,8 @@ ocr() {
 find_text() {
   require_screen_available
   local query="$1"
-  local image="${2:-/tmp/arroba-slice-screenshot.png}"
-  local tsv="/tmp/arroba-slice-ocr.tsv"
+  local image="${2:-/tmp/chariox-slice-screenshot.png}"
+  local tsv="/tmp/chariox-slice-ocr.tsv"
   if [[ ! -f "$image" ]]; then
     screenshot "$image" >/dev/null
   fi

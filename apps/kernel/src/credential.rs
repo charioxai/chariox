@@ -10,7 +10,7 @@ use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArrobaCredentialRegistry {
+pub struct CharioxCredentialRegistry {
     root: PathBuf,
 }
 
@@ -20,19 +20,19 @@ pub struct CredentialRegistryEntry {
     pub path: PathBuf,
 }
 
-impl ArrobaCredentialRegistry {
+impl CharioxCredentialRegistry {
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("credentials"))
+        chariox_home().map(|home| home.join("credentials"))
     }
 
     pub fn user() -> Result<Self, DaemonError> {
         let root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
             field: "credential registry root",
-            message: "HOME must be set to resolve ~/.arroba/credentials",
+            message: "HOME must be set to resolve ~/.chariox/credentials",
         })?;
         Ok(Self::new(root))
     }
@@ -142,14 +142,14 @@ impl ArrobaCredentialRegistry {
 }
 
 pub fn load_user_credentials() -> Result<Vec<UserCredentialConfig>, DaemonError> {
-    ArrobaCredentialRegistry::user()?.list()
+    CharioxCredentialRegistry::user()?.list()
 }
 
-fn arroba_home() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_HOME")
+fn chariox_home() -> Option<PathBuf> {
+    std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".arroba")))
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".chariox")))
 }
 
 fn ensure_private_dir(path: &Path, operation: &'static str) -> Result<(), DaemonError> {
@@ -228,11 +228,11 @@ mod tests {
     #[test]
     fn upsert_writes_and_replaces_credential_metadata() {
         let root = std::env::temp_dir().join(format!(
-            "arroba-credential-upsert-test-{}",
+            "chariox-credential-upsert-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&root);
-        let registry = ArrobaCredentialRegistry::new(root.clone());
+        let registry = CharioxCredentialRegistry::new(root.clone());
 
         let first = UserCredentialConfig {
             id: "demo-token".to_string(),

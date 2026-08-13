@@ -83,7 +83,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let mut mcp_servers = request.mcp_servers.clone();
         for name in remote_extension_manifest.home_proxy_mcp_server_names() {
             if !mcp_servers.iter().any(|server| server.name == name) {
-                mcp_servers.push(crate::mcp::ArrobaMcpServerConfig::streamable_http(
+                mcp_servers.push(crate::mcp::CharioxMcpServerConfig::streamable_http(
                     name,
                     "http://127.0.0.1/mcp",
                 ));
@@ -206,7 +206,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
 mod tests {
     use crate::app::{DaemonApp, RemoteLeaseRuntime};
     use crate::config::DaemonConfig;
-    use crate::mcp::ArrobaMcpServerConfig;
+    use crate::mcp::CharioxMcpServerConfig;
     use crate::transport::relay_peer::RequiredRemoteMcp;
 
     #[test]
@@ -216,15 +216,15 @@ mod tests {
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let worktree = std::env::temp_dir().join(format!(
-            "arroba-native-provider-mcp-test-{}",
+            "chariox-native-provider-mcp-test-{}",
             std::process::id()
         ));
         let isolation_root = std::env::temp_dir().join(format!(
-            "arroba-native-provider-mcp-isolation-test-{}",
+            "chariox-native-provider-mcp-isolation-test-{}",
             std::process::id()
         ));
-        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
-        std::env::set_var("ARROBA_SLICE_MACHINE_ID", "slice:native-provider-test");
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        std::env::set_var("CHARIOX_SLICE_MACHINE_ID", "slice:native-provider-test");
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
@@ -249,7 +249,7 @@ mod tests {
                 None,
             )
             .expect("leased agent should create");
-        let mcp = ArrobaMcpServerConfig::stdio(
+        let mcp = CharioxMcpServerConfig::stdio(
             "browser",
             std::env::current_exe()
                 .expect("current test executable should resolve")
@@ -294,7 +294,7 @@ mod tests {
 
         assert_eq!(run.mcp_servers().len(), 1);
         assert_eq!(run.mcp_servers()[0].name, "browser");
-        assert!(!run.client_interface().is_arroba());
+        assert!(!run.client_interface().is_chariox());
         let expected_source_attachment_id = format!(
             "remote-native:{}:{}",
             leased_agent.id, colliding_attachment_id
@@ -315,12 +315,12 @@ mod tests {
             "home attachment ids must not collide with the worker backing attachment",
         );
         assert_eq!(app.pty().size(run.id()), Some((80, 24)));
-        assert!(crate::mcp::ArrobaMcpRegistry::user_root()
+        assert!(crate::mcp::CharioxMcpRegistry::user_root()
             .expect("isolated user MCP root should resolve")
             .join("browser.json")
             .exists());
-        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
-        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&isolation_root);
     }
@@ -332,7 +332,7 @@ mod tests {
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let worktree = std::env::temp_dir().join(format!(
-            "arroba-native-provider-home-proxy-mcp-test-{}",
+            "chariox-native-provider-home-proxy-mcp-test-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&worktree).expect("worktree should create");
@@ -404,15 +404,15 @@ mod tests {
         config.accept_remote_leases = true;
         let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let worktree = std::env::temp_dir().join(format!(
-            "arroba-standard-native-provider-mcp-test-{}",
+            "chariox-standard-native-provider-mcp-test-{}",
             std::process::id()
         ));
         let isolation_root = std::env::temp_dir().join(format!(
-            "arroba-standard-native-provider-mcp-isolation-test-{}",
+            "chariox-standard-native-provider-mcp-isolation-test-{}",
             std::process::id()
         ));
-        std::env::set_var("ARROBA_CAPABILITY_ISOLATION_ROOT", &isolation_root);
-        std::env::remove_var("ARROBA_SLICE_MACHINE_ID");
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+        std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
         std::fs::create_dir_all(&worktree).expect("worktree should create");
         let mut runtime = RemoteLeaseRuntime::new(&mut app);
         let lease = runtime
@@ -437,7 +437,7 @@ mod tests {
                 None,
             )
             .expect("leased agent should create");
-        let mcp = ArrobaMcpServerConfig::stdio(
+        let mcp = CharioxMcpServerConfig::stdio(
             "browser",
             std::env::current_exe()
                 .expect("current test executable should resolve")
@@ -464,7 +464,7 @@ mod tests {
             crate::extension::RemoteExtensionManifest::default(),
         );
 
-        std::env::remove_var("ARROBA_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&isolation_root);
         let error = result.expect_err("standard worker must require a preinstalled MCP");

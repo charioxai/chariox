@@ -1,14 +1,14 @@
 use super::*;
 
-impl ArrobaConnectorAdapterRegistry {
+impl CharioxConnectorAdapterRegistry {
     pub fn user_root() -> Option<PathBuf> {
-        arroba_home().map(|home| home.join("connectors").join("adapters"))
+        chariox_home().map(|home| home.join("connectors").join("adapters"))
     }
 
     pub fn user() -> Result<Self, DaemonError> {
         let user_root = Self::user_root().ok_or_else(|| DaemonError::InvalidConfig {
             field: "connector adapter registry root",
-            message: "HOME must be set to resolve ~/.arroba/connectors/adapters",
+            message: "HOME must be set to resolve ~/.chariox/connectors/adapters",
         })?;
         Ok(Self::new(user_root, bundled_adapter_roots()))
     }
@@ -23,7 +23,7 @@ impl ArrobaConnectorAdapterRegistry {
     pub fn install_from_file(
         &self,
         source: &Path,
-    ) -> Result<(ArrobaConnectorAdapterDefinition, PathBuf), DaemonError> {
+    ) -> Result<(CharioxConnectorAdapterDefinition, PathBuf), DaemonError> {
         if !source.is_file() {
             return Err(DaemonError::InvalidConfig {
                 field: "connector adapter file",
@@ -53,7 +53,7 @@ impl ArrobaConnectorAdapterRegistry {
     pub fn remove(
         &self,
         name: &str,
-    ) -> Result<(ArrobaConnectorAdapterDefinition, PathBuf), DaemonError> {
+    ) -> Result<(CharioxConnectorAdapterDefinition, PathBuf), DaemonError> {
         validate_registry_name(name, "connector adapter name")?;
         let path = self.user_root.join(name).join("adapter.yaml");
         if !path.exists() {
@@ -68,7 +68,7 @@ impl ArrobaConnectorAdapterRegistry {
         Ok((adapter, path))
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaConnectorAdapterDefinition>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxConnectorAdapterDefinition>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.bundled_roots {
             read_adapter_root(root, ConnectorAdapterSource::Bundled, &mut entries)?;
@@ -77,7 +77,10 @@ impl ArrobaConnectorAdapterRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaConnectorAdapterDefinition>, DaemonError> {
+    pub fn get(
+        &self,
+        name: &str,
+    ) -> Result<Option<CharioxConnectorAdapterDefinition>, DaemonError> {
         validate_registry_name(name, "connector adapter name")?;
         let user = self.user_root.join(name).join("adapter.yaml");
         if user.exists() {
@@ -95,9 +98,9 @@ impl ArrobaConnectorAdapterRegistry {
     pub(super) fn read_yaml(
         path: &Path,
         source: ConnectorAdapterSource,
-    ) -> Result<ArrobaConnectorAdapterDefinition, DaemonError> {
+    ) -> Result<CharioxConnectorAdapterDefinition, DaemonError> {
         let contents = fs::read_to_string(path).map_err(io_error("connector.adapter.read"))?;
-        let mut adapter = serde_yaml::from_str::<ArrobaConnectorAdapterDefinition>(&contents)
+        let mut adapter = serde_yaml::from_str::<CharioxConnectorAdapterDefinition>(&contents)
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "connector.adapter.read",
                 message: format!(

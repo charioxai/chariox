@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::ArrobaMcpServerConfig;
+use crate::mcp::CharioxMcpServerConfig;
 use crate::session::unix_epoch_ms;
 
 use super::launch_contract::{
@@ -35,7 +35,7 @@ pub struct RuntimeProviderRun {
     usage: ProviderRunTokenUsage,
     state: ProviderRunState,
     endpoint_mode: AgentEndpointMode,
-    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_arroba")]
+    #[serde(default, skip_serializing_if = "ProviderClientInterface::is_chariox")]
     client_interface: ProviderClientInterface,
     process_label: String,
     pty_target: Option<String>,
@@ -50,7 +50,7 @@ pub struct RuntimeProviderRun {
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    mcp_servers: Vec<ArrobaMcpServerConfig>,
+    mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
         default,
         skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -168,7 +168,7 @@ impl RuntimeProviderRun {
             usage: ProviderRunTokenUsage::default(),
             state: ProviderRunState::Starting,
             endpoint_mode: AgentEndpointMode::Managed,
-            client_interface: ProviderClientInterface::Arroba,
+            client_interface: ProviderClientInterface::Chariox,
             process_label: "inferred-control-capabilities".to_string(),
             pty_target: None,
             pty_program: None,
@@ -310,7 +310,7 @@ impl RuntimeProviderRun {
         self.runtime_mcp_server_url.as_deref()
     }
 
-    pub fn mcp_servers(&self) -> &[ArrobaMcpServerConfig] {
+    pub fn mcp_servers(&self) -> &[CharioxMcpServerConfig] {
         &self.mcp_servers
     }
 

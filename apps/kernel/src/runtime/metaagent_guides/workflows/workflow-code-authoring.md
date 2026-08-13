@@ -79,7 +79,7 @@ Canvas points are optional. Use `{ x, y }` for nodes/endpoints. Use `{ points: [
 
 ## Canvas Contract
 
-Use coordinate space `workflow-canvas-v1`. Workflow nodes are `232 x 96`, endpoints are `180 x 78`, and generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28` for nodes that can complete the run. Keep at least `36` canvas units between nodes, endpoints, and exit markers. A safe node grid is `320` horizontally and `160` vertically; place entry endpoints at `node.x - 220`, `node.y` unless you have a reason to custom-place them. Call `arroba.meta.workflow_code.canvas_contract` when you need the authoritative current dimensions programmatically.
+Use coordinate space `workflow-canvas-v1`. Workflow nodes are `232 x 96`, endpoints are `180 x 78`, and generated exit markers are `120 x 72` at `node.x + 268`, `node.y + 28` for nodes that can complete the run. Keep at least `36` canvas units between nodes, endpoints, and exit markers. A safe node grid is `320` horizontally and `160` vertically; place entry endpoints at `node.x - 220`, `node.y` unless you have a reason to custom-place them. Call `chariox.meta.workflow_code.canvas_contract` when you need the authoritative current dimensions programmatically.
 
 If no queues are defined, the kernel creates the workflow default prompt queue and returns it in `queue_ids`. Define queues only when the workflow needs named priorities or disabled queues. Watchdogs reference endpoint and optional queue handles, not runtime ids. Use `queue: "default"` when a watchdog should target the implicit default queue while the script also defines other queues. The queue handle `default` is reserved for the kernel default queue; only use that handle when the queue alias also normalizes to `default`.
 
@@ -87,7 +87,7 @@ Workflow, endpoint, and queue aliases use the same rules as manual workflow comm
 
 The kernel validates workflow-code against TOML-backed limits before apply: `workflow.code.max_concurrent`, `max_nodes`, `max_agents`, `max_edges`, `max_endpoints`, `max_queues`, `max_watchdogs`, `max_schema_bytes`, and `max_generated_prompt_bytes`.
 
-Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `arroba.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; `endpoint` and `queue` may be script handles returned by `workflow.endpoint` and `workflow.queue`, and the kernel maps them to generated runtime ids before normal workflow scheduling.
+Workflow-code scripts only define workflow structure. They do not call `run` or `enqueue` during compilation. To invoke the generated workflow, call `chariox.meta.workflow_code.run` with `endpoint`, optional `queue`, and `prompt`; `endpoint` and `queue` may be script handles returned by `workflow.endpoint` and `workflow.queue`, and the kernel maps them to generated runtime ids before normal workflow scheduling.
 
 ## Schemas and Outputs
 
@@ -107,7 +107,7 @@ For multi-edge nodes, the runtime prompt lists outgoing edge contracts with real
 
 ## Extensions
 
-Use node `extensions` when the node's agent needs MCP, skill, script, connector, credential-backed access, or other extension grants supported by Arroba extension definitions. Keep extension grants on the node that needs them; generated agents receive those grants during apply, and existing agents receive them when the binding is authorized.
+Use node `extensions` when the node's agent needs MCP, skill, script, connector, credential-backed access, or other extension grants supported by Chariox extension definitions. Keep extension grants on the node that needs them; generated agents receive those grants during apply, and existing agents receive them when the binding is authorized.
 
 Extension grant shape:
 
@@ -140,10 +140,10 @@ Do not include runtime ids in provider rebindings. Do not rebind existing-agent 
 ## Metaagent Tool Flow
 
 1. Author the script.
-2. Call `arroba.meta.workflow_code.validate` with `source`, or save it with `arroba.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
-3. Call `arroba.meta.workflow_code.apply` to add the generated workflow to the session, or `arroba.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue`, and `prompt`; endpoint and queue values may be script handles, and when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
+2. Call `chariox.meta.workflow_code.validate` with `source`, or save it with `chariox.meta.workflow_code.create` and validate by `name`. Include `language: "typescript"` when the inline or saved source uses TypeScript syntax.
+3. Call `chariox.meta.workflow_code.apply` to add the generated workflow to the session, or `chariox.meta.workflow_code.run` to apply and invoke an endpoint in one step. `run` may pass `endpoint`, `queue`, and `prompt`; endpoint and queue values may be script handles, and when it omits or blanks `prompt`, the script-level `workflow.define({ prompt })` value is used.
 4. Inspect the apply report. It contains `workflow_id`, `schema_refs`, `node_ids`, `edge_ids`, `endpoint_ids`, `queue_ids`, `watchdog_ids`, and `agent_ids`.
-5. Use `arroba.meta.workflow_code.package_export` and `arroba.meta.workflow_code.package_import` to exchange portable workflow-code packages across kernels. Use `arroba.meta.workflow_code.source_export` for a single source file and `arroba.meta.workflow_code.source_export_directory` for a source-directory package with `workflow.js`, `schemas/*.json`, and `manifest.json`. `source_export_dir` remains a compatibility alias.
+5. Use `chariox.meta.workflow_code.package_export` and `chariox.meta.workflow_code.package_import` to exchange portable workflow-code packages across kernels. Use `chariox.meta.workflow_code.source_export` for a single source file and `chariox.meta.workflow_code.source_export_directory` for a source-directory package with `workflow.js`, `schemas/*.json`, and `manifest.json`. `source_export_dir` remains a compatibility alias.
 
 Use `provider_rebindings` with apply/run when a generated-agent provider, model, effort, or account profile is unavailable or should be replaced in the target kernel. Rebindings target node handles, not generated runtime ids, and can only rebind nodes using `workflow.newAgent`.
 
@@ -157,10 +157,10 @@ Use the workflow registry when the user asks for a known reusable workflow, a st
 
 Preferred registry flow:
 
-1. Call `arroba.meta.workflow_registry.list` or `arroba.meta.workflow_registry.get` to check whether a suitable workflow already exists.
-2. If it fits, call `arroba.meta.workflow_registry.load` to add it to the current session, or `arroba.meta.workflow_registry.run` to load and invoke it in one step. Use `provider_rebindings` when the registered workflow names a provider/model/account profile unavailable in this kernel.
-3. If no entry fits, author workflow-code, validate it, and either apply/run it directly or register it with `arroba.meta.workflow_registry.add` for reuse.
-4. Use `arroba.meta.workflow_registry.add_from_workflow` only after a live workflow is already correct and should become reusable. It exports portable generated-agent bindings by default; use `agent_mode: "existing_agents"` only for intentionally non-portable local workflows.
+1. Call `chariox.meta.workflow_registry.list` or `chariox.meta.workflow_registry.get` to check whether a suitable workflow already exists.
+2. If it fits, call `chariox.meta.workflow_registry.load` to add it to the current session, or `chariox.meta.workflow_registry.run` to load and invoke it in one step. Use `provider_rebindings` when the registered workflow names a provider/model/account profile unavailable in this kernel.
+3. If no entry fits, author workflow-code, validate it, and either apply/run it directly or register it with `chariox.meta.workflow_registry.add` for reuse.
+4. Use `chariox.meta.workflow_registry.add_from_workflow` only after a live workflow is already correct and should become reusable. It exports portable generated-agent bindings by default; use `agent_mode: "existing_agents"` only for intentionally non-portable local workflows.
 
 Registry scripts are still generators. Every load/run creates a fresh workflow with fresh graph ids and generated agents unless the registered source intentionally uses authorized existing-agent refs. Do not author runtime ids in registry source.
 

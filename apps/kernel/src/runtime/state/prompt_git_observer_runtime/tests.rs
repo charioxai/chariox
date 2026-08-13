@@ -315,7 +315,7 @@ fn forwarded_workspace_live_sync_apply_requires_matching_link_attachment() {
 #[tokio::test]
 async fn workspace_live_sync_fans_out_between_second_user_attached_forks() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-workspace-live-sync-collab-{}-{}",
+        "chariox-workspace-live-sync-collab-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -480,7 +480,7 @@ async fn workspace_live_sync_fans_out_between_second_user_attached_forks() {
 #[tokio::test]
 async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-forwarded-workspace-live-sync-notice-{}-{}",
+        "chariox-forwarded-workspace-live-sync-notice-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -584,7 +584,7 @@ async fn forwarded_workspace_live_sync_apply_notifies_target_session() {
 #[tokio::test]
 async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider_completion() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-git-turn-finalizer-{}-{}",
+        "chariox-git-turn-finalizer-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -627,7 +627,7 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
         prompt_id: "prompt-1".to_string(),
         turn_id: "prompt-1".to_string(),
         source_attachment_id: Some("attachment-1".to_string()),
-        prompt_origin: Some(crate::session::PromptOrigin::Arroba),
+        prompt_origin: Some(crate::session::PromptOrigin::Chariox),
         external_provider: None,
         external_provider_session_id: None,
         external_provider_turn_id: None,
@@ -686,7 +686,7 @@ async fn pending_git_snapshot_finalizes_completed_turn_projection_after_provider
 #[tokio::test]
 async fn pending_git_snapshot_waits_for_prompt_owner_when_session_mirror_is_stale() {
     let root = std::env::temp_dir().join(format!(
-        "arroba-git-turn-owner-active-{}-{}",
+        "chariox-git-turn-owner-active-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

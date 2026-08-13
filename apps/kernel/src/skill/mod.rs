@@ -15,7 +15,7 @@ mod tests;
 
 use package::package_skill_directory;
 pub(crate) use package::remote_skill_materialization_base;
-pub use package::{materialize_skill_package, ArrobaSkillPackage, ArrobaSkillPackageFile};
+pub use package::{materialize_skill_package, CharioxSkillPackage, CharioxSkillPackageFile};
 pub use provider_import::{
     discover_provider_skill_import_candidates, import_claude_skills, import_codex_skills,
     import_opencode_skills, ProviderSkillImportCandidate, ProviderSkillImportDiscovery,
@@ -23,7 +23,7 @@ pub use provider_import::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrobaSkillMetadata {
+pub struct CharioxSkillMetadata {
     pub name: String,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -32,11 +32,11 @@ pub struct ArrobaSkillMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArrobaSkillRegistry {
+pub struct CharioxSkillRegistry {
     roots: Vec<PathBuf>,
 }
 
-impl ArrobaSkillRegistry {
+impl CharioxSkillRegistry {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self { roots }
     }
@@ -48,7 +48,7 @@ impl ArrobaSkillRegistry {
                 .join(workspace_registry_hash(workspace.as_ref()))
                 .join("skills");
         }
-        workspace.as_ref().join(".arroba").join("skills")
+        workspace.as_ref().join(".chariox").join("skills")
     }
 
     pub fn user_root() -> Option<PathBuf> {
@@ -57,13 +57,13 @@ impl ArrobaSkillRegistry {
         }
         std::env::var_os("HOME")
             .map(PathBuf::from)
-            .map(|home| home.join(".arroba").join("skills"))
+            .map(|home| home.join(".chariox").join("skills"))
     }
 
     pub fn install_from_path(
         &self,
         source: &Path,
-    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         if !source.is_dir() {
             return Err(DaemonError::LocalTransport {
                 operation: "skill.install",
@@ -116,7 +116,7 @@ impl ArrobaSkillRegistry {
     pub fn update_from_path(
         &self,
         source: &Path,
-    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         if !source.is_dir() {
             return Err(DaemonError::LocalTransport {
                 operation: "skill.update",
@@ -167,7 +167,7 @@ impl ArrobaSkillRegistry {
     pub fn upsert_from_path(
         &self,
         source: &Path,
-    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         if !source.is_dir() {
             return Err(DaemonError::LocalTransport {
                 operation: "skill.upsert.path",
@@ -216,7 +216,7 @@ impl ArrobaSkillRegistry {
     pub fn upsert_from_content(
         &self,
         skill_md: &str,
-    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         let root = self.primary_root()?;
         fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
             operation: "skill.upsert",
@@ -262,7 +262,7 @@ impl ArrobaSkillRegistry {
     pub fn upsert_from_url(
         &self,
         url: &str,
-    ) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         let url = skill_content_url(url)?;
         let response = ureq::get(&url)
             .call()
@@ -282,7 +282,7 @@ impl ArrobaSkillRegistry {
         self.upsert_from_content(&skill_md)
     }
 
-    pub fn uninstall(&self, name: &str) -> Result<(ArrobaSkillMetadata, PathBuf), DaemonError> {
+    pub fn uninstall(&self, name: &str) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         validate_registry_name(name, "skill name")?;
         let destination =
             self.find_skill_dir(name)?
@@ -301,7 +301,7 @@ impl ArrobaSkillRegistry {
         Ok((metadata, destination))
     }
 
-    pub fn list(&self) -> Result<Vec<ArrobaSkillMetadata>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<CharioxSkillMetadata>, DaemonError> {
         let mut entries = BTreeMap::new();
         for root in &self.roots {
             if !root.exists() {
@@ -319,7 +319,7 @@ impl ArrobaSkillRegistry {
         Ok(entries.into_values().collect())
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<ArrobaSkillMetadata>, DaemonError> {
+    pub fn get(&self, name: &str) -> Result<Option<CharioxSkillMetadata>, DaemonError> {
         validate_registry_name(name, "skill name")?;
         let Some(skill_dir) = self.find_skill_dir(name)? else {
             return Ok(None);
@@ -327,7 +327,7 @@ impl ArrobaSkillRegistry {
         parse_skill_metadata(&skill_dir.join("SKILL.md")).map(Some)
     }
 
-    pub fn package(&self, name: &str) -> Result<Option<ArrobaSkillPackage>, DaemonError> {
+    pub fn package(&self, name: &str) -> Result<Option<CharioxSkillPackage>, DaemonError> {
         validate_registry_name(name, "skill name")?;
         let Some(skill_dir) = self.find_skill_dir(name)? else {
             return Ok(None);
@@ -367,12 +367,12 @@ pub(crate) fn format_granted_skill_prompt_context(
         return Ok(String::new());
     }
     let _ = workspace.as_ref();
-    let roots = ArrobaSkillRegistry::user_root()
+    let roots = CharioxSkillRegistry::user_root()
         .map(|root| vec![root])
         .unwrap_or_default();
-    let registry = ArrobaSkillRegistry::new(roots);
+    let registry = CharioxSkillRegistry::new(roots);
     let mut lines = vec![
-        "Available Arroba skills for this agent:".to_string(),
+        "Available Chariox skills for this agent:".to_string(),
         "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.".to_string(),
     ];
     let mut requested_skill_bodies = Vec::new();
@@ -404,17 +404,17 @@ pub(crate) fn format_granted_skill_prompt_context(
     }
     if !requested_skill_bodies.is_empty() {
         lines.push(String::new());
-        lines.push("Full instructions for explicitly requested Arroba skills:".to_string());
+        lines.push("Full instructions for explicitly requested Chariox skills:".to_string());
         for (name, body) in requested_skill_bodies {
-            lines.push(format!("<arroba_skill name=\"{name}\">"));
+            lines.push(format!("<chariox_skill name=\"{name}\">"));
             lines.push(body.trim().to_string());
-            lines.push("</arroba_skill>".to_string());
+            lines.push("</chariox_skill>".to_string());
         }
     }
     Ok(lines.join("\n"))
 }
 
-pub fn parse_skill_metadata(skill_md: &Path) -> Result<ArrobaSkillMetadata, DaemonError> {
+pub fn parse_skill_metadata(skill_md: &Path) -> Result<CharioxSkillMetadata, DaemonError> {
     let body = fs::read_to_string(skill_md).map_err(|error| DaemonError::LocalTransport {
         operation: "skill.read",
         message: format!("failed to read skill `{}`: {error}", skill_md.display()),
@@ -439,7 +439,7 @@ pub fn parse_skill_metadata(skill_md: &Path) -> Result<ArrobaSkillMetadata, Daem
             message: format!("skill `{name}` must define a non-empty description"),
         });
     }
-    Ok(ArrobaSkillMetadata {
+    Ok(CharioxSkillMetadata {
         name,
         description,
         short_description: values
@@ -695,7 +695,7 @@ fn skill_url_error(operation: &'static str, error: ureq::Error) -> DaemonError {
 }
 
 fn managed_capability_root() -> Option<PathBuf> {
-    std::env::var_os("ARROBA_CAPABILITY_ISOLATION_ROOT")
+    std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }

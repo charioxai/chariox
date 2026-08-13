@@ -7,7 +7,7 @@ fn local_request_api_persists_workflow_code_artifacts() {
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-artifact-{}",
+        "chariox-workflow-code-artifact-{}",
         crate::session::unix_epoch_ms()
     ));
     std::fs::create_dir_all(&workspace_root).expect("temporary workspace should be created");
@@ -562,7 +562,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_create_without_persi
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-invalid-create-{}-{}",
+        "chariox-workflow-code-invalid-create-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -626,7 +626,7 @@ fn local_request_api_rejects_invalid_workflow_code_artifact_update_without_overw
         return;
     };
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-invalid-update-{}-{}",
+        "chariox-workflow-code-invalid-update-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));
@@ -706,7 +706,7 @@ workflow.endpoint(worker, { handle: "entry", alias: "entry" })
 #[test]
 fn local_request_api_rejects_invalid_workflow_code_artifact_import() {
     let workspace_root = std::env::temp_dir().join(format!(
-        "arroba-workflow-code-invalid-import-{}-{}",
+        "chariox-workflow-code-invalid-import-{}-{}",
         std::process::id(),
         crate::session::unix_epoch_ms()
     ));

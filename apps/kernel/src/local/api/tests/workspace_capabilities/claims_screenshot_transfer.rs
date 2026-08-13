@@ -9,7 +9,7 @@ fn local_request_api_rejects_conflicting_workspace_write_claims() {
 }
 
 fn local_request_api_rejects_conflicting_workspace_write_claims_inner() {
-    let worktree_root = std::env::temp_dir().join("arroba-workspace-claim-local-api-test");
+    let worktree_root = std::env::temp_dir().join("chariox-workspace-claim-local-api-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
@@ -98,7 +98,7 @@ fn local_request_api_returns_structured_screenshot_unavailable_result() {
 
 fn local_request_api_returns_structured_screenshot_unavailable_result_inner() {
     let _guard = crate::env_lock::lock();
-    std::env::set_var("ARROBA_SCREENSHOT_DISABLE", "1");
+    std::env::set_var("CHARIOX_SCREENSHOT_DISABLE", "1");
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -131,7 +131,7 @@ fn local_request_api_returns_structured_screenshot_unavailable_result_inner() {
             },
         ))
         .expect("screenshot request should succeed with unavailable result");
-    std::env::remove_var("ARROBA_SCREENSHOT_DISABLE");
+    std::env::remove_var("CHARIOX_SCREENSHOT_DISABLE");
 
     match response {
         LocalDaemonResponse::ScreenshotCaptured { result } => {
@@ -153,7 +153,7 @@ fn local_request_api_stores_transferred_file_under_session_artifacts() {
 }
 
 fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
-    let worktree_root = std::env::temp_dir().join("arroba-transfer-local-api-test");
+    let worktree_root = std::env::temp_dir().join("chariox-transfer-local-api-test");
     let _ = std::fs::remove_dir_all(&worktree_root);
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
     let source = worktree_root.join("artifact.txt");
@@ -199,7 +199,7 @@ fn local_request_api_stores_transferred_file_under_session_artifacts_inner() {
             assert!(result
                 .stored_path
                 .to_string_lossy()
-                .contains("arroba-session-artifacts"));
+                .contains("chariox-session-artifacts"));
             assert_eq!(result.bytes, 8);
         }
         _ => panic!("unexpected transfer response"),

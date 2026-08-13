@@ -94,7 +94,7 @@ impl KernelRuntimeState {
                         app.block_on_relay_future(
                             crate::transport::relay_client::send_peer_request_via_temporary_connection(
                                 app.config(),
-                                arroba_relay::protocol::ClientTarget {
+                                chariox_relay::protocol::ClientTarget {
                                     daemon_id: Some(context.home_kernel_id.clone()),
                                     daemon_alias: None,
                                 },
@@ -288,7 +288,7 @@ fn clear_failed_provider_resume_state_for_runtime(
         crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
             .unwrap_or_else(|| {
                 format!(
-                    "Provider session `{stale_provider_session_id}` is no longer available. Arroba cleared it from the agent profile so the next prompt can start a new durable provider session."
+                    "Provider session `{stale_provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable provider session."
                 )
             }),
     );

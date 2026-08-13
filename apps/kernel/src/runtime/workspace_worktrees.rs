@@ -57,7 +57,7 @@ pub(crate) fn create_waiting_room_worktree(
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .unwrap_or(resolve_preferred_base_ref(&repo_root)?);
-    let description = std::env::var("ARROBA_WAITING_ROOM_WORKTREE_DESCRIPTION")
+    let description = std::env::var("CHARIOX_WAITING_ROOM_WORKTREE_DESCRIPTION")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
@@ -70,7 +70,7 @@ pub(crate) fn create_waiting_room_worktree(
             )
         });
     let branch_base = format!(
-        "arroba/{}-{}",
+        "chariox/{}-{}",
         slugify_segment(&description),
         timestamp_slug(),
     );
@@ -408,18 +408,18 @@ mod tests {
     fn default_worktree_directory_base_uses_branch_leaf_without_duplicate_repo_prefix() {
         assert_eq!(
             default_worktree_directory_base(
-                "arroba-cloud",
-                "arroba/arroba-cloud-session-1783622367"
+                "chariox-cloud",
+                "chariox/chariox-cloud-session-1783622367"
             ),
-            "arroba-cloud-session-1783622367"
+            "chariox-cloud-session-1783622367"
         );
         assert_eq!(
-            default_worktree_directory_base("arroba", "arroba/arroba-session-1779647319"),
-            "arroba-session-1779647319"
+            default_worktree_directory_base("chariox", "chariox/chariox-session-1779647319"),
+            "chariox-session-1779647319"
         );
         assert_eq!(
-            default_worktree_directory_base("arroba-cloud", "feature/worktree-name"),
-            "arroba-cloud-worktree-name"
+            default_worktree_directory_base("chariox-cloud", "feature/worktree-name"),
+            "chariox-cloud-worktree-name"
         );
     }
 
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn available_worktree_directory_advances_existing_paths() {
         let parent =
-            std::env::temp_dir().join(format!("arroba-worktree-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("chariox-worktree-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir_all(parent.join("repo-feature")).unwrap();
         std::fs::create_dir_all(parent.join("repo-feature-1")).unwrap();

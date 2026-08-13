@@ -7,7 +7,7 @@ use crate::transport::relay_client::{
     send_peer_request_via_temporary_connection_with_timeout,
 };
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
-use arroba_relay::protocol::ClientTarget;
+use chariox_relay::protocol::ClientTarget;
 
 use super::super::KernelAgentService;
 use super::completion::{KernelPromptCompletionAdmission, KernelPromptOwnerCompletion};
@@ -163,7 +163,7 @@ impl<'a> KernelAgentService<'a> {
                 remote_execution.worker_kernel_id
             ),
             None => format!(
-                "Arroba requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
+                "Chariox requested cancellation of active remote prompt `{}` on worker kernel `{}`.",
                 active_prompt.id(),
                 remote_execution.worker_kernel_id
             ),
@@ -696,7 +696,7 @@ mod tests {
         );
         assert_eq!(
             entry.prompt_origin,
-            Some(crate::session::PromptOrigin::Arroba)
+            Some(crate::session::PromptOrigin::Chariox)
         );
         assert_eq!(
             app.operational_history_store()
