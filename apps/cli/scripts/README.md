@@ -311,7 +311,7 @@ package plus live-workflow single-source and source-directory exports, then
 imports, validates, applies, and runs each form with fresh workflow ids.
 
 Use this to validate the semantic URL renderer application shape on top of
-workflow publication:
+workflow trigger:
 
 ```bash
 pnpm --filter @chariox/cli run semantic-url-renderer:drill

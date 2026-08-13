@@ -602,7 +602,7 @@ async function createPublicationPackage(input) {
     await writePackageFiles(exportDir, payload.package_files)
   } else {
     const exportResult = await executeShellCommand(
-      parseShellCommand(`workflow publication export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
+      parseShellCommand(`workflow trigger export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
       createDefaultShellContext({ workspace, worktree: workspace, sessionId: session.id, workflowId: workflow.id }),
       { client },
     )

@@ -333,8 +333,7 @@ export async function executeWorkflowCommand(
       return executeWorkflowEdgeCommand(args, context, deps)
     case "endpoint":
       return executeWorkflowEndpointCommand(args, context, deps)
-    case "publication":
-    case "publish":
+    case "trigger":
       return executeWorkflowPublicationCommand(args, context, deps)
     case "watchdog":
       return executeWorkflowWatchdogCommand(args, context, deps)

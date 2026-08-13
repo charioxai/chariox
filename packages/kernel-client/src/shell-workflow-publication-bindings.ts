@@ -149,7 +149,7 @@ function bindingForAgent(
   if (binding) return binding
   const agent = (snapshot.agents ?? []).find((candidate) => candidate.id === agentId)
   if (!agent) {
-    throw new Error(`agent ${agentId} was not found in workflow publication snapshot`)
+    throw new Error(`agent ${agentId} was not found in workflow trigger snapshot`)
   }
   binding = {
     agent_id: agent.id,

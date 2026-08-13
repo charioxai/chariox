@@ -58,7 +58,7 @@ test("TUI publication handler creates an event-based publication for the selecte
       poll_ms: null,
     },
   }])
-  assert.match(notices[0] ?? "", /created workflow publication publication-1/)
+  assert.match(notices[0] ?? "", /created workflow trigger publication-1/)
 })
 
 test("TUI event publication handler renders paged catalog results", async () => {

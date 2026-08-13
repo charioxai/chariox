@@ -54,7 +54,7 @@ export function formatWorkflowPublicationLabel(publication: WorkflowPublicationD
 
 export function formatWorkflowPublications(publications: WorkflowPublicationDefinition[]): string {
   if (publications.length === 0) {
-    return "no workflow publications configured"
+    return "no workflow triggers configured"
   }
   return publications.map((publication) => {
     const queue = publication.queue_ref ? ` queue=${publication.queue_ref}` : ""

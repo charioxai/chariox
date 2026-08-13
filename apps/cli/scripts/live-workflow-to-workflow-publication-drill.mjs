@@ -213,7 +213,7 @@ async function createPublishedWorkflow(envState, alias, route, parser, gatewayPo
     session.id,
     workflow.id,
     node.id,
-    `For the workflow-to-workflow publication drill, complete ${alias} deterministically.`,
+    `For the workflow-to-workflow trigger drill, complete ${alias} deterministically.`,
   ))
   const endpoint = variant(
     await envState.client.send(createWorkflowEndpointRequest(session.id, workflow.id, node.id, 'http')),

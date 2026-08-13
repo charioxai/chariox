@@ -602,7 +602,7 @@ test("executeShellCommand forwards workflow node instruction edits as design ops
   }
 })
 
-test("executeShellCommand manages workflow publications", async () => {
+test("executeShellCommand manages workflow triggers", async () => {
   const publication = makeWorkflowPublication({ queue_ref: "priority" })
   const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
   const fake = fakeClient((request) => {
@@ -625,23 +625,23 @@ test("executeShellCommand manages workflow publications", async () => {
   })
 
   const createResult = await executeShellCommand(
-    parseShellCommand("workflow publication create endpoint-1 public_qa --queue priority --route /qa --method POST"),
+    parseShellCommand("workflow trigger create endpoint-1 public_qa --queue priority --route /qa --method POST"),
     context,
     { client: fake.client },
   )
-  const listResult = await executeShellCommand(parseShellCommand("workflow publication list"), context, { client: fake.client })
-  const showResult = await executeShellCommand(parseShellCommand("workflow publication show publication-1"), context, { client: fake.client })
-  const disableResult = await executeShellCommand(parseShellCommand("workflow publication disable publication-1"), context, { client: fake.client })
+  const listResult = await executeShellCommand(parseShellCommand("workflow trigger list"), context, { client: fake.client })
+  const showResult = await executeShellCommand(parseShellCommand("workflow trigger show publication-1"), context, { client: fake.client })
+  const disableResult = await executeShellCommand(parseShellCommand("workflow trigger disable publication-1"), context, { client: fake.client })
 
   assert.equal(createResult.ok, true)
-  assert.match(createResult.message ?? "", /created workflow publication publication-1/)
+  assert.match(createResult.message ?? "", /created workflow trigger publication-1/)
   assert.deepEqual(createResult.contextUpdates, { sessionId: "session-1", agentId: "agent-1", workflowId: "workflow-1" })
   assert.equal(listResult.ok, true)
   assert.match(listResult.message ?? "", /publication-1 \(public_qa\) workflow=workflow-1 endpoint=endpoint-1 queue=priority enabled=true route=\/qa methods=POST/)
   assert.equal(showResult.ok, true)
   assert.equal(showResult.format, "json")
   assert.equal(disableResult.ok, true)
-  assert.match(disableResult.message ?? "", /disabled workflow publication publication-1/)
+  assert.match(disableResult.message ?? "", /disabled workflow trigger publication-1/)
   assert.deepEqual(fake.requests, [
     {
       CreateWorkflowPublication: {
@@ -670,7 +670,7 @@ test("executeShellCommand manages workflow publications", async () => {
   ])
 })
 
-test("executeShellCommand exports a workflow publication package", async () => {
+test("executeShellCommand exports a workflow trigger package", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-export-test-"))
   try {
     const publication = makeWorkflowPublication({
@@ -726,13 +726,13 @@ test("executeShellCommand exports a workflow publication package", async () => {
     })
 
     const result = await executeShellCommand(
-      parseShellCommand("workflow publication export publication-1 exported --kernel-url ws://kernel.example --agent-app-json '{\"enabled\":true,\"replicas\":{\"count\":2,\"per_caller_ordering\":true}}' --agent-app-assets-dir agent-app-dist"),
+      parseShellCommand("workflow trigger export publication-1 exported --kernel-url ws://kernel.example --agent-app-json '{\"enabled\":true,\"replicas\":{\"count\":2,\"per_caller_ordering\":true}}' --agent-app-assets-dir agent-app-dist"),
       context,
       { client: fake.client },
     )
 
     assert.equal(result.ok, true)
-    assert.match(result.message ?? "", /exported workflow publication publication-1 .*package v3 sha256:b+/)
+    assert.match(result.message ?? "", /exported workflow trigger publication-1 .*package v3 sha256:b+/)
     const packageJson = JSON.parse(await readFile(join(root, "exported", "publication.json"), "utf8"))
     assert.equal(packageJson.schema_version, 1)
     assert.equal(packageJson.package_version, 3)
@@ -760,7 +760,7 @@ test("executeShellCommand exports a workflow publication package", async () => {
   }
 })
 
-test("executeShellCommand configures workflow publication package bindings", async () => {
+test("executeShellCommand configures workflow trigger package bindings", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-bindings-test-"))
   try {
     const workflow = makeWorkflow({
@@ -798,24 +798,24 @@ test("executeShellCommand configures workflow publication package bindings", asy
       workflowId: "workflow-1",
     })
 
-    const showResult = await executeShellCommand(parseShellCommand("workflow publication config show ."), context, { client: fake.client })
-    const setResult = await executeShellCommand(parseShellCommand("workflow publication config set . agent-1 claude sonnet-4 medium"), context, { client: fake.client })
+    const showResult = await executeShellCommand(parseShellCommand("workflow trigger config show ."), context, { client: fake.client })
+    const setResult = await executeShellCommand(parseShellCommand("workflow trigger config set . agent-1 claude sonnet-4 medium"), context, { client: fake.client })
     const localBindingsAfterSet = JSON.parse(await readFile(join(root, "bindings.local.json"), "utf8"))
-    const clearResult = await executeShellCommand(parseShellCommand("workflow publication config clear . agent-1"), context, { client: fake.client })
+    const clearResult = await executeShellCommand(parseShellCommand("workflow trigger config clear . agent-1"), context, { client: fake.client })
     const localBindingsAfterClear = JSON.parse(await readFile(join(root, "bindings.local.json"), "utf8"))
 
     assert.equal(showResult.ok, true)
     assert.match(showResult.message ?? "", /agent-1 nodes=node-1 captured=opencode\/gpt-5\.2 effort=high replacement=default/)
     assert.match(showResult.message ?? "", /local bindings file has not been created yet/)
     assert.equal(setResult.ok, true)
-    assert.match(setResult.message ?? "", /updated workflow publication binding for agent-1/)
+    assert.match(setResult.message ?? "", /updated workflow trigger binding for agent-1/)
     assert.deepEqual(localBindingsAfterSet.provider_model_overrides[0].replacement, {
       provider: "claude",
       model: "sonnet-4",
       effort: "medium",
     })
     assert.equal(clearResult.ok, true)
-    assert.match(clearResult.message ?? "", /cleared workflow publication binding for agent-1/)
+    assert.match(clearResult.message ?? "", /cleared workflow trigger binding for agent-1/)
     assert.equal(localBindingsAfterClear.provider_model_overrides[0].replacement, null)
     assert.deepEqual(fake.requests, [])
   } finally {

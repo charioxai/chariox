@@ -74,12 +74,12 @@ test("slash command submit delegates catalog-only kernel commands to shared shel
   })
   const controller = createSlashCommandSubmitController(harness.deps)
 
-  const command = await controller.submit("/workflow publication list", {
+  const command = await controller.submit("/workflow trigger list", {
     allowSlashCommandSubmission: true,
   })
 
   assert.equal(command?.kind, "workflow")
-  assert.deepEqual(harness.sharedCommands(), ["/workflow publication list"])
+  assert.deepEqual(harness.sharedCommands(), ["/workflow trigger list"])
   assert.deepEqual(harness.calls(), [])
   assert.equal(harness.clearPromptCount(), 1)
 })

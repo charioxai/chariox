@@ -6,7 +6,7 @@ import test from "node:test"
 
 import { writeWorkflowPublicationExportPackage } from "./shell-workflow-publication-export.js"
 
-test("workflow publication export materializes nested files and executable modes", async () => {
+test("workflow trigger export materializes nested files and executable modes", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-materialize-"))
   try {
     const paths = await writeWorkflowPublicationExportPackage(root, [
@@ -29,7 +29,7 @@ test("workflow publication export materializes nested files and executable modes
   }
 })
 
-test("workflow publication export rejects unsafe, duplicate, and malformed entries", async () => {
+test("workflow trigger export rejects unsafe, duplicate, and malformed entries", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-publication-materialize-invalid-"))
   try {
     await assert.rejects(

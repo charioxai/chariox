@@ -355,9 +355,9 @@ export async function handleWorkflowSlashCommand(
     return
   }
 
-  if (subcommand === "publication") {
+  if (subcommand === "trigger") {
     if (!deps.sendWorkflowEventPublicationRequest) {
-      deps.flashFooter("workflow publication commands are unavailable", "error")
+      deps.flashFooter("workflow trigger commands are unavailable", "error")
       return
     }
     await handleWorkflowPublicationCommand({
