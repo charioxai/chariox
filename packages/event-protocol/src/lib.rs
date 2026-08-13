@@ -327,11 +327,7 @@ pub struct AegsConnectionInspectionRequest {
 
 impl AegsConnectionInspectionRequest {
     pub fn validate(&self) -> Result<(), String> {
-        require_connection_identity(
-            &self.generator_id,
-            &self.owner_id,
-            &self.connection_id,
-        )
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)
     }
 }
 
@@ -367,11 +363,7 @@ pub struct AegsConnectionRefreshRequest {
 
 impl AegsConnectionRefreshRequest {
     pub fn validate(&self) -> Result<(), String> {
-        require_connection_identity(
-            &self.generator_id,
-            &self.owner_id,
-            &self.connection_id,
-        )
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)
     }
 }
 
@@ -386,11 +378,7 @@ pub struct AegsConnectionTestEventRequest {
 
 impl AegsConnectionTestEventRequest {
     pub fn validate(&self) -> Result<(), String> {
-        require_connection_identity(
-            &self.generator_id,
-            &self.owner_id,
-            &self.connection_id,
-        )?;
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)?;
         if self
             .event_type
             .as_deref()
