@@ -34,6 +34,7 @@ import {
   tmpdir,
   visibleWorkflowRun,
   waitForCondition,
+  writeDeploymentContractFixture,
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
@@ -493,10 +494,11 @@ test("gateway can load publication config from kernel lookup", async () => {
 test("gateway maps exported publication packages to runtime config", async () => {
   const config = publicationConfigFromPackage({
     schema_version: 1,
-    package_version: 1,
+    package_version: 3,
     publication_id: "pub-1",
     source_session_id: "session-1",
     workflow_id: "workflow-1",
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
     hooks: [{
       id: "hook-human",
       transport: "human_http",
@@ -547,9 +549,11 @@ test("gateway loads publication package directories", async () => {
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       default_bindings_path: "bindings.local.json",
       hooks: [{
         id: "hook-1",
@@ -560,6 +564,7 @@ test("gateway loads publication package directories", async () => {
         parser: { kind: "regex", source: "path", pattern: "^/(?<prompt>.+)$" },
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -665,7 +670,14 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       provider_requirements: [],
       credential_slots: [],
       configuration: [],
-      capabilities: {},
+      capabilities: {
+        network: {
+          policy_version: 1,
+          default_action: "deny",
+          destinations: [],
+          provider_access: [],
+        },
+      },
       resources: {},
       presentation: {},
       signatures: [],

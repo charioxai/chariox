@@ -34,6 +34,7 @@ import {
   tmpdir,
   visibleWorkflowRun,
   waitForCondition,
+  writeDeploymentContractFixture,
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
@@ -45,9 +46,11 @@ test("gateway materializes exported publication packages through the kernel", as
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
         transport: "human_http",
@@ -56,6 +59,7 @@ test("gateway materializes exported publication packages through the kernel", as
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -183,10 +187,11 @@ test("gateway materializes Agent App replica sessions from package config", asyn
     await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 2,
+      package_version: 3,
       publication_id: "pub-agent-app",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
         transport: "human_http",
@@ -201,6 +206,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
         replicas: { count: 2, per_caller_ordering: true },
       },
     }))
+    await writeDeploymentContractFixture(root, "pub-agent-app")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -283,10 +289,11 @@ test("gateway remaps portable package workspace paths before local materializati
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 2,
+      package_version: 3,
       publication_id: "pub-portable",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
         transport: "human_http",
@@ -295,6 +302,7 @@ test("gateway remaps portable package workspace paths before local materializati
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-portable")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -380,9 +388,11 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       default_bindings_path: "bindings.local.json",
       hooks: [{
         id: "hook-1",
@@ -392,6 +402,7 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -482,9 +493,11 @@ test("gateway accepts provider-prefixed captured models when the provider matche
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       default_bindings_path: "bindings.local.json",
       hooks: [{
         id: "hook-1",
@@ -494,6 +507,7 @@ test("gateway accepts provider-prefixed captured models when the provider matche
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -574,9 +588,11 @@ test("gateway fails before materialization when provider/model bindings cannot b
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       default_bindings_path: "bindings.local.json",
       hooks: [{
         id: "hook-1",
@@ -586,6 +602,7 @@ test("gateway fails before materialization when provider/model bindings cannot b
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -648,9 +665,11 @@ test("gateway fails package materialization before runtime creation when require
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
+      package_version: 3,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
         transport: "human_http",
@@ -659,6 +678,7 @@ test("gateway fails package materialization before runtime creation when require
         methods: ["GET"],
       }],
     }))
+    await writeDeploymentContractFixture(root, "pub-1")
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {

@@ -155,7 +155,14 @@ test("managed agent app runtime verifies caller claims before affinity and role 
     provider_requirements: [],
     credential_slots: [],
     configuration: [],
-    capabilities: {},
+    capabilities: {
+      network: {
+        policy_version: 1,
+        default_action: "deny",
+        destinations: [],
+        provider_access: [],
+      },
+    },
     resources: {},
     presentation: {},
     signatures: [],
