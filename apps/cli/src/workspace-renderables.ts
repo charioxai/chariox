@@ -26,7 +26,7 @@ import {
 import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import {
-  arrobaArtFrame,
+  charioxArtFrame,
   waitingRoomMenuMinWidth,
   waitingRoomRows,
 } from "./waiting-room.js"
@@ -240,7 +240,7 @@ export function buildNoSessionRenderable(
   })
   intro.add(
     new TextRenderable(renderer, {
-      content: arrobaArtFrame(state.introStep),
+      content: charioxArtFrame(state.introStep),
       fg: theme.primary,
       attributes: TextAttributes.BOLD,
       wrapMode: "none",
@@ -316,7 +316,7 @@ function buildAsciiCanvasRenderable(
   promptText: string,
   promptColor: RGBA,
 ) {
-  const art = arrobaArtFrame(12)
+  const art = charioxArtFrame(12)
   const prompt = centerTextToWidth(promptText, maxLineWidth(art))
   const wrapper = new BoxRenderable(renderer, {
     marginBottom: 0,

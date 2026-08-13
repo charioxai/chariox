@@ -1,12 +1,12 @@
-import type { ArrobaLogger } from "./logging.js"
-import type { ArrobaPreferences } from "./preferences.js"
-import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
-import { extractPromptInputHistoryEntries } from "@arroba/kernel-client/prompt-history"
+import type { CharioxLogger } from "./logging.js"
+import type { CharioxPreferences } from "./preferences.js"
+import type { TerminalCommandCatalog } from "@chariox/kernel-client/kernel-types"
+import { extractPromptInputHistoryEntries } from "@chariox/kernel-client/prompt-history"
 import { fallbackProviderCatalog, type ProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs, type ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { selectAttachableSession, decideBootstrapAction } from "./sessions.js"
 import { settleAttachProviderRun } from "./attach-provider-run.js"
-import { sessionHistoryCursorForVisibleAgent } from "@arroba/kernel-client/session-history-outline"
+import { sessionHistoryCursorForVisibleAgent } from "@chariox/kernel-client/session-history-outline"
 
 import type {
   CliOptions,
@@ -22,11 +22,11 @@ import type {
 import type { LocalIpcClient } from "./ipc.js"
 
 type BootstrapDeps = {
-  logger?: ArrobaLogger | null
+  logger?: CharioxLogger | null
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
-  getProviderCatalog: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCatalog>
-  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<ProviderCommandCatalogs>
-  getTerminalCommandCatalog: (client: LocalIpcClient, logger?: ArrobaLogger | null) => Promise<TerminalCommandCatalog>
+  getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCatalog>
+  getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCommandCatalogs>
+  getTerminalCommandCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<TerminalCommandCatalog>
   createSession: (client: LocalIpcClient, workspace: string, worktree: string, alias?: string) => Promise<RuntimeSession>
   resolveSession: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<RuntimeSession>
   attachToSession: (client: LocalIpcClient, sessionId: string, clientId: string) => Promise<RuntimeAttachment>
@@ -43,14 +43,14 @@ type BootstrapDeps = {
   tryGetProviderRun: (
     client: LocalIpcClient,
     providerRunId: string,
-    logger?: ArrobaLogger | null,
+    logger?: CharioxLogger | null,
   ) => Promise<RuntimeProviderRun | null>
   catchUpAttachedSession: (
     client: LocalIpcClient,
     sessionId: string,
     attachmentId: string,
     session: RuntimeSession,
-    logger?: ArrobaLogger | null,
+    logger?: CharioxLogger | null,
   ) => Promise<void>
   getSessionHistoryOutline: (
     client: LocalIpcClient,
@@ -61,7 +61,7 @@ type BootstrapDeps = {
     client: LocalIpcClient,
     sessionId: string,
   ) => Promise<{ entries: PromptInputHistoryEntry[] }>
-  resolveVisibleAgentId: (session: RuntimeSession, preferences: ArrobaPreferences) => string | null
+  resolveVisibleAgentId: (session: RuntimeSession, preferences: CharioxPreferences) => string | null
   prepareHistoryOutlineAgent: (agent: SessionHistoryOutlineAgent, session: RuntimeSession) => TranscriptEntry[]
 }
 
@@ -70,7 +70,7 @@ export async function bootstrapSession(
   options: CliOptions,
   workspace: string,
   worktree: string,
-  preferences: ArrobaPreferences,
+  preferences: CharioxPreferences,
   deps: BootstrapDeps,
 ): Promise<BootstrapState> {
   let createdSession = false

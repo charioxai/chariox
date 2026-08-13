@@ -8,7 +8,7 @@ import {
 } from "./drill-kernel-storage.mjs"
 
 test("drill kernel config isolates all persistent stores", () => {
-  const root = path.join("", "tmp", "arroba-drill", "home-storage")
+  const root = path.join("", "tmp", "chariox-drill", "home-storage")
   const paths = drillKernelStoragePaths(root)
 
   assert.deepEqual(Object.keys(paths).sort(), [
@@ -26,5 +26,5 @@ test("drill kernel config isolates all persistent stores", () => {
   assert.match(config, /\[history\.operational\]/)
   assert.match(config, /\[artifacts\.operational\]/)
   assert.match(config, /\[slices\]/)
-  assert.doesNotMatch(config, /~\/\.arroba|\/Users\//)
+  assert.doesNotMatch(config, /~\/\.chariox|\/Users\//)
 })

@@ -1,1 +1,1 @@
-export * from "@arroba/kernel-client/ipc";
+export * from "@chariox/kernel-client/ipc";

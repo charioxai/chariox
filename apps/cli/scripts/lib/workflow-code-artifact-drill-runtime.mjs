@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
-import { createSessionRequest, endSessionRequest } from '@arroba/kernel-client'
+import { createSessionRequest, endSessionRequest } from '@chariox/kernel-client'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 export const cliRoot = path.resolve(scriptDir, '..', '..')
@@ -36,29 +36,29 @@ export function parseArgs(argv) {
     hetznerSecondKernel: false,
     realProviderTopology: null,
     providerModels: {
-      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_MODEL ?? process.env.ARROBA_CODEX_MODEL ?? 'gpt-5.4-mini',
-      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_MODEL ?? process.env.ARROBA_OPENCODE_MODEL ?? 'opencode/gpt-5.2',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_MODEL ?? process.env.ARROBA_CLAUDE_MODEL ?? 'sonnet',
+      codex: process.env.CHARIOX_WORKFLOW_CODE_CODEX_MODEL ?? process.env.CHARIOX_CODEX_MODEL ?? 'gpt-5.4-mini',
+      opencode: process.env.CHARIOX_WORKFLOW_CODE_OPENCODE_MODEL ?? process.env.CHARIOX_OPENCODE_MODEL ?? 'opencode/gpt-5.2',
+      claude: process.env.CHARIOX_WORKFLOW_CODE_CLAUDE_MODEL ?? process.env.CHARIOX_CLAUDE_MODEL ?? 'sonnet',
     },
     providerIds: {
-      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_PROVIDER ?? 'codex',
-      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_PROVIDER ?? 'opencode',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_PROVIDER ?? 'claude-p',
+      codex: process.env.CHARIOX_WORKFLOW_CODE_CODEX_PROVIDER ?? 'codex',
+      opencode: process.env.CHARIOX_WORKFLOW_CODE_OPENCODE_PROVIDER ?? 'opencode',
+      claude: process.env.CHARIOX_WORKFLOW_CODE_CLAUDE_PROVIDER ?? 'claude-p',
     },
     providerAccounts: {
-      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_ACCOUNT ?? 'default',
-      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_ACCOUNT ?? 'default',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_ACCOUNT ?? 'default',
+      codex: process.env.CHARIOX_WORKFLOW_CODE_CODEX_ACCOUNT ?? 'default',
+      opencode: process.env.CHARIOX_WORKFLOW_CODE_OPENCODE_ACCOUNT ?? 'default',
+      claude: process.env.CHARIOX_WORKFLOW_CODE_CLAUDE_ACCOUNT ?? 'default',
     },
     providerEfforts: {
-      codex: process.env.ARROBA_WORKFLOW_CODE_CODEX_EFFORT ?? 'low',
-      opencode: process.env.ARROBA_WORKFLOW_CODE_OPENCODE_EFFORT ?? 'low',
-      claude: process.env.ARROBA_WORKFLOW_CODE_CLAUDE_EFFORT ?? 'low',
+      codex: process.env.CHARIOX_WORKFLOW_CODE_CODEX_EFFORT ?? 'low',
+      opencode: process.env.CHARIOX_WORKFLOW_CODE_OPENCODE_EFFORT ?? 'low',
+      claude: process.env.CHARIOX_WORKFLOW_CODE_CLAUDE_EFFORT ?? 'low',
     },
-    hetznerHost: process.env.ARROBA_WORKFLOW_CODE_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.ARROBA_WORKFLOW_CODE_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
-    hetznerRepo: process.env.ARROBA_WORKFLOW_CODE_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
-    hetznerRemoteRoot: process.env.ARROBA_WORKFLOW_CODE_HETZNER_ROOT ?? '/tmp/arroba-workflow-code-second-kernel',
+    hetznerHost: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
+    hetznerRepo: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
+    hetznerRemoteRoot: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_ROOT ?? '/tmp/chariox-workflow-code-second-kernel',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -178,12 +178,12 @@ export function runChecked(command, args, options = {}) {
 }
 
 export function buildKernel() {
-  runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   const cargoTargetDir = process.env.CARGO_TARGET_DIR?.trim()
   const targetDir = cargoTargetDir
     ? path.resolve(repoRoot, cargoTargetDir)
     : path.join(repoRoot, 'target')
-  return path.join(targetDir, 'debug', 'arroba-kernel')
+  return path.join(targetDir, 'debug', 'chariox-kernel')
 }
 
 export function sha256Hex(value) {
@@ -220,15 +220,15 @@ export function spawnedKernel(label = 'workflow-code-drill', rootDir = null) {
   const socketPath = path.join(os.tmpdir(), `${runId}.sock`)
   const env = {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_DAEMON_SOCKET: socketPath,
-    ARROBA_DAEMON_ID: runId,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1000),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_DAEMON_SOCKET: socketPath,
+    CHARIOX_DAEMON_ID: runId,
   }
   if (rootDir) {
-    env.ARROBA_HOME = path.join(rootDir, 'arroba-home')
+    env.CHARIOX_HOME = path.join(rootDir, 'chariox-home')
   }
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,

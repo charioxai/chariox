@@ -74,8 +74,8 @@ test("formats target-specific next actions", () => {
     "refresh provider login for the profile used by this drill, then rerun the scenario",
   )
   assert.equal(
-    drillFailureNextActionForClassification("unknown", { target: "drill", rootDir: "/tmp/arroba-drill" }),
-    "inspect preserved artifacts under /tmp/arroba-drill; rerun the drill after addressing the failure",
+    drillFailureNextActionForClassification("unknown", { target: "drill", rootDir: "/tmp/chariox-drill" }),
+    "inspect preserved artifacts under /tmp/chariox-drill; rerun the drill after addressing the failure",
   )
   assert.equal(
     drillFailureNextActionForClassification("workspace-live-sync-conflict", { target: "scenario" }),
@@ -122,7 +122,7 @@ test("builds manifest classification records from taxonomy", () => {
 test("builds stable failure taxonomy manifest", () => {
   const manifest = drillFailureTaxonomyManifest({ target: "scenario" })
 
-  assert.equal(manifest.schema, "arroba.drill.failure_taxonomy.v1")
+  assert.equal(manifest.schema, "chariox.drill.failure_taxonomy.v1")
   assert.equal(manifest.target, "scenario")
   assert.deepEqual(
     manifest.classifications.map((entry) => entry.kind),

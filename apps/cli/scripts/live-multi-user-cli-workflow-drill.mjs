@@ -13,8 +13,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 
-const RELAY_ISSUER = 'arroba-multi-user-cli-workflow-drill'
-const RELAY_SECRET = 'arroba-multi-user-cli-workflow-drill-secret'
+const RELAY_ISSUER = 'chariox-multi-user-cli-workflow-drill'
+const RELAY_SECRET = 'chariox-multi-user-cli-workflow-drill-secret'
 const RELAY_REALM = 'multi-user-cli-workflow-drill'
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -26,9 +26,9 @@ function nowStamp() {
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
     hetznerRelay: false,
-    hetznerHost: process.env.ARROBA_COLLAB_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.ARROBA_COLLAB_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
-    hetznerRepo: process.env.ARROBA_COLLAB_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+    hetznerHost: process.env.CHARIOX_COLLAB_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.CHARIOX_COLLAB_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
+    hetznerRepo: process.env.CHARIOX_COLLAB_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -48,7 +48,7 @@ function parseArgs(argv = process.argv.slice(2)) {
         '  --hetzner-relay       Run the scoped relay on the configured Hetzner host through an SSH tunnel',
         '  --hetzner-host HOST   SSH host for --hetzner-relay',
         '  --hetzner-key PATH    SSH key for --hetzner-relay',
-        '  --hetzner-repo PATH   Remote Arroba checkout containing built relay binary',
+        '  --hetzner-repo PATH   Remote Chariox checkout containing built relay binary',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -76,7 +76,7 @@ function base64url(input) {
 function signRelayToken(claims) {
   const payload = base64url(JSON.stringify(claims))
   const signature = createHmac('sha256', RELAY_SECRET).update(payload).digest('base64url')
-  return `arroba-scoped-v1.${payload}.${signature}`
+  return `chariox-scoped-v1.${payload}.${signature}`
 }
 
 function relayClaims({ subject, subjectKind, actions, userId = null }) {
@@ -136,33 +136,33 @@ function makeEnv(ports, rootDir) {
     relayUrl,
     relayEnv: {
       ...process.env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(ports.relayPort),
-      ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-      ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      CHARIOX_RELAY_HOST: '127.0.0.1',
+      CHARIOX_RELAY_PORT: String(ports.relayPort),
+      CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+      CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     },
     daemonEnv: {
       ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_RELAY_URL: relayUrl,
-      ARROBA_RELAY_TOKEN: daemonRelayToken,
-      ARROBA_DAEMON_ID: daemonId,
-      ARROBA_DAEMON_ALIAS: daemonAlias,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
-      ARROBA_TEST_TUI: '1',
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_RELAY_URL: relayUrl,
+      CHARIOX_RELAY_TOKEN: daemonRelayToken,
+      CHARIOX_DAEMON_ID: daemonId,
+      CHARIOX_DAEMON_ALIAS: daemonAlias,
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
+      CHARIOX_TEST_TUI: '1',
     },
   }
 }
 
 async function buildKernelIfNeeded() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (exists) return binary
-  const result = await runCommand('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await runCommand('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -170,7 +170,7 @@ async function buildKernelIfNeeded() {
 async function requireBuiltCli() {
   const cli = path.join(cliRoot, 'dist/index.js')
   await access(cli).catch(() => {
-    throw new Error(`missing built CLI ${cli}; run pnpm --filter @arroba/cli run build first`)
+    throw new Error(`missing built CLI ${cli}; run pnpm --filter @chariox/cli run build first`)
   })
   return cli
 }
@@ -383,8 +383,8 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const home1 = path.join(rootDir, 'home-user-1')
   const home2 = path.join(rootDir, 'home-user-2')
-  const socket1 = path.join(os.tmpdir(), `arroba-cli-user1-${process.pid}-${Date.now()}.sock`)
-  const socket2 = path.join(os.tmpdir(), `arroba-cli-user2-${process.pid}-${Date.now()}.sock`)
+  const socket1 = path.join(os.tmpdir(), `chariox-cli-user1-${process.pid}-${Date.now()}.sock`)
+  const socket2 = path.join(os.tmpdir(), `chariox-cli-user2-${process.pid}-${Date.now()}.sock`)
   await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
   await mkdir(home1, { recursive: true })
@@ -425,18 +425,18 @@ async function main() {
     const startupChecks = []
     if (options.hetznerRelay) {
       const remoteRelayCheck = await runCommand('ssh', sshArgs(options, [
-        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay'))}`,
+        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/chariox-relay'))}`,
       ].join('; ')))
       if (remoteRelayCheck.code !== 0) {
         throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
       const relayProcess = spawnObserved('hetzner relay', 'ssh', sshArgs(options, remoteEnvCommand({
-        ARROBA_REMOTE_REPO: options.hetznerRepo,
-        ARROBA_RELAY_HOST: '127.0.0.1',
-        ARROBA_RELAY_PORT: String(ports.relayPort),
-        ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-        ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
-      }, './apps/relay/target/debug/arroba-relay')), {
+        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_RELAY_HOST: '127.0.0.1',
+        CHARIOX_RELAY_PORT: String(ports.relayPort),
+        CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+        CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      }, './apps/relay/target/debug/chariox-relay')), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
       relay = relayProcess.child
@@ -458,7 +458,7 @@ async function main() {
       relayTunnel = tunnelProcess.child
       startupChecks.push(tunnelProcess.startupError)
     } else {
-      const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+      const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'chariox-relay'], {
         cwd: repoRoot,
         env: envs.relayEnv,
         stdio: ['ignore', 'ignore', 'inherit'],

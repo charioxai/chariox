@@ -34,7 +34,7 @@ import {
 } from "./drill-runtime-signals.mjs"
 import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
 
-export const DRILL_VALIDATION_GATE_SCHEMA = "arroba.drill.validation_gate.v1"
+export const DRILL_VALIDATION_GATE_SCHEMA = "chariox.drill.validation_gate.v1"
 
 export function validateDrillValidationGateReport(report, source = "validation gate report") {
   if (!report || typeof report !== "object" || Array.isArray(report)) {

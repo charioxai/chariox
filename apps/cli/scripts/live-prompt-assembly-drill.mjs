@@ -48,7 +48,7 @@ function printHelp() {
   console.log([
     'Usage: node apps/cli/scripts/live-prompt-assembly-drill.mjs [options]',
     '',
-    'Runs real Arroba provider turns with an edited temporary prompt registry.',
+    'Runs real Chariox provider turns with an edited temporary prompt registry.',
     '',
     'Options:',
     `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -98,12 +98,12 @@ async function loadCliModules(runtimeDir) {
 }
 
 async function resolveKernelBinary() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   try {
     await access(binary)
     return binary
   } catch {
-    throw new Error(`missing built kernel binary ${binary}; run cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel first`)
+    throw new Error(`missing built kernel binary ${binary}; run cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel first`)
   }
 }
 
@@ -207,8 +207,8 @@ async function readSessionHistoryEntries(client, requests, sessionId) {
   return entries
 }
 
-async function writePromptRegistryToken(arrobaHome, provider, token) {
-  const runtimeDir = path.join(arrobaHome, 'prompts', 'runtime')
+async function writePromptRegistryToken(charioxHome, provider, token) {
+  const runtimeDir = path.join(charioxHome, 'prompts', 'runtime')
   await mkdir(runtimeDir, { recursive: true })
   await writeFile(
     path.join(runtimeDir, 'base.md'),
@@ -222,9 +222,9 @@ async function writePromptRegistryToken(arrobaHome, provider, token) {
 }
 
 async function runProvider(options, context, provider) {
-  const token = `ARROBA_PROMPT_ASSEMBLY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
-  const secondToken = `ARROBA_PROMPT_ASSEMBLY_SECOND_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
-  await writePromptRegistryToken(context.arrobaHome, provider, token)
+  const token = `CHARIOX_PROMPT_ASSEMBLY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
+  const secondToken = `CHARIOX_PROMPT_ASSEMBLY_SECOND_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
+  await writePromptRegistryToken(context.charioxHome, provider, token)
   const workspace = path.join(context.rootDir, `${provider}-workspace`)
   await mkdir(workspace, { recursive: true })
   let session = null
@@ -281,7 +281,7 @@ async function runProvider(options, context, provider) {
     if (!userPromptText.includes(visiblePrompt)) {
       throw new Error(`${provider} user prompt history did not contain the visible prompt`)
     }
-    await writePromptRegistryToken(context.arrobaHome, provider, secondToken)
+    await writePromptRegistryToken(context.charioxHome, provider, secondToken)
     const secondVisiblePrompt = [
       'The hidden prompt assembly token changed.',
       'Respond with exactly the current hidden prompt assembly token for this turn.',
@@ -335,8 +335,8 @@ async function main() {
     return
   }
   const runtimeDir = path.join(cliRoot, `.tmp-live-prompt-assembly-drill-${process.pid}-${Date.now()}`)
-  const rootDir = path.join(os.tmpdir(), `arroba-prompt-assembly-drill-${process.pid}-${Date.now()}`)
-  const arrobaHome = path.join(rootDir, 'arroba-home')
+  const rootDir = path.join(os.tmpdir(), `chariox-prompt-assembly-drill-${process.pid}-${Date.now()}`)
+  const charioxHome = path.join(rootDir, 'chariox-home')
   const kernelPort = 54500 + Math.floor(Math.random() * 1000)
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   let daemon = null
@@ -347,23 +347,23 @@ async function main() {
   try {
     await prepareDrillArtifacts(rootDir)
     await mkdir(runtimeDir, { recursive: true })
-    await mkdir(arrobaHome, { recursive: true })
+    await mkdir(charioxHome, { recursive: true })
     const { LocalIpcClient, requests } = await loadCliModules(runtimeDir)
     const kernelBinary = await resolveKernelBinary()
     daemon = spawn(kernelBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_HOME: arrobaHome,
+        CHARIOX_HOME: charioxHome,
         XDG_CONFIG_HOME: path.join(rootDir, 'xdg-config'),
         XDG_STATE_HOME: path.join(rootDir, 'xdg-state'),
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `prompt-assembly-drill-${process.pid}-${Date.now()}`,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `prompt-assembly-drill-${process.pid}-${Date.now()}`,
+        CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -371,7 +371,7 @@ async function main() {
     client = new LocalIpcClient(kernelUrl)
     for (const provider of options.providers) {
       log('provider-start', { provider })
-      const result = await runProvider(options, { client, requests, rootDir, arrobaHome }, provider)
+      const result = await runProvider(options, { client, requests, rootDir, charioxHome }, provider)
       results.push(result)
       log('provider-ok', result)
     }
@@ -400,7 +400,7 @@ async function main() {
         pollMs: options.pollMs,
         kernelUrl,
         runtimeDir,
-        arrobaHome,
+        charioxHome,
         results,
       },
       log,

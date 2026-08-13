@@ -253,11 +253,11 @@ function promptStateForAgent(session, agentId) {
 
 async function main() {
   const stamp = nowStamp()
-  const marker = `ARROBA_UNATTACHED_TUI_${stamp}_${process.pid}`
+  const marker = `CHARIOX_UNATTACHED_TUI_${stamp}_${process.pid}`
   const artifactRoot = path.join(repoRoot, ".artifacts", "unattached-agents-tui-parity", stamp)
-  const runtimeRoot = path.join(os.tmpdir(), `arroba-unattached-tui-${process.pid}-${Date.now()}`)
+  const runtimeRoot = path.join(os.tmpdir(), `chariox-unattached-tui-${process.pid}-${Date.now()}`)
   const workspace = repoRoot
-  const automationSocket = path.join(os.tmpdir(), `arroba-utui-${process.pid}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-utui-${process.pid}.sock`)
   const ports = await makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const opencodeHome = path.join(runtimeRoot, "provider-homes", "opencode")
@@ -299,13 +299,13 @@ async function main() {
       CODEX_HOME: codexHome,
       CLAUDE_HOME: claudeHome,
       OPENCODE_DATA_HOME: opencodeHome,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `unattached-tui-drill-${process.pid}`,
-      ARROBA_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: path.join(runtimeRoot, "history"),
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_ID: `unattached-tui-drill-${process.pid}`,
+      CHARIOX_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(runtimeRoot, "history"),
     }
 
     const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
@@ -422,7 +422,7 @@ async function main() {
     )
     waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
     const attachAgent = agentForExternal(waitingSession, attachExternalSessionId)
-    assert.ok(attachAgent, "spawned unattached agent should attach to the existing Arroba session")
+    assert.ok(attachAgent, "spawned unattached agent should attach to the existing Chariox session")
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "03-tui-spawn-external-agent.png", "TUI Spawn External Agent", [
       `PASS session agent count=${attachedSnapshot.session?.agentCount}`,
       `PASS attached agent=${attachAgent.id}`,
@@ -449,8 +449,8 @@ async function main() {
     waitingSession = unwrap(await client.send(requests.resolveSessionRequest(waitingSessionId, workspace)), "SessionResolved").session
     const codexAgent = agentForExternal(waitingSession, codexExternalSessionId)
     const claudeAgent = agentForExternal(waitingSession, claudeExternalSessionId)
-    assert.ok(codexAgent, "Codex unattached agent should attach to the existing Arroba session")
-    assert.ok(claudeAgent, "Claude unattached agent should attach to the existing Arroba session")
+    assert.ok(codexAgent, "Codex unattached agent should attach to the existing Chariox session")
+    assert.ok(claudeAgent, "Claude unattached agent should attach to the existing Chariox session")
     evidence.push(path.relative(repoRoot, await renderTerminalScreenshot(artifactRoot, "04-tui-provider-matrix-external-agents-attached.png", "TUI Provider Matrix External Agents Attached", [
       `PASS session agent count=${providerMatrixAttachedSnapshot.session?.agentCount}`,
       `PASS opencode agent=${attachAgent.id}`,
@@ -510,7 +510,7 @@ async function main() {
       attachFile,
       "opencode-user-3",
       "user",
-      `opencode external prompt queues arroba input in TUI ${marker}`,
+      `opencode external prompt queues chariox input in TUI ${marker}`,
     )
     unwrap(await client.send(refreshExternalProviderSessionsRequest("opencode")), "ExternalProviderSessionsRefreshed")
     await waitForCondition(async () => {
@@ -521,7 +521,7 @@ async function main() {
         : false
     }, "kernel external active prompt for TUI queue guard", 30_000)
 
-    const queuedPromptText = `arroba prompt queued behind external TUI turn ${marker}`
+    const queuedPromptText = `chariox prompt queued behind external TUI turn ${marker}`
     await automation.send("submit_prompt", { prompt: queuedPromptText })
     const queuedSnapshot = await waitForSnapshot(
       automation,
@@ -613,7 +613,7 @@ async function main() {
       codexFile,
       "codex-user-3",
       "user",
-      `codex external prompt queues arroba input in TUI ${marker}`,
+      `codex external prompt queues chariox input in TUI ${marker}`,
     )
     unwrap(await client.send(refreshExternalProviderSessionsRequest("codex")), "ExternalProviderSessionsRefreshed")
     await waitForCondition(async () => {
@@ -624,7 +624,7 @@ async function main() {
         : false
     }, "kernel external active prompt for Codex TUI queue guard", 30_000)
 
-    const codexQueuedPromptText = `arroba prompt queued behind external Codex TUI turn ${marker}`
+    const codexQueuedPromptText = `chariox prompt queued behind external Codex TUI turn ${marker}`
     await automation.send("submit_prompt", { prompt: codexQueuedPromptText })
     const codexQueuedSnapshot = await waitForSnapshot(
       automation,
@@ -714,7 +714,7 @@ async function main() {
       claudeProviderSessionId,
       "claude-user-3",
       "user",
-      `claude external prompt queues arroba input in TUI ${marker}`,
+      `claude external prompt queues chariox input in TUI ${marker}`,
       workspace,
     )
     unwrap(await client.send(refreshExternalProviderSessionsRequest("claude")), "ExternalProviderSessionsRefreshed")
@@ -726,7 +726,7 @@ async function main() {
         : false
     }, "kernel external active prompt for Claude TUI queue guard", 30_000)
 
-    const claudeQueuedPromptText = `arroba prompt queued behind external Claude TUI turn ${marker}`
+    const claudeQueuedPromptText = `chariox prompt queued behind external Claude TUI turn ${marker}`
     await automation.send("submit_prompt", { prompt: claudeQueuedPromptText })
     const claudeQueuedSnapshot = await waitForSnapshot(
       automation,

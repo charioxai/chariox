@@ -166,7 +166,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
       sendUpstream(message)
       return
     }
-    const upstreamId = `arroba-proxy-${nextUpstreamRequestId++}`
+    const upstreamId = `chariox-proxy-${nextUpstreamRequestId++}`
     pendingRequests.set(upstreamId, {
       downstream,
       originalId: message.id,
@@ -248,7 +248,7 @@ export async function startCodexProxy(options: CodexProxyOptions): Promise<Codex
     sendDownstream(downstream, {
       id: message.id,
       result: {
-        server: "arroba-codex-native-proxy",
+        server: "chariox-codex-native-proxy",
         version: "0.0.0-native-tui",
       },
     })

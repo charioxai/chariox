@@ -36,13 +36,13 @@ test("cross repo validation gate help lists artifact identity requirements", asy
 })
 
 test("cross repo validation gate combines OSS and Cloud matrix evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     const outputPath = path.join(rootDir, "gate.json")
-    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
     await writeDrillPlatformBundle(bundleDir)
     await writeMatrixReport(path.join(ossRoot, ".artifacts", "drill-matrices", "slice-runtime.json"), {
       matrix: "slice-runtime-matrix",
@@ -117,7 +117,7 @@ test("cross repo validation gate combines OSS and Cloud matrix evidence", async 
     assert.deepEqual(fileReport, report)
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
-    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.equal(report.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite_run.v1"], 1)
     assert.deepEqual(report.checks.artifacts.requiredArtifactProviderAccountAliases, ["codex=work"])
     assert.deepEqual(report.checks.artifacts.missingArtifactProviderAccountAliases, [])
     assert.deepEqual(report.checks.artifacts.aggregate.providerAccountAliases, { "codex=work": 1 })

@@ -38,7 +38,7 @@ import {
 } from '../drill-artifacts.test-support.mjs'
 
 test("drill artifacts are removed after a passing run", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-pass-"))
   await prepareDrillArtifacts(root)
 
   const result = await finalizeDrillArtifacts({ rootDir: root, passed: true })
@@ -49,7 +49,7 @@ test("drill artifacts are removed after a passing run", async () => {
 })
 
 test("drill artifacts can be preserved after a passing run", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-pass-preserved-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-pass-preserved-"))
   const events = []
   await prepareDrillArtifacts(root)
   await writeFile(path.join(root, "evidence.txt"), "kept\n", "utf8")
@@ -72,7 +72,7 @@ test("drill artifacts can be preserved after a passing run", async () => {
 test("normalizes drill artifact lifecycle roots to absolute paths", async () => {
   const targetRoot = path.join(process.cwd(), "target")
   await mkdir(targetRoot, { recursive: true })
-  const absoluteRoot = await mkdtemp(path.join(targetRoot, "arroba-drill-artifacts-lifecycle-"))
+  const absoluteRoot = await mkdtemp(path.join(targetRoot, "chariox-drill-artifacts-lifecycle-"))
   const relativeRoot = path.relative(process.cwd(), absoluteRoot)
   const events = []
 
@@ -85,12 +85,12 @@ test("normalizes drill artifact lifecycle roots to absolute paths", async () => 
   })
 
   assert.equal(result.rootDir, absoluteRoot)
-  assert.equal(result.manifestPath, path.join(absoluteRoot, "arroba-drill-failure.json"))
+  assert.equal(result.manifestPath, path.join(absoluteRoot, "chariox-drill-failure.json"))
   assert.deepEqual(events, [{
     name: "preserved-failed-run",
     details: {
       rootDir: absoluteRoot,
-      manifestPath: path.join(absoluteRoot, "arroba-drill-failure.json"),
+      manifestPath: path.join(absoluteRoot, "chariox-drill-failure.json"),
     },
   }])
   const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"))
@@ -104,7 +104,7 @@ test("normalizes drill artifact lifecycle roots to absolute paths", async () => 
 })
 
 test("drill artifacts are preserved with a failure manifest after a failed run", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-fail-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-fail-"))
   const events = []
   await prepareDrillArtifacts(root)
 
@@ -127,7 +127,7 @@ test("drill artifacts are preserved with a failure manifest after a failed run",
   assert.equal(result.preserved, true)
   assert.equal(events[0].name, "preserved-failed-run")
   const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"))
-  assert.equal(manifest.schema, "arroba.drill.failure.v1")
+  assert.equal(manifest.schema, "chariox.drill.failure.v1")
   assert.equal(manifest.metadata.drill, "hosted-cloud-relay")
   assert.equal(manifest.metadata.relayToken, "<redacted>")
   assert.equal(manifest.metadata.provider, "<redacted>")
@@ -140,11 +140,11 @@ test("drill artifacts are preserved with a failure manifest after a failed run",
 })
 
 test("writes and verifies drill artifact indexes", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "gate.json"), `${JSON.stringify({
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
       status: "passed",
     })}\n`, "utf8")
     await writeFile(path.join(root, "reports", "notes.log"), "plain log\n", "utf8")
@@ -157,7 +157,7 @@ test("writes and verifies drill artifact indexes", async () => {
         relayToken: "relay-token-should-not-persist",
       },
     })
-    const indexPath = path.join(root, "arroba-drill-artifacts.json")
+    const indexPath = path.join(root, "chariox-drill-artifacts.json")
     const readIndex = await readDrillArtifactIndex(indexPath)
     const verified = await verifyDrillArtifactIndex(indexPath)
 
@@ -171,7 +171,7 @@ test("writes and verifies drill artifact indexes", async () => {
       "reports/notes.log",
     ])
     assert.deepEqual(index.artifacts.map((artifact) => artifact.schema), [
-      "arroba.drill.validation_gate.v1",
+      "chariox.drill.validation_gate.v1",
       null,
     ])
     assert.doesNotMatch(JSON.stringify(index), /should-not-persist/)
@@ -183,17 +183,17 @@ test("writes and verifies drill artifact indexes", async () => {
 test("normalizes drill artifact index roots to absolute paths", async () => {
   const targetRoot = path.join(process.cwd(), "target")
   await mkdir(targetRoot, { recursive: true })
-  const root = await mkdtemp(path.join(targetRoot, "arroba-drill-artifacts-relative-"))
+  const root = await mkdtemp(path.join(targetRoot, "chariox-drill-artifacts-relative-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
-    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"chariox.drill.validation_gate.v1\"}\n", "utf8")
     const relativeRoot = path.relative(process.cwd(), root)
 
     const index = await writeDrillArtifactIndex({
       rootDir: relativeRoot,
       artifacts: ["reports/gate.json"],
     })
-    const verified = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+    const verified = await verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json"))
 
     assert.equal(index.rootDir, root)
     assert.deepEqual(verified, index)
@@ -203,7 +203,7 @@ test("normalizes drill artifact index roots to absolute paths", async () => {
 })
 
 test("verifies runtime signal manifests embedded in validation artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-signals-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
@@ -217,19 +217,19 @@ test("verifies runtime signal manifests embedded in validation artifacts", async
       },
     })
 
-    assert.deepEqual(await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")), index)
+    assert.deepEqual(await verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")), index)
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
 })
 
 test("rejects validation artifacts that advertise runtime signals without a manifest", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-signals-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
       manifest: {
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
         command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
         testCount: 1,
         testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
@@ -246,7 +246,7 @@ test("rejects validation artifacts that advertise runtime signals without a mani
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json is missing manifest\.runtimeSignalsManifest/,
     )
   } finally {
@@ -255,12 +255,12 @@ test("rejects validation artifacts that advertise runtime signals without a mani
 })
 
 test("rejects validation artifacts that advertise required runtime signals without a manifest", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-signals-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
       manifest: {
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
         command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
         testCount: 1,
         testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
@@ -277,7 +277,7 @@ test("rejects validation artifacts that advertise required runtime signals witho
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json is missing manifest\.runtimeSignalsManifest/,
     )
   } finally {
@@ -286,7 +286,7 @@ test("rejects validation artifacts that advertise required runtime signals witho
 })
 
 test("rejects validation artifacts that advertise required runtime authority invariants without a manifest", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-authority-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-authority-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
@@ -300,7 +300,7 @@ test("rejects validation artifacts that advertise required runtime authority inv
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json is missing manifest\.runtimeAuthorityManifest/,
     )
   } finally {
@@ -309,12 +309,12 @@ test("rejects validation artifacts that advertise required runtime authority inv
 })
 
 test("rejects validation artifacts that advertise required failure classifications without a taxonomy manifest", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-failure-taxonomy-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-failure-taxonomy-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
       manifest: {
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
         command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
         testCount: 1,
         testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
@@ -330,7 +330,7 @@ test("rejects validation artifacts that advertise required failure classificatio
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json is missing manifest\.failureTaxonomyManifest/,
     )
   } finally {
@@ -339,7 +339,7 @@ test("rejects validation artifacts that advertise required failure classificatio
 })
 
 test("verifies Cloud validation artifacts with compatible contextual contracts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-cloud-contracts-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-cloud-contracts-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     const taxonomy = drillFailureTaxonomyManifest()
@@ -382,7 +382,7 @@ test("verifies Cloud validation artifacts with compatible contextual contracts",
         requiredRuntimeAuthorityInvariants: cloudAuthority.invariants.map((invariant) => invariant.id).join(","),
       },
     })
-    const verifiedCloudIndex = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+    const verifiedCloudIndex = await verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json"))
     const aggregate = summarizeDrillArtifactIndexes([verifiedCloudIndex])
     assert.equal(aggregate.runtimeAuthorityInvariants["cloud-control-plane-only"], undefined)
     assert.equal(aggregate.runtimeAuthorityInvariants["relay-cloud-transport-only"], 1)
@@ -394,7 +394,7 @@ test("verifies Cloud validation artifacts with compatible contextual contracts",
       metadata: { evidenceRepos: "oss" },
     })
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /failureTaxonomyManifest\.classifications\[1\] has invalid nextAction/,
     )
   } finally {
@@ -403,13 +403,13 @@ test("verifies Cloud validation artifacts with compatible contextual contracts",
 })
 
 test("rejects validation artifacts with malformed runtime signal manifests", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-signals-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     const manifest = drillRuntimeSignalsManifest()
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
       manifest: {
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
         command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
         testCount: 1,
         testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
@@ -431,7 +431,7 @@ test("rejects validation artifacts with malformed runtime signal manifests", asy
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json\.manifest\.runtimeSignalsManifest does not match required runtime signals/,
     )
   } finally {
@@ -440,7 +440,7 @@ test("rejects validation artifacts with malformed runtime signal manifests", asy
 })
 
 test("rejects malformed validation suite run artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-run-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-suite-run-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
@@ -453,7 +453,7 @@ test("rejects malformed validation suite run artifacts", async () => {
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json ok does not match status/,
     )
   } finally {
@@ -462,7 +462,7 @@ test("rejects malformed validation suite run artifacts", async () => {
 })
 
 test("rejects validation suite run artifacts with inconsistent manifest fields", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-run-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-suite-run-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact({
@@ -475,7 +475,7 @@ test("rejects validation suite run artifacts with inconsistent manifest fields",
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json\.testCount must match manifest\.testCount/,
     )
   } finally {
@@ -484,11 +484,11 @@ test("rejects validation suite run artifacts with inconsistent manifest fields",
 })
 
 test("rejects malformed validation suite manifest artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-manifest-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-suite-manifest-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify({
-      schema: "arroba.drill.validation_suite.v1",
+      schema: "chariox.drill.validation_suite.v1",
     }, null, 2)}\n`, "utf8")
 
     await writeDrillArtifactIndex({
@@ -497,7 +497,7 @@ test("rejects malformed validation suite manifest artifacts", async () => {
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite\.json is missing command/,
     )
   } finally {
@@ -506,7 +506,7 @@ test("rejects malformed validation suite manifest artifacts", async () => {
 })
 
 test("rejects validation suite artifacts with mismatched metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-metadata-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-suite-metadata-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify(validationSuiteManifestArtifact(), null, 2)}\n`, "utf8")
@@ -520,7 +520,7 @@ test("rejects validation suite artifacts with mismatched metadata", async () => 
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite\.json metadata\.artifactKinds must include validation-suite/,
     )
   } finally {
@@ -529,7 +529,7 @@ test("rejects validation suite artifacts with mismatched metadata", async () => 
 })
 
 test("rejects validation suite run artifacts with stale metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-suite-metadata-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-suite-metadata-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite-run.json"), `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
@@ -545,7 +545,7 @@ test("rejects validation suite run artifacts with stale metadata", async () => {
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /suite-run\.json metadata\.status must match artifact status/,
     )
   } finally {
@@ -554,11 +554,11 @@ test("rejects validation suite run artifacts with stale metadata", async () => {
 })
 
 test("rejects malformed matrix report artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-matrix-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify({
-      schema: "arroba.drill.matrix.v1",
+      schema: "chariox.drill.matrix.v1",
     }, null, 2)}\n`, "utf8")
 
     await writeDrillArtifactIndex({
@@ -567,7 +567,7 @@ test("rejects malformed matrix report artifacts", async () => {
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /matrix\.json is missing matrix/,
     )
   } finally {
@@ -576,7 +576,7 @@ test("rejects malformed matrix report artifacts", async () => {
 })
 
 test("verifies focused runtime gate artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-focused-runtime-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact(), null, 2)}\n`, "utf8")
@@ -591,17 +591,17 @@ test("verifies focused runtime gate artifacts", async () => {
         runtimeSignalOwners: "kernel-authority",
       },
     })
-    const verified = await verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json"))
+    const verified = await verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json"))
 
     assert.deepEqual(verified, index)
-    assert.deepEqual(index.artifacts.map((artifact) => artifact.schema), ["arroba.drill.focused_runtime_gate.v1"])
+    assert.deepEqual(index.artifacts.map((artifact) => artifact.schema), ["chariox.drill.focused_runtime_gate.v1"])
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
   }
 })
 
 test("rejects malformed focused runtime gate artifacts", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-focused-runtime-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact({
@@ -613,7 +613,7 @@ test("rejects malformed focused runtime gate artifacts", async () => {
       artifacts: ["reports/focused.json"],
     })
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /focused\.json status does not match embedded report statuses/,
     )
   } finally {
@@ -622,7 +622,7 @@ test("rejects malformed focused runtime gate artifacts", async () => {
 })
 
 test("rejects focused runtime gate artifacts with stale metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-focused-runtime-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-focused-runtime-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "focused.json"), `${JSON.stringify(focusedRuntimeGateReportArtifact(), null, 2)}\n`, "utf8")
@@ -635,7 +635,7 @@ test("rejects focused runtime gate artifacts with stale metadata", async () => {
       },
     })
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /focused\.json metadata\.artifactKinds must include focused-runtime-gate/,
     )
 
@@ -648,7 +648,7 @@ test("rejects focused runtime gate artifacts with stale metadata", async () => {
       },
     })
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /focused\.json metadata\.status must match artifact status/,
     )
   } finally {
@@ -657,7 +657,7 @@ test("rejects focused runtime gate artifacts with stale metadata", async () => {
 })
 
 test("rejects matrix report artifacts with stale metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-matrix-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify(matrixReportArtifact(), null, 2)}\n`, "utf8")
@@ -675,7 +675,7 @@ test("rejects matrix report artifacts with stale metadata", async () => {
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /matrix\.json metadata\.matrix must match artifact matrix/,
     )
   } finally {
@@ -684,7 +684,7 @@ test("rejects matrix report artifacts with stale metadata", async () => {
 })
 
 test("rejects matrix report artifacts with stale planned diagnostic metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-matrix-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-matrix-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "matrix.json"), `${JSON.stringify(matrixReportArtifact({
@@ -723,7 +723,7 @@ test("rejects matrix report artifacts with stale planned diagnostic metadata", a
     })
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /matrix\.json metadata\.plannedOwners must match artifact planned diagnostics/,
     )
   } finally {
@@ -732,11 +732,11 @@ test("rejects matrix report artifacts with stale planned diagnostic metadata", a
 })
 
 test("rejects inconsistent drill runtime signal owner metadata", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-runtime-signals-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-runtime-signals-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     await writeFile(path.join(root, "reports", "suite.json"), `${JSON.stringify({
-      schema: "arroba.drill.validation_suite.v1",
+      schema: "chariox.drill.validation_suite.v1",
       runtimeSignalsManifest: drillRuntimeSignalsManifest(),
     })}\n`, "utf8")
 

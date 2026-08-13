@@ -56,12 +56,12 @@ test("distributed runtime gate accepts a pnpm argument separator", async () => {
 })
 
 test("distributed runtime gate passes with complete OSS and Cloud matrix evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const outputPath = path.join(rootDir, "gate.json")
-    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -129,7 +129,7 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
     assert.deepEqual(report.checks.artifacts.requiredArtifactCoverageAreas, ["distributed-observability"])
     assert.deepEqual(report.checks.artifacts.missingArtifactCoverageAreas, [])
     assert.equal(report.checks.artifacts.aggregate.coverageAreas["distributed-observability"], 2)
-    assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
     assert.deepEqual(report.checks.artifacts.requiredArtifactKinds, ["validation-suite-run"])
     assert.deepEqual(report.checks.artifacts.requiredArtifactEvidenceRepos, ["cloud", "oss"])
     assert.deepEqual(report.checks.artifacts.missingArtifactEvidenceRepos, [])
@@ -199,10 +199,10 @@ test("distributed runtime gate passes with complete OSS and Cloud matrix evidenc
 })
 
 test("distributed runtime gate requires default artifact indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       coverageAreas: ["suite-contract"],
@@ -224,8 +224,8 @@ test("distributed runtime gate requires default artifact indexes", async () => {
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
         assert.equal(report.checks.artifacts.status, "failed")
-        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
-        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
+        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
         return true
       },
     )
@@ -241,8 +241,8 @@ test("distributed runtime gate requires default artifact indexes", async () => {
     ])).stdout)
     assert.equal(discovered.status, "passed")
     assert.equal(discovered.checks.artifacts.status, "passed")
-    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
-    assert.deepEqual(discovered.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite_run.v1"], 2)
+    assert.deepEqual(discovered.checks.artifacts.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
     assert.deepEqual(discovered.checks.artifacts.missingArtifactSchemas, [])
     assert.deepEqual(discovered.checks.artifacts.requiredArtifactEvidenceRepos, ["cloud", "oss"])
     assert.deepEqual(discovered.checks.artifacts.missingArtifactEvidenceRepos, [])
@@ -255,10 +255,10 @@ test("distributed runtime gate requires default artifact indexes", async () => {
 })
 
 test("distributed runtime gate accepts explicit artifact evidence inputs", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const explicitArtifactRoot = path.join(rootDir, "validation-artifacts", "cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     const ossArtifactIndex = await writeValidationSuiteArtifact(path.join(rootDir, "validation-artifacts", "oss"), {
@@ -291,10 +291,10 @@ test("distributed runtime gate accepts explicit artifact evidence inputs", async
 })
 
 test("distributed runtime gate can run validation suites as artifact evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeFakeValidationSuiteScript({
@@ -321,15 +321,15 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
     ])).stdout)
 
     const expectedArtifactIndexes = [
-      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
-      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "oss", "chariox-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "cloud", "chariox-drill-artifacts.json"),
     ]
     assert.equal(report.status, "passed")
     assert.equal(report.checks.artifacts.status, "passed")
     assert.deepEqual(report.checks.artifacts.inputs, expectedArtifactIndexes)
     assert.equal(report.checks.artifacts.aggregate.evidenceRepos.cloud, 1)
     assert.equal(report.checks.artifacts.aggregate.evidenceRepos.oss, 1)
-    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 2)
+    assert.equal(report.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite_run.v1"], 2)
     assert.deepEqual(report.generatedEvidence.validationSuites, {
       artifactIndexes: expectedArtifactIndexes.sort(),
       failureRoots: [
@@ -338,7 +338,7 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
       ].sort(),
       commands: [
         {
-          artifactIndexPath: path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+          artifactIndexPath: path.join(validationSuiteOutputRoot, "oss", "chariox-drill-artifacts.json"),
           args: [
             "--run-json",
             "--preserve-failure-root",
@@ -352,7 +352,7 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
             "--output",
             path.join(validationSuiteOutputRoot, "oss", "drill-validation-suite-run.json"),
             "--output-artifact-index",
-            path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+            path.join(validationSuiteOutputRoot, "oss", "chariox-drill-artifacts.json"),
             "--preserve-failure-root",
             path.join(validationSuiteOutputRoot, "oss", "failed-run"),
           ],
@@ -360,7 +360,7 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
           scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
         },
         {
-          artifactIndexPath: path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+          artifactIndexPath: path.join(validationSuiteOutputRoot, "cloud", "chariox-drill-artifacts.json"),
           args: [
             "--run-json",
             "--preserve-failure-root",
@@ -374,7 +374,7 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
             "--output",
             path.join(validationSuiteOutputRoot, "cloud", "cloud-validation-suite-run.json"),
             "--output-artifact-index",
-            path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
+            path.join(validationSuiteOutputRoot, "cloud", "chariox-drill-artifacts.json"),
             "--preserve-failure-root",
             path.join(validationSuiteOutputRoot, "cloud", "failed-run"),
           ],
@@ -395,10 +395,10 @@ test("distributed runtime gate can run validation suites as artifact evidence", 
 })
 
 test("distributed runtime gate can run matrix reports as evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const matrixOutputRoot = path.join(rootDir, "generated-matrices")
     const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
     const outputPath = path.join(rootDir, "distributed-runtime-gate.json")
@@ -549,12 +549,12 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--include-opencode",
     ])
     assert.deepEqual(report.generatedEvidence.validationSuites.artifactIndexes, [
-      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
-      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "cloud", "chariox-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "oss", "chariox-drill-artifacts.json"),
     ].sort())
     assert.equal(artifactIndex.metadata.generatedValidationSuiteArtifactIndexes, [
-      path.join(validationSuiteOutputRoot, "cloud", "arroba-drill-artifacts.json"),
-      path.join(validationSuiteOutputRoot, "oss", "arroba-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "cloud", "chariox-drill-artifacts.json"),
+      path.join(validationSuiteOutputRoot, "oss", "chariox-drill-artifacts.json"),
     ].sort().join(","))
     assert.equal(artifactIndex.metadata.generatedMatrixArtifactIndexes, [
       path.join(matrixOutputRoot, "cloud", "browser-terminal-resilience-matrix-artifacts.json"),
@@ -598,10 +598,10 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
 })
 
 test("distributed runtime gate labels dry-run generated matrix limitations", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const matrixOutputRoot = path.join(rootDir, "generated-matrices")
     const validationSuiteOutputRoot = path.join(rootDir, "generated-validation-suites")
     const outputPath = path.join(rootDir, "distributed-runtime-gate.json")

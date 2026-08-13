@@ -58,10 +58,10 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
   if (existing) return existingBinary
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -172,20 +172,20 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
   // Keep the Unix socket path short; macOS fails bind() with long paths.
-  const automationSocket = path.join(os.tmpdir(), `arroba-cli-auto-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-cli-auto-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `embedded-shell-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `embedded-shell-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -200,7 +200,7 @@ async function main() {
     await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
-    await writeFile(path.join(workspace, 'embedded-flow.arroba'), [
+    await writeFile(path.join(workspace, 'embedded-flow.chariox'), [
       'context',
       'pwd',
       'agent spawn alpha shell-drill-model as alpha',
@@ -262,7 +262,7 @@ async function main() {
     requireCondition(switched.screen === 'workflow' && switched.workflowScreenActive === true, 'workflow screen did not activate', switched)
     await automation.send('wait_for', { screen: 'workflow', timeoutMs: 5000 })
 
-    const sourceResult = await automation.send('workspace_shell_exec', { command: 'source embedded-flow.arroba' })
+    const sourceResult = await automation.send('workspace_shell_exec', { command: 'source embedded-flow.chariox' })
     requireCondition(sourceResult.result?.ok === true, 'embedded shell source failed', sourceResult)
     const snapshot = sourceResult.snapshot
     sessionId = snapshot.session?.id ?? null
@@ -273,7 +273,7 @@ async function main() {
     requireCondition(workflow.endpointCount === 1, 'workflow endpoint count mismatch', workflow)
     requireCondition(snapshot.selectedWorkflowId === workflow.id, 'workflow pane did not select shell-created workflow', snapshot)
     requireCondition(snapshot.shell?.entries?.length === 1, 'shell transcript did not record source command', snapshot.shell)
-    requireCondition(/@ source embedded-flow\.arroba/.test(snapshot.shell.transcript), 'shell transcript missing source command', snapshot.shell)
+    requireCondition(/@ source embedded-flow\.chariox/.test(snapshot.shell.transcript), 'shell transcript missing source command', snapshot.shell)
     requireCondition(/workspace: /.test(snapshot.shell.transcript), 'shell transcript missing context output', snapshot.shell)
 
     const showResult = await automation.send('workspace_shell_exec', { command: 'workflow show $wf' })

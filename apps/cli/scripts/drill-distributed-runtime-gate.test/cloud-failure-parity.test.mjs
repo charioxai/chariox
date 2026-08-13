@@ -38,10 +38,10 @@ import {
 } from '../drill-distributed-runtime-gate.test-support.mjs'
 
 test("distributed runtime gate requires executed Cloud validation suite artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteManifestArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
 
@@ -59,9 +59,9 @@ test("distributed runtime gate requires executed Cloud validation suite artifact
         const report = JSON.parse(error.stdout)
         assert.equal(error.code, 1)
         assert.equal(report.status, "failed")
-        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
-        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
-        assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite.v1"], 1)
+        assert.deepEqual(report.checks.artifacts.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
+        assert.deepEqual(report.checks.artifacts.missingArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
+        assert.equal(report.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite.v1"], 1)
         return true
       },
     )
@@ -71,10 +71,10 @@ test("distributed runtime gate requires executed Cloud validation suite artifact
 })
 
 test("distributed runtime gate requires Cloud validation suite distributed observability coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       coverageAreas: ["suite-contract"],
@@ -112,14 +112,14 @@ test("distributed runtime gate requires Cloud validation suite distributed obser
 })
 
 test("distributed runtime gate can include default failure manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
-    await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "arroba-drill-failure.json"), {
+    await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "chariox-drill-failure.json"), {
       drill: "cloud-slice-runtime-matrix",
       message: "slice auth stale projection",
     })
@@ -167,14 +167,14 @@ test("distributed runtime gate can include default failure manifests", async () 
 })
 
 test("distributed runtime gate accepts explicit failure manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
-    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "arroba-drill-failure.json"), {
+    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "chariox-drill-failure.json"), {
       drill: "remote-agent-runtime-matrix",
       message: "worker lease expired",
     })
@@ -208,10 +208,10 @@ test("distributed runtime gate accepts explicit failure manifests", async () => 
 })
 
 test("distributed runtime gate reports missing hosted Cloud evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: false })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), { evidenceRepo: "oss" })
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
@@ -256,7 +256,7 @@ test("distributed runtime gate reports missing hosted Cloud evidence", async () 
 
 test("distributed runtime gate rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -266,10 +266,10 @@ test("distributed runtime gate rejects output artifact index without output", as
 })
 
 test("distributed runtime gate can require generated matrix registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -296,10 +296,10 @@ test("distributed runtime gate can require generated matrix registry parity", as
 })
 
 test("distributed runtime gate can require chaos contract registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -325,13 +325,13 @@ test("distributed runtime gate can require chaos contract registry parity", asyn
 })
 
 test("distributed runtime gate rejects chaos contract registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillChaosContractManifest()
     await writeCloudChaosContractRegistry(cloudRoot, {
       ...manifest,
-      replaySchema: "arroba.drill.chaos_replay.v2",
+      replaySchema: "chariox.drill.chaos_replay.v2",
     })
 
     await assert.rejects(
@@ -355,9 +355,9 @@ test("distributed runtime gate rejects chaos contract registry drift", async () 
 })
 
 test("distributed runtime gate rejects generated matrix registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
       matrices: [
         { name: "cloud-slice-runtime-matrix", repo: "cloud" },
@@ -385,10 +385,10 @@ test("distributed runtime gate rejects generated matrix registry drift", async (
 })
 
 test("distributed runtime gate can require runtime signal registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -415,10 +415,10 @@ test("distributed runtime gate can require runtime signal registry parity", asyn
 })
 
 test("distributed runtime gate can require runtime authority registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -445,10 +445,10 @@ test("distributed runtime gate can require runtime authority registry parity", a
 })
 
 test("distributed runtime gate can require failure taxonomy registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, includeCloud: true })
     await writeValidationSuiteArtifact(path.join(ossRoot, ".artifacts", "validation-suite"), {
       evidenceRepo: "oss",
@@ -475,9 +475,9 @@ test("distributed runtime gate can require failure taxonomy registry parity", as
 })
 
 test("distributed runtime gate rejects failure taxonomy registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
@@ -507,9 +507,9 @@ test("distributed runtime gate rejects failure taxonomy registry drift", async (
 })
 
 test("distributed runtime gate rejects runtime signal registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillRuntimeSignalsManifest()
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
       signals: manifest.signals.filter((signal) => signal.id !== "home-extension-manifest-sync"),
@@ -536,9 +536,9 @@ test("distributed runtime gate rejects runtime signal registry drift", async () 
 })
 
 test("distributed runtime gate rejects runtime authority registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillRuntimeAuthorityManifest()
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: manifest.invariants.filter((invariant) => invariant.id !== "shared-runtime-primitives"),

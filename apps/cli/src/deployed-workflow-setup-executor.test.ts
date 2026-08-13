@@ -96,7 +96,7 @@ const completedSetup: DeploymentSetup = {
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
   email: "user@example.test",
   accountId: "account-1",
   userId: "user-1",

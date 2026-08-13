@@ -253,7 +253,7 @@ test("kernel health formatter reports workspace live sync and collision issues",
   assert.match(rendered, /workspace active operations:/)
   assert.match(rendered, /write live_sync_apply workspace=workspace-1 worktree=\/repo session=session-1/)
   assert.match(rendered, /next: stop and relaunch provider run provider-run-identity after confirming the selected worktree/)
-  assert.match(rendered, /next: run \/workspace sync status, then \/workspace sync ignore; check \.arrobaignore, selected workspace paths, and permissions before refreshing/)
+  assert.match(rendered, /next: run \/workspace sync status, then \/workspace sync ignore; check \.charioxignore, selected workspace paths, and permissions before refreshing/)
   assert.match(rendered, /workspace identity issues: changed=1 invalid=2/)
   assert.match(rendered, /run=provider-run-identity root=\/repo generation=7 valid=no fingerprint=root-a->root-b branch=main->feature head=abc123->def456 repo=git@example.com:repo.git->git@example.com:repo.git/)
   assert.match(rendered, /workspace external changes:/)
@@ -349,7 +349,7 @@ test("kernel health formatter reports transport terminal and capability issues",
   assert.match(rendered, /next: reconnect stale clients/)
   assert.match(rendered, /terminal stream trimmed pending output for 2 recipients/)
   assert.match(rendered, /next: refresh the terminal session/)
-  assert.match(rendered, /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
+  assert.match(rendered, /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from chariox-shell/)
 })
 
 test("kernel health formatter reports session and agent projection invariants", () => {

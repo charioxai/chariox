@@ -4,7 +4,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import {
   backendProviderLabel,
   isBackendProviderId,
@@ -44,7 +44,7 @@ type ProviderSelectionControllerDeps = {
   availableSessions: () => SessionListEntry[]
   providerCatalog: () => ProviderCatalog
   themeRegistry: () => ThemeRegistry
-  preferences: () => ArrobaPreferences
+  preferences: () => CharioxPreferences
   defaults: () => ProviderSelectionDefaults
   setDefaults: (selection: ProviderSelectionDefaults) => void
   reconcileWaitingRoom: (next: WaitingRoomState) => void

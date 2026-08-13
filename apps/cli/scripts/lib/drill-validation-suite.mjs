@@ -297,7 +297,7 @@ export function drillValidationSuiteCommand({ nodeCommand = "node", testPaths = 
 
 export function drillValidationSuiteManifest({
   nodeCommand = "node",
-  schema = "arroba.drill.validation_suite.v1",
+  schema = "chariox.drill.validation_suite.v1",
   testPaths = SHARED_DRILL_TEST_PATHS,
   coverageAreas = DRILL_VALIDATION_COVERAGE_AREAS,
   validationPresets = describeDrillValidationGatePresets(),
@@ -317,7 +317,7 @@ export function drillValidationSuiteManifest({
 }
 
 export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
-  const manifest = suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+  const manifest = suiteArtifact?.schema === "chariox.drill.validation_suite_run.v1"
     ? suiteArtifact.manifest
     : suiteArtifact
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
@@ -359,14 +359,14 @@ export function drillValidationSuiteArtifactMetadata(suiteArtifact) {
   const runtimeSignalOwners = drillRuntimeSignalOwnersFor(runtimeSignals)
   return {
     drill: "validation-suite",
-    ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),
-    ...(suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+    ...(suiteArtifact?.schema === "chariox.drill.validation_suite_run.v1" ? { status: suiteArtifact.status } : {}),
+    ...(suiteArtifact?.schema === "chariox.drill.validation_suite_run.v1"
       ? validationSuiteRunExitCriterionMetadata(suiteArtifact.status)
       : {}),
     tests: manifest.testCount,
     owners: "validation-platform",
     classifications: "validation-suite",
-    artifactKinds: suiteArtifact?.schema === "arroba.drill.validation_suite_run.v1"
+    artifactKinds: suiteArtifact?.schema === "chariox.drill.validation_suite_run.v1"
       ? "validation-suite-run"
       : "validation-suite",
     evidenceRepos: "oss",

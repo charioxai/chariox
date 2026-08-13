@@ -17,7 +17,7 @@ import {
   formatSessionRuntimeStatus,
   type RuntimeSession as SharedRuntimeSession,
   type SliceRecord as SharedSliceRecord,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
 const SESSION_AGENT_PERMISSION_CONFIG_KEY = "agents.permissions"

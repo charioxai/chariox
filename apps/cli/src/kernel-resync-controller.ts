@@ -4,7 +4,7 @@ import type {
 } from "./cli-types.js"
 import {
   sessionSnapshotRefreshTransition,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 
 const RESYNC_FORCE_PANE_REFRESH_REASONS = ["transport_resumed", "replay_gap"] as const
 

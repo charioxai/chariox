@@ -5,15 +5,15 @@ import type {
   TranscriptEntry,
 } from "./cli-types.js"
 import type { PromptHistoryHydrationController } from "./prompt-history-hydration-controller.js"
-import { selectResponsePaneAgents } from "@arroba/kernel-client/response-pane-selection"
+import { selectResponsePaneAgents } from "@chariox/kernel-client/response-pane-selection"
 import {
   sessionHistoryCursorForVisibleAgent,
-} from "@arroba/kernel-client/session-history-outline"
+} from "@chariox/kernel-client/session-history-outline"
 import {
   hydrateSessionHistoryOutlineAgentEntries,
-} from "@arroba/kernel-client/session-history-transcript"
-import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
-import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/session-history-transcript"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 
 export type AttachedSessionPrimeControllerDeps = {
   promptHistoryHydrationController: Pick<PromptHistoryHydrationController, "begin" | "loadAndApply">

@@ -65,8 +65,8 @@ async function commandPath(command) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -146,12 +146,12 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_DAEMON_ID: `script-extension-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1000),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_DAEMON_ID: `script-extension-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
   }
 
   let daemon = null
@@ -163,8 +163,8 @@ async function main() {
     python = process.env.PYTHON || await commandPath('python3') || await commandPath('python')
     if (!python) throw new Error('python3 or python is required for the script extension drill')
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     await writeFile(scriptPath, `
 def run(query: str, limit: int = 1) -> dict[str, object]:
     """Lookup deterministic rows from a vector database fixture."""

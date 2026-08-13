@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
-import { applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createWorkflowCodeArtifactRequest, exportWorkflowCodeArtifactRequest, exportWorkflowCodeSourceRequest, focusAgentRequest, getProviderRunRequest, getSessionStateRequest, importWorkflowCodeArtifactRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, validateWorkflowCodeRequest } from '@arroba/kernel-client'
+import { applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createWorkflowCodeArtifactRequest, exportWorkflowCodeArtifactRequest, exportWorkflowCodeSourceRequest, focusAgentRequest, getProviderRunRequest, getSessionStateRequest, importWorkflowCodeArtifactRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, validateWorkflowCodeRequest } from '@chariox/kernel-client'
 import { buildWorkflowOutline } from '../../dist/workflow-outline/build.js'
 import { renderWorkflowOutlineToText } from '../../dist/workflow-outline/text.js'
 import { assert, defaultToyExpectation, expectationFromDefinition, providerFamily, providerSetForDefinition, realProviderRebindingsForDefinition, rebindingByNode, rebindingsForDefinition, repoRoot, sha256Hex, shouldPrelaunchRealProvider, sleep, stage, topologyRuntimeExpectation, topologyRuntimeRebindingsForDefinition, unwrap, writeSourceDirectoryExport } from './workflow-code-artifact-drill-runtime.mjs'

@@ -8,9 +8,9 @@ import { drillChaosContractManifest } from "./drill-chaos-contract.mjs"
 import { verifyDrillChaosContractRegistryParity } from "./drill-chaos-contract-registry-parity.mjs"
 
 test("accepts matching OSS and Cloud chaos contracts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-chaos-contract-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-chaos-contract-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudChaosContractRegistry(cloudRoot)
     await assert.doesNotReject(verifyDrillChaosContractRegistryParity({ cloudRoot }))
   } finally {
@@ -19,9 +19,9 @@ test("accepts matching OSS and Cloud chaos contracts", async () => {
 })
 
 test("rejects drifted Cloud chaos contracts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-chaos-contract-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-chaos-contract-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillChaosContractManifest()
     await writeCloudChaosContractRegistry(cloudRoot, {
       ...manifest,
@@ -37,9 +37,9 @@ test("rejects drifted Cloud chaos contracts", async () => {
 })
 
 test("rejects missing Cloud chaos contract manifest exports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-chaos-contract-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-chaos-contract-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-chaos-contract.mjs")
     await mkdir(path.dirname(registryPath), { recursive: true })
     await writeFile(registryPath, "export const noManifest = true\n", "utf8")
@@ -53,9 +53,9 @@ test("rejects missing Cloud chaos contract manifest exports", async () => {
 })
 
 test("rejects malformed Cloud chaos contract manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-chaos-contract-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-chaos-contract-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudChaosContractRegistry(cloudRoot, {
       ...drillChaosContractManifest(),
       invariantIds: ["bounded-queues", "bounded-queues"],

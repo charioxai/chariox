@@ -4,7 +4,7 @@ import { inflateSync } from "node:zlib"
 
 import {
   assertNativeProviderAgentSelections,
-  arrobaAttachmentImagePng,
+  charioxAttachmentImagePng,
   attachedImagePrompt,
   attachSubscribedTerminalClient,
   baselinePrompt,
@@ -80,8 +80,8 @@ test("remote Claude drills use natural factual prompts instead of protocol senti
   const markers = {
     nativeA: "Mercury is the closest planet to the Sun",
     nativeB: "Jupiter is the largest planet in the Solar System",
-    arrobaA: "Canberra is the capital of Australia",
-    arrobaB: "Ottawa is the capital of Canada",
+    charioxA: "Canberra is the capital of Australia",
+    charioxB: "Ottawa is the capital of Canada",
   }
 
   for (const promptKey of Object.keys(markers)) {
@@ -99,7 +99,7 @@ test("remote Claude drills use natural factual prompts instead of protocol senti
 test("remote Claude attachment fixtures are visible images with natural prompts", () => {
   for (const [fixture, expectedRgb] of [
     [nativeAttachmentImagePng, [220, 30, 30]],
-    [arrobaAttachmentImagePng, [30, 80, 220]],
+    [charioxAttachmentImagePng, [30, 80, 220]],
   ]) {
     assert.equal(fixture.readUInt32BE(16), 256)
     assert.equal(fixture.readUInt32BE(20), 256)
@@ -107,7 +107,7 @@ test("remote Claude attachment fixtures are visible images with natural prompts"
     assert.equal(pixels.length, (256 * 3 + 1) * 256)
     assert.deepEqual([...pixels.subarray(1, 4)], expectedRgb)
   }
-  assert.equal(nativeAttachmentImagePng.equals(arrobaAttachmentImagePng), false)
+  assert.equal(nativeAttachmentImagePng.equals(charioxAttachmentImagePng), false)
 
   const prompt = attachedImagePrompt("dominant color is red", "claude")
   assert.match(prompt, /inspect the attached image/i)

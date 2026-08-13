@@ -136,7 +136,7 @@ function focusedRuntimeMatrixReport({
   scenarios,
 }) {
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix,
     status: "passed",
     dryRun: false,

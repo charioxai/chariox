@@ -13,14 +13,14 @@ import {
   LIVE_TRANSCRIPT_MAX_CHARS,
 } from "./cli-runtime-tuning.js"
 import { clampScrollTop } from "./history-viewport.js"
-import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
 import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import {
   getSessionHistoryBlobContent,
   getSessionHistoryOutline,
 } from "./session-history-api.js"
-import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
-import { splitPaneAuxiliaryAgentIds } from "@arroba/kernel-client/response-pane-selection"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
+import { splitPaneAuxiliaryAgentIds } from "@chariox/kernel-client/response-pane-selection"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,

@@ -61,7 +61,7 @@ export {
   validateDrillMatrixAggregate,
 } from "./drill-matrix-report-aggregate.mjs"
 
-const DRILL_MATRIX_REPORT_SCHEMA = "arroba.drill.matrix.v1"
+const DRILL_MATRIX_REPORT_SCHEMA = "chariox.drill.matrix.v1"
 
 export async function readDrillMatrixReport(reportPath) {
   const report = JSON.parse(await readFile(reportPath, "utf8"))
@@ -317,7 +317,7 @@ export function summarizeDrillMatrixReports(reports, { sources = [] } = {}) {
     }
   }
   return {
-    schema: "arroba.drill.matrix.aggregate.v1",
+    schema: "chariox.drill.matrix.aggregate.v1",
     status: totals.failed > 0
       ? "failed"
       : totals.reports > 0 && totals.dryRun === totals.scenarios

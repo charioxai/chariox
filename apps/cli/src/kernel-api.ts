@@ -5,7 +5,7 @@ import {
 import type { LocalIpcClient } from "./ipc.js"
 import { deleteKernelRequest, exportDebugBundleRequest, getDaemonHealthRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
-import type { DaemonHealthProjection } from "@arroba/kernel-client"
+import type { DaemonHealthProjection } from "@chariox/kernel-client"
 
 export async function deleteKernel(client: LocalIpcClient): Promise<{
   kernelId: string

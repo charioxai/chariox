@@ -1,4 +1,4 @@
-import { applyWorkflowCodeArtifactRequest, createWorkflowCodeArtifactRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, spawnAgentRequest } from '@arroba/kernel-client'
+import { applyWorkflowCodeArtifactRequest, createWorkflowCodeArtifactRequest, invokeWorkflowEndpointRequest, launchProviderRunRequest, spawnAgentRequest } from '@chariox/kernel-client'
 import { assert, existingAgentRebindings, existingAgentWorkflowCodeSource, outputSchemaWorkflowCodeSource, unwrap } from './workflow-code-artifact-drill-runtime.mjs'
 import { validateApplyResult, validateSessionProjection } from './workflow-code-artifact-drill-topology.mjs'
 import { waitForCompletedWorkflowRun, waitForProviderRunReady } from './workflow-code-artifact-drill-waits.mjs'

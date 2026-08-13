@@ -33,7 +33,7 @@ test('browser publication recorder observes output changes without a status chan
   output.textContent = '{"value":1841}'
   for (const callback of observers.get(output) ?? []) callback()
 
-  assert.deepEqual([...window.__arrobaPublicationDrillOutputs], ['{"value":1841}'])
+  assert.deepEqual([...window.__charioxPublicationDrillOutputs], ['{"value":1841}'])
 })
 
 test('browser publication recorder captures transient WebSocket partial and final output', () => {
@@ -70,7 +70,7 @@ test('browser publication recorder captures transient WebSocket partial and fina
   }))
 
   assert.deepEqual(
-    [...window.__arrobaPublicationDrillOutputs],
+    [...window.__charioxPublicationDrillOutputs],
     ['{"value":1841}', '{"value":1842}'],
   )
 })

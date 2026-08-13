@@ -46,7 +46,7 @@ export function matrixReport(overrides = {}) {
   const durationMs = overrides.durationMs ?? 1000
   const completedAt = overrides.completedAt ?? new Date(Date.parse(startedAt) + durationMs).toISOString()
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "test-matrix",
     status,
     dryRun,

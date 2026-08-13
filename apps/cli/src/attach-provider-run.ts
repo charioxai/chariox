@@ -1,7 +1,7 @@
 import {
   resolveAttachTimeProviderLaunch,
   type SessionLifecycleLaunchSelection,
-} from "@arroba/kernel-client/session-lifecycle-state"
+} from "@chariox/kernel-client/session-lifecycle-state"
 
 import type {
   RuntimeProviderRun,

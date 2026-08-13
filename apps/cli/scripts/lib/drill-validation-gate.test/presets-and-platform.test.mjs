@@ -72,7 +72,7 @@ test("describes validation gate presets", () => {
 })
 
 test("passes with valid platform bundle and complete matrix reports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const matrixRoot = path.join(rootDir, "matrices")
@@ -85,7 +85,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
       requireComplete: true,
     })
 
-    assert.equal(report.schema, "arroba.drill.validation_gate.v1")
+    assert.equal(report.schema, "chariox.drill.validation_gate.v1")
     assert.equal(report.status, "passed")
     assert.equal(drillValidationGateExitCode(report), 0)
     assert.equal(report.checks.configuration.status, "passed")
@@ -116,7 +116,7 @@ test("passes with valid platform bundle and complete matrix reports", async () =
 })
 
 test("gates platform bundle validation suite coverage areas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -155,7 +155,7 @@ test("gates platform bundle validation suite coverage areas", async () => {
 })
 
 test("gates platform bundle failure taxonomy classifications", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -190,7 +190,7 @@ test("gates platform bundle failure taxonomy classifications", async () => {
 })
 
 test("gates platform bundle runtime signal coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -282,7 +282,7 @@ test("gates platform bundle runtime signal coverage", async () => {
 })
 
 test("applies validation gate requirement presets", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const reportPath = path.join(rootDir, "workspace-live-sync.json")
@@ -381,7 +381,7 @@ test("applies validation gate requirement presets", async () => {
 })
 
 test("runtime authority preset gates shared kernel-owned path evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -427,7 +427,7 @@ test("runtime authority preset gates shared kernel-owned path evidence", async (
 })
 
 test("distributed state health preset reports owner-routed missing diagnostics", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const reportPath = path.join(rootDir, "remote-agent-runtime.json")
@@ -480,7 +480,7 @@ test("distributed state health preset reports owner-routed missing diagnostics",
 })
 
 test("suppresses only preset-derived matrix classification requirements", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "workspace-live-sync.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -525,7 +525,7 @@ test("suppresses only preset-derived matrix classification requirements", async 
 })
 
 test("slice runtime preset accepts hosted Cloud evidence from a separate matrix report", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const sliceRuntimeReport = path.join(rootDir, "slice-runtime.json")

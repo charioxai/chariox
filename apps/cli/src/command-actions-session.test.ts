@@ -9,7 +9,7 @@ import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeA
 import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 
 test("session new can attach a new session in an existing directory", async () => {
-  const sessionDir = await mkdtemp(join(tmpdir(), "arroba-session-dir-"))
+  const sessionDir = await mkdtemp(join(tmpdir(), "chariox-session-dir-"))
   const createCalls: Array<{ workspace: string; worktree: string; alias: string | undefined }> = []
   let attachedSession: Pick<RuntimeSession, "id"> | null = null
   let flashedMessage = ""

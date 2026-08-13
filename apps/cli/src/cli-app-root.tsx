@@ -74,7 +74,7 @@ import {
 } from "./prompt-runtime-api.js"
 import {
   type QueuedPromptStripItem,
-} from "@arroba/kernel-client/queued-prompt-strip-state"
+} from "@chariox/kernel-client/queued-prompt-strip-state"
 import { createCliQueuedPromptController } from "./cli-queued-prompt-controller.js"
 import {
   type BackendProviderId,
@@ -90,7 +90,7 @@ import { createResponsePaneRenderRefStoreController } from "./response-pane-rend
 import { createResponsePaneRenderScheduleController } from "./response-pane-render-schedule-controller.js"
 import {
   extractPromptHistoryEntries,
-} from "@arroba/kernel-client/prompt-history"
+} from "@chariox/kernel-client/prompt-history"
 import {
   DEFAULT_CONNECTED_STATUS,
 } from "./runtime.js"
@@ -99,10 +99,10 @@ import {
 } from "./session-chrome-update-controller.js"
 import {
   SESSION_CONFIG_RESPONSE_LAYOUT_KEY,
-} from "@arroba/kernel-client/session-config-projection"
+} from "@chariox/kernel-client/session-config-projection"
 import {
   sessionFocusedAgentId,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import { createSessionStateApplyController } from "./session-state-apply-controller.js"
 import { resolveTerminalRecordAgentId as resolveTerminalRecordAgentIdFromState } from "./terminal-record-agent-resolver.js"
 import { createTranscriptScrollboxRefController } from "./transcript-scrollbox-ref-controller.js"
@@ -149,7 +149,7 @@ import {
 import {
   computeCurrentTranscriptTurnId as computeCurrentTurnId,
   computeNextTranscriptTurnId as computeNextTurnId,
-} from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/transcript-entry-state"
 import {
   type TranscriptEntryRenderable,
   type TranscriptSurfaceTone,
@@ -157,7 +157,7 @@ import {
 import { createTranscriptSyntaxStyleController } from "./transcript-syntax-style-controller.js"
 import { createTranscriptTurnStateController } from "./transcript-turn-state-controller.js"
 
-export function ArrobaCliApp(props: { bootstrap: BootstrapState }) {
+export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const {
     client, options, supportsKernelEventStream, initialBinding,
     initialSession, initialEntries, initialPromptDraft, initialWorkspaceTarget,

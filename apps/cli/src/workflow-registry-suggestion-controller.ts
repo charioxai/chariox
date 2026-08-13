@@ -1,6 +1,6 @@
 import {
   listWorkflowRegistryRequest,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 import { getLogger } from "./cli-runtime-singletons.js"
 import { workflowRegistrySuggestionEntriesFromResponse } from "./workflow-registry-command-center-entries.js"

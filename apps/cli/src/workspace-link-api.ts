@@ -3,7 +3,7 @@ import type {
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
-import type { RecallEvent } from "@arroba/kernel-client"
+import type { RecallEvent } from "@chariox/kernel-client"
 import type { LocalIpcClient } from "./ipc.js"
 import {
   attachWorkspaceLinkRequest,

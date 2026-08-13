@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 
 import {
   sessionAgentPaneStatusBadge,
-} from "@arroba/kernel-client/session-runtime-status"
+} from "@chariox/kernel-client/session-runtime-status"
 
 const agent = {
   id: "agent-a",

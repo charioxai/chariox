@@ -5,12 +5,12 @@ import {
   createPromptSessionStatePersistenceController,
   type PromptSessionStateUpdate,
 } from "./prompt-session-state-persistence-controller.js"
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 
 test("prompt session state persistence merges local preferences before saving", async () => {
   const calls: string[] = []
   const saved: Array<{ sessionId: string; next: PromptSessionStateUpdate }> = []
-  let preferences: ArrobaPreferences = {}
+  let preferences: CharioxPreferences = {}
   const controller = createPromptSessionStatePersistenceController({
     updatePreferences: (updater) => {
       calls.push("update")

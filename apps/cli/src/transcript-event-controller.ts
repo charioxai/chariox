@@ -1,11 +1,11 @@
 import type { AgentInstance, TranscriptEntry } from "./cli-types.js"
-import { compactTranscriptDisplayEntries } from "@arroba/kernel-client/transcript-display-state"
+import { compactTranscriptDisplayEntries } from "@chariox/kernel-client/transcript-display-state"
 import {
   createTranscriptSteeredPromptEntry,
   createTranscriptUserPromptTurn,
   computeNextTranscriptTurnId as computeNextTurnId,
   type TranscriptPromptMetadata,
-} from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/transcript-entry-state"
 
 export type TranscriptEventControllerDeps = {
   recordTurnActivity: (activityType: string) => void

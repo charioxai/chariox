@@ -28,9 +28,9 @@ const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
   path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "arroba-kernel",
+  "chariox-kernel",
 )
 const marker = `NTCMD_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
@@ -138,7 +138,7 @@ async function finalizeProviderArtifacts({ root, provider, passed, failure, opti
   await finalizeDrillArtifacts({
     rootDir: root,
     passed,
-    preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_COMMAND_ARTIFACTS === "1",
+    preserveOnFailure: options.keepArtifactsOnFailure || process.env.CHARIOX_KEEP_NATIVE_TUI_COMMAND_ARTIFACTS === "1",
     failure,
     metadata: {
       drill: "native-tui-provider-command",
@@ -237,7 +237,7 @@ async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
 }
 
 async function runNativeOpenCodeCommand(proxyUrl, providerSessionId, worktree, command, args) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
       "run",
@@ -283,7 +283,7 @@ async function runCodex(options) {
   const workspace = repoRoot
   const worktree = repoRoot
   const alias = "cdx-command"
-  const screenNative = `arroba-${provider}-command-${process.pid}`
+  const screenNative = `chariox-${provider}-command-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
     native: path.join(root, "native-screen", "screenlog.0"),
@@ -300,13 +300,13 @@ async function runCodex(options) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-command-${provider}-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-command-${provider}-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -332,10 +332,10 @@ async function runCodex(options) {
       "high",
     ], {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: "1",
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxy,
+      CHARIOX_CODEX_NATIVE_DEBUG: "1",
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxy,
     })
-    const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
+    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = (await waitForFileMatch(logs.native, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
     const threadId = (await waitForFileMatch(logs.proxy, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
 
@@ -388,13 +388,13 @@ async function runOpenCode(options) {
   const workspace = path.join(root, "workspace")
   const worktree = workspace
   const alias = "oc-command"
-  const screenNative = `arroba-${provider}-command-${process.pid}`
+  const screenNative = `chariox-${provider}-command-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
     native: path.join(root, "native-screen", "screenlog.0"),
     proxy: path.join(root, "native.proxy.log"),
   }
-  const commandName = "arroba_native_command"
+  const commandName = "chariox_native_command"
   const commandMarker = `${marker}_OPENCODE_PROVIDER_COMMAND`
   let daemon = null
   let client = null
@@ -408,7 +408,7 @@ async function runOpenCode(options) {
       command: {
         [commandName]: {
           template: `Reply with exactly ${commandMarker} and nothing else. Arguments: $ARGUMENTS`,
-          description: "Arroba native TUI provider command drill",
+          description: "Chariox native TUI provider command drill",
         },
       },
     }, null, 2))
@@ -416,13 +416,13 @@ async function runOpenCode(options) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-command-${provider}-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-command-${provider}-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -446,10 +446,10 @@ async function runOpenCode(options) {
       "yolo",
     ], {
       ...process.env,
-      ARROBA_OPENCODE_NATIVE_DEBUG: "1",
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxy,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxy,
     })
-    const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
+    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
     const providerSessionId = (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
 

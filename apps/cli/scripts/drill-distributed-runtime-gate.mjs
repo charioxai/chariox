@@ -40,19 +40,19 @@ import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
-const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
+const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "chariox-cloud")
 const DISTRIBUTED_RUNTIME_PROVIDER_ACCOUNT_PROVIDERS = Object.freeze(["claude", "codex", "opencode"])
 
 function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/drill-distributed-runtime-gate.mjs [options]",
     "",
-    "Runs the release-level distributed-runtime validation gate across arroba and arroba-cloud matrix artifacts.",
+    "Runs the release-level distributed-runtime validation gate across chariox and chariox-cloud matrix artifacts.",
     "This is a focused wrapper for --preset distributed-runtime; it generates a platform bundle unless one is supplied.",
     "",
     "Options:",
     "  --oss-root DIR          OSS repo root; defaults to this script's repo root",
-    "  --cloud-root DIR        Cloud repo root; defaults to ../arroba-cloud",
+    "  --cloud-root DIR        Cloud repo root; defaults to ../chariox-cloud",
     "  --no-default-roots      Only use matrix roots passed explicitly with --matrix-root",
     "  --matrix-root ROOT      Discover matrix reports below ROOT; repeatable",
     "  --artifact-index PATH   Read and verify a specific artifact index; repeatable",
@@ -155,7 +155,7 @@ async function main() {
   if (options.requireRuntimeAuthorityRegistryParity) {
     await verifyDrillRuntimeAuthorityRegistryParity(options)
   }
-  const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-platform-"))
+  const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-platform-"))
   try {
     const platformBundleDir = options.platformBundleDir ?? generatedBundleDir
     if (!options.platformBundleDir) {

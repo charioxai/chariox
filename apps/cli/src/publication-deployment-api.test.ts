@@ -176,7 +176,7 @@ async function publicationPackageFixture(
   },
   minimumLocalDaemonProtocolVersion = 240,
 ): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-package-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-package-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
     package_version: 3,

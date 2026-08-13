@@ -47,7 +47,7 @@ test("deployed workflow TUI command drives claim handoff and member access", asy
     if (pathname.endsWith("/access") || pathname.includes("/members")) {
       return jsonResponse({ access: accessState() })
     }
-    return jsonResponse({ claim: claimSummary(), claimToken: "arroba_claim_one_time_secret" }, 201)
+    return jsonResponse({ claim: claimSummary(), claimToken: "chariox_claim_one_time_secret" }, 201)
   }
   try {
     const handled = await handleDeployedWorkflowCloudCommand({
@@ -69,14 +69,14 @@ test("deployed workflow TUI command drives claim handoff and member access", asy
       "600",
     ])
     assert.equal(handled, true)
-    assert.match(notices[0] ?? "", /claim_token arroba_claim_one_time_secret/)
+    assert.match(notices[0] ?? "", /claim_token chariox_claim_one_time_secret/)
     assert.equal(footers[0], "deployment claim created; token shown once")
 
-    await executeDeployedWorkflowCommand(profile, ["claim", "review", "arroba_claim_one_time_secret"])
+    await executeDeployedWorkflowCommand(profile, ["claim", "review", "chariox_claim_one_time_secret"])
     const accepted = await executeDeployedWorkflowCommand(profile, [
       "claim",
       "accept",
-      "arroba_claim_one_time_secret",
+      "chariox_claim_one_time_secret",
       "--name",
       "Customer app",
       "--slug",
@@ -96,7 +96,7 @@ test("deployed workflow TUI command drives claim handoff and member access", asy
     await executeDeployedWorkflowCommand(profile, ["member", "revoke", "project-1", "member-1"])
 
     assert.equal(accepted.footer, "claimed deployment demo")
-    assert.doesNotMatch(access.notice, /arroba_claim_one_time_secret/)
+    assert.doesNotMatch(access.notice, /chariox_claim_one_time_secret/)
     assert.match(access.notice, /member member-1 active/)
     assert.deepEqual(calls[0]?.body, {
       accountId: "account-1",
@@ -109,7 +109,7 @@ test("deployed workflow TUI command drives claim handoff and member access", asy
     })
     assert.deepEqual(calls[2]?.body, {
       accountId: "account-1",
-      claimToken: "arroba_claim_one_time_secret",
+      claimToken: "chariox_claim_one_time_secret",
       projectName: "Customer app",
       projectSlug: "customer-app",
       runtimeMode: "local_runtime",
@@ -521,7 +521,7 @@ test("deployed workflow TUI command drives the complete domain lifecycle", async
     ])
     assert.match(shown.notice, /canonical demo\.apps\.example\.test/)
     assert.match(shown.notice, /domain domain-1 custom pending_dns canonical=no/)
-    assert.match(shown.notice, /txt_value arroba-domain-token/)
+    assert.match(shown.notice, /txt_value chariox-domain-token/)
     assert.match(shown.notice, /dns pending/)
     assert.match(shown.notice, /tls pending/)
     assert.equal(shown.footer, "2 deployment domains")
@@ -533,7 +533,7 @@ test("deployed workflow TUI command drives the complete domain lifecycle", async
 
 test("deployed workflow TUI command keeps runtime usage and limits in control-plane sync", async () => {
   const originalFetch = globalThis.fetch
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-limits-command-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployment-limits-command-"))
   const calls: Array<{
     readonly method: string
     readonly pathname: string
@@ -608,7 +608,7 @@ test("deployed workflow TUI command keeps runtime usage and limits in control-pl
 
 test("deployed workflow TUI command keeps emergency admission and retention policy in sync", async () => {
   const originalFetch = globalThis.fetch
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-operations-command-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployment-operations-command-"))
   const policyPath = join(root, "operations.json")
   const calls: Array<{
     readonly method: string
@@ -677,7 +677,7 @@ test("deployed workflow TUI command keeps emergency admission and retention poli
 
 test("deployed workflow TUI command exports verified telemetry and deletes retained metadata", async () => {
   const originalFetch = globalThis.fetch
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-telemetry-command-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployment-telemetry-command-"))
   const outputPath = join(root, "telemetry.json")
   const corruptPath = join(root, "corrupt.json")
   const content = Buffer.from("{\"schemaVersion\":1,\"records\":[]}\n", "utf8")
@@ -781,7 +781,7 @@ test("deployed workflow TUI command lists projects through the shared Cloud path
 
 test("deployed workflow command parses create and promotion configuration", async () => {
   const originalFetch = globalThis.fetch
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-command-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployment-command-"))
   const bodies: Record<string, unknown>[] = []
   await writeFile(join(root, "configuration.json"), JSON.stringify({ feature: true }))
   await writeFile(join(root, "limits.json"), JSON.stringify({ concurrency: 3 }))
@@ -978,7 +978,7 @@ function claimSummary() {
     targetEmail: "owner@customer.test",
     ownershipMode: "customer_owned",
     builderRole: "viewer",
-    tokenPrefix: "arroba_claim_",
+    tokenPrefix: "chariox_claim_",
     status: "pending",
     expiresAt: "2026-01-02T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -1108,8 +1108,8 @@ function domainState() {
       tlsStatus: "pending",
       isCanonical: false,
       redirectToCanonical: true,
-      verificationName: "_arroba-verification.agents.customer.test",
-      verificationValue: "arroba-domain-token",
+      verificationName: "_chariox-verification.agents.customer.test",
+      verificationValue: "chariox-domain-token",
       cnameTarget: "ingress.apps.example.test",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",

@@ -14,7 +14,7 @@ import {
 const execFile = promisify(execFileWithCallback)
 
 test("remote Hetzner preflight reports checkout commit skew before launch", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-hetzner-preflight-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
   try {
     const command = remoteHomeExtensionHetznerPreflightCommand({
       hetznerRepo: path.join(rootDir, "missing-repo"),
@@ -38,7 +38,7 @@ test("remote Hetzner preflight reports checkout commit skew before launch", asyn
 })
 
 test("remote Hetzner preflight reports insufficient remote filesystem capacity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-hetzner-preflight-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
   try {
     const command = remoteHomeExtensionHetznerPreflightCommand({
       hetznerRepo: rootDir,
@@ -62,9 +62,9 @@ test("remote Hetzner preflight reports insufficient remote filesystem capacity",
 })
 
 test("remote Hetzner preflight verifies an explicit run-owned worker kernel", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-hetzner-preflight-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hetzner-preflight-"))
   try {
-    const workerKernelBinary = path.join(rootDir, "runtime", "arroba-kernel")
+    const workerKernelBinary = path.join(rootDir, "runtime", "chariox-kernel")
     await mkdir(path.dirname(workerKernelBinary), { recursive: true })
     await writeFile(workerKernelBinary, "kernel")
     await chmod(workerKernelBinary, 0o755)
@@ -93,11 +93,11 @@ test("remote Hetzner preflight verifies an explicit run-owned worker kernel", as
 
 test("remote worker launch uses the explicit run-owned kernel", () => {
   const command = remoteHomeExtensionHetznerWorkerLaunchCommand({
-    remoteRoot: "/tmp/arroba-worker-root",
-    workerWorktree: "/tmp/arroba-worker-root/workspace",
-    workerKernelBinary: "/tmp/hosted-runtime/arroba-kernel",
+    remoteRoot: "/tmp/chariox-worker-root",
+    workerWorktree: "/tmp/chariox-worker-root/workspace",
+    workerKernelBinary: "/tmp/hosted-runtime/chariox-kernel",
   })
 
-  assert.match(command, /exec '\/tmp\/hosted-runtime\/arroba-kernel'$/)
-  assert.doesNotMatch(command, /apps\/kernel\/target\/debug\/arroba-kernel/)
+  assert.match(command, /exec '\/tmp\/hosted-runtime\/chariox-kernel'$/)
+  assert.doesNotMatch(command, /apps\/kernel\/target\/debug\/chariox-kernel/)
 })

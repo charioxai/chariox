@@ -32,7 +32,7 @@ import {
 } from '../drill-validation-gate.test-support.mjs'
 
 test("passes with explicit matrix report paths", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport())
@@ -52,7 +52,7 @@ test("passes with explicit matrix report paths", async () => {
 })
 
 test("gates matrix reports by required freshness", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     const completedAt = new Date(Date.now() - 500).toISOString()
@@ -103,7 +103,7 @@ test("gates matrix reports by required freshness", async () => {
 })
 
 test("gates matrix reports by required matrix name coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const localReport = path.join(rootDir, "local.json")
     const remoteReport = path.join(rootDir, "remote.json")
@@ -136,7 +136,7 @@ test("gates matrix reports by required matrix name coverage", async () => {
 })
 
 test("gates matrix reports by required classification coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -181,7 +181,7 @@ test("rejects unknown required matrix classifications", async () => {
 })
 
 test("passes when matrix reports cover required deployment presets", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -203,7 +203,7 @@ test("passes when matrix reports cover required deployment presets", async () =>
 })
 
 test("fails when matrix reports miss required deployment presets", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -230,7 +230,7 @@ test("fails when matrix reports miss required deployment presets", async () => {
 })
 
 test("gates matrix reports by required provider coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -263,7 +263,7 @@ test("gates matrix reports by required provider coverage", async () => {
 })
 
 test("gates matrix reports by required scenario coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -319,7 +319,7 @@ test("fails when no validation checks are configured", async () => {
 })
 
 test("fails when configured matrix roots contain no reports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const report = await runDrillValidationGate({ matrixRoots: [rootDir] })
 
@@ -335,7 +335,7 @@ test("fails when configured matrix roots contain no reports", async () => {
 })
 
 test("fails when require-complete sees dry-run matrix scenarios", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     await writeMatrixReport(path.join(rootDir, "matrix.json"), matrixReport({
       status: "dry-run",

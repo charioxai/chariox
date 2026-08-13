@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { waitingRoomTimestampLabel } from "@arroba/kernel-client/waiting-room-activity"
+import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import {
@@ -335,14 +335,14 @@ test("waiting room places join below start configuration and makes cloud relay l
   assert.equal(relayConfigure?.focused, true)
 
   const cloudNoticeRows = waitingRoomRows(state, [], catalog, {
-    cloudNotice: "Opening Arroba Cloud.\nurl=https://cloud.example/terminal?view=waiting",
+    cloudNotice: "Opening Chariox Cloud.\nurl=https://cloud.example/terminal?view=waiting",
     relay: {
       configured: false,
       connected: false,
     },
   })
   assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:0")?.title, "Cloud status")
-  assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:0")?.value, "Opening Arroba Cloud.")
+  assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:0")?.value, "Opening Chariox Cloud.")
   assert.equal(cloudNoticeRows.find((row) => row.id === "cloud-notice:1")?.value, "url=https://cloud.example/terminal?view=waiting")
 })
 

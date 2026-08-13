@@ -69,10 +69,10 @@ async function initGitWorktree(root) {
 }
 
 async function buildKernel() {
-  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
   if (existing) return existingBinary
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -80,7 +80,7 @@ async function buildKernel() {
 }
 
 async function waitForDaemon(shellBin, kernelUrl, workspace, env) {
-  const scriptPath = path.join(workspace, 'wait.arroba')
+  const scriptPath = path.join(workspace, 'wait.chariox')
   await writeFile(scriptPath, 'session list\n', 'utf8')
   const deadline = Date.now() + 20_000
   let last = null
@@ -144,13 +144,13 @@ async function main() {
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `shell-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `shell-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
 
   let daemon = null
@@ -164,12 +164,12 @@ async function main() {
     await mkdir(home, { recursive: true })
     await mkdir(scriptsDir, { recursive: true })
     await mkdir(skillDir, { recursive: true })
-    await writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: shell-drill-skill\ndescription: Skill used by the arroba-shell live drill.\n---\nUse this only for shell live drills.\n', 'utf8')
+    await writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: shell-drill-skill\ndescription: Skill used by the chariox-shell live drill.\n---\nUse this only for shell live drills.\n', 'utf8')
     await writeFile(mcpPath, [
       "process.stdin.resume()",
       "process.stdin.on('data', () => {})",
     ].join('\n'), 'utf8')
-    await writeFile(path.join(workspace, 'sourced.arroba'), [
+    await writeFile(path.join(workspace, 'sourced.chariox'), [
       'set effort low',
       'vars',
     ].join('\n'), 'utf8')
@@ -179,7 +179,7 @@ async function main() {
     await waitForDaemon(shellBin, kernelUrl, workspace, env)
     log('daemon-ready', { kernelUrl })
 
-    const successScript = path.join(scriptsDir, 'success.arroba')
+    const successScript = path.join(scriptsDir, 'success.chariox')
     await writeFile(successScript, [
       'set provider dev-stub',
       'set model shell-drill-model',
@@ -187,7 +187,7 @@ async function main() {
       'context',
       'pwd',
       'vars',
-      'source sourced.arroba',
+      'source sourced.chariox',
       'session list',
       'session new $workspace as session',
       'session use $session',
@@ -290,7 +290,7 @@ async function main() {
     }
     log('success-script-passed', { sessionId })
 
-    const unconfirmedBatchScript = path.join(scriptsDir, 'batch-spawn-unconfirmed.arroba')
+    const unconfirmedBatchScript = path.join(scriptsDir, 'batch-spawn-unconfirmed.chariox')
     await writeFile(unconfirmedBatchScript, [
       'set provider dev-stub',
       'set model shell-drill-model',
@@ -317,7 +317,7 @@ async function main() {
     requireOutput(unconfirmedBatch.stdout, /spawning 50 agents requires confirmation/, 'large batch confirmation prompt')
     requireOutput(unconfirmedBatch.stdout, /--confirm-large/, 'large batch confirmation flag')
 
-    const batchScript = path.join(scriptsDir, 'batch-spawn.arroba')
+    const batchScript = path.join(scriptsDir, 'batch-spawn.chariox')
     await writeFile(batchScript, [
       'set provider dev-stub',
       'set model shell-drill-model',
@@ -351,7 +351,7 @@ async function main() {
     requireOutput(batch.stdout, /promptbot-10/, 'prompted batch agent list tail alias')
     log('batch-spawn-script-passed')
 
-    const auditScript = path.join(scriptsDir, 'continue-on-error.arroba')
+    const auditScript = path.join(scriptsDir, 'continue-on-error.chariox')
     await writeFile(auditScript, [
       'vars',
       'session use $session',

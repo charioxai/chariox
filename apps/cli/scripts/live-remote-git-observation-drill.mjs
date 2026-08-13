@@ -94,20 +94,20 @@ function daemonEnv({ baseEnv, ports, rootDir, relayToken, daemonId, daemonAlias,
     XDG_RUNTIME_DIR: path.join(daemonRoot, 'runtime'),
     XDG_DATA_HOME: path.join(daemonRoot, 'data'),
     XDG_CACHE_HOME: path.join(daemonRoot, 'cache'),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(daemonRoot, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(daemonRoot, 'history'),
-    ARROBA_PROVIDER_DEV_STUB: '1',
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(daemonRoot, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(daemonRoot, 'history'),
+    CHARIOX_PROVIDER_DEV_STUB: '1',
   }
 }
 
@@ -252,9 +252,9 @@ async function main() {
 
   const relayEnv = {
     ...baseEnv,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const homeEnv = daemonEnv({
     baseEnv,
@@ -310,8 +310,8 @@ async function main() {
       import('../../../packages/kernel-client/dist/ipc-requests.js'),
     ])
     requests = requestModule
-    const kernelBinary = await buildBinary(path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
-    const relayBinary = await buildBinary(path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
+    const kernelBinary = await buildBinary(path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'chariox-kernel')
+    const relayBinary = await buildBinary(path.join(repoRoot, 'apps/relay/Cargo.toml'), 'chariox-relay')
 
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: homeEnv })

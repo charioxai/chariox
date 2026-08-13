@@ -5,7 +5,7 @@ import type { TerminalOutputRecord } from "./cli-types.js"
 import { createTerminalOutputRecordProcessor } from "./terminal-output-record-processor.js"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 
 test("terminal output record processor stores prompt echoes before kernel processing", () => {
   const harness = processorHarness()

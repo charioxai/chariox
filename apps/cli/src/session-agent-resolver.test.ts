@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"
-import { resolveSessionAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import { resolveSessionAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 
 test("resolveSessionAgentReference returns the focused agent without an explicit reference", () => {
   const session = sessionWithAgents([

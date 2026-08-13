@@ -18,37 +18,37 @@ test("defines stable drill platform bundle artifacts", () => {
   assert.deepEqual(DRILL_PLATFORM_BUNDLE_ARTIFACTS, [
     {
       path: "failure-taxonomy-drill.json",
-      schema: "arroba.drill.failure_taxonomy.v1",
+      schema: "chariox.drill.failure_taxonomy.v1",
     },
     {
       path: "failure-taxonomy-scenario.json",
-      schema: "arroba.drill.failure_taxonomy.v1",
+      schema: "chariox.drill.failure_taxonomy.v1",
     },
     {
       path: "generated-matrix-limitations.json",
-      schema: "arroba.drill.generated_matrix_limitations.v1",
+      schema: "chariox.drill.generated_matrix_limitations.v1",
     },
     {
       path: "generated-matrix-names.json",
-      schema: "arroba.drill.generated_matrix_names.v1",
+      schema: "chariox.drill.generated_matrix_names.v1",
     },
     {
       path: "runtime-signals.json",
-      schema: "arroba.drill.runtime_signals.v1",
+      schema: "chariox.drill.runtime_signals.v1",
     },
     {
       path: "validation-suite.json",
-      schema: "arroba.drill.validation_suite.v1",
+      schema: "chariox.drill.validation_suite.v1",
     },
   ])
 })
 
 test("writes and verifies drill platform bundle artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     const bundle = await writeDrillPlatformBundle(rootDir)
     const verified = await verifyDrillPlatformBundle(rootDir)
-    const artifactIndex = await verifyDrillArtifactIndex(path.join(rootDir, "arroba-drill-artifacts.json"))
+    const artifactIndex = await verifyDrillArtifactIndex(path.join(rootDir, "chariox-drill-artifacts.json"))
     const generatedMatrixLimitations = JSON.parse(await readFile(path.join(rootDir, "generated-matrix-limitations.json"), "utf8"))
     const generatedMatrixNames = JSON.parse(await readFile(path.join(rootDir, "generated-matrix-names.json"), "utf8"))
     const validationSuite = JSON.parse(await readFile(path.join(rootDir, "validation-suite.json"), "utf8"))
@@ -56,9 +56,9 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     assert.equal(bundle.schema, DRILL_PLATFORM_BUNDLE_SCHEMA)
     assert.deepEqual(verified, bundle)
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
-    assert.equal(generatedMatrixLimitations.schema, "arroba.drill.generated_matrix_limitations.v1")
+    assert.equal(generatedMatrixLimitations.schema, "chariox.drill.generated_matrix_limitations.v1")
     assert.deepEqual(generatedMatrixLimitations.limitations.map((limitation) => limitation.kind), ["dry-run-classification-coverage"])
-    assert.equal(generatedMatrixNames.schema, "arroba.drill.generated_matrix_names.v1")
+    assert.equal(generatedMatrixNames.schema, "chariox.drill.generated_matrix_names.v1")
     assert.deepEqual(generatedMatrixNames.matrices, [
       { name: "browser-terminal-resilience-matrix", repo: "cloud" },
       { name: "cloud-slice-runtime-matrix", repo: "cloud" },
@@ -146,46 +146,46 @@ test("writes and verifies drill platform bundle artifacts", async () => {
     })), [
       {
         path: "failure-taxonomy-drill.json",
-        schema: "arroba.drill.failure_taxonomy.v1",
+        schema: "chariox.drill.failure_taxonomy.v1",
       },
       {
         path: "failure-taxonomy-scenario.json",
-        schema: "arroba.drill.failure_taxonomy.v1",
+        schema: "chariox.drill.failure_taxonomy.v1",
       },
       {
         path: "generated-matrix-limitations.json",
-        schema: "arroba.drill.generated_matrix_limitations.v1",
+        schema: "chariox.drill.generated_matrix_limitations.v1",
       },
       {
         path: "generated-matrix-names.json",
-        schema: "arroba.drill.generated_matrix_names.v1",
+        schema: "chariox.drill.generated_matrix_names.v1",
       },
       {
         path: "index.json",
-        schema: "arroba.drill.platform_bundle.v1",
+        schema: "chariox.drill.platform_bundle.v1",
       },
       {
         path: "runtime-signals.json",
-        schema: "arroba.drill.runtime_signals.v1",
+        schema: "chariox.drill.runtime_signals.v1",
       },
       {
         path: "validation-suite.json",
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
       },
     ])
-    assert.equal(validationSuite.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(validationSuite.schema, "chariox.drill.validation_suite.v1")
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
 
 test("rejects unsafe drill platform bundle artifact paths", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeFile(path.join(rootDir, "index.json"), `${JSON.stringify({
       schema: DRILL_PLATFORM_BUNDLE_SCHEMA,
       outputDir: rootDir,
-      artifacts: [{ path: "../outside.json", schema: "arroba.drill.validation_suite.v1" }],
+      artifacts: [{ path: "../outside.json", schema: "chariox.drill.validation_suite.v1" }],
     })}\n`, "utf8")
 
     await assert.rejects(
@@ -198,14 +198,14 @@ test("rejects unsafe drill platform bundle artifact paths", async () => {
 })
 
 test("rejects incomplete drill platform bundles", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeFile(path.join(rootDir, "index.json"), `${JSON.stringify({
       schema: DRILL_PLATFORM_BUNDLE_SCHEMA,
       outputDir: rootDir,
       artifacts: [{
         path: "validation-suite.json",
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
         sha256: "0".repeat(64),
         sizeBytes: 0,
       }],
@@ -221,7 +221,7 @@ test("rejects incomplete drill platform bundles", async () => {
 })
 
 test("rejects validation suite artifact count drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -238,7 +238,7 @@ test("rejects validation suite artifact count drift", async () => {
 })
 
 test("rejects validation suite coverage drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -260,7 +260,7 @@ test("rejects validation suite coverage drift", async () => {
 })
 
 test("rejects validation suite coverage count drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -282,7 +282,7 @@ test("rejects validation suite coverage count drift", async () => {
 })
 
 test("rejects validation suite preset contract drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -304,7 +304,7 @@ test("rejects validation suite preset contract drift", async () => {
 })
 
 test("rejects validation suite preset artifact kind drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -326,7 +326,7 @@ test("rejects validation suite preset artifact kind drift", async () => {
 })
 
 test("rejects validation suite preset artifact provenance drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -384,7 +384,7 @@ test("rejects validation suite preset artifact provenance drift", async () => {
 })
 
 test("rejects validation suite preset environment drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const suitePath = path.join(rootDir, "validation-suite.json")
@@ -442,7 +442,7 @@ test("rejects validation suite preset environment drift", async () => {
 })
 
 test("rejects failure taxonomy target drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const taxonomyPath = path.join(rootDir, "failure-taxonomy-drill.json")
@@ -459,7 +459,7 @@ test("rejects failure taxonomy target drift", async () => {
 })
 
 test("rejects generated matrix limitation taxonomy drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const limitationsPath = path.join(rootDir, "generated-matrix-limitations.json")
@@ -482,7 +482,7 @@ test("rejects generated matrix limitation taxonomy drift", async () => {
 })
 
 test("rejects failure taxonomy classification drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const taxonomyPath = path.join(rootDir, "failure-taxonomy-scenario.json")
@@ -502,7 +502,7 @@ test("rejects failure taxonomy classification drift", async () => {
 })
 
 test("rejects failure taxonomy owner and next action drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-lib-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-lib-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     const taxonomyPath = path.join(rootDir, "failure-taxonomy-scenario.json")

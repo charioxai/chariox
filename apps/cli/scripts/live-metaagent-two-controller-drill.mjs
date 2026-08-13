@@ -10,9 +10,9 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 900_000
 const DEFAULT_POLL_MS = 1_000
-const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_TWO_CONTROLLER_PROVIDER ?? 'codex'
-const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_TWO_CONTROLLER_MODEL ?? 'gpt-5.5'
-const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TWO_CONTROLLER_EFFORT ?? 'medium'
+const DEFAULT_PROVIDER = process.env.CHARIOX_METAAGENT_TWO_CONTROLLER_PROVIDER ?? 'codex'
+const DEFAULT_MODEL = process.env.CHARIOX_METAAGENT_TWO_CONTROLLER_MODEL ?? 'gpt-5.5'
+const DEFAULT_EFFORT = process.env.CHARIOX_METAAGENT_TWO_CONTROLLER_EFFORT ?? 'medium'
 const ALPHA_PHRASE = 'TWO_META_ALPHA_WORKER_VISIBLE'
 const BETA_PHRASE = 'TWO_META_BETA_WORKER_VISIBLE'
 
@@ -113,15 +113,15 @@ function unwrapVariant(response, ...keys) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (!exists) throw new Error(`kernel build did not produce ${binary}`)
   return binary
 }
 
 async function waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env) {
-  const scriptPath = path.join(scriptsDir, 'wait.arroba')
+  const scriptPath = path.join(scriptsDir, 'wait.chariox')
   await writeFile(scriptPath, 'session list\n', 'utf8')
   const deadline = Date.now() + 20_000
   let last = null
@@ -147,7 +147,7 @@ async function writeFixture(workspace) {
     `Beta worker marker: ${BETA_PHRASE}.`,
     '',
   ].join('\n'), 'utf8')
-  await writeFile(path.join(workspace, '.gitignore'), '.arroba-wait.arroba\n.arrobaignore\n', 'utf8')
+  await writeFile(path.join(workspace, '.gitignore'), '.chariox-wait.chariox\n.charioxignore\n', 'utf8')
 }
 
 async function getSession(client, requests, sessionId) {
@@ -216,7 +216,7 @@ function buildMetaPrompt(label, workerAlias, phrase) {
     `Coordinate a tiny ${label} worker-ownership check.`,
     `Spawn exactly one regular worker named ${workerAlias}.`,
     `Ask that worker to inspect README.md and include the exact phrase ${phrase} in its final response.`,
-    'Supervise with whatever Arroba meta tools are appropriate.',
+    'Supervise with whatever Chariox meta tools are appropriate.',
     'Do not use or control any worker that you did not spawn.',
     'When your own worker evidence proves the phrase was produced, complete this Meta-mode task with a concise summary including that exact phrase.',
   ].join(' ')}`
@@ -247,7 +247,7 @@ async function observeTwoControllers({ client, requests, sessionId, historyDir, 
         input: tool.input ?? null,
       })
       assert(
-        String(tool.tool).startsWith('arroba.meta.'),
+        String(tool.tool).startsWith('chariox.meta.'),
         `${state[entry.agent_id].label} controller must not use provider-native tools during the Meta-mode task`,
         tool,
       )
@@ -324,15 +324,15 @@ async function main() {
   const env = {
     ...process.env,
     HOME: process.env.HOME ?? home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_HOME: home,
-    ARROBA_DAEMON_ID: `metaagent-two-controller-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_HOME: home,
+    CHARIOX_DAEMON_ID: `metaagent-two-controller-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
   let daemon = null
   let client = null
@@ -407,7 +407,7 @@ async function main() {
       client,
       requests,
       sessionId,
-      historyDir: env.ARROBA_SESSION_HISTORY_DIR,
+      historyDir: env.CHARIOX_SESSION_HISTORY_DIR,
       alphaId: alpha.id,
       betaId: beta.id,
       timeoutMs: options.timeoutMs,

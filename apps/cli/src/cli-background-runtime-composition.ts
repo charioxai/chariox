@@ -17,25 +17,25 @@ import {
   SILENT_POLL_THRESHOLD,
   getPollRecoveryDecision,
 } from "./runtime.js"
-import { getProviderActivityLabel } from "@arroba/kernel-client/provider-status"
+import { getProviderActivityLabel } from "@chariox/kernel-client/provider-status"
 import {
   applyProviderRunProfileToSession,
-} from "@arroba/kernel-client/prompt-provider-selection"
+} from "@chariox/kernel-client/prompt-provider-selection"
 import { isSessionUnavailableError } from "./session-errors.js"
 import { createTerminalResizeController } from "./terminal-resize-controller.js"
 import {
   previewLineForTerminalRecord,
-} from "@arroba/kernel-client/session-history-preview"
-import { sameProviderRun } from "@arroba/kernel-client/session-runtime-lookup"
+} from "@chariox/kernel-client/session-history-preview"
+import { sameProviderRun } from "@chariox/kernel-client/session-runtime-lookup"
 import { createTranscriptScrollMonitorController } from "./transcript-scroll-monitor-controller.js"
 import {
   computeNextTranscriptTurnId as computeNextTurnId,
   trimSingleTrailingNewline,
-} from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/transcript-entry-state"
 import {
   shouldRenderProviderStatus,
 } from "./transcript.js"
-import type { WorkflowDesignOpForwarded } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
 import type {
   AgentRuntimeActivity,
   RuntimeInteraction,
@@ -373,7 +373,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         error: deps.formatError(error),
       })
       deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
       deps.updateSessionChrome()
     },
   })

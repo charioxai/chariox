@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
 import type { BootstrapState, CliOptions } from "./cli-types.js"
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import {
   bootstrapCliRuntime,
@@ -97,7 +97,7 @@ test("bootstrapCliRuntime deletes a requested session without attaching", async 
 test("buildDetachedBootstrap creates a waiting-room bootstrap shell", () => {
   const client = fakeClient()
   const options = cliOptions({ detached: true })
-  const preferences: ArrobaPreferences = {}
+  const preferences: CharioxPreferences = {}
 
   const bootstrap = buildDetachedBootstrap(client, options, preferences)
 
@@ -151,7 +151,7 @@ function fakeClient(): LocalIpcClient {
 function attachedBootstrap(
   client: LocalIpcClient,
   options: CliOptions,
-  preferences: ArrobaPreferences,
+  preferences: CharioxPreferences,
 ): BootstrapState {
   return {
     client,

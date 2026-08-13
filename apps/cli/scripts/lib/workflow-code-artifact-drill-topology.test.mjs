@@ -15,7 +15,7 @@ import { remoteWorkflowCodeRunnerSource } from './workflow-code-artifact-drill-r
 import { buildKernel } from './workflow-code-artifact-drill-runtime.mjs'
 
 test('workflow-code artifact topology helpers keep their filesystem dependencies', async () => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'arroba-workflow-code-topology-'))
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'chariox-workflow-code-topology-'))
   try {
     const skillDir = await writeWorkflowCodeArtifactSkillSource(tempDir, 'workflow-code-test-skill')
     const skillSource = await readFile(path.join(skillDir, 'SKILL.md'), 'utf8')
@@ -35,7 +35,7 @@ test('workflow-code artifact topology helpers keep their filesystem dependencies
 test('workflow-code artifact drill launches the kernel binary Cargo built', async () => {
   const kernelPath = buildKernel()
   await access(kernelPath)
-  assert.match(kernelPath, /\/target\/debug\/arroba-kernel$/)
+  assert.match(kernelPath, /\/target\/debug\/chariox-kernel$/)
 })
 
 test('remote workflow-code runner covers the complete example runtime suite', () => {

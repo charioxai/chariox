@@ -28,8 +28,8 @@ const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const realHomeDir = os.homedir()
 const execFileAsync = promisify(execFile)
-const RELAY_ISSUER = 'arroba-remote-home-extension-drill'
-const RELAY_SECRET = 'arroba-remote-home-extension-drill-secret'
+const RELAY_ISSUER = 'chariox-remote-home-extension-drill'
+const RELAY_SECRET = 'chariox-remote-home-extension-drill-secret'
 const RELAY_REALM = 'remote-home-extension-drill'
 
 function parseArgs(argv) {
@@ -38,9 +38,9 @@ function parseArgs(argv) {
     collab: false,
     restartRelay: false,
     restartWorker: false,
-    hetznerHost: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh', 'arroba_hetzner_staging'),
-    hetznerRepo: process.env.ARROBA_REMOTE_HOME_EXTENSION_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+    hetznerHost: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh', 'chariox_hetzner_staging'),
+    hetznerRepo: process.env.CHARIOX_REMOTE_HOME_EXTENSION_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -75,7 +75,7 @@ function printHelp() {
     '  --restart-worker      Restart the worker and repair the lease before revocation',
     '  --hetzner-host HOST    SSH host for --hetzner-worker',
     '  --hetzner-key PATH     SSH key for --hetzner-worker',
-    '  --hetzner-repo PATH    Remote Arroba checkout containing built binaries',
+    '  --hetzner-repo PATH    Remote Chariox checkout containing built binaries',
   ].join('\n'))
 }
 
@@ -208,7 +208,7 @@ async function exerciseHomeProxyExtensions({
       launch.runtime_mcp_auth_token,
       'tools/call',
       {
-        name: 'arroba.request_extension',
+        name: 'chariox.request_extension',
         arguments: { kind: 'script', name: 'home_only_lookup', environment: environmentName },
       },
     )
@@ -307,21 +307,21 @@ function daemonEnv({ rootDir, relayUrl, relayToken, daemonId, daemonAlias, machi
     OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, '.config', 'opencode'),
     XDG_CONFIG_HOME: path.join(rootDir, `${daemonAlias}-config`),
     XDG_STATE_HOME: path.join(rootDir, `${daemonAlias}-state`),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_PROVIDER_DEV_STUB: '1',
-    ARROBA_RELAY_URL: relayUrl,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonAlias}-history`),
-    ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_PROVIDER_DEV_STUB: '1',
+    CHARIOX_RELAY_URL: relayUrl,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonAlias}-history`),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
   }
 }
 
@@ -332,7 +332,7 @@ async function main() {
     return
   }
   const python = await resolveExecutable(process.env.PYTHON ?? 'python3')
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-home-extension-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-home-extension-${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const homeMarker = path.join(rootDir, 'home-script-marker.txt')
   const homeMcpMarker = path.join(rootDir, 'home-mcp-marker.txt')
@@ -359,7 +359,7 @@ async function main() {
   const workerMachineId = `remote-home-extension-worker-machine-${process.pid}`
   const workerAlias = `remote-home-extension-worker-${process.pid}`
   const workerKernelRef = options.collab ? workerDaemonId : workerAlias
-  const remoteRoot = `/tmp/arroba-remote-home-extension-${process.pid}-${Date.now()}`
+  const remoteRoot = `/tmp/chariox-remote-home-extension-${process.pid}-${Date.now()}`
   const workerWorktree = options.hetznerWorker ? path.posix.join(remoteRoot, 'workspace') : workspace
 
   let relay = null
@@ -393,17 +393,17 @@ async function main() {
     homeOnlyMcp = fixtures.homeOnlyMcp
 
     const relayBinary = options.hetznerWorker
-      ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/arroba-relay')
-      : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'arroba-relay')
-    const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'arroba-kernel')
+      ? path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/chariox-relay')
+      : await resolveBinary(path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'), path.join(repoRoot, 'apps/relay/Cargo.toml'), 'chariox-relay')
+    const daemonBinary = await resolveBinary(path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'), path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'chariox-kernel')
     const localRelayEnv = {
       ...process.env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(relayPort),
-      ARROBA_RELAY_TOKEN: sharedRelayToken,
+      CHARIOX_RELAY_HOST: '127.0.0.1',
+      CHARIOX_RELAY_PORT: String(relayPort),
+      CHARIOX_RELAY_TOKEN: sharedRelayToken,
       ...(options.collab ? {
-        ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-        ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+        CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+        CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
       } : {}),
     }
     if (options.hetznerWorker) {

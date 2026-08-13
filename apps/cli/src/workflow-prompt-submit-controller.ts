@@ -2,7 +2,7 @@ import type { FooterFlash } from "./footer-flash-controller.js"
 import {
   validateWorkflowPromptSubmit,
   type WorkflowPromptState,
-} from "@arroba/kernel-client/workflow-prompt-state"
+} from "@chariox/kernel-client/workflow-prompt-state"
 
 export type WorkflowPromptSubmitControllerDeps = {
   getWorkflowPromptState: () => WorkflowPromptState

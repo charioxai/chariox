@@ -4,7 +4,7 @@ import test from "node:test"
 import type { ProviderAuthStatus, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { fallbackProviderCatalog, type BackendProviderId } from "./provider-catalog.js"
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -200,7 +200,7 @@ function createHarness(options: {
   attached?: boolean
   currentSelection?: { provider: string; model: string; effort: string }
   providerRun?: RuntimeProviderRun | null
-  preferences?: ArrobaPreferences
+  preferences?: CharioxPreferences
   authStatus?: ProviderAuthStatus
   providerCatalog?: ReturnType<typeof fallbackProviderCatalog>
   updateAgentProfile?: (

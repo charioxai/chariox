@@ -15,7 +15,7 @@ function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/drill-matrix-report-summary.mjs [--json] [--output PATH] [--find ROOT] [--max-depth N] [--require-complete] REPORT...",
     "",
-    "Summarizes arroba.drill.matrix.v1 JSON reports and exits non-zero when any report failed.",
+    "Summarizes chariox.drill.matrix.v1 JSON reports and exits non-zero when any report failed.",
     "",
     "Options:",
     "  --find ROOT     Discover valid matrix reports below ROOT; repeatable",

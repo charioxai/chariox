@@ -130,7 +130,7 @@ test("config command renders kernel mutation effects", async () => {
     setUserConfigValue: async (path: string, value: string) => {
       updates.push({ path, value })
       return {
-        path: "/home/.arroba/config.toml",
+        path: "/home/.chariox/config.toml",
         config: { version: 1, providers: { workspace_live_sync: value as "off" | "managed" | "tracked" } },
         effects: [
           {

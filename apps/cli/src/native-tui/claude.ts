@@ -100,14 +100,14 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
     return
   }
 
-  const tempRoot = path.join(os.tmpdir(), `arroba-claude-native-${process.pid}-${Date.now()}`)
+  const tempRoot = path.join(os.tmpdir(), `chariox-claude-native-${process.pid}-${Date.now()}`)
   const eventsFile = path.join(tempRoot, "events.jsonl")
   const contextFile = path.join(tempRoot, "hidden-context.txt")
   const contextResponseDir = path.join(tempRoot, "hook-context-responses")
   const attachmentContextDir = path.join(tempRoot, "attachments")
   const settingsPath = path.join(tempRoot, "settings.json")
   const hookHandlerPath = path.join(tempRoot, "hook-handler.mjs")
-  const screenName = `arroba-claude-${process.pid}-${Date.now()}`
+  const screenName = `chariox-claude-${process.pid}-${Date.now()}`
   const screenLogDir = path.join(tempRoot, "screen")
   let bridge: { stop: () => void } | null = null
   let permissionBridge: { url: string; stop: () => Promise<void> } | null = null
@@ -166,7 +166,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
         `  tui:            ${options.detachedScreen ? `screen:${screenName}` : "attached-pty"}`,
         ...(options.detachedScreen ? [`  screen:         ${screenName}`] : []),
       ],
-      promptPolicy: "Claude Code TUI is native; Arroba observes hooks and injects queued prompts through the PTY",
+      promptPolicy: "Claude Code TUI is native; Chariox observes hooks and injects queued prompts through the PTY",
     }))
 
     const launchOptions: Parameters<typeof startClaudeScreen>[2] = {
@@ -177,10 +177,10 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
       permissions: options.permissions,
       env: {
         ...process.env,
-        ARROBA_CLAUDE_NATIVE_EVENTS: eventsFile,
-        ARROBA_CLAUDE_NATIVE_CONTEXT: contextFile,
-        ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponseDir,
-        ARROBA_CLAUDE_NATIVE_HOOK_BRIDGE_URL: permissionBridge.url,
+        CHARIOX_CLAUDE_NATIVE_EVENTS: eventsFile,
+        CHARIOX_CLAUDE_NATIVE_CONTEXT: contextFile,
+        CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES: contextResponseDir,
+        CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL: permissionBridge.url,
       },
     }
     tui = options.detachedScreen
@@ -224,7 +224,7 @@ export async function runClaudeNativeTui(args: string[]): Promise<void> {
 
 function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
   const options: NativeClaudeOptions = {
-    clientId: `arroba-claude-native-${process.pid}`,
+    clientId: `chariox-claude-native-${process.pid}`,
     model: "claude-sonnet-4-6",
     effort: "low",
     mode: "build",
@@ -341,26 +341,26 @@ function parseNativeClaudeArgs(args: string[]): NativeClaudeOptions {
 
 function printNativeClaudeUsage() {
   process.stdout.write([
-    "Usage: arroba claude [session_id] [options]",
+    "Usage: chariox claude [session_id] [options]",
     "",
-    "Launch Claude Code's native TUI as an Arroba-managed native provider agent.",
+    "Launch Claude Code's native TUI as a Chariox-managed native provider agent.",
     "",
     "Options:",
     "  --kernel-port, --port <port>     Kernel websocket port (default 43119)",
     "  --kernel-url <url>               Kernel websocket URL",
     "  --workspace <path>               Workspace root",
     "  --worktree <path>                Worktree root",
-    "  --machine, --kernel-ref <ref>    Run the Arroba agent/provider on a remote worker kernel",
-    "  --slice <ref>                    Run the Arroba agent/provider on a home-managed slice worker",
+    "  --machine, --kernel-ref <ref>    Run the Chariox agent/provider on a remote worker kernel",
+    "  --slice <ref>                    Run the Chariox agent/provider on a home-managed slice worker",
     "  --alias <name>                   Alias for a newly-created session",
     "  --agent-alias <name>             Alias for the Claude native agent",
     "  --model <model>                  Claude model argument (default claude-sonnet-4-6)",
     "  --effort <effort>                Claude effort argument (default low)",
-    "  --mode <build|plan>              Arroba agent mode (default build)",
+    "  --mode <build|plan>              Chariox agent mode (default build)",
     "  --permissions <required|yolo>    Claude permission mode mapping (default required)",
     "  --remote-rendered                Run Claude Code in the target kernel PTY and render it here",
-    "  --grant-mcp <name>               Grant an installed Arroba MCP to the native agent before provider launch",
-    "  --grant-skill <name>             Grant an installed Arroba skill to the native agent before provider launch",
+    "  --grant-mcp <name>               Grant an installed Chariox MCP to the native agent before provider launch",
+    "  --grant-skill <name>             Grant an installed Chariox skill to the native agent before provider launch",
     "",
   ].join("\n"))
 }
@@ -458,9 +458,9 @@ async function runClaudeRemoteRendered(
 }
 
 function debugNativeClaude(label: string, payload: unknown) {
-  if (!process.env.ARROBA_CLAUDE_NATIVE_DEBUG) return
-  const line = `[arroba claude native-tui] ${label}: ${JSON.stringify(payload)}\n`
-  const debugFile = process.env.ARROBA_CLAUDE_NATIVE_DEBUG_FILE
+  if (!process.env.CHARIOX_CLAUDE_NATIVE_DEBUG) return
+  const line = `[chariox claude native-tui] ${label}: ${JSON.stringify(payload)}\n`
+  const debugFile = process.env.CHARIOX_CLAUDE_NATIVE_DEBUG_FILE
   if (debugFile) {
     appendFileSync(debugFile, line)
     return

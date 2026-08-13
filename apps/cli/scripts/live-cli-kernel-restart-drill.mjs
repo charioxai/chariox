@@ -62,8 +62,8 @@ async function sleep(ms) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -190,20 +190,20 @@ async function main() {
   const rootDir = path.join(repoRoot, 'target', 'live-cli-kernel-restart-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
-  const automationSocket = path.join(os.tmpdir(), `arroba-cli-restart-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-cli-restart-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `cli-restart-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `cli-restart-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null

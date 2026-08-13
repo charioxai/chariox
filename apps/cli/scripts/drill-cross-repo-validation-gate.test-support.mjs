@@ -41,7 +41,7 @@ export {
 export async function writeMatrixReport(file, { matrix, metadata, scenarios }) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix,
     status: "passed",
     dryRun: false,
@@ -63,7 +63,7 @@ export async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudFailureTaxonomyManifest() {",
-    `  return { schema: "arroba.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
+    `  return { schema: "chariox.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
     "}",
     "",
   ].join("\n"), "utf8")
@@ -89,7 +89,7 @@ export async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = 
   const artifactPath = path.join(rootDir, "cloud-validation-suite.json")
   await mkdir(rootDir, { recursive: true })
   await writeFile(artifactPath, `${JSON.stringify({
-    schema: "arroba.drill.validation_suite_run.v1",
+    schema: "chariox.drill.validation_suite_run.v1",
     status: "passed",
     ok: true,
     startedAt: "2026-06-13T00:00:00.000Z",
@@ -102,7 +102,7 @@ export async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = 
     command: "node --test scripts/cloud-validation-suite.test.mjs",
     testPaths: ["scripts/cloud-validation-suite.test.mjs"],
     manifest: {
-      schema: "arroba.drill.validation_suite.v1",
+      schema: "chariox.drill.validation_suite.v1",
       testCount: 1,
       command: "node --test scripts/cloud-validation-suite.test.mjs",
       coverage: [{
@@ -124,7 +124,7 @@ export async function writeValidationSuiteArtifact(rootDir, { metadata = {} } = 
       ...metadata,
     },
   })
-  return path.join(rootDir, "arroba-drill-artifacts.json")
+  return path.join(rootDir, "chariox-drill-artifacts.json")
 }
 
 export async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
@@ -143,7 +143,7 @@ export async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudDrillGeneratedMatrixNamesManifest() {",
-    `  return { schema: "arroba.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
+    `  return { schema: "chariox.cloud.drill.generated_matrix_names.v1", matrices: ${JSON.stringify(matrices)} }`,
     "}",
     "",
   ].join("\n"), "utf8")
@@ -157,7 +157,7 @@ export async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudRuntimeSignalsManifest() {",
-    `  return { schema: "arroba.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
+    `  return { schema: "chariox.drill.runtime_signals.v1", signals: ${JSON.stringify(signals)} }`,
     "}",
     "",
   ].join("\n"), "utf8")
@@ -173,7 +173,7 @@ export async function writeCloudRuntimeAuthorityRegistry(cloudRoot, {
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudRuntimeAuthorityManifest() {",
-    `  return { schema: "arroba.drill.runtime_authority_invariants.v1", invariants: ${JSON.stringify(invariants)} }`,
+    `  return { schema: "chariox.drill.runtime_authority_invariants.v1", invariants: ${JSON.stringify(invariants)} }`,
     "}",
     "",
   ].join("\n"), "utf8")
@@ -186,7 +186,7 @@ export async function writeFailureManifest(file, {
 } = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.failure.v1",
+    schema: "chariox.drill.failure.v1",
     rootDir: path.dirname(file),
     failedAt: "2026-06-13T00:00:00.000Z",
     metadata: { drill },

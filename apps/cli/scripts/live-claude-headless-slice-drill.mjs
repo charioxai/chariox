@@ -35,17 +35,17 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
   path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "arroba-kernel",
+  "chariox-kernel",
 )
 const relayBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/relay/target/debug/arroba-relay"),
+  path.join(repoRoot, "apps/relay/target/debug/chariox-relay"),
   path.join(repoRoot, "apps/relay/Cargo.toml"),
-  "arroba-relay",
+  "chariox-relay",
 )
 const realHomeDir = os.homedir()
-const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
+const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 
 async function dockerHostEnv() {
   if (process.env.DOCKER_HOST?.trim()) return process.env.DOCKER_HOST
@@ -226,8 +226,8 @@ async function waitForHistoryMarker(client, sessionId, attachmentId, agentId, ma
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "arroba-kernel")
-  await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
+  await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
+  await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
 
   const root = path.join("/tmp", `arb-claude-headless-slice-${process.pid}-${Date.now()}`)
   const ports = await makeAvailablePorts()
@@ -241,7 +241,7 @@ async function main() {
   const xdgStateHome = path.join(root, "xdg-state")
   const xdgDataHome = path.join(root, "xdg-data")
   const xdgCacheHome = path.join(root, "xdg-cache")
-  const sliceBuildImagePolicy = process.env.ARROBA_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
+  const sliceBuildImagePolicy = process.env.CHARIOX_NATIVE_TUI_SLICE_BUILD_IMAGE ?? "always"
   const rustMinStack = process.env.RUST_MIN_STACK ?? "16777216"
   const dockerHost = await dockerHostEnv()
   const dockerContext = dockerHost?.includes("/.colima/") ? "colima" : process.env.DOCKER_CONTEXT
@@ -261,8 +261,8 @@ async function main() {
     await mkdir(xdgStateHome, { recursive: true })
     await mkdir(xdgDataHome, { recursive: true })
     await mkdir(xdgCacheHome, { recursive: true })
-    await mkdir(path.join(xdgConfigHome, "arroba"), { recursive: true })
-    await writeFile(path.join(xdgConfigHome, "arroba", "config.toml"), [
+    await mkdir(path.join(xdgConfigHome, "chariox"), { recursive: true })
+    await writeFile(path.join(xdgConfigHome, "chariox", "config.toml"), [
       "version = 1",
       "",
       "[slices]",
@@ -283,9 +283,9 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_RELAY_HOST: "127.0.0.1",
-        ARROBA_RELAY_PORT: String(ports.relayPort),
-        ARROBA_RELAY_TOKEN: relayToken,
+        CHARIOX_RELAY_HOST: "127.0.0.1",
+        CHARIOX_RELAY_PORT: String(ports.relayPort),
+        CHARIOX_RELAY_TOKEN: relayToken,
         RUST_MIN_STACK: rustMinStack,
       },
       stdio: ["ignore", "ignore", "inherit"],
@@ -302,23 +302,23 @@ async function main() {
         XDG_CACHE_HOME: xdgCacheHome,
         CODEX_HOME: process.env.CODEX_HOME ?? path.join(realHomeDir, ".codex"),
         OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR ?? path.join(realHomeDir, ".config", "opencode"),
-        ARROBA_LOG_DIR: path.join(root, "logs"),
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.openCodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_RELAY_URL: relayUrl,
-        ARROBA_RELAY_TOKEN: relayToken,
-        ARROBA_DAEMON_ID: `claude-headless-slice-home-${process.pid}-${Date.now()}`,
-        ARROBA_DAEMON_ALIAS: targetDaemonAlias,
-        ARROBA_MACHINE_ID: `claude-headless-slice-machine-${process.pid}`,
-        ARROBA_MACHINE_ALIAS: targetDaemonAlias,
-        ARROBA_ACCEPT_REMOTE_LEASES: "0",
-        ARROBA_DAEMON_SOCKET: path.join(root, "home.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_LOG_DIR: path.join(root, "logs"),
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_RELAY_URL: relayUrl,
+        CHARIOX_RELAY_TOKEN: relayToken,
+        CHARIOX_DAEMON_ID: `claude-headless-slice-home-${process.pid}-${Date.now()}`,
+        CHARIOX_DAEMON_ALIAS: targetDaemonAlias,
+        CHARIOX_MACHINE_ID: `claude-headless-slice-machine-${process.pid}`,
+        CHARIOX_MACHINE_ALIAS: targetDaemonAlias,
+        CHARIOX_ACCEPT_REMOTE_LEASES: "0",
+        CHARIOX_DAEMON_SOCKET: path.join(root, "home.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
         RUST_MIN_STACK: rustMinStack,
         ...(exportedClaudeCredentialsPath
-          ? { ARROBA_SLICE_CLAUDE_CREDENTIALS: exportedClaudeCredentialsPath }
+          ? { CHARIOX_SLICE_CLAUDE_CREDENTIALS: exportedClaudeCredentialsPath }
           : {}),
         ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
         ...(dockerContext ? { DOCKER_CONTEXT: dockerContext } : {}),

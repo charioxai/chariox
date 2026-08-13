@@ -1,7 +1,7 @@
 import {
   resolvePromptHistoryKeyNavigation,
   type PromptHistoryDirection,
-} from "@arroba/kernel-client/prompt-history"
+} from "@chariox/kernel-client/prompt-history"
 
 export type PromptKeyDownEvent = {
   name: string

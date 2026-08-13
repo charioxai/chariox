@@ -8,9 +8,9 @@ import { verifyDrillRuntimeSignalRegistryParity } from "./drill-runtime-signal-r
 import { drillRuntimeSignalsManifest } from "./drill-runtime-signals.mjs"
 
 test("accepts matching OSS and Cloud runtime signal registries", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeSignalsRegistry(cloudRoot)
 
     await assert.doesNotReject(verifyDrillRuntimeSignalRegistryParity({ cloudRoot }))
@@ -20,9 +20,9 @@ test("accepts matching OSS and Cloud runtime signal registries", async () => {
 })
 
 test("rejects drifted Cloud runtime signal registries", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillRuntimeSignalsManifest()
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
       signals: manifest.signals.map((signal) => signal.id === "lease-health"
@@ -40,9 +40,9 @@ test("rejects drifted Cloud runtime signal registries", async () => {
 })
 
 test("rejects missing Cloud runtime signal registry exports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-signals.mjs")
     await mkdir(path.dirname(registryPath), { recursive: true })
     await writeFile(registryPath, "export const noManifest = true\n", "utf8")
@@ -57,9 +57,9 @@ test("rejects missing Cloud runtime signal registry exports", async () => {
 })
 
 test("rejects malformed Cloud runtime signal manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
       signals: [{ id: "session-authority", owner: "kernel-authority" }],
     })
@@ -74,16 +74,16 @@ test("rejects malformed Cloud runtime signal manifests", async () => {
 })
 
 test("rejects unsupported Cloud runtime signal registry schemas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
-      schema: "arroba.cloud.runtime_signals.v1",
+      schema: "chariox.cloud.runtime_signals.v1",
     })
 
     await assert.rejects(
       verifyDrillRuntimeSignalRegistryParity({ cloudRoot }),
-      /Cloud runtime signal registry has unsupported schema "arroba.cloud.runtime_signals.v1"/,
+      /Cloud runtime signal registry has unsupported schema "chariox.cloud.runtime_signals.v1"/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -91,9 +91,9 @@ test("rejects unsupported Cloud runtime signal registry schemas", async () => {
 })
 
 test("rejects duplicate Cloud runtime signal ids", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-signal-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-signal-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
       signals: [
         ...drillRuntimeSignalsManifest().signals,
@@ -111,7 +111,7 @@ test("rejects duplicate Cloud runtime signal ids", async () => {
 })
 
 async function writeCloudRuntimeSignalsRegistry(cloudRoot, {
-  schema = "arroba.drill.runtime_signals.v1",
+  schema = "chariox.drill.runtime_signals.v1",
   signals = drillRuntimeSignalsManifest().signals,
 } = {}) {
   const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-signals.mjs")

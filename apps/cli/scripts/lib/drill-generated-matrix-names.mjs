@@ -21,7 +21,7 @@ export const DRILL_GENERATED_MATRIX_NAMES_BY_REPO = Object.freeze({
   ]),
 })
 
-export const DRILL_GENERATED_MATRIX_NAMES_SCHEMA = "arroba.drill.generated_matrix_names.v1"
+export const DRILL_GENERATED_MATRIX_NAMES_SCHEMA = "chariox.drill.generated_matrix_names.v1"
 
 export function drillGeneratedMatrixNamesManifest() {
   return {

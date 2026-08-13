@@ -102,7 +102,7 @@ async function runCodexDrill(options, root) {
     stdout: path.join(root, "codex.stdout.log"),
     stderr: path.join(root, "codex.stderr.log"),
   }
-  const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
+  const executable = process.env.CHARIOX_CODEX_BIN?.trim() || "codex"
   const child = spawnLogged(executable, ["app-server", "--listen", endpoint], {
     cwd: options.worktree,
     stdout: logs.stdout,
@@ -120,7 +120,7 @@ async function runCodexDrill(options, root) {
       sandbox: "read-only",
       personality: "pragmatic",
       persistExtendedHistory: true,
-      serviceName: "arroba-context-injection-drill",
+      serviceName: "chariox-context-injection-drill",
       cwd: options.worktree,
     }
     if (model) threadParams.model = model
@@ -162,7 +162,7 @@ async function runCodexDrill(options, root) {
 }
 
 async function codexMidturnSteeringProbe(client, { options, threadId, model, provider }) {
-  const marker = `ARROBA_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
+  const marker = `CHARIOX_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
   const firstMarker = `${marker}_FIRST`
   const secondMarker = `${marker}_SECOND`
   client.drainNotifications()
@@ -301,7 +301,7 @@ async function runOpenCodeDrill(options, root) {
     stdout: path.join(root, "opencode.stdout.log"),
     stderr: path.join(root, "opencode.stderr.log"),
   }
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const child = spawnLogged(executable, ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: options.worktree,
     stdout: logs.stdout,
@@ -346,7 +346,7 @@ async function runOpenCodeDrill(options, root) {
 }
 
 async function opencodeMidturnSteeringProbe(baseUrl, sessionId, options, provider) {
-  const marker = `ARROBA_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
+  const marker = `CHARIOX_STEER_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
   const firstMarker = `${marker}_FIRST`
   const secondMarker = `${marker}_SECOND`
   const firstMessageId = nextOpenCodeMessageId()
@@ -458,7 +458,7 @@ async function runClaudeDrill(options, root, provider = "claude") {
     },
   }), "utf8")
 
-  const executable = process.env.ARROBA_CLAUDE_BIN?.trim() || "claude"
+  const executable = process.env.CHARIOX_CLAUDE_BIN?.trim() || "claude"
   const model = providerModel(options, provider) ?? "sonnet"
   const child = spawn(executable, [
     "-p",
@@ -480,8 +480,8 @@ async function runClaudeDrill(options, root, provider = "claude") {
     cwd: options.worktree,
     env: {
       ...process.env,
-      ARROBA_CLAUDE_CONTEXT_DRILL_EVENTS: logs.events,
-      ARROBA_CLAUDE_CONTEXT_DRILL_CONTEXT: contextFile,
+      CHARIOX_CLAUDE_CONTEXT_DRILL_EVENTS: logs.events,
+      CHARIOX_CLAUDE_CONTEXT_DRILL_CONTEXT: contextFile,
     },
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],
@@ -641,7 +641,7 @@ async function runClaudeHeadlessDrill(options, root) {
   return {
     provider,
     status: result?.status === "ok" && midturnOk ? "ok" : "failed",
-    channel: "Arroba kernel Claude headless UserPromptSubmit additionalContext",
+    channel: "Chariox kernel Claude headless UserPromptSubmit additionalContext",
     sessionId: result?.providerRunId ?? null,
     perTurnContext: Boolean(result?.tokenSeenByModel),
     hiddenTextVisibleInPromptBlob: Boolean(result?.hiddenTokenVisibleInUserPromptHistory),
@@ -659,34 +659,34 @@ async function claudeHeadlessMidturnSteeringProbe(options, root) {
   const runtimeDir = path.join(cliRoot, `.tmp-provider-context-claude-headless-steering-${runId}`)
   const rootDir = path.join(root, `claude-headless-steering-${runId}`)
   const workspace = path.join(rootDir, "workspace")
-  const arrobaHome = path.join(rootDir, "arroba-home")
+  const charioxHome = path.join(rootDir, "chariox-home")
   const logs = {
     kernel: path.join(root, `claude-headless-steering-kernel-${runId}.log`),
   }
   await mkdir(workspace, { recursive: true })
-  await mkdir(arrobaHome, { recursive: true })
+  await mkdir(charioxHome, { recursive: true })
   const { LocalIpcClient, requests } = await loadCliIpcModules(runtimeDir)
   const kernelPort = await reservePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const kernelLog = createWriteStream(logs.kernel, { flags: "a" })
-  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
   const daemon = spawn(kernelBinary, [], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      ARROBA_HOME: arrobaHome,
+      CHARIOX_HOME: charioxHome,
       XDG_CONFIG_HOME: path.join(rootDir, "xdg-config"),
       XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
-      ARROBA_LOG_DIR: path.join(rootDir, "logs"),
-      ARROBA_LOG_LEVEL: "debug",
-      ARROBA_CLAUDE_HEADLESS_DEBUG: "1",
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(kernelPort + 1000),
-      ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-      ARROBA_CODEX_PORT: String(kernelPort + 2001),
-      ARROBA_DAEMON_ID: `claude-headless-steering-${runId}`,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
+      CHARIOX_LOG_DIR: path.join(rootDir, "logs"),
+      CHARIOX_LOG_LEVEL: "debug",
+      CHARIOX_CLAUDE_HEADLESS_DEBUG: "1",
+      CHARIOX_KERNEL_PORT: String(kernelPort),
+      CHARIOX_MCP_PORT: String(kernelPort + 1000),
+      CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+      CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+      CHARIOX_DAEMON_ID: `claude-headless-steering-${runId}`,
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
     },
     detached: true,
     stdio: ["ignore", "ignore", "pipe"],
@@ -718,8 +718,8 @@ async function claudeHeadlessMidturnSteeringProbe(options, root) {
     if (!launchPayload?.provider_run) throw new Error(`unexpected launch response: ${JSON.stringify(launchResponse)}`)
     await waitForProviderRunReady(client, requests, launchPayload.provider_run.id, options.timeoutMs)
 
-    const firstMarker = `ARROBA_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_A`
-    const secondMarker = `ARROBA_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_B`
+    const firstMarker = `CHARIOX_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_A`
+    const secondMarker = `CHARIOX_STEER_CLAUDE_HEADLESS_${randomBytes(4).toString("hex")}_B`
     const firstPrompt = [
       "Midturn steering probe.",
       "Write twenty short numbered lines, then finish with this marker:",
@@ -797,12 +797,12 @@ const chunks = []
 for await (const chunk of process.stdin) chunks.push(chunk)
 const raw = Buffer.concat(chunks).toString("utf8")
 const input = raw.trim() ? JSON.parse(raw) : {}
-appendFileSync(process.env.ARROBA_CLAUDE_CONTEXT_DRILL_EVENTS, JSON.stringify(input) + "\\n")
+appendFileSync(process.env.CHARIOX_CLAUDE_CONTEXT_DRILL_EVENTS, JSON.stringify(input) + "\\n")
 if (input.hook_event_name === "UserPromptSubmit") {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
-      additionalContext: readFileSync(process.env.ARROBA_CLAUDE_CONTEXT_DRILL_CONTEXT, "utf8"),
+      additionalContext: readFileSync(process.env.CHARIOX_CLAUDE_CONTEXT_DRILL_CONTEXT, "utf8"),
     },
   }))
 }
@@ -829,8 +829,8 @@ async function claudeTurn(child, resultQueue, waiters, { options, contextFile, v
 }
 
 async function claudeMidturnSteeringProbe(child, resultQueue, waiters, { options, contextFile, provider }) {
-  const firstMarker = `ARROBA_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_A`
-  const secondMarker = `ARROBA_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_B`
+  const firstMarker = `CHARIOX_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_A`
+  const secondMarker = `CHARIOX_STEER_${provider.toUpperCase()}_${randomBytes(4).toString("hex")}_B`
   await writeFile(contextFile, "No hidden context is required for this steering probe.", "utf8")
   child.stdin.write(JSON.stringify({
     type: "user",

@@ -13,7 +13,7 @@ import {
 } from "./prompt-attachments.js"
 
 test("extractDroppedPromptAttachments parses dropped quoted files", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arroba-cli-attachments-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chariox-cli-attachments-"))
   const alpha = path.join(dir, "notes.md")
   const beta = path.join(dir, "diagram.png")
   fs.writeFileSync(alpha, "hello")
@@ -34,7 +34,7 @@ test("extractDroppedPromptAttachments parses dropped quoted files", () => {
 })
 
 test("extractDroppedPromptAttachments preserves insertion point in the middle", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arroba-cli-attachments-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chariox-cli-attachments-"))
   const alpha = path.join(dir, "diagram.png")
   fs.writeFileSync(alpha, "png")
 
@@ -49,7 +49,7 @@ test("extractDroppedPromptAttachments preserves insertion point in the middle", 
 })
 
 test("parsePromptAttachmentCommand supports escaped spaces", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arroba-cli-attachments-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chariox-cli-attachments-"))
   const file = path.join(dir, "my note.txt")
   fs.writeFileSync(file, "hello")
 
@@ -59,7 +59,7 @@ test("parsePromptAttachmentCommand supports escaped spaces", () => {
 })
 
 test("classifyPromptAttachment rejects unsupported binaries", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "arroba-cli-attachments-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chariox-cli-attachments-"))
   const file = path.join(dir, "archive.zip")
   fs.writeFileSync(file, "zip")
   assert.equal(classifyPromptAttachment(file), null)

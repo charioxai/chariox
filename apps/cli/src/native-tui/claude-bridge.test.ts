@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { AgentInstance, PromptQueueItem, RuntimeSession } from "../cli-types.js"
-import { sessionActivePromptForAgent } from "@arroba/kernel-client/session-prompt-identity"
+import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 
 test("native Claude bridge ignores stale prompts when projected activity is idle", () => {
   const stalePrompt = prompt("prompt-stale", "agent-1")

@@ -9,7 +9,7 @@ import {
   type RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 import {
   cancelActivePromptRequest,
   cancelQueuedPromptRequest,
@@ -21,17 +21,17 @@ import { expectVariant } from "./ipc-response.js"
 import { launchProviderRun } from "./provider-api.js"
 import { describeCliError } from "./runtime.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
-import { resolvePromptRecoveryProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
+import { resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import {
   expectPromptSubmittedPayload,
   promptSubmissionOutcomeName,
   promptSubmissionTargetAgentId,
   promptSubmissionTranscriptMetadata,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 
 export {
   promptSubmissionTranscriptMetadata,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 
 export type PromptSubmissionResult = {
   payload: PromptSubmittedPayload
@@ -48,7 +48,7 @@ export async function submitPromptWithRecovery(
   attachments: PromptAttachmentPart[],
   getSession: () => RuntimeSession,
   options: CliOptions,
-  logger?: ArrobaLogger | null,
+  logger?: CharioxLogger | null,
 ): Promise<PromptSubmissionResult> {
   try {
     return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)

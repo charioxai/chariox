@@ -9,7 +9,7 @@ import {
   type WorkflowRun,
 } from "./cli-types.js"
 import type { KernelEvent } from "./ipc.js"
-import type { WorkflowDesignOpForwarded } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView } from "./relay-api.js"
 import type { RemoteMachineView } from "./waiting-room-inventory-api.js"

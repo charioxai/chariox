@@ -14,9 +14,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-runtime-resilience-chaos-matrix-drill.mjs", import.meta.url))
 
 test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and hosted recovery axes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-resilience-chaos-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-resilience-chaos-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -42,7 +42,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "runtime-resilience-chaos-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [
@@ -86,7 +86,7 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
     assert.equal(report.metadata.generatedMatrixNames, "runtime-resilience-chaos-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.equal(report.metadata.deterministicChaosSeed, "matrix-dry-run")
-    assert.equal(report.metadata.deterministicChaosReplaySchema, "arroba.drill.chaos_replay.v1")
+    assert.equal(report.metadata.deterministicChaosReplaySchema, "chariox.drill.chaos_replay.v1")
     assert.match(report.metadata.deterministicChaosFaultKinds, /process-death/)
     assert.match(report.metadata.deterministicChaosInvariantIds, /eventual-client-convergence/)
     assert.match(stdout, /dry-run deterministic-runtime-convergence classification=ui-client-projection/)
@@ -102,9 +102,9 @@ test("runtime resilience chaos matrix dry-run covers local, slice, Hetzner, and 
 })
 
 test("runtime resilience matrix retains a validated deterministic replay on success", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-resilience-replay-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-resilience-replay-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   const replayPath = path.join(rootDir, "replay.json")
   try {
     await execFile(process.execPath, [
@@ -146,11 +146,11 @@ test("runtime resilience chaos matrix rejects gated scenarios without opt-in fla
 })
 
 test("runtime resilience chaos matrix uses the supported Codex default model", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-resilience-codex-model-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-resilience-codex-model-"))
   const reportPath = path.join(rootDir, "matrix.json")
   const env = { ...process.env }
-  delete env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
-  delete env.ARROBA_CODEX_MODEL
+  delete env.CHARIOX_RUNTIME_RESILIENCE_CODEX_MODEL
+  delete env.CHARIOX_CODEX_MODEL
   try {
     await execFile(process.execPath, [
       scriptPath,

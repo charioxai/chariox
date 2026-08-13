@@ -52,7 +52,7 @@ const repoRoot = path.resolve(new URL("../../../..", import.meta.url).pathname)
 const cliRoot = path.resolve(repoRoot, "apps/cli")
 const cliPath = path.join(cliRoot, "dist/index.js")
 export const nativeAttachmentImagePng = solidColorPng(220, 30, 30)
-export const arrobaAttachmentImagePng = solidColorPng(30, 80, 220)
+export const charioxAttachmentImagePng = solidColorPng(30, 80, 220)
 
 function solidColorPng(red, green, blue) {
   const width = 256
@@ -204,7 +204,7 @@ async function waitForAutomationReady(socketPath, cliLogDir, timeoutMs = 90_000)
       await sleep(250)
     }
   }
-  const structuredLogDir = path.join(cliLogDir, ".arroba", "logs")
+  const structuredLogDir = path.join(cliLogDir, ".chariox", "logs")
   const structuredLogs = await readdir(structuredLogDir).catch(() => [])
   const latestLog = structuredLogs.sort().at(-1)
   const logTail = latestLog
@@ -541,8 +541,8 @@ export function baselinePrompt(provider, promptKey, markers) {
   const prompts = {
     nativeA: `Please answer this astronomy question in one concise sentence: which planet is closest to the Sun? Include the phrase ${markers.nativeA}.`,
     nativeB: `Please answer this astronomy question in one concise sentence: which planet is the largest in the Solar System? Include the phrase ${markers.nativeB}.`,
-    arrobaA: `Please answer this geography question in one concise sentence: what is the capital of Australia? Include the phrase ${markers.arrobaA}.`,
-    arrobaB: `Please answer this geography question in one concise sentence: what is the capital of Canada? Include the phrase ${markers.arrobaB}.`,
+    charioxA: `Please answer this geography question in one concise sentence: what is the capital of Australia? Include the phrase ${markers.charioxA}.`,
+    charioxB: `Please answer this geography question in one concise sentence: what is the capital of Canada? Include the phrase ${markers.charioxB}.`,
   }
   return prompts[promptKey]
 }
@@ -642,9 +642,9 @@ export async function runProviderScenario({
   const scenarioRoot = path.join(root, provider)
   const remotePlacement = Boolean(machineRef || sliceRef)
   const sessionAlias = `remote-native-${provider}-${process.pid}`
-  const screenA = `arroba-rnt-${provider}-a-${process.pid}`
-  const screenB = `arroba-rnt-${provider}-b-${process.pid}`
-  const screenCli = `arroba-rnt-${provider}-cli-${process.pid}`
+  const screenA = `chariox-rnt-${provider}-a-${process.pid}`
+  const screenB = `chariox-rnt-${provider}-b-${process.pid}`
+  const screenCli = `chariox-rnt-${provider}-cli-${process.pid}`
   const aliases = provider === "opencode"
     ? ["oc-remote-a", "oc-remote-b"]
     : provider === "codex"
@@ -656,33 +656,33 @@ export async function runProviderScenario({
   }
   const marker = provider === "opencode" ? "OPENCODE" : provider === "codex" ? "CODEX" : "CLAUDE"
   const markers = {
-    arrobaA: provider === "claude" ? "Canberra is the capital of Australia" : `${marker}ALPHA`,
-    arrobaB: provider === "claude" ? "Ottawa is the capital of Canada" : `${marker}BRAVO`,
+    charioxA: provider === "claude" ? "Canberra is the capital of Australia" : `${marker}ALPHA`,
+    charioxB: provider === "claude" ? "Ottawa is the capital of Canada" : `${marker}BRAVO`,
     nativeA: provider === "claude" ? "Mercury is the closest planet to the Sun" : `${marker}CHARLIE`,
     nativeB: provider === "claude" ? "Jupiter is the largest planet in the Solar System" : `${marker}DELTA`,
     nativePermission: `${marker}NATIVEPERMISSION`,
-    arrobaPermission: `${marker}ARROBAPERMISSION`,
+    charioxPermission: `${marker}CHARIOXPERMISSION`,
     nativeAttachment: provider === "claude" ? "dominant color is red" : `${marker}NATIVEATTACHMENT`,
-    arrobaAttachment: provider === "claude" ? "dominant color is blue" : `${marker}ARROBAATTACHMENT`,
+    charioxAttachment: provider === "claude" ? "dominant color is blue" : `${marker}CHARIOXATTACHMENT`,
     nativeSkill: `${marker}NATIVESKILL`,
-    arrobaSkill: `${marker}ARROBASKILL`,
+    charioxSkill: `${marker}CHARIOXSKILL`,
   }
   const skipBaselineTurns = provider === "claude" && options.includePermissions
   const providerBinaryEnv = {}
-  if (provider === "opencode" && !process.env.ARROBA_OPENCODE_BIN) {
-    providerBinaryEnv.ARROBA_OPENCODE_BIN = await resolveCommandPath("opencode")
-  } else if (provider === "codex" && !process.env.ARROBA_CODEX_BIN) {
-    providerBinaryEnv.ARROBA_CODEX_BIN = await resolveCommandPath("codex")
-  } else if (provider === "claude" && !process.env.ARROBA_CLAUDE_BIN) {
-    providerBinaryEnv.ARROBA_CLAUDE_BIN = await resolveCommandPath("claude")
+  if (provider === "opencode" && !process.env.CHARIOX_OPENCODE_BIN) {
+    providerBinaryEnv.CHARIOX_OPENCODE_BIN = await resolveCommandPath("opencode")
+  } else if (provider === "codex" && !process.env.CHARIOX_CODEX_BIN) {
+    providerBinaryEnv.CHARIOX_CODEX_BIN = await resolveCommandPath("codex")
+  } else if (provider === "claude" && !process.env.CHARIOX_CLAUDE_BIN) {
+    providerBinaryEnv.CHARIOX_CLAUDE_BIN = await resolveCommandPath("claude")
   }
   const logs = {
     aDir: path.join(scenarioRoot, "native-a-screen"),
     bDir: path.join(scenarioRoot, "native-b-screen"),
-    cliDir: path.join(scenarioRoot, "arroba-cli-screen"),
+    cliDir: path.join(scenarioRoot, "chariox-cli-screen"),
     a: path.join(scenarioRoot, "native-a-screen", "screenlog.0"),
     b: path.join(scenarioRoot, "native-b-screen", "screenlog.0"),
-    cli: path.join(scenarioRoot, "arroba-cli-screen", "screenlog.0"),
+    cli: path.join(scenarioRoot, "chariox-cli-screen", "screenlog.0"),
     nativeA: path.join(scenarioRoot, "native-a-run.log"),
     nativeB: path.join(scenarioRoot, "native-b-run.log"),
     proxyA: path.join(scenarioRoot, "native-a.proxy.log"),
@@ -752,18 +752,18 @@ export async function runProviderScenario({
       ...process.env,
       ...providerBinaryEnv,
       ...nativeEnv,
-      ARROBA_CODEX_NATIVE_DEBUG: "1",
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
-      ARROBA_OPENCODE_NATIVE_DEBUG: "1",
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
-      ARROBA_CLAUDE_NATIVE_DEBUG: "1",
-      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyA,
+      CHARIOX_CODEX_NATIVE_DEBUG: "1",
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
+      CHARIOX_CLAUDE_NATIVE_DEBUG: "1",
+      CHARIOX_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
     client = relayClient(relayUrl, relayToken, targetDaemonAlias)
     sessionId = (await waitForSessionByAlias(client, sessionAlias)).id
     await client.close().catch(() => {})
     client = null
-    const bannerSessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    const bannerSessionId = (await waitForFileMatch(logs.a, /chariox session:\s+([^\s(]+)/)).match[1]
     if (bannerSessionId !== sessionId) {
       throw new Error(`native TUI banner session ${bannerSessionId} did not match run-owned session ${sessionId}`)
     }
@@ -794,12 +794,12 @@ export async function runProviderScenario({
       ...process.env,
       ...providerBinaryEnv,
       ...nativeEnv,
-      ARROBA_CODEX_NATIVE_DEBUG: "1",
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
-      ARROBA_OPENCODE_NATIVE_DEBUG: "1",
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
-      ARROBA_CLAUDE_NATIVE_DEBUG: "1",
-      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyB,
+      CHARIOX_CODEX_NATIVE_DEBUG: "1",
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
+      CHARIOX_CLAUDE_NATIVE_DEBUG: "1",
+      CHARIOX_CLAUDE_NATIVE_DEBUG_FILE: logs.proxyB,
     })
 
     let proxyA = null
@@ -872,7 +872,7 @@ export async function runProviderScenario({
       "--session",
       sessionId,
       "--client-id",
-      `arroba-remote-native-observer-${provider}-${process.pid}`,
+      `chariox-remote-native-observer-${provider}-${process.pid}`,
       "--automation-socket",
       automationSocket,
       "--provider",
@@ -923,35 +923,35 @@ export async function runProviderScenario({
 
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} ${shellQuote(baselinePrompt(provider, "arrobaA", markers))}`,
+        command: `prompt ${aliases[0]} ${shellQuote(baselinePrompt(provider, "charioxA", markers))}`,
       })
       badgeTransitions[aliases[0]].during = await waitForAgentBadgeTone(automationSocket, aliases[0], "working")
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
+        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "charioxB", markers))}`,
       })
       badgeTransitions[aliases[1]].during = await waitForAgentBadgeTone(automationSocket, aliases[1], "working")
 
       const histories = await waitForScenarioHistoryMarkers(agents, {
-        [aliases[0]]: { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
-        [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
+        [aliases[0]]: { prompts: [markers.charioxA, markers.nativeA], outputs: [markers.charioxA, markers.nativeA] },
+        [aliases[1]]: { prompts: [markers.charioxB, markers.nativeB], outputs: [markers.charioxB, markers.nativeB] },
       })
       badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
       badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
 
-      if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
+      if (histories[aliases[0]].all.includes(markers.charioxB) || histories[aliases[0]].all.includes(markers.nativeB)) {
         throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
       }
-      if (histories[aliases[1]].all.includes(markers.arrobaA) || histories[aliases[1]].all.includes(markers.nativeA)) {
+      if (histories[aliases[1]].all.includes(markers.charioxA) || histories[aliases[1]].all.includes(markers.nativeA)) {
         throw new Error(`${aliases[1]} history was contaminated with ${aliases[0]} markers`)
       }
 
       await automationRequest(automationSocket, { action: "switch_screen", screen: "agents" })
       await sleep(1_000)
-      for (const expected of [markers.arrobaA, markers.nativeA]) {
+      for (const expected of [markers.charioxA, markers.nativeA]) {
         await waitForScreenMatch(screenA, logs.renderedA, new RegExp(expected), 90_000)
       }
-      for (const expected of [markers.arrobaB, markers.nativeB]) {
+      for (const expected of [markers.charioxB, markers.nativeB]) {
         await waitForScreenMatch(screenB, logs.renderedB, new RegExp(expected), 90_000)
       }
     } else if (provider === "claude") {
@@ -969,23 +969,23 @@ export async function runProviderScenario({
       })
       await fireAutomationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "arrobaB", markers))}`,
+        command: `prompt ${aliases[1]} ${shellQuote(baselinePrompt(provider, "charioxB", markers))}`,
       })
       const histories = await waitForScenarioHistoryMarkers(agents, {
-        [aliases[1]]: { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
+        [aliases[1]]: { prompts: [markers.charioxB, markers.nativeB], outputs: [markers.charioxB, markers.nativeB] },
       })
       badgeTransitions[aliases[1]].after = await waitForAgentBadgeTone(automationSocket, aliases[1], "idle")
-      if (histories[aliases[0]].all.includes(markers.arrobaB) || histories[aliases[0]].all.includes(markers.nativeB)) {
+      if (histories[aliases[0]].all.includes(markers.charioxB) || histories[aliases[0]].all.includes(markers.nativeB)) {
         throw new Error(`${aliases[0]} history was contaminated with ${aliases[1]} markers`)
       }
       await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.nativeB), 90_000)
-      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.arrobaB), 90_000)
+      await waitForScreenMatch(screenB, logs.renderedB, new RegExp(markers.charioxB), 90_000)
     }
 
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
     const proxyBLog = await readFile(logs.proxyB, "utf8").catch(() => "")
     if (provider === "codex") {
-      const expectedProxySignal = nativeEnv.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE
+      const expectedProxySignal = nativeEnv.CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE
         ? "provider_run_bound"
         : remotePlacement
           ? "native_prompt_submitted"
@@ -1000,7 +1000,7 @@ export async function runProviderScenario({
     const extendedChecks = {}
     if (nativeCapabilities) {
       let nativeSkillCheck = "validated"
-      let skillPromptContext = "validated_native_and_arroba_origin"
+      let skillPromptContext = "validated_native_and_chariox_origin"
       const capabilityPermissionInteractionIds = new Set()
       const settleCapabilityPermission = provider === "claude" && options.includePermissions
         ? async () => {
@@ -1025,12 +1025,12 @@ export async function runProviderScenario({
         })
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
-          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
+          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Chariox skill marker.`)}`,
         })
         await waitForScenarioHistoryMarkers([agents[0]], {
-          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.charioxSkill] },
         })
-        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.charioxSkill), 90_000)
       } else {
         const providerRunA = await waitForClaudeProviderRunId(logs.a)
         await sendClaudeRenderedPromptViaKernelInput(
@@ -1050,15 +1050,15 @@ export async function runProviderScenario({
         })
         await automationRequest(automationSocket, {
           action: "workspace_shell_exec",
-          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Arroba skill marker.`)}`,
+          command: `prompt ${aliases[0]} ${shellQuote(`Use the ${nativeCapabilities.skillName} skill. Give the Chariox skill marker.`)}`,
         })
         await waitForScenarioHistoryMarkers([agents[0]], {
-          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.arrobaSkill] },
+          [aliases[0]]: { prompts: [nativeCapabilities.skillName], outputs: [markers.charioxSkill] },
         }, { onPending: settleCapabilityPermission })
-        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaSkill), 90_000)
+        await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.charioxSkill), 90_000)
         const claudeScreenLog = await readFile(logs.a, "utf8").catch(() => "")
-        if (claudeScreenLog.includes("Full instructions for explicitly requested Arroba skills")) {
-          throw new Error("Claude native TUI displayed hidden Arroba skill context")
+        if (claudeScreenLog.includes("Full instructions for explicitly requested Chariox skills")) {
+          throw new Error("Claude native TUI displayed hidden Chariox skill context")
         }
       }
       extendedChecks.mcpSkills = {
@@ -1076,25 +1076,25 @@ export async function runProviderScenario({
         scenarioRoot,
         provider === "opencode" ? "native-attachment.txt" : "native-attachment.png",
       )
-      const arrobaAttachmentPath = path.join(
+      const charioxAttachmentPath = path.join(
         scenarioRoot,
-        provider === "opencode" ? "arroba-attachment.txt" : "arroba-attachment.png",
+        provider === "opencode" ? "chariox-attachment.txt" : "chariox-attachment.png",
       )
       if (provider === "codex") {
         await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
-        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await writeFile(charioxAttachmentPath, charioxAttachmentImagePng)
         await runNativeCodexPrompt(proxyA, providerSessionA, attachedImagePrompt(markers.nativeAttachment, provider), [
           { type: "localImage", path: nativeAttachmentPath },
         ])
       } else if (provider === "claude") {
         await writeFile(nativeAttachmentPath, nativeAttachmentImagePng)
-        await writeFile(arrobaAttachmentPath, arrobaAttachmentImagePng)
+        await writeFile(charioxAttachmentPath, charioxAttachmentImagePng)
         await screenStuff(screenA, `@${nativeAttachmentPath} ${attachedImagePrompt(markers.nativeAttachment, provider)}`)
         await sleep(250)
         await screenStuff(screenA, "\r")
       } else {
         await writeFile(nativeAttachmentPath, `native ${provider} attachment ${markers.nativeAttachment}\n`)
-        await writeFile(arrobaAttachmentPath, `arroba ${provider} attachment ${markers.arrobaAttachment}\n`)
+        await writeFile(charioxAttachmentPath, `chariox ${provider} attachment ${markers.charioxAttachment}\n`)
         await runNativeOpenCodePrompt(
           proxyA,
           providerSessionA,
@@ -1128,20 +1128,20 @@ export async function runProviderScenario({
       await automationRequest(automationSocket, {
         action: "submit_prompt",
         prompt: provider === "opencode"
-          ? attachedFilePrompt(markers.arrobaAttachment)
-          : attachedImagePrompt(markers.arrobaAttachment, provider),
+          ? attachedFilePrompt(markers.charioxAttachment)
+          : attachedImagePrompt(markers.charioxAttachment, provider),
         attachments: [{
-          url: arrobaAttachmentPath,
+          url: charioxAttachmentPath,
           mime: provider === "opencode" ? "text/plain" : "image/png",
-          filename: path.basename(arrobaAttachmentPath),
+          filename: path.basename(charioxAttachmentPath),
         }],
       })
       await waitForScenarioHistoryMarkers([agents[0]], {
-        [aliases[0]]: { prompts: [markers.arrobaAttachment], outputs: [markers.arrobaAttachment] },
+        [aliases[0]]: { prompts: [markers.charioxAttachment], outputs: [markers.charioxAttachment] },
       })
-      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.arrobaAttachment), 60_000)
+      await waitForScreenMatch(screenA, logs.renderedA, new RegExp(markers.charioxAttachment), 60_000)
       if (provider === "claude") {
-        await waitForScreenMatch(screenA, logs.renderedA, /arroba-attach/, 60_000)
+        await waitForScreenMatch(screenA, logs.renderedA, /chariox-attach/, 60_000)
       }
       extendedChecks.attachments = "validated"
     }
@@ -1150,12 +1150,12 @@ export async function runProviderScenario({
       const remoteExecution = Boolean(options.hetznerWorker && machineRef)
       await ensureExecutionDirectory(options, remoteExecution, path.join(worktree, "outputs"))
       const nativePermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-native-permission.txt`)
-      const arrobaPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-arroba-permission.txt`)
+      const charioxPermissionFile = path.join(worktree, "outputs", `remote-native-${provider}-${process.pid}-chariox-permission.txt`)
       await removeExecutionFile(options, remoteExecution, nativePermissionFile)
-      await removeExecutionFile(options, remoteExecution, arrobaPermissionFile)
+      await removeExecutionFile(options, remoteExecution, charioxPermissionFile)
 
       const nativePermissionContent = `native-${provider}`
-      const arrobaPermissionContent = `arroba-${provider}`
+      const charioxPermissionContent = `chariox-${provider}`
       const nativePrompt = provider === "claude"
         ? claudePermissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
         : permissionPrompt(markers.nativePermission, nativePermissionFile, nativePermissionContent)
@@ -1198,36 +1198,36 @@ export async function runProviderScenario({
       if (provider === "claude" && !badgeTransitions[aliases[0]].after) {
         badgeTransitions[aliases[0]].after = await waitForAgentBadgeTone(automationSocket, aliases[0], "idle")
       }
-      const arrobaPrompt = provider === "claude"
-        ? claudePermissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
-        : permissionPrompt(markers.arrobaPermission, arrobaPermissionFile, arrobaPermissionContent)
+      const charioxPrompt = provider === "claude"
+        ? claudePermissionPrompt(markers.charioxPermission, charioxPermissionFile, charioxPermissionContent)
+        : permissionPrompt(markers.charioxPermission, charioxPermissionFile, charioxPermissionContent)
       await automationRequest(automationSocket, {
         action: "workspace_shell_exec",
-        command: `prompt ${aliases[0]} ${shellQuote(arrobaPrompt)}`,
+        command: `prompt ${aliases[0]} ${shellQuote(charioxPrompt)}`,
       })
       if (provider === "claude") {
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
-        extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
+        extendedChecks.charioxPermissionInteraction = interaction.title ?? interaction.message
       } else {
         const interaction = await answerPermissionFromCli(automationSocket, aliases[0])
-        extendedChecks.arrobaPermissionInteraction = interaction.title ?? interaction.message
+        extendedChecks.charioxPermissionInteraction = interaction.title ?? interaction.message
       }
       if (provider !== "claude") {
         await waitForScenarioHistoryMarkers([agents[0]], {
-          [aliases[0]]: { prompts: [markers.arrobaPermission], outputs: [markers.arrobaPermission] },
+          [aliases[0]]: { prompts: [markers.charioxPermission], outputs: [markers.charioxPermission] },
         })
         await waitForProviderToolCompletion(client, sessionId, attachment.id, agents[0].id, (_update, raw) =>
-          raw.includes(arrobaPermissionFile))
+          raw.includes(charioxPermissionFile))
       }
       await waitForExecutionFileContent(
         options,
         remoteExecution,
-        arrobaPermissionFile,
-        provider === "claude" ? arrobaPermissionContent : `${arrobaPermissionContent}\n`,
+        charioxPermissionFile,
+        provider === "claude" ? charioxPermissionContent : `${charioxPermissionContent}\n`,
         10_000,
       )
       await removeExecutionFile(options, remoteExecution, nativePermissionFile)
-      await removeExecutionFile(options, remoteExecution, arrobaPermissionFile)
+      await removeExecutionFile(options, remoteExecution, charioxPermissionFile)
       extendedChecks.permissions = "validated"
     }
 
@@ -1271,7 +1271,7 @@ export async function runProviderScenario({
       screenB,
       screenCli,
       `remote-native-${provider}-${process.pid}`,
-      `arroba-remote-native-observer-${provider}-${process.pid}`,
+      `chariox-remote-native-observer-${provider}-${process.pid}`,
     ])
     if (sessionId) {
       let ended = false

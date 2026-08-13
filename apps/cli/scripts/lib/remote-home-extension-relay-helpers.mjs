@@ -13,7 +13,7 @@ export function createRemoteHomeExtensionRelayTokenFactory({
   function signRelayToken(claims) {
     const payload = base64url(JSON.stringify(claims))
     const signature = createHmac("sha256", secret).update(payload).digest("base64url")
-    return `arroba-scoped-v1.${payload}.${signature}`
+    return `chariox-scoped-v1.${payload}.${signature}`
   }
 
   function relayClaims({ subject, subjectKind, actions, userId = null }) {

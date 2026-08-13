@@ -10,8 +10,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 
-const RELAY_ISSUER = 'arroba-multi-user-workflow-drill'
-const RELAY_SECRET = 'arroba-multi-user-workflow-drill-secret'
+const RELAY_ISSUER = 'chariox-multi-user-workflow-drill'
+const RELAY_SECRET = 'chariox-multi-user-workflow-drill-secret'
 const RELAY_REALM = 'multi-user-workflow-drill'
 const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
@@ -95,7 +95,7 @@ function base64url(input) {
 function signRelayToken(claims) {
   const claimsPayload = base64url(JSON.stringify(claims))
   const signature = createHmac('sha256', RELAY_SECRET).update(claimsPayload).digest('base64url')
-  return `arroba-scoped-v1.${claimsPayload}.${signature}`
+  return `chariox-scoped-v1.${claimsPayload}.${signature}`
 }
 
 function relayClaims({ subject, subjectKind, actions, userId = null }) {
@@ -145,23 +145,23 @@ function makeChildrenEnv(ports, rootDir) {
     relayUrl: `ws://127.0.0.1:${ports.relayPort}`,
     relayEnv: {
       ...process.env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(ports.relayPort),
-      ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-      ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+      CHARIOX_RELAY_HOST: '127.0.0.1',
+      CHARIOX_RELAY_PORT: String(ports.relayPort),
+      CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+      CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
     },
     daemonEnv: {
       ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-      ARROBA_RELAY_TOKEN: daemonRelayToken,
-      ARROBA_DAEMON_ID: daemonId,
-      ARROBA_DAEMON_ALIAS: daemonAlias,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+      CHARIOX_RELAY_TOKEN: daemonRelayToken,
+      CHARIOX_DAEMON_ID: daemonId,
+      CHARIOX_DAEMON_ALIAS: daemonAlias,
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
     },
   }
 }
@@ -384,16 +384,16 @@ async function main() {
     ;({ endSessionRequest } = requests)
 
     logStep('start_relay', { relayUrl: envs.relayUrl })
-    const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'arroba-relay'], {
+    const relayProcess = spawnObserved('relay', 'cargo', ['run', '--manifest-path', path.join(repoRoot, 'apps/relay/Cargo.toml'), '--bin', 'chariox-relay'], {
       cwd: repoRoot,
       env: envs.relayEnv,
       stdio: ['ignore', 'ignore', 'inherit'],
     })
     relayChild = relayProcess.child
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     logStep('start_kernel', { daemonAlias: envs.daemonAlias })
     const daemonProcess = spawnObserved('kernel', daemonBinary, [], {

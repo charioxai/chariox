@@ -28,9 +28,9 @@ export async function runLivePublicationManifestMode({
           ...env,
           HOST: '127.0.0.1',
           PORT: String(port),
-          ARROBA_KERNEL_URL: kernelUrl,
-          ARROBA_PUBLICATION_SESSION_ID: item.sessionId,
-          ARROBA_PUBLICATION_ID: item.publication.id,
+          CHARIOX_KERNEL_URL: kernelUrl,
+          CHARIOX_PUBLICATION_SESSION_ID: item.sessionId,
+          CHARIOX_PUBLICATION_ID: item.publication.id,
         },
         `gateway-live-${item.key}`,
       )

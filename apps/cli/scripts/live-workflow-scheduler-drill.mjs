@@ -169,10 +169,10 @@ function deriveSpawnedKernelUrl(rootDir) {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
     env: {
       ...process.env,
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(mcpPort),
-      ARROBA_DAEMON_SOCKET: socketPath,
-      ARROBA_DAEMON_ID: `workflow-scheduler-drill-${process.pid}-${Date.now()}`,
+      CHARIOX_KERNEL_PORT: String(kernelPort),
+      CHARIOX_MCP_PORT: String(mcpPort),
+      CHARIOX_DAEMON_SOCKET: socketPath,
+      CHARIOX_DAEMON_ID: `workflow-scheduler-drill-${process.pid}-${Date.now()}`,
     },
   }
 }
@@ -180,7 +180,7 @@ function deriveSpawnedKernelUrl(rootDir) {
 function spawnDaemon(env) {
   const child = spawn(
     'cargo',
-    ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'],
+    ['run', '--quiet', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'],
     { cwd: repoRoot, env, stdio: ['ignore', 'pipe', 'pipe'] },
   )
   child.logs = { stdout: '', stderr: '' }

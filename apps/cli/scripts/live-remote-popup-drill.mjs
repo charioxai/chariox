@@ -105,19 +105,19 @@ function daemonEnv({
 }) {
   return {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
     XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
     XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
     XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
@@ -236,7 +236,7 @@ async function main() {
 
   const runId = `${process.pid}-${Date.now()}`
   const ports = makePorts()
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-popup-${runId}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-popup-${runId}`)
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-popup-drill-${runId}`)
   await prepareDrillArtifacts(rootDir)
   await mkdir(cliRuntimeDir, { recursive: true })
@@ -251,20 +251,20 @@ async function main() {
 
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
   const relayBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+    path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
     path.join(repoRoot, 'apps/relay/Cargo.toml'),
-    'arroba-relay',
+    'chariox-relay',
   )
   const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+    path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
+    'chariox-kernel',
   )
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`

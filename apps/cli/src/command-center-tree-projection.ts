@@ -2,7 +2,7 @@ import type {
   TerminalCommandCatalogExecutionTarget,
   TerminalCommandCatalogNodeKind,
   TerminalCommandCatalogSurface,
-} from "@arroba/kernel-client/kernel-types"
+} from "@chariox/kernel-client/kernel-types"
 import type { CommandCenterItem } from "./command-center-types.js"
 
 export type CommandNode = {

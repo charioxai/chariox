@@ -185,7 +185,7 @@ test("command center controller lets exact leaf commands submit normally", () =>
 })
 
 test("command center lets event authorization commands with arguments submit normally", () => {
-  const command = "/workflow publication event authorize dev.arroba.dummy"
+  const command = "/workflow publication event authorize dev.chariox.dummy"
   const harness = createHarness(command)
   harness.controller.sync()
 

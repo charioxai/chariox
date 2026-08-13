@@ -18,7 +18,7 @@ function writeRecords(logDir: string, fileName: string, records: LogRecord[]) {
 }
 
 test("readAllLogRecords sorts NDJSON records across files", () => {
-  const logDir = mkdtempSync(path.join(tmpdir(), "arroba-cli-logs-"))
+  const logDir = mkdtempSync(path.join(tmpdir(), "chariox-cli-logs-"))
   try {
     writeRecords(logDir, "b.ndjson", [
       {
@@ -49,7 +49,7 @@ test("readAllLogRecords sorts NDJSON records across files", () => {
 })
 
 test("seedLogOffsets and readLogTail only return appended records", () => {
-  const logDir = mkdtempSync(path.join(tmpdir(), "arroba-cli-tail-"))
+  const logDir = mkdtempSync(path.join(tmpdir(), "chariox-cli-tail-"))
   try {
     const filePath = writeRecords(logDir, "daemon.ndjson", [
       {

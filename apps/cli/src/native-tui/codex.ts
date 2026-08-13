@@ -146,7 +146,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
     } else if (options.serverInKernel) {
       const port = await reserveCodexKernelServerPort()
       upstreamEndpoint = `ws://127.0.0.1:${port}`
-      const listenHost = process.env.ARROBA_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
+      const listenHost = process.env.CHARIOX_CODEX_KERNEL_SERVER_BIND_HOST?.trim() || "127.0.0.1"
       const listenEndpoint = `ws://${listenHost}:${port}`
       kernelServerPid = await startCodexAppServerInKernel({
         client,
@@ -156,7 +156,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         listenEndpoint,
         workingDirectory: worktree,
       })
-      bindProviderEndpoint = process.env.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE ? upstreamEndpoint : ""
+      bindProviderEndpoint = process.env.CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE ? upstreamEndpoint : ""
     } else {
       upstreamEndpoint = `ws://127.0.0.1:${await reservePort()}`
       appServer = await startCodexAppServer(upstreamEndpoint, worktree)
@@ -201,7 +201,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
         `  proxy:          ${proxyUrl}`,
         ...(providerSessionId ? [`  codex thread:   ${providerSessionId}`] : []),
       ],
-      promptPolicy: "native prompts pass through; Arroba observes the session",
+      promptPolicy: "native prompts pass through; Chariox observes the session",
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       onTerminalRecords: remotePlacement
@@ -242,7 +242,7 @@ export async function runCodexNativeTui(args: string[]): Promise<void> {
 
 function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
   const options: NativeCodexOptions = {
-    clientId: `arroba-codex-native-${process.pid}`,
+    clientId: `chariox-codex-native-${process.pid}`,
     model: "gpt-5.4-mini",
     effort: "high",
     mode: "build",
@@ -343,7 +343,7 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
         positional.push(arg)
     }
   }
-  if (positional.length > 1) throw new Error("usage: arroba codex [session-ref]")
+  if (positional.length > 1) throw new Error("usage: chariox codex [session-ref]")
   if (options.relayUrl && !options.relayToken) throw new Error("--relay-url requires --relay-token")
   if (options.relayUrl && !options.targetDaemonId && !options.targetDaemonAlias) {
     throw new Error("--relay-url requires --target-daemon-id or --target-daemon-alias")
@@ -369,17 +369,17 @@ function parseNativeCodexArgs(args: string[]): NativeCodexOptions {
 
 function printNativeCodexUsage() {
   process.stdout.write([
-    "usage: arroba codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
-    "       arroba codex [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "usage: chariox codex [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--mode build|plan] [--permissions required|yolo]",
+    "       chariox codex [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
-    "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
-    "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
+    "  --machine, --kernel-ref REF       Run the Chariox agent/provider on a remote worker kernel",
+    "  --slice REF                       Run the Chariox agent/provider on a home-managed slice worker",
     "",
     "behavior:",
-    "  --grant-mcp NAME                Grant an installed Arroba MCP to the native agent before provider launch",
-    "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
-    "  creates a new Arroba agent in the selected session and launches native `codex --remote` for it.",
+    "  --grant-mcp NAME                Grant an installed Chariox MCP to the native agent before provider launch",
+    "  --grant-skill NAME              Grant an installed Chariox skill to the native agent before provider launch",
+    "  creates a new Chariox agent in the selected session and launches native `codex --remote` for it.",
   ].join("\n") + "\n")
 }
 
@@ -406,7 +406,7 @@ async function runCodexTui(options: {
   providerSessionId?: string | null
   initialPrompt?: string | undefined
 }): Promise<void> {
-  const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
+  const executable = process.env.CHARIOX_CODEX_BIN?.trim() || "codex"
   const baseArgs = [
     "--remote",
     options.proxyUrl,
@@ -444,9 +444,9 @@ function formatError(error: unknown): string {
 }
 
 function debugNativeCodex(label: string, payload: unknown) {
-  if (!process.env.ARROBA_CODEX_NATIVE_DEBUG) return
-  const line = `[arroba codex native-tui] ${label}: ${JSON.stringify(payload)}\n`
-  const debugFile = process.env.ARROBA_CODEX_NATIVE_DEBUG_FILE
+  if (!process.env.CHARIOX_CODEX_NATIVE_DEBUG) return
+  const line = `[chariox codex native-tui] ${label}: ${JSON.stringify(payload)}\n`
+  const debugFile = process.env.CHARIOX_CODEX_NATIVE_DEBUG_FILE
   if (debugFile) {
     appendFileSync(debugFile, line)
     return

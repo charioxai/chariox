@@ -4,7 +4,7 @@ import type {
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import type { RelayCloudProfile } from "./preferences.js"
-import { parseAbsoluteInstantMs } from "@arroba/kernel-client/time"
+import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
 import {
   configureRelayRequest,
   connectCloudRelayRequest,

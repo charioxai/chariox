@@ -1,11 +1,11 @@
-import type { ShellContext } from "@arroba/kernel-client/shell-core"
+import type { ShellContext } from "@chariox/kernel-client/shell-core"
 import {
   sessionHistoryEntryIsExternalProviderObserved,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 import {
   sessionAgentPaneStatusBadgeForSession,
   sessionAgentRuntimeDisplayStateByAgent,
-} from "@arroba/kernel-client/session-runtime-status"
+} from "@chariox/kernel-client/session-runtime-status"
 
 import type {
   RuntimeSession,
@@ -14,7 +14,7 @@ import type {
   ExternalProviderSessionRecord,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
-import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
+import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"

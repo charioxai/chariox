@@ -63,13 +63,13 @@ export async function handleRelaySlashCommand(
       return
     }
     const relayUrl = args[0]
-    const relayToken = args[1] ?? process.env.ARROBA_RELAY_TOKEN
+    const relayToken = args[1] ?? process.env.CHARIOX_RELAY_TOKEN
     if (!relayUrl) {
       deps.flashFooter("usage: /relay use <ws-url> [token]", "error")
       return
     }
     if (!relayToken) {
-      deps.flashFooter("relay token missing; pass it or set ARROBA_RELAY_TOKEN", "error")
+      deps.flashFooter("relay token missing; pass it or set CHARIOX_RELAY_TOKEN", "error")
       return
     }
     const status = await deps.configureRelay(relayUrl, relayToken)

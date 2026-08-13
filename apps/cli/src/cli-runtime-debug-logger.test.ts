@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import test from "node:test"
 
 import type { RuntimeProviderRun, TranscriptEntry } from "./cli-types.js"
-import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
 import { createCliRuntimeDebugLogger } from "./cli-runtime-debug-logger.js"
 
 test("runtime debug logger gates view debug fields behind the debug flag", () => {

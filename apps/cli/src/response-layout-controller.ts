@@ -7,7 +7,7 @@ import {
   type ResponsePaneLayoutScrollbox,
   type ResponsePaneLayoutText,
 } from "./response-pane-grid-layout.js"
-import type { ResponsePaneSelection } from "@arroba/kernel-client/response-pane-selection"
+import type { ResponsePaneSelection } from "@chariox/kernel-client/response-pane-selection"
 import {
   syncAuxiliaryPane,
 } from "./response-layout-render.js"

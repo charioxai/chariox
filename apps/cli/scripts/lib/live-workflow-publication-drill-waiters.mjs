@@ -237,7 +237,7 @@ export async function waitForPublicationStatusLatestOutput(gatewayUrl, expectedM
   const deadline = Date.now() + 30_000
   let lastStatus = null
   while (Date.now() < deadline) {
-    const response = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const response = await fetch(`${gatewayUrl}/.well-known/chariox/publication/status`)
     lastStatus = await response.json()
     if (response.status === 200 && lastStatus.latest_output?.kind === 'final' && lastStatus.latest_output?.message === expectedMessage) {
       return lastStatus

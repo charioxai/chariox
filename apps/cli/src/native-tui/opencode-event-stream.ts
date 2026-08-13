@@ -138,7 +138,7 @@ export function createHiddenInstructionRedactor(): Transform {
     transform(chunk, _encoding, callback) {
       const combined = `${carry}${chunk.toString("utf8")}`
       const redacted = redactHiddenInstructions(combined)
-      const startIndex = redacted.lastIndexOf("<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>")
+      const startIndex = redacted.lastIndexOf("<<<CHARIOX_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>")
       if (startIndex >= 0) {
         this.push(redacted.slice(0, startIndex))
         carry = redacted.slice(startIndex)
@@ -242,7 +242,7 @@ async function emitNativeTranscriptRefresh(options: {
     if (record.info && typeof record.info === "object") {
       counter += 1
       writeSseData(options.response, {
-        id: `arroba_native_refresh_${Date.now()}_${counter}`,
+        id: `chariox_native_refresh_${Date.now()}_${counter}`,
         type: "message.updated",
         properties: { info: record.info },
       })
@@ -252,7 +252,7 @@ async function emitNativeTranscriptRefresh(options: {
       if (!part || typeof part !== "object") continue
       counter += 1
       writeSseData(options.response, {
-        id: `arroba_native_refresh_${Date.now()}_${counter}`,
+        id: `chariox_native_refresh_${Date.now()}_${counter}`,
         type: "message.part.updated",
         properties: { part },
       })

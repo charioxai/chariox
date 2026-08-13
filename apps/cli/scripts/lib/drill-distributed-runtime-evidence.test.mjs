@@ -24,10 +24,10 @@ import {
 test("builds distributed runtime matrix command contracts", () => {
   const commands = distributedRuntimeMatrixCommandsFor({
     cloudOutputDir: "/tmp/out/cloud",
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     commonArgs: ["--dry-run", "--continue-on-failure"],
     ossOutputDir: "/tmp/out/oss",
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
     providerAccounts: {
       claude: "work_claude",
       codex: "work_codex",
@@ -44,51 +44,51 @@ test("builds distributed runtime matrix command contracts", () => {
   })), [
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "native-provider-tui-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "remote-agent-runtime-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-remote-agent-runtime-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-remote-agent-runtime-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "runtime-resilience-chaos-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-runtime-resilience-chaos-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-runtime-resilience-chaos-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "remote-home-extension-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-remote-home-extension-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-remote-home-extension-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "slice-runtime-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-slice-runtime-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--artifact-index",
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       reportFileName: "workspace-live-sync-matrix.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-workspace-live-sync-matrix-drill.mjs"),
     },
     {
       artifactIndexFlag: "--output-artifact-index",
-      cwd: "/repo/arroba-cloud",
+      cwd: "/repo/chariox-cloud",
       reportFileName: "browser-terminal-resilience-matrix.json",
-      scriptPath: path.join("/repo/arroba-cloud", "scripts", "browser-terminal-resilience-matrix.mjs"),
+      scriptPath: path.join("/repo/chariox-cloud", "scripts", "browser-terminal-resilience-matrix.mjs"),
     },
     {
       artifactIndexFlag: "--output-artifact-index",
-      cwd: "/repo/arroba-cloud",
+      cwd: "/repo/chariox-cloud",
       reportFileName: "cloud-slice-runtime-matrix.json",
-      scriptPath: path.join("/repo/arroba-cloud", "scripts", "staging-slice-runtime-matrix.mjs"),
+      scriptPath: path.join("/repo/chariox-cloud", "scripts", "staging-slice-runtime-matrix.mjs"),
     },
   ])
   assert.deepEqual(commands[0].args, [
@@ -199,27 +199,27 @@ test("builds distributed runtime matrix command contracts", () => {
 
 test("builds distributed runtime generated evidence output directories", () => {
   const options = {
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     matrixOutputRoot: null,
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
     validationSuiteOutputRoot: null,
   }
 
   assert.equal(
     distributedRuntimeMatrixOutputDirFor(options, "oss"),
-    path.join("/repo/arroba", ".artifacts", "drill-matrices", "distributed-runtime-gate"),
+    path.join("/repo/chariox", ".artifacts", "drill-matrices", "distributed-runtime-gate"),
   )
   assert.equal(
     distributedRuntimeMatrixOutputDirFor(options, "cloud"),
-    path.join("/repo/arroba-cloud", ".artifacts", "drill-matrices", "distributed-runtime-gate"),
+    path.join("/repo/chariox-cloud", ".artifacts", "drill-matrices", "distributed-runtime-gate"),
   )
   assert.equal(
     distributedRuntimeValidationSuiteOutputDirFor(options, "oss"),
-    path.join("/repo/arroba", ".artifacts", "validation-suite", "distributed-runtime-gate"),
+    path.join("/repo/chariox", ".artifacts", "validation-suite", "distributed-runtime-gate"),
   )
   assert.equal(
     distributedRuntimeValidationSuiteOutputDirFor(options, "cloud"),
-    path.join("/repo/arroba-cloud", ".artifacts", "validation-suite", "distributed-runtime-gate"),
+    path.join("/repo/chariox-cloud", ".artifacts", "validation-suite", "distributed-runtime-gate"),
   )
   assert.equal(
     distributedRuntimeMatrixOutputDirFor({ ...options, matrixOutputRoot: "/tmp/matrices" }, "cloud"),
@@ -234,36 +234,36 @@ test("builds distributed runtime generated evidence output directories", () => {
 test("builds distributed runtime validation suite command contracts", () => {
   const commands = distributedRuntimeValidationSuiteCommandsFor({
     cloudOutputDir: "/tmp/suites/cloud",
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     ossOutputDir: "/tmp/suites/oss",
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
   })
 
   assert.deepEqual(commands, [
     {
-      cwd: "/repo/arroba",
+      cwd: "/repo/chariox",
       outputDir: "/tmp/suites/oss",
       preserveFailureRoot: path.join("/tmp/suites/oss", "failed-run"),
       reportFileName: "drill-validation-suite-run.json",
-      scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+      scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
     },
     {
-      cwd: "/repo/arroba-cloud",
+      cwd: "/repo/chariox-cloud",
       outputDir: "/tmp/suites/cloud",
       preserveFailureRoot: path.join("/tmp/suites/cloud", "failed-run"),
       reportFileName: "cloud-validation-suite-run.json",
-      scriptPath: path.join("/repo/arroba-cloud", "scripts", "cloud-validation-suite.mjs"),
+      scriptPath: path.join("/repo/chariox-cloud", "scripts", "cloud-validation-suite.mjs"),
     },
   ])
 })
 
 test("builds distributed runtime generated evidence summary", () => {
   const options = {
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     matrixContinueOnFailure: true,
     matrixDryRun: true,
     matrixOutputRoot: "/tmp/matrices",
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
     runMatrixReports: true,
     runValidationSuites: true,
     validationSuiteOutputRoot: "/tmp/suites",
@@ -275,8 +275,8 @@ test("builds distributed runtime generated evidence summary", () => {
   const summary = distributedRuntimeGeneratedEvidenceSummaryFor(options, {
     generatedMatrixRoots: ["/tmp/matrices/oss", "/tmp/matrices/cloud"],
     validationSuiteArtifactIndexes: [
-      "/tmp/suites/oss/arroba-drill-artifacts.json",
-      "/tmp/suites/cloud/arroba-drill-artifacts.json",
+      "/tmp/suites/oss/chariox-drill-artifacts.json",
+      "/tmp/suites/cloud/chariox-drill-artifacts.json",
     ],
   })
 
@@ -304,10 +304,10 @@ test("builds distributed runtime generated evidence summary", () => {
     artifactIndexFlag: "--artifact-index",
     artifactIndexPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix-artifacts.json"),
     args: ["--dry-run", "--continue-on-failure", "--provider-account", "codex=work_codex", "--include-hetzner"],
-    cwd: "/repo/arroba",
+    cwd: "/repo/chariox",
     matrix: "native-provider-tui-matrix",
     nodeArgs: [
-      path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+      path.join("/repo/chariox", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
       "--dry-run",
       "--continue-on-failure",
       "--provider-account",
@@ -320,7 +320,7 @@ test("builds distributed runtime generated evidence summary", () => {
     ],
     repo: "oss",
     reportPath: path.join("/tmp/matrices/oss", "native-provider-tui-matrix.json"),
-    scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
+    scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "live-native-provider-tui-matrix-drill.mjs"),
   })
   assert.deepEqual(summary.matrixReports.commands.map((command) => command.artifactIndexFlag), [
     "--artifact-index",
@@ -334,8 +334,8 @@ test("builds distributed runtime generated evidence summary", () => {
   ])
   assert.deepEqual(summary.validationSuites, {
     artifactIndexes: [
-      "/tmp/suites/cloud/arroba-drill-artifacts.json",
-      "/tmp/suites/oss/arroba-drill-artifacts.json",
+      "/tmp/suites/cloud/chariox-drill-artifacts.json",
+      "/tmp/suites/oss/chariox-drill-artifacts.json",
     ],
     failureRoots: [
       "/tmp/suites/cloud/failed-run",
@@ -343,40 +343,40 @@ test("builds distributed runtime generated evidence summary", () => {
     ],
     commands: [
       {
-        artifactIndexPath: path.join("/tmp/suites/oss", "arroba-drill-artifacts.json"),
+        artifactIndexPath: path.join("/tmp/suites/oss", "chariox-drill-artifacts.json"),
         args: ["--run-json", "--preserve-failure-root", path.join("/tmp/suites/oss", "failed-run")],
-        cwd: "/repo/arroba",
+        cwd: "/repo/chariox",
         failureRoot: path.join("/tmp/suites/oss", "failed-run"),
         nodeArgs: [
-          path.join("/repo/arroba", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+          path.join("/repo/chariox", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
           "--run-json",
           "--output",
           path.join("/tmp/suites/oss", "drill-validation-suite-run.json"),
           "--output-artifact-index",
-          path.join("/tmp/suites/oss", "arroba-drill-artifacts.json"),
+          path.join("/tmp/suites/oss", "chariox-drill-artifacts.json"),
           "--preserve-failure-root",
           path.join("/tmp/suites/oss", "failed-run"),
         ],
         reportPath: path.join("/tmp/suites/oss", "drill-validation-suite-run.json"),
-        scriptPath: path.join("/repo/arroba", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
+        scriptPath: path.join("/repo/chariox", "apps", "cli", "scripts", "drill-validation-suite.mjs"),
       },
       {
-        artifactIndexPath: path.join("/tmp/suites/cloud", "arroba-drill-artifacts.json"),
+        artifactIndexPath: path.join("/tmp/suites/cloud", "chariox-drill-artifacts.json"),
         args: ["--run-json", "--preserve-failure-root", path.join("/tmp/suites/cloud", "failed-run")],
-        cwd: "/repo/arroba-cloud",
+        cwd: "/repo/chariox-cloud",
         failureRoot: path.join("/tmp/suites/cloud", "failed-run"),
         nodeArgs: [
-          path.join("/repo/arroba-cloud", "scripts", "cloud-validation-suite.mjs"),
+          path.join("/repo/chariox-cloud", "scripts", "cloud-validation-suite.mjs"),
           "--run-json",
           "--output",
           path.join("/tmp/suites/cloud", "cloud-validation-suite-run.json"),
           "--output-artifact-index",
-          path.join("/tmp/suites/cloud", "arroba-drill-artifacts.json"),
+          path.join("/tmp/suites/cloud", "chariox-drill-artifacts.json"),
           "--preserve-failure-root",
           path.join("/tmp/suites/cloud", "failed-run"),
         ],
         reportPath: path.join("/tmp/suites/cloud", "cloud-validation-suite-run.json"),
-        scriptPath: path.join("/repo/arroba-cloud", "scripts", "cloud-validation-suite.mjs"),
+        scriptPath: path.join("/repo/chariox-cloud", "scripts", "cloud-validation-suite.mjs"),
       },
     ],
     enabled: true,
@@ -386,9 +386,9 @@ test("builds distributed runtime generated evidence summary", () => {
 
 test("builds generated matrix artifact index inputs", () => {
   const paths = distributedRuntimeMatrixArtifactIndexPathsFor({
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     matrixOutputRoot: "/tmp/matrices",
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
     runMatrixReports: true,
   })
 
@@ -407,10 +407,10 @@ test("builds generated matrix artifact index inputs", () => {
 
 test("builds empty generated evidence summary when generation is disabled", () => {
   const summary = distributedRuntimeGeneratedEvidenceSummaryFor({
-    cloudRoot: "/repo/arroba-cloud",
+    cloudRoot: "/repo/chariox-cloud",
     matrixContinueOnFailure: false,
     matrixDryRun: false,
-    ossRoot: "/repo/arroba",
+    ossRoot: "/repo/chariox",
     runMatrixReports: false,
     runValidationSuites: false,
   })
@@ -436,7 +436,7 @@ test("builds empty generated evidence summary when generation is disabled", () =
 })
 
 test("matrix report child failures include generated evidence context", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-evidence-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-evidence-"))
   try {
     const scriptPath = path.join(rootDir, "failing-matrix.mjs")
     await writeFailingScript(scriptPath, "matrix failed")
@@ -471,7 +471,7 @@ test("matrix report child failures include generated evidence context", async ()
 })
 
 test("validation suite child failures include generated evidence context", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-distributed-runtime-evidence-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-distributed-runtime-evidence-"))
   try {
     const scriptPath = path.join(rootDir, "failing-suite.mjs")
     await writeFailingScript(scriptPath, "suite failed")
@@ -488,9 +488,9 @@ test("validation suite child failures include generated evidence context", async
         assert.match(error.message, /validation suite failed:/)
         assert.match(error.message, new RegExp(`cwd: ${escapeRegExp(rootDir)}`))
         assert.match(error.message, /validation-suite: suite/)
-        assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*arroba-drill-artifacts\.json .*--preserve-failure-root .*failed-run/)
+        assert.match(error.message, /args: .*--run-json .*--output .*suite\.json .*--output-artifact-index .*chariox-drill-artifacts\.json .*--preserve-failure-root .*failed-run/)
         assert.match(error.message, /report: .*suite\.json/)
-        assert.match(error.message, /artifact-index: .*arroba-drill-artifacts\.json/)
+        assert.match(error.message, /artifact-index: .*chariox-drill-artifacts\.json/)
         assert.match(error.message, /failure-root: .*failed-run/)
         assert.match(error.message, /stderr:\nsuite failed/)
         return true

@@ -8,9 +8,9 @@ import { verifyDrillGeneratedMatrixRegistryParity } from "./drill-generated-matr
 import { drillGeneratedMatrixNamesManifest } from "./drill-generated-matrix-names.mjs"
 
 test("accepts matching OSS and Cloud generated matrix registries", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot)
 
     await assert.doesNotReject(verifyDrillGeneratedMatrixRegistryParity({ cloudRoot }))
@@ -20,9 +20,9 @@ test("accepts matching OSS and Cloud generated matrix registries", async () => {
 })
 
 test("rejects drifted Cloud generated matrix registries", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
       matrices: [
         { name: "cloud-slice-runtime-matrix", repo: "cloud" },
@@ -40,9 +40,9 @@ test("rejects drifted Cloud generated matrix registries", async () => {
 })
 
 test("rejects missing Cloud generated matrix registry exports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")
     await mkdir(path.dirname(registryPath), { recursive: true })
     await writeFile(registryPath, "export const noManifest = true\n", "utf8")
@@ -57,9 +57,9 @@ test("rejects missing Cloud generated matrix registry exports", async () => {
 })
 
 test("rejects malformed Cloud generated matrix manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
       matrices: [{ name: "workspace-live-sync-matrix" }],
     })
@@ -74,16 +74,16 @@ test("rejects malformed Cloud generated matrix manifests", async () => {
 })
 
 test("rejects unsupported Cloud generated matrix registry schemas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
-      schema: "arroba.drill.generated_matrix_names.v1",
+      schema: "chariox.drill.generated_matrix_names.v1",
     })
 
     await assert.rejects(
       verifyDrillGeneratedMatrixRegistryParity({ cloudRoot }),
-      /Cloud generated matrix registry has unsupported schema "arroba.drill.generated_matrix_names.v1"/,
+      /Cloud generated matrix registry has unsupported schema "chariox.drill.generated_matrix_names.v1"/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -91,9 +91,9 @@ test("rejects unsupported Cloud generated matrix registry schemas", async () => 
 })
 
 test("rejects duplicate Cloud generated matrix names", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-generated-matrix-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-generated-matrix-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
       matrices: [
         ...drillGeneratedMatrixNamesManifest().matrices,
@@ -111,7 +111,7 @@ test("rejects duplicate Cloud generated matrix names", async () => {
 })
 
 async function writeCloudGeneratedMatrixRegistry(cloudRoot, {
-  schema = "arroba.cloud.drill.generated_matrix_names.v1",
+  schema = "chariox.cloud.drill.generated_matrix_names.v1",
   matrices = drillGeneratedMatrixNamesManifest().matrices,
 } = {}) {
   const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")

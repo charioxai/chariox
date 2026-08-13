@@ -2,12 +2,12 @@ import type { TranscriptEntry } from "./cli-types.js"
 import {
   appendTranscriptPreviewLine as appendPreviewLine,
   formatTranscriptPreview,
-} from "@arroba/kernel-client/session-history-preview"
+} from "@chariox/kernel-client/session-history-preview"
 import {
   createNextTranscriptEntry,
   shouldSkipConsecutiveTranscriptEntry,
   transcriptHasTrailingUserPrompt,
-} from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/transcript-entry-state"
 
 export type AgentPaneTranscriptEntryControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]

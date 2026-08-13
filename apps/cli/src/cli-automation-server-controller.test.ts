@@ -26,9 +26,9 @@ test("cli automation server controller starts and stops the automation socket", 
   harness.controller.stop()
 
   assert.deepEqual(harness.calls(), [
-    "start:/tmp/arroba.sock",
-    "info:cli automation socket listening:/tmp/arroba.sock",
-    "stop:server-1:/tmp/arroba.sock",
+    "start:/tmp/chariox.sock",
+    "info:cli automation socket listening:/tmp/chariox.sock",
+    "stop:server-1:/tmp/chariox.sock",
   ])
 })
 
@@ -42,8 +42,8 @@ test("cli automation server controller reports start failures", async () => {
   harness.controller.stop()
 
   assert.deepEqual(harness.calls(), [
-    "start:/tmp/arroba.sock",
-    "error:failed to start cli automation socket:/tmp/arroba.sock:bind failed",
+    "start:/tmp/chariox.sock",
+    "error:failed to start cli automation socket:/tmp/chariox.sock:bind failed",
     "flash:automation socket failed: bind failed:error",
   ])
 })
@@ -57,7 +57,7 @@ function createHarness(options: {
   let startPromise: Promise<void> | null = null
   const socketPath = Object.hasOwn(options, "socketPath")
     ? options.socketPath
-    : "/tmp/arroba.sock"
+    : "/tmp/chariox.sock"
   const deps: CliAutomationServerControllerDeps = {
     socketPath,
     handleRequest: () => ({ ok: true }),

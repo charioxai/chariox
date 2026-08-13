@@ -346,21 +346,21 @@ async function main() {
       const ports = makePorts()
       kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
       const daemonBinary = await resolveBinary(
-        path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+        path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
         path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-        'arroba-kernel',
+        'chariox-kernel',
       )
       daemonChild = spawn(daemonBinary, [], {
         cwd: repoRoot,
         env: {
           ...process.env,
-          ARROBA_KERNEL_PORT: String(ports.kernelPort),
-          ARROBA_MCP_PORT: String(ports.mcpPort),
-          ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-          ARROBA_CODEX_PORT: String(ports.codexPort),
-          ARROBA_DAEMON_ID: `freeform-drill-${process.pid}-${Date.now()}`,
-          ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-          ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+          CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+          CHARIOX_MCP_PORT: String(ports.mcpPort),
+          CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+          CHARIOX_CODEX_PORT: String(ports.codexPort),
+          CHARIOX_DAEMON_ID: `freeform-drill-${process.pid}-${Date.now()}`,
+          CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+          CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })

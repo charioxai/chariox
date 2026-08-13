@@ -112,19 +112,19 @@ function daemonEnv({
 }) {
   return {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
     XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
     XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
     XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
@@ -176,11 +176,11 @@ async function createWorkflowEchoMcp(rootDir) {
     "  const { id, method, params } = message",
     "  if (method === 'notifications/initialized') return",
     "  if (method === 'initialize') {",
-    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-workflow-echo', version: '1.0.0' } } })",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'chariox-workflow-echo', version: '1.0.0' } } })",
     "    return",
     "  }",
     "  if (method === 'tools/list') {",
-    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba workflow MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Chariox workflow MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
     "    return",
     "  }",
     "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
@@ -375,9 +375,9 @@ async function main() {
   const relayToken = `relay-token-${process.pid}-${Date.now()}`
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const workerMachineId = `workflow-machine-worker-${process.pid}`
   const workerMachineAlias = `workflow-builder-${process.pid}`
@@ -403,14 +403,14 @@ async function main() {
       installMcpServerRequest,
     } } = await loadCliModules(cliRuntimeDir))
     const relayBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
-      'arroba-relay',
+      'chariox-relay',
     )
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     await waitForTcpPort(ports.relayPort)

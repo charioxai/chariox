@@ -255,7 +255,7 @@ test("waiting room activation attaches selected sessions", async () => {
   ])
 })
 
-test("waiting room activation opens unattached agents as arroba sessions", async () => {
+test("waiting room activation opens unattached agents as chariox sessions", async () => {
   const harness = createHarness({
     controlDecision: { action: "none" },
     activationDecision: {

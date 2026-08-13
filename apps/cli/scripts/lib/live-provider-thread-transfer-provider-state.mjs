@@ -123,7 +123,7 @@ export async function runDockerCommandForTransfer(root, label, args, timeoutMs) 
 }
 
 export async function transferProviderStateToSlice({ provider, root, sliceName, timeoutMs, providerEnv }) {
-  const container = `arroba-slice-${sliceName}`
+  const container = `chariox-slice-${sliceName}`
   const evidence = {
     provider,
     container,
@@ -197,7 +197,7 @@ export async function transferProviderStateToSlice({ provider, root, sliceName, 
 }
 
 export async function transferProviderStateFromSlice({ provider, root, sliceName, timeoutMs, providerEnv }) {
-  const container = `arroba-slice-${sliceName}`
+  const container = `chariox-slice-${sliceName}`
   const copyEnv = provider === "claude-p" || provider === "claude-headless" || provider === "claude"
     ? { ...providerEnv, HOME: path.join(root, "returned-claude-home") }
     : providerEnv

@@ -8,7 +8,7 @@ import {
   type ThemeTokenColors,
 } from "./theme-registry.js"
 
-export type ArrobaThemePalette = {
+export type CharioxThemePalette = {
   primary: RGBA
   secondary: RGBA
   accent: RGBA
@@ -46,7 +46,7 @@ export type ArrobaThemePalette = {
 let selectedThemeName: ThemeName = "opencode"
 let currentThemeRegistry: ThemeRegistry = DEFAULT_THEME_REGISTRY
 
-export const theme: ArrobaThemePalette = palette(themeDefinition(selectedThemeName).colors)
+export const theme: CharioxThemePalette = palette(themeDefinition(selectedThemeName).colors)
 
 export function currentThemeName() {
   return selectedThemeName
@@ -64,10 +64,10 @@ export function applyTheme(value: unknown, registry: ThemeRegistry = currentThem
   return nextThemeName
 }
 
-function palette(colors: ThemeTokenColors): ArrobaThemePalette {
+function palette(colors: ThemeTokenColors): CharioxThemePalette {
   return Object.fromEntries(
     Object.entries(colors).map(([key, value]) => [key, RGBA.fromHex(value)]),
-  ) as ArrobaThemePalette
+  ) as CharioxThemePalette
 }
 
 export const EmptyBorder = {

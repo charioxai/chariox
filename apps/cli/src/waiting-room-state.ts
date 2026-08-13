@@ -2,7 +2,7 @@ import {
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
   externalProviderSessionSelectionIndex,
-} from "@arroba/kernel-client/external-provider-sessions"
+} from "@chariox/kernel-client/external-provider-sessions"
 import {
   normalizeBackendProviderId,
   selectConfiguredModel,
@@ -21,7 +21,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { normalizeWaitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
+import { normalizeWaitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import {
   waitingRoomPreviewSessions,
   waitingRoomSessions,

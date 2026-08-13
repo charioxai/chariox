@@ -11,7 +11,7 @@ import { setTimeout as startTimeout } from "node:timers"
 import {
   queuedPromptActionState,
   queuedPromptMetaLabel,
-} from "@arroba/kernel-client/queued-prompt-controls"
+} from "@chariox/kernel-client/queued-prompt-controls"
 
 import type { TranscriptEntry } from "./cli-types.js"
 import { transcriptEntryPadding } from "./transcript-entry-style.js"

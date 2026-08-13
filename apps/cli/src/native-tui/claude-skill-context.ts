@@ -25,7 +25,7 @@ export async function buildClaudeNativeSkillContext(
     .map((grant) => grant.name)
   if (grants.length === 0) return ""
   const lines = [
-    "Available Arroba skills for this agent:",
+    "Available Chariox skills for this agent:",
     "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.",
   ]
   const requestedBodies: Array<{ name: string; body: string }> = []
@@ -39,9 +39,9 @@ export async function buildClaudeNativeSkillContext(
     }
   }
   if (requestedBodies.length > 0) {
-    lines.push("", "Full instructions for explicitly requested Arroba skills:")
+    lines.push("", "Full instructions for explicitly requested Chariox skills:")
     for (const { name, body } of requestedBodies) {
-      lines.push(`<arroba_skill name="${name}">`, body.trim(), "</arroba_skill>")
+      lines.push(`<chariox_skill name="${name}">`, body.trim(), "</chariox_skill>")
     }
   }
   return lines.join("\n")

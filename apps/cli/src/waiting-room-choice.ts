@@ -1,7 +1,7 @@
 import {
   externalProviderSessionAtSelection,
   externalProviderSessionPageSessions,
-} from "@arroba/kernel-client/external-provider-sessions"
+} from "@chariox/kernel-client/external-provider-sessions"
 import {
   catalogModelOptions,
   providerCatalogIsLocalFallback,
@@ -13,7 +13,7 @@ import {
   waitingRoomRemoteKernels,
   waitingRoomRemoteMachines,
 } from "./waiting-room-remote-rows.js"
-import { waitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
+import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomSessions } from "./waiting-room-session-rows.js"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import {

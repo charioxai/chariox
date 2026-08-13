@@ -63,16 +63,16 @@ export function createUnattachedAgentsTuiParityDrillRuntime({ repoRoot, cliRoot 
   }
 
   async function ensureBuilt() {
-    const kernel = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
+    const kernel = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "chariox-kernel"])
     if (kernel.code !== 0) throw new Error(`kernel build failed\n${kernel.stdout}\n${kernel.stderr}`)
-    const kernelClient = await run("pnpm", ["--filter", "@arroba/kernel-client", "run", "build"])
+    const kernelClient = await run("pnpm", ["--filter", "@chariox/kernel-client", "run", "build"])
     if (kernelClient.code !== 0) throw new Error(`kernel-client build failed\n${kernelClient.stdout}\n${kernelClient.stderr}`)
-    const toolDisplay = await run("pnpm", ["--filter", "@arroba/tool-display", "run", "build"])
+    const toolDisplay = await run("pnpm", ["--filter", "@chariox/tool-display", "run", "build"])
     if (toolDisplay.code !== 0) throw new Error(`tool-display build failed\n${toolDisplay.stdout}\n${toolDisplay.stderr}`)
     const cli = await run("node", [path.join(cliRoot, "scripts/build.mjs")])
     if (cli.code !== 0) throw new Error(`cli build failed\n${cli.stdout}\n${cli.stderr}`)
     return {
-      kernelBinary: path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+      kernelBinary: path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
       cliDist: path.join(cliRoot, "dist/index.js"),
     }
   }

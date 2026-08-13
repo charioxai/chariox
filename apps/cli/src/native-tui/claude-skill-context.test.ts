@@ -45,7 +45,7 @@ test("Claude native skill context reads session state with projected activity", 
 
   const context = await buildClaudeNativeSkillContext(client, "session-1", "/workspace", "agent-1", "check this")
 
-  assert.match(context, /Available Arroba skills/)
+  assert.match(context, /Available Chariox skills/)
   assert.match(context, /`reviewer`: Review code/)
   assert.deepEqual(requests.map((request) => Object.keys(request)[0]), ["GetSessionState", "GetSkill"])
 })

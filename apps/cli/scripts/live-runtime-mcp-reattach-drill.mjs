@@ -71,7 +71,7 @@ function printHelp() {
   console.log([
     'Usage: node apps/cli/scripts/live-runtime-mcp-reattach-drill.mjs [options]',
     '',
-    'Warms provider catalog endpoints before workspace live sync launch, then verifies Arroba runtime MCP tools survive detach/reattach.',
+    'Warms provider catalog endpoints before workspace live sync launch, then verifies Chariox runtime MCP tools survive detach/reattach.',
     '',
     'Options:',
     '  --provider PROVIDER',
@@ -295,21 +295,21 @@ async function main() {
     endSessionRequest = requests.endSessionRequest
 
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     daemonChild = spawn(daemonBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `runtime-mcp-reattach-${runId}`,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: historyDir,
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_DAEMON_ID: `runtime-mcp-reattach-${runId}`,
+        CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: historyDir,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -352,9 +352,9 @@ async function main() {
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is a runtime MCP attachment drill.',
         'Do not use shell commands or direct filesystem tools.',
-        'First call Arroba `list_extensions`.',
-        'Then call Arroba `read_artifact` for `seed.txt` with domain text.',
-        `Then call Arroba \`write_artifact\` for \`outputs/${provider}-before-reattach.txt\` with exactly \`${provider}:BEFORE_REATTACH_OK\\n\`.`,
+        'First call Chariox `list_extensions`.',
+        'Then call Chariox `read_artifact` for `seed.txt` with domain text.',
+        `Then call Chariox \`write_artifact\` for \`outputs/${provider}-before-reattach.txt\` with exactly \`${provider}:BEFORE_REATTACH_OK\\n\`.`,
         `Reply exactly ${provider.toUpperCase()}_BEFORE_REATTACH_DONE.`,
       ].join('\n'), []))
       await waitForFile({
@@ -404,9 +404,9 @@ async function main() {
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is the after-reattach runtime MCP verification.',
         'Do not use shell commands or direct filesystem tools.',
-        'First call Arroba `list_extensions` again.',
-        `Then call Arroba \`read_artifact\` for \`outputs/${provider}-before-reattach.txt\` with domain text.`,
-        `Then call Arroba \`write_artifact\` for \`outputs/${provider}-after-reattach.txt\` with exactly \`${provider}:AFTER_REATTACH_OK\\n\`.`,
+        'First call Chariox `list_extensions` again.',
+        `Then call Chariox \`read_artifact\` for \`outputs/${provider}-before-reattach.txt\` with domain text.`,
+        `Then call Chariox \`write_artifact\` for \`outputs/${provider}-after-reattach.txt\` with exactly \`${provider}:AFTER_REATTACH_OK\\n\`.`,
         `Reply exactly ${provider.toUpperCase()}_AFTER_REATTACH_DONE.`,
       ].join('\n'), []))
       await waitForFile({

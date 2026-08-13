@@ -2,7 +2,7 @@ import type { SessionListEntry } from "./sessions.js"
 import type {
   SessionProjectSelection,
   WaitingRoomPublicProjectSummary,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 export type WaitingRoomProjectSummary = WaitingRoomPublicProjectSummary
 export type { SessionProjectSelection }

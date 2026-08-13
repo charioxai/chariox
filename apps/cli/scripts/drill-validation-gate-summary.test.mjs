@@ -19,9 +19,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-validation-gate-summary.mjs", import.meta.url))
 
 test("drill validation gate summary aggregates discovered reports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const passedReportPath = path.join(rootDir, "reports", "passed.json")
     const failedReportPath = path.join(rootDir, "reports", "failed.json")
@@ -71,7 +71,7 @@ test("drill validation gate summary aggregates discovered reports", async () => 
       schema: artifact.schema,
     })), [{
       path: "aggregate.json",
-      schema: "arroba.drill.validation_gate.aggregate.v1",
+      schema: "chariox.drill.validation_gate.aggregate.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -80,7 +80,7 @@ test("drill validation gate summary aggregates discovered reports", async () => 
 
 test("drill validation gate summary rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -114,7 +114,7 @@ test("drill validation gate summary help lists artifact coverage requirements", 
 })
 
 test("drill validation gate summary accepts explicit report paths", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     await writeGateReport(reportPath, await passingGateReport(rootDir))
@@ -135,7 +135,7 @@ test("drill validation gate summary accepts explicit report paths", async () => 
 })
 
 test("drill validation gate summary gates generated evidence kinds", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     await writeGateReport(reportPath, {
@@ -265,7 +265,7 @@ test("drill validation gate summary gates generated evidence kinds", async () =>
 })
 
 test("drill validation gate summary gates aggregate preset coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "workspace-live-sync.json")
     await writeGateReport(reportPath, await passingWorkspaceLiveSyncGateReport(rootDir))
@@ -338,7 +338,7 @@ test("drill validation gate summary gates aggregate preset coverage", async () =
 })
 
 test("drill validation gate summary gates aggregate artifact schema coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     await writeGateReport(reportPath, await passingGateReport(rootDir))
@@ -349,15 +349,15 @@ test("drill validation gate summary gates aggregate artifact schema coverage", a
         "--gate-report",
         reportPath,
         "--require-artifact-schema",
-        "arroba.drill.validation_suite_run.v1",
+        "chariox.drill.validation_suite_run.v1",
         "--json",
       ]),
       (error) => {
         const aggregate = JSON.parse(error.stdout)
         assert.equal(error.code, 1)
         assert.equal(aggregate.status, "failed")
-        assert.deepEqual(aggregate.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
-        assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+        assert.deepEqual(aggregate.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
+        assert.deepEqual(aggregate.missingArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
         assert.equal(
           aggregate.nextActions.some((action) =>
             action.nextAction === "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate"),
@@ -372,7 +372,7 @@ test("drill validation gate summary gates aggregate artifact schema coverage", a
 })
 
 test("drill validation gate summary gates aggregate artifact coverage areas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     await writeGateReport(reportPath, await passingGateReport(rootDir))
@@ -406,7 +406,7 @@ test("drill validation gate summary gates aggregate artifact coverage areas", as
 })
 
 test("drill validation gate summary gates artifact generated matrix limitation coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     await writeGateReport(reportPath, await passingGateReport(rootDir))
@@ -440,7 +440,7 @@ test("drill validation gate summary gates artifact generated matrix limitation c
 })
 
 test("drill validation gate summary consumes artifact metadata inputs", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const reportPath = path.join(rootDir, "reports", "gate.json")
     await writeGateReport(reportPath, await passingGateReport(rootDir))
@@ -463,7 +463,7 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
     })
 
     const outputPath = path.join(rootDir, "aggregate.json")
-    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
       "--gate-report",
@@ -528,7 +528,7 @@ test("drill validation gate summary consumes artifact metadata inputs", async ()
 })
 
 test("drill validation gate summary fails stale artifact metadata inputs", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const evidenceRoot = path.join(rootDir, "evidence")
     const evidencePath = path.join(evidenceRoot, "distributed-runtime-gate.json")
@@ -538,7 +538,7 @@ test("drill validation gate summary fails stale artifact metadata inputs", async
       rootDir: evidenceRoot,
       artifacts: ["distributed-runtime-gate.json"],
     })
-    const evidenceIndexPath = path.join(evidenceRoot, "arroba-drill-artifacts.json")
+    const evidenceIndexPath = path.join(evidenceRoot, "chariox-drill-artifacts.json")
     await rewriteArtifactIndexCreatedAt(evidenceIndexPath, new Date(Date.now() - 500).toISOString())
 
     const reportPath = path.join(rootDir, "gate.json")
@@ -589,11 +589,11 @@ test("drill validation gate summary fails stale artifact metadata inputs", async
 })
 
 test("drill validation gate summary indexes aggregate artifact coverage metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-summary-"))
   try {
     const evidenceRoot = path.join(rootDir, "evidence")
     const evidencePath = path.join(evidenceRoot, "validation-suite.json")
-    const evidenceIndexPath = path.join(evidenceRoot, "arroba-drill-artifacts.json")
+    const evidenceIndexPath = path.join(evidenceRoot, "chariox-drill-artifacts.json")
     await mkdir(evidenceRoot, { recursive: true })
     await writeFile(evidencePath, `${JSON.stringify(validationSuiteRunArtifact(), null, 2)}\n`, "utf8")
     await writeDrillArtifactIndex({
@@ -612,7 +612,7 @@ test("drill validation gate summary indexes aggregate artifact coverage metadata
     }))
 
     const outputPath = path.join(rootDir, "aggregate.json")
-    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
     await execFile(process.execPath, [
       scriptPath,
       "--gate-report",
@@ -660,16 +660,16 @@ function generatedEvidence() {
   return {
     validationSuites: {
       enabled: true,
-      artifactIndexes: ["/tmp/generated-validation-suite/arroba-drill-artifacts.json"],
+      artifactIndexes: ["/tmp/generated-validation-suite/chariox-drill-artifacts.json"],
       failureRoots: ["/tmp/generated-validation-suite/failed-run"],
       commands: [{
-        artifactIndexPath: "/tmp/generated-validation-suite/arroba-drill-artifacts.json",
+        artifactIndexPath: "/tmp/generated-validation-suite/chariox-drill-artifacts.json",
         args: ["--run-json", "--preserve-failure-root", "/tmp/generated-validation-suite/failed-run"],
-        cwd: "/tmp/arroba",
+        cwd: "/tmp/chariox",
         failureRoot: "/tmp/generated-validation-suite/failed-run",
-        nodeArgs: ["/tmp/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/generated-validation-suite/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/generated-validation-suite/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/generated-validation-suite/failed-run"],
+        nodeArgs: ["/tmp/chariox/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/generated-validation-suite/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/generated-validation-suite/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/generated-validation-suite/failed-run"],
         reportPath: "/tmp/generated-validation-suite/drill-validation-suite-run.json",
-        scriptPath: "/tmp/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+        scriptPath: "/tmp/chariox/apps/cli/scripts/drill-validation-suite.mjs",
       }],
       outputRoots: ["/tmp/generated-validation-suite"],
     },
@@ -688,12 +688,12 @@ function generatedEvidence() {
         artifactIndexFlag: "--artifact-index",
         artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
         args: ["--include-remote"],
-        cwd: "/tmp/arroba",
+        cwd: "/tmp/chariox",
         matrix: "workspace-live-sync-matrix",
-        nodeArgs: ["/tmp/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs", "--include-remote", "--report", "/tmp/generated-matrix/workspace-live-sync-matrix.json", "--artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+        nodeArgs: ["/tmp/chariox/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs", "--include-remote", "--report", "/tmp/generated-matrix/workspace-live-sync-matrix.json", "--artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
-        scriptPath: "/tmp/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+        scriptPath: "/tmp/chariox/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
       }],
     },
   }
@@ -701,13 +701,13 @@ function generatedEvidence() {
 
 function validationSuiteRunArtifact() {
   const manifest = {
-    schema: "arroba.drill.validation_suite.v1",
+    schema: "chariox.drill.validation_suite.v1",
     command: "node --test apps/cli/scripts/drill-validation-gate-summary.test.mjs",
     testCount: 1,
     testPaths: ["apps/cli/scripts/drill-validation-gate-summary.test.mjs"],
   }
   return {
-    schema: "arroba.drill.validation_suite_run.v1",
+    schema: "chariox.drill.validation_suite_run.v1",
     status: "passed",
     ok: true,
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -728,7 +728,7 @@ async function passingWorkspaceLiveSyncGateReport(rootDir) {
   const matrixPath = path.join(rootDir, `matrix-${Date.now()}-${Math.random().toString(16).slice(2)}.json`)
   await writeDrillPlatformBundle(bundleDir)
   await writeGateReport(matrixPath, {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "workspace-live-sync-matrix",
     status: "passed",
     dryRun: false,

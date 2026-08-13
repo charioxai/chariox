@@ -1,7 +1,7 @@
 import {
   externalProviderSessionPageSessions,
   externalProviderSessionPageState,
-} from "@arroba/kernel-client/external-provider-sessions"
+} from "@chariox/kernel-client/external-provider-sessions"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
 import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"

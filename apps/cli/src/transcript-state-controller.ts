@@ -4,19 +4,19 @@ import {
   markSessionHistoryBlobLoading,
   replaceSessionHistoryBlobPlaceholder,
   resolveSessionHistoryBlobLoadTarget,
-} from "@arroba/kernel-client/session-history-transcript"
+} from "@chariox/kernel-client/session-history-transcript"
 import {
   compactTranscriptDisplayEntries,
   projectCompactTranscriptDisplayState,
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
-} from "@arroba/kernel-client/transcript-display-state"
+} from "@chariox/kernel-client/transcript-display-state"
 import {
   computeMaxTranscriptEntryId,
   createNextTranscriptEntry,
   shouldSkipConsecutiveTranscriptEntry,
   transcriptEntryRuntimeOptions,
-} from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/transcript-entry-state"
 
 export type TranscriptStateControllerDeps = {
   entries: () => TranscriptEntry[]

@@ -21,7 +21,7 @@ import {
 
 const cliRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const cloudRepo = process.env.ARROBA_CLOUD_REPO ?? path.resolve(repoRoot, "..", "arroba-cloud")
+const cloudRepo = process.env.CHARIOX_CLOUD_REPO ?? path.resolve(repoRoot, "..", "chariox-cloud")
 
 export function startKernelMonitor({ client, sessionId, agentId, provider, marker, finalMarker, promptMarker, options }) {
   const samples = []
@@ -226,7 +226,7 @@ export function agentStatus(agent, agentActivity = null) {
 }
 
 export async function startTuiObserver({ sessionId, options, providerRoot }) {
-  const socketPath = path.join(os.tmpdir(), `arroba-external-parity-${process.pid}-${sessionId}.sock`)
+  const socketPath = path.join(os.tmpdir(), `chariox-external-parity-${process.pid}-${sessionId}.sock`)
   const stdoutPath = path.join(providerRoot, "tui.stdout.log")
   const stderrPath = path.join(providerRoot, "tui.stderr.log")
   await rm(socketPath, { force: true }).catch(() => {})
@@ -320,7 +320,7 @@ export function transcriptMarkerOutputText(entries) {
 
 export async function startWebObserver({ sessionId, webUrl, providerRoot }) {
   const { launchChromiumBrowser } = await import(pathToFileURL(path.join(cloudRepo, "scripts/lib/playwright.mjs")).href)
-  const browser = await launchChromiumBrowser({ headless: process.env.ARROBA_EXTERNAL_PARITY_WEB_HEADFUL !== "1" })
+  const browser = await launchChromiumBrowser({ headless: process.env.CHARIOX_EXTERNAL_PARITY_WEB_HEADFUL !== "1" })
   const context = await browser.newContext({ baseURL: webUrl, viewport: { width: 1500, height: 980 } })
   const page = await context.newPage()
   page.on("pageerror", (error) => console.log(`[web-pageerror] ${error.message}`))

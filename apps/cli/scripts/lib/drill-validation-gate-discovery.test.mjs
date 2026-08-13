@@ -17,7 +17,7 @@ import {
 } from "./drill-validation-gate-report.mjs"
 
 test("reads validation gate reports and rejects invalid report files", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-discovery-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-discovery-"))
   try {
     const reportPath = path.join(rootDir, "gate.json")
     const invalidPath = path.join(rootDir, "invalid.json")
@@ -36,7 +36,7 @@ test("reads validation gate reports and rejects invalid report files", async () 
 })
 
 test("reads validation gate aggregates and rejects invalid aggregate files", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-discovery-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-discovery-"))
   try {
     const aggregatePath = path.join(rootDir, "aggregate.json")
     const invalidPath = path.join(rootDir, "invalid-aggregate.json")
@@ -58,7 +58,7 @@ test("reads validation gate aggregates and rejects invalid aggregate files", asy
 })
 
 test("discovers validation gate reports below broad roots", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-discovery-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-discovery-"))
   try {
     const first = path.join(rootDir, "reports", "one.json")
     const second = path.join(rootDir, ".artifacts", "reports", "two.json")
@@ -82,7 +82,7 @@ test("discovers validation gate reports below broad roots", async () => {
 })
 
 test("discovers validation gate aggregates and respects max depth", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-discovery-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-discovery-"))
   try {
     const aggregate = summarizeValidationGateReportAggregate([report()], {
       validateReport: validateDrillValidationGateReport,

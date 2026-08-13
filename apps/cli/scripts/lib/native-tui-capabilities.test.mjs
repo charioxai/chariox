@@ -26,7 +26,7 @@ function fakeClient(requests) {
 }
 
 test("installs matching MCP and skill capabilities on a relay-addressed Hetzner worker", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-native-capabilities-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-native-capabilities-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const workspace = path.join(root, "workspace")
   const scenarioRoot = path.join(root, "scenario")
@@ -53,7 +53,7 @@ test("installs matching MCP and skill capabilities on a relay-addressed Hetzner 
     },
     markers: {
       nativeSkill: "NATIVE_SKILL_MARKER",
-      arrobaSkill: "ARROBA_SKILL_MARKER",
+      charioxSkill: "CHARIOX_SKILL_MARKER",
     },
   })
 

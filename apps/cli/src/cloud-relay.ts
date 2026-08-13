@@ -1,5 +1,5 @@
 import type { RelayCloudProfile } from "./preferences.js"
-import { parseAbsoluteInstantMs } from "@arroba/kernel-client/time"
+import { parseAbsoluteInstantMs } from "@chariox/kernel-client/time"
 
 export type BootstrapCloudRelayInput = {
   apiUrl: string

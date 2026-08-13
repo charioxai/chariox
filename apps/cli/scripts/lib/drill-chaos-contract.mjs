@@ -3,9 +3,9 @@ import {
   looksLikeDrillSecretValue,
 } from "./drill-secrets.mjs"
 
-export const DRILL_CHAOS_REPLAY_SCHEMA = "arroba.drill.chaos_replay.v1"
-export const DRILL_CHAOS_INVARIANTS_SCHEMA = "arroba.drill.chaos_invariants.v1"
-export const DRILL_CHAOS_CONTRACT_SCHEMA = "arroba.drill.chaos_contract.v1"
+export const DRILL_CHAOS_REPLAY_SCHEMA = "chariox.drill.chaos_replay.v1"
+export const DRILL_CHAOS_INVARIANTS_SCHEMA = "chariox.drill.chaos_invariants.v1"
+export const DRILL_CHAOS_CONTRACT_SCHEMA = "chariox.drill.chaos_contract.v1"
 
 export const DRILL_CHAOS_FAULT_KINDS = Object.freeze([
   "delay",

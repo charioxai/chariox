@@ -27,18 +27,18 @@ import { validationGateEvidenceSourceMetadata } from "./lib/drill-validation-gat
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
-const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
+const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "chariox-cloud")
 
 function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/drill-cross-repo-validation-gate.mjs [options]",
     "",
-    "Verifies validation-platform evidence collected across arroba and arroba-cloud.",
+    "Verifies validation-platform evidence collected across chariox and chariox-cloud.",
     "By default it discovers matrix reports under both repos' .artifacts/drill-matrices roots.",
     "",
     "Options:",
     "  --oss-root DIR         OSS repo root; defaults to this script's repo root",
-    "  --cloud-root DIR       Cloud repo root; defaults to ../arroba-cloud",
+    "  --cloud-root DIR       Cloud repo root; defaults to ../chariox-cloud",
     "  --no-default-roots     Only use matrix roots passed explicitly with --matrix-root",
     "  --include-default-artifacts",
     "                         Discover artifact indexes under each repo's .artifacts root",

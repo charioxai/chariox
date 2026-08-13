@@ -77,13 +77,13 @@ test("explains missing executable validation suite artifacts", () => {
   assert.deepEqual(validationGateNextActions(checks({
     artifacts: {
       status: "failed",
-      missingArtifactSchemas: ["arroba.drill.validation_suite_run.v1", "arroba.drill.matrix.v1"],
+      missingArtifactSchemas: ["chariox.drill.validation_suite_run.v1", "chariox.drill.matrix.v1"],
     },
   })), [
     {
       owner: "validation-harness",
       classification: "artifact-coverage",
-      nextAction: "produce artifact evidence with schemas: arroba.drill.matrix.v1",
+      nextAction: "produce artifact evidence with schemas: chariox.drill.matrix.v1",
       count: 1,
     },
     {

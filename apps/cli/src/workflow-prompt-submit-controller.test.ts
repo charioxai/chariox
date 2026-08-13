@@ -3,7 +3,7 @@ import test from "node:test"
 
 import type { WorkflowRun } from "./cli-types.js"
 import { createWorkflowPromptSubmitController } from "./workflow-prompt-submit-controller.js"
-import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-state"
+import type { WorkflowPromptState } from "@chariox/kernel-client/workflow-prompt-state"
 
 test("workflow prompt submit reports disabled prompt state", async () => {
   const harness = createHarness({

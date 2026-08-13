@@ -44,7 +44,7 @@ function parseArgs(argv) {
       console.log([
         'Usage: node apps/cli/scripts/live-runtime-register-mcp-use-drill.mjs [options]',
         '',
-        'Prompts live Arroba agents to register, grant, and use the public Playwright MCP.',
+        'Prompts live Chariox agents to register, grant, and use the public Playwright MCP.',
         '',
         'Options:',
         `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -87,7 +87,7 @@ async function run(command, args, options = {}) {
 }
 
 async function resolveKernelBinary() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   try {
     await access(binary)
     return binary
@@ -97,7 +97,7 @@ async function resolveKernelBinary() {
       '--manifest-path',
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
       '--bin',
-      'arroba-kernel',
+      'chariox-kernel',
     ])
     if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
     return binary
@@ -346,14 +346,14 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `m16-runtime-mcp-use-${process.pid}-${Date.now()}`,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: historyDir,
-        ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_DAEMON_ID: `m16-runtime-mcp-use-${process.pid}-${Date.now()}`,
+        CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: historyDir,
+        CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -406,11 +406,11 @@ async function main() {
       const startedAt = Date.now()
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is an M16 live external MCP validation drill.',
-        'You must install a third-party MCP yourself through Arroba runtime MCP.',
-        'First call `arroba.register_mcp` with this exact JSON argument:',
+        'You must install a third-party MCP yourself through Chariox runtime MCP.',
+        'First call `chariox.register_mcp` with this exact JSON argument:',
         '{"config":{"name":"m16_playwright_external","transport":{"type":"stdio","command":"npx","args":["-y","@playwright/mcp@latest"]},"enabled":true,"required":true,"startup_timeout_sec":45,"tool_timeout_sec":45}}',
-        'Then call `arroba.request_extension` with {"kind":"mcp","name":"m16_playwright_external"}.',
-        'After Arroba reloads the provider conversation and sends the continuation, use the provider-native Playwright/browser MCP tool, not Arroba request_extension.',
+        'Then call `chariox.request_extension` with {"kind":"mcp","name":"m16_playwright_external"}.',
+        'After Chariox reloads the provider conversation and sends the continuation, use the provider-native Playwright/browser MCP tool, not Chariox request_extension.',
         'The Playwright tool may be named `playwright_browser_snapshot`, `mcp__m16_playwright_external__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
         'A non-mutating snapshot/title/text call is enough. Navigating to https://example.com is optional.',
         'When a provider-native Playwright/browser MCP call completes successfully, reply exactly M16_EXTERNAL_PLAYWRIGHT_MCP_DONE.',
@@ -447,7 +447,7 @@ async function main() {
         predicate: (update) => {
           const name = toolName(update)
           return update.status === 'completed' &&
-            !name.includes('arroba') &&
+            !name.includes('chariox') &&
             (name.includes('playwright') || name.includes('browser'))
         },
       })
@@ -466,8 +466,8 @@ async function main() {
         'utf8',
       )
       await renderTerminalScreenshot(`runtime-register-external-mcp-${provider}.png`, `M16 External MCP Live Use (${provider})`, [
-        'PASS provider agent called arroba.register_mcp for @playwright/mcp',
-        'PASS provider agent called arroba.request_extension for the registered MCP',
+        'PASS provider agent called chariox.register_mcp for @playwright/mcp',
+        'PASS provider agent called chariox.request_extension for the registered MCP',
         `PASS request_extension completed with tool ${requestCall.tool}`,
         `PASS provider-native MCP tool completed: ${playwrightCall.tool}`,
         'PASS external credentialless MCP was installed, granted, reloaded, and used',

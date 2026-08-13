@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { createCliAutomationActionHandler } from "./cli-automation-handler.js"
-import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
+import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import type { AgentInstance, CliOptions, ExternalProviderSessionRecord, RuntimeSession } from "./cli-types.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
@@ -617,7 +617,7 @@ test("automation action handler refuses disabled queued prompt actions", async (
       ? [queuedPromptItem("prompt-1", {
         canSteer: false,
         steerDisabled: true,
-        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
       })]
       : [],
     onQueuedPromptAction: (item, action) => {
@@ -633,7 +633,7 @@ test("automation action handler refuses disabled queued prompt actions", async (
       promptId: "prompt-1",
       queuedPromptAction: "steer",
     }),
-    /started outside Arroba/,
+    /started outside Chariox/,
   )
 
   await handler({
@@ -701,7 +701,7 @@ function queuedPromptItem(
     steerDisabledReason: null,
     cancelDisabledReason: null,
     ...overrides,
-    promptOrigin: overrides.promptOrigin ?? "arroba",
+    promptOrigin: overrides.promptOrigin ?? "chariox",
   }
 }
 

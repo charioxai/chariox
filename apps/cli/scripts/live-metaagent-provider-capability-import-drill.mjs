@@ -11,11 +11,11 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 900_000
 const DEFAULT_POLL_MS = 1_000
-const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_PROVIDER_IMPORT_PROVIDER ?? 'codex'
-const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_PROVIDER_IMPORT_MODEL ?? 'gpt-5.5'
-const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_PROVIDER_IMPORT_EFFORT ?? 'medium'
-const ARROBA_ONLY_MCP = 'ma-arroba-only-mcp'
-const ARROBA_ONLY_SKILL = 'ma-arroba-only-skill'
+const DEFAULT_PROVIDER = process.env.CHARIOX_METAAGENT_PROVIDER_IMPORT_PROVIDER ?? 'codex'
+const DEFAULT_MODEL = process.env.CHARIOX_METAAGENT_PROVIDER_IMPORT_MODEL ?? 'gpt-5.5'
+const DEFAULT_EFFORT = process.env.CHARIOX_METAAGENT_PROVIDER_IMPORT_EFFORT ?? 'medium'
+const CHARIOX_ONLY_MCP = 'ma-chariox-only-mcp'
+const CHARIOX_ONLY_SKILL = 'ma-chariox-only-skill'
 const WORKER_MARKER = 'PROVIDER_CAPABILITY_IMPORT_DRILL_COMPLETE'
 
 function parseArgs(argv) {
@@ -48,7 +48,7 @@ function parseArgs(argv) {
         '',
         'Runs provider capability import validation:',
         '- uses real Codex MCPs and skills as provider import sources',
-        '- validates the shared extension import providers command in an isolated Arroba registry',
+        '- validates the shared extension import providers command in an isolated Chariox registry',
         '- runs a real metaagent and observes it import/grant capabilities to a worker',
         '- preserves drill artifacts by default, including successful runs',
       ].join('\n'))
@@ -122,8 +122,8 @@ function unwrapVariant(response, ...keys) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   const existing = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (!existing) throw new Error(`kernel build did not produce ${binary}`)
   return binary
@@ -143,11 +143,11 @@ async function writeWorkspaceFixture(workspace) {
     `A worker should report ${WORKER_MARKER} after receiving the requested capabilities.`,
     '',
   ].join('\n'), 'utf8')
-  await writeFile(path.join(workspace, '.gitignore'), '.arroba-wait.arroba\n.arrobaignore\n', 'utf8')
+  await writeFile(path.join(workspace, '.gitignore'), '.chariox-wait.chariox\n.charioxignore\n', 'utf8')
 }
 
 async function waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env) {
-  const scriptPath = path.join(scriptsDir, 'wait.arroba')
+  const scriptPath = path.join(scriptsDir, 'wait.chariox')
   await writeFile(scriptPath, 'session list\n', 'utf8')
   const deadline = Date.now() + 20_000
   let last = null
@@ -199,7 +199,7 @@ function parseSummaryCount(output, name) {
 }
 
 async function runShellScript({ shellBin, kernelUrl, workspace, scriptsDir, env, name, lines, vars = {} }) {
-  const scriptPath = path.join(scriptsDir, `${name}.arroba`)
+  const scriptPath = path.join(scriptsDir, `${name}.chariox`)
   await writeFile(scriptPath, `${lines.join('\n')}\n`, 'utf8')
   const args = [
     shellBin,
@@ -254,9 +254,9 @@ function parseProviderToolText(text) {
 
 function metaagentToolIsAllowed(toolName) {
   if (typeof toolName !== 'string') return false
-  return toolName.startsWith('arroba.')
-    || toolName.startsWith('mcp__arroba__')
-    || toolName.startsWith('mcp__arroba.')
+  return toolName.startsWith('chariox.')
+    || toolName.startsWith('mcp__chariox__')
+    || toolName.startsWith('mcp__chariox.')
 }
 
 function listMetaagentEventsRequest(sessionId, metaagentId, limit = 100) {
@@ -307,12 +307,12 @@ function userPrompt({ providerMcpName, providerSkillName }) {
     'Coordinate a small capability provisioning check.',
     '',
     'A regular worker needs these capabilities before doing the check:',
-    `- Arroba MCP ${ARROBA_ONLY_MCP}`,
-    `- Arroba skill ${ARROBA_ONLY_SKILL}`,
+    `- Chariox MCP ${CHARIOX_ONLY_MCP}`,
+    `- Chariox skill ${CHARIOX_ONLY_SKILL}`,
     `- local Codex MCP ${providerMcpName}`,
     `- local Codex skill ${providerSkillName}`,
     '',
-    'Provision whatever is needed in Arroba, give the capabilities to a worker, and ask the worker to inspect README.md.',
+    'Provision whatever is needed in Chariox, give the capabilities to a worker, and ask the worker to inspect README.md.',
     `The worker must reply with ${WORKER_MARKER} and name the capabilities it received.`,
     'When the worker has responded, mark this metaagent task complete with a concise report.',
     'Do not do the worker task yourself.',
@@ -427,8 +427,8 @@ async function observeMetaagentProvisioning({
     }
 
     const provisionedWorker = workers.find((agent) =>
-      agentHasGrant(agent, 'mcp', ARROBA_ONLY_MCP)
-      && agentHasGrant(agent, 'skill', ARROBA_ONLY_SKILL)
+      agentHasGrant(agent, 'mcp', CHARIOX_ONLY_MCP)
+      && agentHasGrant(agent, 'skill', CHARIOX_ONLY_SKILL)
       && agentHasGrant(agent, 'mcp', providerMcpName)
       && agentHasGrant(agent, 'skill', providerSkillName)
     )
@@ -440,15 +440,15 @@ async function observeMetaagentProvisioning({
         || commandMatches(command, 'mcp import codex', providerMcpName)
         || commandMatches(command, 'skill import codex', providerSkillName)
       )
-      const sawArrobaOnlyMcpGrant = commands.some((command) => commandMatches(command, 'mcp grant', ARROBA_ONLY_MCP))
-      const sawArrobaOnlySkillGrant = commands.some((command) => commandMatches(command, 'skill grant', ARROBA_ONLY_SKILL))
+      const sawCharioxOnlyMcpGrant = commands.some((command) => commandMatches(command, 'mcp grant', CHARIOX_ONLY_MCP))
+      const sawCharioxOnlySkillGrant = commands.some((command) => commandMatches(command, 'skill grant', CHARIOX_ONLY_SKILL))
       const sawProviderMcpGrant = commands.some((command) => commandMatches(command, 'mcp grant', providerMcpName))
       const sawProviderSkillGrant = commands.some((command) => commandMatches(command, 'skill grant', providerSkillName))
-      assert(sawMcpList, 'metaagent should list/show Arroba MCPs before granting', { commands })
-      assert(sawSkillList, 'metaagent should list/show Arroba skills before granting', { commands })
-      assert(sawProviderImport, 'metaagent should import missing provider capabilities into Arroba before granting', { commands })
-      assert(sawArrobaOnlyMcpGrant, 'metaagent should grant the Arroba-only MCP', { commands })
-      assert(sawArrobaOnlySkillGrant, 'metaagent should grant the Arroba-only skill', { commands })
+      assert(sawMcpList, 'metaagent should list/show Chariox MCPs before granting', { commands })
+      assert(sawSkillList, 'metaagent should list/show Chariox skills before granting', { commands })
+      assert(sawProviderImport, 'metaagent should import missing provider capabilities into Chariox before granting', { commands })
+      assert(sawCharioxOnlyMcpGrant, 'metaagent should grant the Chariox-only MCP', { commands })
+      assert(sawCharioxOnlySkillGrant, 'metaagent should grant the Chariox-only skill', { commands })
       assert(sawProviderMcpGrant, 'metaagent should grant the imported provider MCP', { commands })
       assert(sawProviderSkillGrant, 'metaagent should grant the imported provider skill', { commands })
       return {
@@ -503,7 +503,7 @@ async function writeMcpServer(serverPath) {
     '    const { id, method, params } = request',
     '    if (method === "notifications/initialized") continue',
     '    if (method === "initialize") {',
-    '      write({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "ma-arroba-only-mcp", version: "1.0.0" } } })',
+    '      write({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "ma-chariox-only-mcp", version: "1.0.0" } } })',
     '      continue',
     '    }',
     '    if (method === "tools/list") {',
@@ -511,7 +511,7 @@ async function writeMcpServer(serverPath) {
     '      continue',
     '    }',
     '    if (method === "tools/call" && params?.name === "capability_marker") {',
-    '      write({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "ARROBA_ONLY_MCP_OK" }] } })',
+    '      write({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "CHARIOX_ONLY_MCP_OK" }] } })',
     '      continue',
     '    }',
     '    write({ jsonrpc: "2.0", id, error: { code: -32601, message: `unknown method ${method}` } })',
@@ -535,7 +535,7 @@ async function findCodexSkillName() {
     const match = names.find((entry) =>
       entry.isDirectory()
       && !entry.name.startsWith('.')
-      && entry.name !== ARROBA_ONLY_SKILL
+      && entry.name !== CHARIOX_ONLY_SKILL
     )
     if (match) return match.name
   }
@@ -560,14 +560,14 @@ async function startKernel({ rootDir, kernelBinary, workspace, scriptsDir, capab
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `metaagent-provider-import-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `metaagent-provider-import-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
   }
   const kernelStdout = createWriteStream(path.join(rootDir, 'kernel.stdout.log'), { flags: 'a' })
   const kernelStderr = createWriteStream(path.join(rootDir, 'kernel.stderr.log'), { flags: 'a' })
@@ -652,8 +652,8 @@ async function runProviderImportCommandDrill({ rootDir, kernelBinary, shellBin, 
 async function runRealMetaagentDrill({ rootDir, kernelBinary, shellBin, options, providerMcpName, providerSkillName }) {
   const workspace = path.join(rootDir, 'workspace')
   const scriptsDir = path.join(rootDir, 'scripts')
-  const skillDir = path.join(rootDir, 'arroba-only-skill')
-  const mcpServer = path.join(rootDir, 'arroba-only-mcp-server.mjs')
+  const skillDir = path.join(rootDir, 'chariox-only-skill')
+  const mcpServer = path.join(rootDir, 'chariox-only-mcp-server.mjs')
   const capabilityRoot = path.join(rootDir, 'capabilities')
   await mkdir(workspace, { recursive: true })
   await mkdir(scriptsDir, { recursive: true })
@@ -663,11 +663,11 @@ async function runRealMetaagentDrill({ rootDir, kernelBinary, shellBin, options,
   await writeMcpServer(mcpServer)
   await writeFile(path.join(skillDir, 'SKILL.md'), [
     '---',
-    `name: ${ARROBA_ONLY_SKILL}`,
-    'description: Arroba-only skill for the live provider capability import drill',
+    `name: ${CHARIOX_ONLY_SKILL}`,
+    'description: Chariox-only skill for the live provider capability import drill',
     '---',
     '',
-    `Use this skill only for the live provider capability import drill. Mention ${ARROBA_ONLY_SKILL} when asked what capability was granted.`,
+    `Use this skill only for the live provider capability import drill. Mention ${CHARIOX_ONLY_SKILL} when asked what capability was granted.`,
     '',
   ].join('\n'), 'utf8')
 
@@ -697,7 +697,7 @@ async function runRealMetaagentDrill({ rootDir, kernelBinary, shellBin, options,
         skill_dir: skillDir,
       },
       lines: [
-        `mcp install ${ARROBA_ONLY_MCP} --command $node_bin --arg $mcp_server`,
+        `mcp install ${CHARIOX_ONLY_MCP} --command $node_bin --arg $mcp_server`,
         'skill install $skill_dir',
         `set provider ${options.provider}`,
         `set model ${options.model}`,
@@ -708,8 +708,8 @@ async function runRealMetaagentDrill({ rootDir, kernelBinary, shellBin, options,
         'agent list',
       ],
     })
-    requireOutput(setup.stdout, /installed MCP|installed mcp|mcp/i, 'Arroba-only MCP install')
-    requireOutput(setup.stdout, /installed skill/i, 'Arroba-only skill install')
+    requireOutput(setup.stdout, /installed MCP|installed mcp|mcp/i, 'Chariox-only MCP install')
+    requireOutput(setup.stdout, /installed skill/i, 'Chariox-only skill install')
     sessionId = setup.stdout.match(/bound \$session = (\S+)/)?.[1] ?? null
     assert(sessionId, 'setup script did not bind session id', { stdout: setup.stdout })
 
@@ -764,7 +764,7 @@ async function runRealMetaagentDrill({ rootDir, kernelBinary, shellBin, options,
       requests,
       sessionId,
       metaagentId: metaagent.id,
-      historyDir: runtime.env.ARROBA_SESSION_HISTORY_DIR,
+      historyDir: runtime.env.CHARIOX_SESSION_HISTORY_DIR,
       beforeAgentIds,
       options,
       providerMcpName,

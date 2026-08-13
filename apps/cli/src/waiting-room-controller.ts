@@ -12,7 +12,7 @@ import {
   waitingRoomRemoteKernelCanDelete,
   waitingRoomRemoteMachineCanDelete,
 } from "./waiting-room-remote-rows.js"
-import { waitingRoomLaunchPlacement } from "@arroba/kernel-client/waiting-room-runtime-placement"
+import { waitingRoomLaunchPlacement } from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomSliceSelectionUnavailable, waitingRoomSlices } from "./waiting-room-slices.js"
 import { normalizeWaitingRoomState } from "./waiting-room-state.js"
@@ -395,8 +395,8 @@ export function deriveWaitingRoomControlActivationDecision(options: {
       return {
         action: "info",
         message: options.remote?.collaborationBackend === "cloud"
-          ? "Open Arroba Cloud for saved collaborators before starting. After session start, use /cloud invite create."
-          : "Create the session first, then use /relay invite create. Arroba Cloud adds saved collaborators and pre-session invites.",
+          ? "Open Chariox Cloud for saved collaborators before starting. After session start, use /cloud invite create."
+          : "Create the session first, then use /relay invite create. Chariox Cloud adds saved collaborators and pre-session invites.",
       }
     case "machine": {
       const machine = remote.machines?.[options.state.machineIndex]

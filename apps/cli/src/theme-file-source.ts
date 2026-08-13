@@ -16,7 +16,7 @@ export type ThemeLoadOptions = {
 export function themeDirectories(workspace?: string | null) {
   const directories = [path.join(configRoot(), "themes")]
   if (workspace?.trim()) {
-    directories.push(path.join(workspace, ".arroba", "themes"))
+    directories.push(path.join(workspace, ".chariox", "themes"))
   }
   return directories
 }
@@ -35,7 +35,7 @@ export async function themeFiles(directory: string) {
 function configRoot() {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) {
-    return path.join(xdg, "arroba")
+    return path.join(xdg, "chariox")
   }
-  return path.join(os.homedir(), ".arroba")
+  return path.join(os.homedir(), ".chariox")
 }

@@ -8,7 +8,7 @@ import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryCache } from "./waiting-room-inventory-cache.js"
 
 test("waiting room inventory cache keeps one revisioned snapshot per kernel", () => {
-  const directory = mkdtempSync(join(tmpdir(), "arroba-waiting-room-cache-"))
+  const directory = mkdtempSync(join(tmpdir(), "chariox-waiting-room-cache-"))
   try {
     let now = 1_000
     const cache = createWaitingRoomInventoryCache(directory, () => now)
@@ -31,7 +31,7 @@ test("waiting room inventory cache keeps one revisioned snapshot per kernel", ()
 })
 
 test("waiting room inventory cache bounds revision and activity timer state", () => {
-  const directory = mkdtempSync(join(tmpdir(), "arroba-waiting-room-cache-bound-"))
+  const directory = mkdtempSync(join(tmpdir(), "chariox-waiting-room-cache-bound-"))
   const scheduled: Array<{ callback: () => void; cancelled: boolean }> = []
   const timers = {
     setTimeout: ((callback: () => void) => {

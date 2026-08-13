@@ -8,7 +8,7 @@ import type {
 import {
   remoteKernelReadiness,
   remoteKernelReadinessCounts,
-} from "@arroba/kernel-client/shell-remote-format"
+} from "@chariox/kernel-client/shell-remote-format"
 
 export function waitingRoomRemoteRows(
   state: Pick<WaitingRoomState, "focus" | "machineIndex" | "remoteKernelIndex">,

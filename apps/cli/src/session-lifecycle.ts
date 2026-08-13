@@ -9,13 +9,13 @@ import type {
   AttachedCliTransitionState,
   DetachedCliTransitionState,
 } from "./session-state.js"
-import { sessionResponseLayout } from "@arroba/kernel-client/session-config-projection"
+import { sessionResponseLayout } from "@chariox/kernel-client/session-config-projection"
 import {
   isCompleteSessionSnapshot,
   sessionListEntryFromSession,
   upsertSessionListEntry,
   type SessionLifecycleLaunchSelection,
-} from "@arroba/kernel-client/session-lifecycle-state"
+} from "@chariox/kernel-client/session-lifecycle-state"
 import { settleAttachProviderRun } from "./attach-provider-run.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"

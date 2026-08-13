@@ -78,10 +78,10 @@ async function handleClaudePermissionBridgeRequest(
       handled: true,
       permissionDecision: allowed ? "allow" : "deny",
       permissionDecisionReason: allowed
-        ? "Approved through Arroba."
+        ? "Approved through Chariox."
         : resolution.status === "timed_out"
-          ? "Timed out waiting for Arroba approval."
-          : "Denied through Arroba.",
+          ? "Timed out waiting for Chariox approval."
+          : "Denied through Chariox.",
     })
   } catch (error) {
     writeJsonResponse(response, 500, {

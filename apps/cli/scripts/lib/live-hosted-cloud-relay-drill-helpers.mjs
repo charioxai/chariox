@@ -8,11 +8,11 @@ import { resolveBuiltBinary } from "./drill-runtime-helpers.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.ARROBA_CLOUD_HOSTED_API_URL ?? "https://arroba-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
-const pollTimeoutMs = Number(process.env.ARROBA_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
-const remoteCliHost = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
-const remoteCliKey = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/arroba_hetzner_staging")
-const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
+const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://chariox-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
+const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
+const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
+const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")
+const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -128,10 +128,10 @@ export async function closeClient(client, label) {
 
 export async function buildKernelIfNeeded() {
   const manifest = path.join(repoRoot, "apps/kernel/Cargo.toml")
-  const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const result = await run("cargo", ["build", "--manifest-path", manifest, "--bin", "arroba-kernel"])
+  const binary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
+  const result = await run("cargo", ["build", "--manifest-path", manifest, "--bin", "chariox-kernel"])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return await resolveBuiltBinary(binary, manifest, "arroba-kernel")
+  return await resolveBuiltBinary(binary, manifest, "chariox-kernel")
 }
 
 export async function resolveExecutable(command) {
@@ -354,7 +354,7 @@ export async function issueMachineRelayToken({ profile, machineId }) {
 export async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
   if (!devAuthSecret) return false
   const slug = accountSlug ?? `hosted-${role}-${process.pid}-${Date.now()}`
-  const email = `${slug}@arroba.local`
+  const email = `${slug}@chariox.local`
   log(`${role}-dev-approve-cloud-login`, { accountSlug: slug, email })
   await postJson(`${apiUrl}/auth/dev/device/approve`, {
     userCode,
@@ -363,7 +363,7 @@ export async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
     displayName: `Hosted ${role} drill`,
     providerSubject: `dev|${slug}`,
   }, {
-    "x-arroba-dev-auth-secret": devAuthSecret,
+    "x-chariox-dev-auth-secret": devAuthSecret,
   })
   return true
 }
@@ -486,7 +486,7 @@ export function cookieHeader(jar) {
 
 export async function devBrowserCloudLogin({ role }) {
   if (!devAuthSecret) {
-    throw new Error("ARROBA_CLOUD_DEV_AUTH_SECRET is required for hosted browser dev login")
+    throw new Error("CHARIOX_CLOUD_DEV_AUTH_SECRET is required for hosted browser dev login")
   }
   const slug = `hosted-${role}-${process.pid}-${Date.now()}`
   const email = `ma.gutierrez.estevez+${slug}@gmail.com`
@@ -502,7 +502,7 @@ export async function devBrowserCloudLogin({ role }) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-arroba-dev-auth-secret": devAuthSecret,
+      "x-chariox-dev-auth-secret": devAuthSecret,
       cookie: cookieHeader(jar),
     },
     body: JSON.stringify({

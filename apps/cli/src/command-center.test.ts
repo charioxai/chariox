@@ -145,7 +145,7 @@ test("buildCommandCenterItems describes home-proxy extension sync recovery", () 
 
   assert.equal(items.find((item) => item.value === "/extension sync-status ")?.description, "Show home-authoritative manifest sync, worker projection, and recovery for an agent")
   assert.equal(items.find((item) => item.value === "/extension sync-retry ")?.description, "Retry worker projection of a home-authoritative extension manifest")
-  assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs and skills from provider configs into Arroba")
+  assert.equal(items.find((item) => item.value === "/extension import providers ")?.description, "Import MCPs and skills from provider configs into Chariox")
   assert.equal(buildCommandCenterItems("/extension import provider mcp", {
     providerCatalog: fallbackProviderCatalog(),
     providerCommandCatalogs: fallbackProviderCommandCatalogs(),
@@ -195,7 +195,7 @@ test("buildCommandCenterItems finds runtime recovery commands by user-facing ter
   const workspaceHealth = new Set(buildCommandCenterItems("/workspace sync health", context).map((item) => item.value))
   assert.equal(workspaceHealth.has("/workspace sync doctor"), true)
 
-  const ignoreRules = new Set(buildCommandCenterItems("/workspace sync arrobaignore", context).map((item) => item.value))
+  const ignoreRules = new Set(buildCommandCenterItems("/workspace sync charioxignore", context).map((item) => item.value))
   assert.equal(ignoreRules.has("/workspace sync ignore"), true)
 
   const agentPlacement = new Set(buildCommandCenterItems("/agent where does this run", context).map((item) => item.value))
@@ -433,7 +433,7 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(authItems.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
   assert.equal(authItems.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
   assert.equal(authItems.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
-  assert.equal(authItems.find((item) => item.value === "/slice auth alias ")?.description, "Set an Arroba display alias when the provider account label is unclear")
+  assert.equal(authItems.find((item) => item.value === "/slice auth alias ")?.description, "Set a Chariox display alias when the provider account label is unclear")
 
   assert.equal(buildCommandCenterItems("/slice snapshot", {
     providerCatalog: fallbackProviderCatalog(),

@@ -63,7 +63,7 @@ test('classifies local test harness prerequisite failures', () => {
 
 test('classifies Docker slice image build failures as test harness failures', () => {
   const text = [
-    'docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile -t arroba-slice-linux:0.1.0 . exited with code 101',
+    'docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile -t chariox-slice-linux:0.1.0 . exited with code 101',
     'stdout tail:',
     "error: couldn't read `src/../../../examples/workflow-code/prompt-chaining.js`: No such file or directory",
   ].join('\n')
@@ -112,7 +112,7 @@ test('classifies remote worker protocol version skew', () => {
 })
 
 test('classifies remote worker checkout version skew', () => {
-  const text = 'remote worker checkout `/tmp/arroba-native-remote-validate` is at commit 1111111, but home checkout expects 2222222. Upgrade/rebuild the remote worker checkout and restart the worker kernel, then rerun the drill.'
+  const text = 'remote worker checkout `/tmp/chariox-native-remote-validate` is at commit 1111111, but home checkout expects 2222222. Upgrade/rebuild the remote worker checkout and restart the worker kernel, then rerun the drill.'
 
   assert.equal(classifyDrillChildFailure(text), 'remote-worker-version')
 })
@@ -164,8 +164,8 @@ test('classifies kernel authority drift failures', () => {
 })
 
 test('classifies duplicate provider run binding health failures as kernel authority', () => {
-  assert.equal(classifyDrillChildFailure('daemon health duplicate_arroba_agent_bindings: agent-1 has run-a and run-b'), 'kernel-authority')
-  assert.equal(classifyDrillChildFailure('daemon health multi_interface_agent_bindings: agent-1 has Arroba and native TUI runs'), 'kernel-authority')
+  assert.equal(classifyDrillChildFailure('daemon health duplicate_chariox_agent_bindings: agent-1 has run-a and run-b'), 'kernel-authority')
+  assert.equal(classifyDrillChildFailure('daemon health multi_interface_agent_bindings: agent-1 has Chariox and native TUI runs'), 'kernel-authority')
   assert.equal(classifyDrillChildFailure('multiple provider runs are bound to agent agent-1'), 'kernel-authority')
 })
 

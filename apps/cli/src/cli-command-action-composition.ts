@@ -132,8 +132,8 @@ import {
   resumeMetaagentTask,
   updateMetaagentTask,
 } from "./session-api.js"
-import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@arroba/kernel-client/session-config-projection"
-import { createAgentPromptScheduleRequest } from "@arroba/kernel-client/ipc-requests"
+import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
+import { createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -474,7 +474,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       issueKernelCloudRelayClientToken(
         client,
         targetDaemonAlias,
-        options.clientId ?? "arroba-cli",
+        options.clientId ?? "chariox-cli",
         tokenOptions?.sessionId ?? null,
       ),
     createCloudSessionInvite: (sessionId, inviteOptions) =>

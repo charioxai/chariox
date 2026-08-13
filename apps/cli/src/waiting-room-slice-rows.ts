@@ -5,7 +5,7 @@ import {
   formatSliceRelayLabel,
   formatSliceScope,
   sliceProviderAuthCoverage,
-} from "@arroba/kernel-client/slice-format"
+} from "@chariox/kernel-client/slice-format"
 import { formatWaitingRoomSliceLabel } from "./waiting-room-slices.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 

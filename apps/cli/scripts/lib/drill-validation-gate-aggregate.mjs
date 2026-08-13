@@ -56,7 +56,7 @@ import {
   validateValidationGateCoverageAggregate,
 } from "./drill-validation-gate-aggregate-validation.mjs"
 
-export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "arroba.drill.validation_gate.aggregate.v1"
+export const DRILL_VALIDATION_GATE_AGGREGATE_SCHEMA = "chariox.drill.validation_gate.aggregate.v1"
 
 export function summarizeValidationGateReportAggregate(
   reports,

@@ -213,10 +213,10 @@ function cacheFileRecords(directory: string): Array<{ path: string; modifiedAtMs
 }
 
 function defaultWaitingRoomInventoryCacheDir(): string {
-  const explicit = process.env.ARROBA_WAITING_ROOM_INVENTORY_CACHE_DIR?.trim()
+  const explicit = process.env.CHARIOX_WAITING_ROOM_INVENTORY_CACHE_DIR?.trim()
   if (explicit) {
     return explicit
   }
   const xdgCacheHome = process.env.XDG_CACHE_HOME?.trim()
-  return join(xdgCacheHome || join(homedir(), ".cache"), "arroba", "waiting-room", "kernels")
+  return join(xdgCacheHome || join(homedir(), ".cache"), "chariox", "waiting-room", "kernels")
 }

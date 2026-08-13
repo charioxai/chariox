@@ -1,28 +1,28 @@
 import path from "node:path"
 
-import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
-import { formatWorkspaceLiveSyncModeCompactLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
+import { formatWorkspaceLiveSyncModeCompactLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   waitingRoomSessionActivityNextAction,
   waitingRoomSessionRecencyMs,
   waitingRoomSessionRemoteActivityLabel,
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
-} from "@arroba/kernel-client/waiting-room-activity"
+} from "@chariox/kernel-client/waiting-room-activity"
 import {
   decideBootstrapAction,
   selectAttachableSession,
   type SessionBootstrapDecision,
-} from "@arroba/kernel-client/session-bootstrap-policy"
+} from "@chariox/kernel-client/session-bootstrap-policy"
 
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 
-export const ARROBA_ASCII_ART = [
-  "    _    ____  ____   ___  ____    _     _",
-  "   / \\  |  _ \\ |  _ \\  / _ \\| __ )  / \\   ",
-  "  / _ \\ | |_)   | |_) | | | | || _    / _ \\  ",
-  " / ___ \\|  _ <  |  _ <| | |_| || _)  / ___ \\ ",
-  "/_/   \\_\\_| \\_\\_| \\_\\___/|| _ ) /_/  \\_\\",
+export const CHARIOX_ASCII_ART = [
+  "  ____ _   _    _    ____  ___ _____  __",
+  " / ___| | | |  / \\  |  _ \\|_ _/ _ \\ \\/ /",
+  "| |   | |_| | / _ \\ | |_) || | | | \\  / ",
+  "| |___|  _  |/ ___ \\|  _ < | | |_| /  \\ ",
+  " \\____|_| |_/_/   \\_\\_| \\_\\___\\___/_/\\_\\",
 ].join("\n")
 
 export const SESSION_NEW_HELP_TEXT = "Use arrows to choose a project, provider, model, variant, worktree, theme, or remote inventory. Enter on a project opens its sessions. E renames, R restores, A archives, and D deletes the selected project or session."

@@ -45,7 +45,7 @@ const DOCKER_RUNTIME_PATTERNS = [
 ]
 
 const CLOUD_RUNTIME_PATTERNS = [
-  /\barroba-cloud\b/i,
+  /\bchariox-cloud\b/i,
   /\bScalingo\b/i,
   /cloud .*deployment/i,
   /deployment .*did not become ready/i,
@@ -110,7 +110,7 @@ const PROVIDER_RUNTIME_PATTERNS = [
 
 const KERNEL_AUTHORITY_PATTERNS = [
   /agent [`'"][^`'"]+[`'"] does not belong to session/i,
-  /duplicate_arroba_agent_bindings/i,
+  /duplicate_chariox_agent_bindings/i,
   /multi_interface_agent_bindings/i,
   /duplicate .*provider run .*bindings?/i,
   /multiple .*provider runs? .*bound .*agent/i,

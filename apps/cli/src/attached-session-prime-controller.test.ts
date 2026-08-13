@@ -11,7 +11,7 @@ import type {
 } from "./cli-types.js"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 
 test("attached session prime clears the transcript when no agent is visible", async () => {
   const harness = primeHarness()

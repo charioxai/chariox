@@ -1,4 +1,4 @@
-import { executeNotificationCommand } from "@arroba/kernel-client"
+import { executeNotificationCommand } from "@chariox/kernel-client"
 import type { ParsedSlashCommand } from "./commands.js"
 
 export type NotificationCommandHandlerDeps = {

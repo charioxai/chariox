@@ -9,19 +9,19 @@ import {
   shouldPreserveAgentActivityLabel as shouldPreserveAgentActivityLabelState,
   type AgentToolActivityUpdate as ToolActivityUpdate,
   type AgentBusyState,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import {
   runtimeProviderRunForAgent,
-} from "@arroba/kernel-client/session-runtime-lookup"
+} from "@chariox/kernel-client/session-runtime-lookup"
 import {
   sessionActivePromptForAgent,
   sessionPromptStateForAgent,
-} from "@arroba/kernel-client/session-prompt-identity"
+} from "@chariox/kernel-client/session-prompt-identity"
 import {
   sessionHasPromptWork,
   sessionHasTurnWork,
   sessionQueuedPromptCount,
-} from "@arroba/kernel-client/session-prompt-work"
+} from "@chariox/kernel-client/session-prompt-work"
 import type {
   AgentInstance,
   RuntimeProviderRun,
@@ -30,7 +30,7 @@ import type {
 import {
   resolveSessionAgentReference,
   type ResolvedAgentReference,
-} from "@arroba/kernel-client/session-agent-resolver"
+} from "@chariox/kernel-client/session-agent-resolver"
 import {
   isBackendProviderId,
   normalizeBackendProviderId,

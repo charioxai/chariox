@@ -25,31 +25,31 @@ import {
   validateValidationSuiteCoverage,
 } from "./drill-validation-suite.mjs"
 
-export const DRILL_PLATFORM_BUNDLE_SCHEMA = "arroba.drill.platform_bundle.v1"
+export const DRILL_PLATFORM_BUNDLE_SCHEMA = "chariox.drill.platform_bundle.v1"
 export const DRILL_PLATFORM_BUNDLE_ARTIFACTS = Object.freeze([
   {
     path: "failure-taxonomy-drill.json",
-    schema: "arroba.drill.failure_taxonomy.v1",
+    schema: "chariox.drill.failure_taxonomy.v1",
   },
   {
     path: "failure-taxonomy-scenario.json",
-    schema: "arroba.drill.failure_taxonomy.v1",
+    schema: "chariox.drill.failure_taxonomy.v1",
   },
   {
     path: "generated-matrix-limitations.json",
-    schema: "arroba.drill.generated_matrix_limitations.v1",
+    schema: "chariox.drill.generated_matrix_limitations.v1",
   },
   {
     path: "generated-matrix-names.json",
-    schema: "arroba.drill.generated_matrix_names.v1",
+    schema: "chariox.drill.generated_matrix_names.v1",
   },
   {
     path: "runtime-signals.json",
-    schema: "arroba.drill.runtime_signals.v1",
+    schema: "chariox.drill.runtime_signals.v1",
   },
   {
     path: "validation-suite.json",
-    schema: "arroba.drill.validation_suite.v1",
+    schema: "chariox.drill.validation_suite.v1",
   },
 ])
 

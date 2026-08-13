@@ -87,8 +87,8 @@ async function mustRun(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  await mustRun('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  await mustRun('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
+  return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
 function startDaemon(binary, env) {
@@ -174,9 +174,9 @@ async function main() {
     await prepareDrillArtifacts(root)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
     await writeFile(
-      path.join(configHome, 'arroba', 'config.toml'),
+      path.join(configHome, 'chariox', 'config.toml'),
       `version = 1
 
 [history.operational]
@@ -205,15 +205,15 @@ snapshot_interval_events = 1
       XDG_STATE_HOME: stateHome,
       XDG_DATA_HOME: path.join(home, '.local/share'),
       XDG_CACHE_HOME: path.join(home, '.cache'),
-      ARROBA_DAEMON_ID: `git-observation-${process.pid}`,
-      ARROBA_MACHINE_ID: `machine-git-observation-${process.pid}`,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: path.join(root, 'session-history'),
-      ARROBA_PROVIDER_DEV_STUB: '1',
+      CHARIOX_DAEMON_ID: `git-observation-${process.pid}`,
+      CHARIOX_MACHINE_ID: `machine-git-observation-${process.pid}`,
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'session-history'),
+      CHARIOX_PROVIDER_DEV_STUB: '1',
     }
 
     const kernelBinary = await buildKernel()

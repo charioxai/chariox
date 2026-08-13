@@ -1,17 +1,17 @@
 import {
   createProcessLogger,
-  type ArrobaLogger,
+  type CharioxLogger,
   type LogFields,
 } from "./logging.js"
 import { describeCliError } from "./runtime.js"
 
-export type CreateCliProcessLogger = (processKind: string, component?: string) => ArrobaLogger
+export type CreateCliProcessLogger = (processKind: string, component?: string) => CharioxLogger
 
 export function createCliProcessLoggerRegistry(options: {
   createLogger?: CreateCliProcessLogger
 } = {}) {
   const createLogger = options.createLogger ?? createProcessLogger
-  let processLogger: ArrobaLogger | null = null
+  let processLogger: CharioxLogger | null = null
 
   return {
     initialize(processKind: string) {

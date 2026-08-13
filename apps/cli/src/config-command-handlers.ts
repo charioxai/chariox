@@ -1,22 +1,22 @@
 import type {
-  ArrobaUserConfigPayload,
-  ArrobaUserConfigSchemaPayload,
+  CharioxUserConfigPayload,
+  CharioxUserConfigSchemaPayload,
   UserConfigSchemaEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import {
   formatWorkspaceLiveSyncDefaultModeChangeMessage,
-} from "@arroba/kernel-client/workspace-live-sync-mode"
+} from "@chariox/kernel-client/workspace-live-sync-mode"
 
 type FooterTone = "info" | "error"
 
 export type ConfigCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
-  getUserConfig?: () => Promise<ArrobaUserConfigPayload>
-  getUserConfigSchema?: () => Promise<ArrobaUserConfigSchemaPayload>
-  setUserConfigValue?: (path: string, value: string) => Promise<ArrobaUserConfigPayload>
-  unsetUserConfigValue?: (path: string) => Promise<ArrobaUserConfigPayload>
+  getUserConfig?: () => Promise<CharioxUserConfigPayload>
+  getUserConfigSchema?: () => Promise<CharioxUserConfigSchemaPayload>
+  setUserConfigValue?: (path: string, value: string) => Promise<CharioxUserConfigPayload>
+  unsetUserConfigValue?: (path: string) => Promise<CharioxUserConfigPayload>
 }
 
 export async function handleConfigSlashCommand(
@@ -60,7 +60,7 @@ export async function handleConfigSlashCommand(
 
 function appendUserConfigEffects(
   deps: ConfigCommandHandlerDeps,
-  payload: ArrobaUserConfigPayload,
+  payload: CharioxUserConfigPayload,
 ): void {
   const effects = payload.effects ?? []
   if (effects.length > 0) {

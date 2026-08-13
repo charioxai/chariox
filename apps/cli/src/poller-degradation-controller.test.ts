@@ -74,16 +74,16 @@ test("poller degradation controller clears disconnected state after the last deg
   assert.deepEqual(harness.calls(), [
     "info:poller recovered:polling terminal output:3",
     "disconnected:false",
-    "status:Connected to Arroba daemon.",
+    "status:Connected to Chariox daemon.",
     "chrome",
-    "notice:Reconnected to the Arroba daemon.:default",
+    "notice:Reconnected to the Chariox daemon.:default",
   ])
 })
 
 function createHarness() {
   const calls: string[] = []
   const controller = createPollerDegradationController({
-    connectedStatusLine: "Connected to Arroba daemon.",
+    connectedStatusLine: "Connected to Chariox daemon.",
     logger: {
       warn: (message, fields) => {
         calls.push(`warn:${message}:${String(fields?.operation)}`)

@@ -121,7 +121,7 @@ async function pairRelayCloudClient(deps: RelayCloudCommandHandlerDeps, cloudArg
   const alias = cloudArgs.join(" ").trim() || undefined
   const paired = await deps.pairCloudRelayClient(
     profile,
-    deps.clientId ?? "arroba-cli",
+    deps.clientId ?? "chariox-cli",
     alias,
   )
   await deps.saveCloudRelayProfile(paired)
@@ -212,7 +212,7 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
   const ensuredProfile = profile.clientId
     ? profile
     : deps.pairCloudRelayClient
-      ? await deps.pairCloudRelayClient(profile, deps.clientId ?? "arroba-cli", undefined)
+      ? await deps.pairCloudRelayClient(profile, deps.clientId ?? "chariox-cli", undefined)
       : profile
   if (!profile.clientId && deps.saveCloudRelayProfile) {
     await deps.saveCloudRelayProfile(ensuredProfile)
@@ -228,7 +228,7 @@ async function issueRelayCloudClientToken(deps: RelayCloudCommandHandlerDeps, cl
       `transport=${issued.relayUrl}`,
       `expires_at_ms=${issued.tokenExpiresAtMs}`,
       ...(sessionId ? [`session_id=${sessionId}`] : []),
-      `command=arroba --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
+      `command=chariox --relay-url ${issued.relayUrl} --relay-token ${issued.relayToken} --target-daemon-alias ${targetDaemonAlias}`,
     ].join("\n"),
   )
   deps.appendNotice(`cloud client token minted for ${targetDaemonAlias}`)

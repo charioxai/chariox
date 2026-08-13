@@ -17,8 +17,8 @@ test("parses Hetzner passthrough flags", () => {
     args: ["--hetzner-host", "root@example"],
     nextIndex: 1,
   })
-  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-repo=/tmp/arroba"], 0), {
-    args: ["--hetzner-repo", "/tmp/arroba"],
+  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-repo=/tmp/chariox"], 0), {
+    args: ["--hetzner-repo", "/tmp/chariox"],
     nextIndex: 0,
   })
   assert.equal(parseHetznerPassthroughArg(["--include-hetzner"], 0), null)

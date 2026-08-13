@@ -69,29 +69,29 @@ const {
 const REAL_DASHBOARD_PROMPT = [
   'Generate a vibrant dashboard as a compact self-contained HTML document.',
   'The dashboard must visibly include the title text `Real Provider Workflow Dashboard`.',
-  'The main dashboard element must include `data-arroba-real-provider-dashboard="true"`.',
+  'The main dashboard element must include `data-chariox-real-provider-dashboard="true"`.',
   'Before writing the file, reason through a compact layout plan that balances mobile responsiveness, contrast, KPI cards, one chart-like visual, and a status section.',
   'Use inline CSS only; no scripts, external assets, shell commands, file inspection, or network calls.',
   'Keep the HTML under 1800 characters so it fits comfortably in one runtime tool call.',
-  'This is the final workflow node: call the Arroba runtime MCP tool validate_and_submit_workflow_run_output directly with workflow_output_json set to {"kind":"html","html":"<full html document>"}.',
+  'This is the final workflow node: call the Chariox runtime MCP tool validate_and_submit_workflow_run_output directly with workflow_output_json set to {"kind":"html","html":"<full html document>"}.',
   'Do not use bash, python, node, or other provider tools to construct or submit this payload. After the runtime tool succeeds, emit the final fenced workflow JSON block with the same output.message object.',
-  'If the Arroba runtime MCP tool is unavailable, do not search for it: emit the final fenced workflow JSON block directly with output.message set to {"kind":"html","html":"<full html document>"}.',
+  'If the Chariox runtime MCP tool is unavailable, do not search for it: emit the final fenced workflow JSON block directly with output.message set to {"kind":"html","html":"<full html document>"}.',
 ].join(' ')
 
 const SHOPPING_LIST_PROMPT = '1 kg bananas, 2 bottles of 1l Coca-Cola, and a bag of chips'
 const SHOPPING_LIST_PROMPT_B = '2 red apples, 1 bag of coffee beans, and 3 packs of pasta'
-const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
-const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'apples', 'coffee', 'pasta']
+const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
+const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'apples', 'coffee', 'pasta']
 const AGENT_APP_SHOPPING_PROMPT = [
-  'You are the checkout automation agent for a published Arroba Agent App.',
+  'You are the checkout automation agent for a published Chariox Agent App.',
   'The invocation prompt is a grocery shopping list from the browser URL.',
-  'First call the Arroba runtime MCP tool arroba.agent_app_action for action_id "cart.add" once per product with input containing sku, name, quantity, and unit.',
-  'Then call arroba.agent_app_action with action_id "cart.checkout" and input {"ready":true}.',
+  'First call the Chariox runtime MCP tool chariox.agent_app_action for action_id "cart.add" once per product with input containing sku, name, quantity, and unit.',
+  'Then call chariox.agent_app_action with action_id "cart.checkout" and input {"ready":true}.',
   'Use the action responses to build a compact checkout page.',
   'The final workflow output must be JSON stringified through validate_and_submit_workflow_run_output with this exact outer shape: {"kind":"response","response":{"mode":"serve","entry":"/generated/checkout.html"},"effects":{"overlay":[{"path":"/generated/checkout.html","mime_type":"text/html; charset=utf-8","content":"<full html document>"}]}}.',
-  'The generated HTML must include the visible title text `Agent App Grocery Checkout`, the attribute data-arroba-agent-app-checkout="true", and the products requested by the invocation prompt.',
+  'The generated HTML must include the visible title text `Agent App Grocery Checkout`, the attribute data-chariox-agent-app-checkout="true", and the products requested by the invocation prompt.',
   'Use inline CSS only. Do not use shell, bash, python, node, filesystem, or network tools.',
-  'If the Arroba runtime MCP tools are unavailable, emit the final fenced workflow JSON block directly with the same output.message object, but still include the checkout HTML.',
+  'If the Chariox runtime MCP tools are unavailable, emit the final fenced workflow JSON block directly with the same output.message object, but still include the checkout HTML.',
 ].join(' ')
 
 function usage() {
@@ -132,15 +132,15 @@ function parseArgs(argv) {
     model: null,
     slug: null,
     credentialProfile: null,
-    cloudApiUrl: process.env.ARROBA_DRILL_CLOUD_API_URL?.trim() || null,
-    cloudAccountId: process.env.ARROBA_DRILL_CLOUD_ACCOUNT_ID?.trim() || null,
-    cloudSessionToken: process.env.ARROBA_DRILL_CLOUD_SESSION_TOKEN?.trim() || null,
-    relayMode: process.env.ARROBA_DRILL_RELAY_MODE?.trim() || 'auto',
-    kernelPort: optionalPort(process.env.ARROBA_DRILL_KERNEL_PORT),
-    relayPort: optionalPort(process.env.ARROBA_DRILL_RELAY_PORT),
-    servePort: optionalPort(process.env.ARROBA_DRILL_SERVE_PORT),
-    daemonAlias: process.env.ARROBA_DRILL_DAEMON_ALIAS?.trim() || null,
-    relayToken: process.env.ARROBA_DRILL_RELAY_TOKEN?.trim() || null,
+    cloudApiUrl: process.env.CHARIOX_DRILL_CLOUD_API_URL?.trim() || null,
+    cloudAccountId: process.env.CHARIOX_DRILL_CLOUD_ACCOUNT_ID?.trim() || null,
+    cloudSessionToken: process.env.CHARIOX_DRILL_CLOUD_SESSION_TOKEN?.trim() || null,
+    relayMode: process.env.CHARIOX_DRILL_RELAY_MODE?.trim() || 'auto',
+    kernelPort: optionalPort(process.env.CHARIOX_DRILL_KERNEL_PORT),
+    relayPort: optionalPort(process.env.CHARIOX_DRILL_RELAY_PORT),
+    servePort: optionalPort(process.env.CHARIOX_DRILL_SERVE_PORT),
+    daemonAlias: process.env.CHARIOX_DRILL_DAEMON_ALIAS?.trim() || null,
+    relayToken: process.env.CHARIOX_DRILL_RELAY_TOKEN?.trim() || null,
     realDashboard: false,
     agentAppShopping: false,
     agentAppSessionIsolation: false,
@@ -249,7 +249,7 @@ function tail(value, max = 4000) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   await mkdir(options.artifactsDir, { recursive: true })
-  const root = path.join(repoRoot, '.artifacts', 'live-cloud-publication-deployment-drill', `arroba-cloud-publication-drill-${nowStamp()}`)
+  const root = path.join(repoRoot, '.artifacts', 'live-cloud-publication-deployment-drill', `chariox-cloud-publication-drill-${nowStamp()}`)
   await prepareDrillArtifacts(root)
   const workspace = path.join(root, 'workspace')
   const exportDir = path.join(root, 'exported')
@@ -273,17 +273,17 @@ async function main() {
     HOME: options.provider === 'dev-stub' ? home : process.env.HOME,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: daemonAlias,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_DAEMON_ID: daemonAlias,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'history'),
     ...(useLocalRelay ? {
-      ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
-      ARROBA_RELAY_TOKEN: relayToken,
+      CHARIOX_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+      CHARIOX_RELAY_TOKEN: relayToken,
     } : {}),
   }
   const env = options.provider === 'dev-stub'
@@ -291,7 +291,7 @@ async function main() {
     : baseEnv
   if (process.env.HOME) {
     if (!env.CODEX_HOME) env.CODEX_HOME = path.join(process.env.HOME, '.codex')
-    if (!env.ARROBA_CLAUDE_CONFIG) env.ARROBA_CLAUDE_CONFIG = path.join(process.env.HOME, '.claude.json')
+    if (!env.CHARIOX_CLAUDE_CONFIG) env.CHARIOX_CLAUDE_CONFIG = path.join(process.env.HOME, '.claude.json')
   }
   let kernel = null
   let relay = null
@@ -305,20 +305,20 @@ async function main() {
   const sessionIds = []
   try {
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await mkdir(path.join(serverConfigHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
-    await writeFile(path.join(serverConfigHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await mkdir(path.join(serverConfigHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
+    await writeFile(path.join(serverConfigHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     if (!options.cloudApiUrl) await copyCloudProfile(configHome).catch(() => {})
 
-    const kernelBinary = await buildRustBinary('arroba-kernel')
-    const relayBinary = await buildRustBinary('arroba-relay')
+    const kernelBinary = await buildRustBinary('chariox-kernel')
+    const relayBinary = await buildRustBinary('chariox-relay')
     if (useLocalRelay) {
       relay = startProcess(relayBinary, [], {
         ...env,
-        ARROBA_RELAY_HOST: '127.0.0.1',
-        ARROBA_RELAY_PORT: String(relayPort),
-        ARROBA_RELAY_TOKEN: relayToken,
+        CHARIOX_RELAY_HOST: '127.0.0.1',
+        CHARIOX_RELAY_PORT: String(relayPort),
+        CHARIOX_RELAY_TOKEN: relayToken,
       }, 'relay')
       await waitForTcpPort('127.0.0.1', relayPort)
     }
@@ -374,13 +374,13 @@ async function main() {
         XDG_CONFIG_HOME: serverConfigHome,
         HOST: '127.0.0.1',
         PORT: String(servePort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_PACKAGE: packageDir,
-        ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID: deployment.id,
-        ARROBA_PUBLICATION_CLOUD_API_URL: profile.apiUrl,
-        ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID: profile.accountId,
-        ...(profile.cloudSessionToken ? { ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN: profile.cloudSessionToken } : {}),
-      }, 'arroba-serve-local-runtime')
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_PACKAGE: packageDir,
+        CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID: deployment.id,
+        CHARIOX_PUBLICATION_CLOUD_API_URL: profile.apiUrl,
+        CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID: profile.accountId,
+        ...(profile.cloudSessionToken ? { CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN: profile.cloudSessionToken } : {}),
+      }, 'chariox-serve-local-runtime')
       await waitForGateway(`http://127.0.0.1:${servePort}`).catch((error) => {
         throw new Error(`${errorMessage(error)}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
       })
@@ -654,7 +654,7 @@ function publicationOptions(transport, nodeId) {
 
 function routeForTransport(transport) {
   if (transport === 'mcp') return '/mcp'
-  if (transport === 'websocket_json') return '/.well-known/arroba/publication/ws'
+  if (transport === 'websocket_json') return '/.well-known/chariox/publication/ws'
   if (transport === 'api_sse_json') return '/invoke'
   return '/final/*'
 }
@@ -715,7 +715,7 @@ async function writeShoppingAgentAppAssets(workspace) {
     'const carts = new Map();',
     'function readBody(req){return new Promise((resolve,reject)=>{let data="";req.on("data",c=>data+=c);req.on("end",()=>{try{resolve(data?JSON.parse(data):{})}catch(e){reject(e)}});req.on("error",reject);});}',
     'function send(res,status,body){res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify(body));}',
-    'function sessionCart(req){const key=String(req.headers["x-arroba-agent-app-session"]||"anonymous");if(!carts.has(key))carts.set(key,[]);return {key,cart:carts.get(key)};}',
+    'function sessionCart(req){const key=String(req.headers["x-chariox-agent-app-session"]||"anonymous");if(!carts.has(key))carts.set(key,[]);return {key,cart:carts.get(key)};}',
     'http.createServer(async (req,res)=>{',
     '  try {',
     '    if (req.url === "/health") return send(res,200,{ok:true});',

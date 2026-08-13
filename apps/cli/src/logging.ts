@@ -41,7 +41,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   off: 100,
 }
 
-export class ArrobaLogger {
+export class CharioxLogger {
   constructor(
     private readonly sink: LogSink,
     private readonly component: string,
@@ -49,7 +49,7 @@ export class ArrobaLogger {
   ) {}
 
   child(component: string, context: LogFields = {}) {
-    return new ArrobaLogger(this.sink, component, { ...this.context, ...context })
+    return new CharioxLogger(this.sink, component, { ...this.context, ...context })
   }
 
   debug(message: string, fields: LogFields = {}) {
@@ -91,7 +91,7 @@ export class ArrobaLogger {
   }
 }
 
-export function createProcessLogger(processKind: string, component = "logging"): ArrobaLogger {
+export function createProcessLogger(processKind: string, component = "logging"): CharioxLogger {
   const logDir = defaultLogDir()
   mkdirSync(logDir, { recursive: true })
   cleanupLogDir(logDir)
@@ -104,7 +104,7 @@ export function createProcessLogger(processKind: string, component = "logging"):
     logPath,
     level,
   }
-  const logger = new ArrobaLogger(sink, component)
+  const logger = new CharioxLogger(sink, component)
   if (level !== "off") {
     logger.info("initialized process logger", {
       log_root: logDir,
@@ -115,24 +115,24 @@ export function createProcessLogger(processKind: string, component = "logging"):
 }
 
 export function defaultLogDir() {
-  if (process.env.ARROBA_LOG_DIR) {
-    return process.env.ARROBA_LOG_DIR
+  if (process.env.CHARIOX_LOG_DIR) {
+    return process.env.CHARIOX_LOG_DIR
   }
 
-  const workspaceLogDir = path.join(process.cwd(), ".arroba", "logs")
+  const workspaceLogDir = path.join(process.cwd(), ".chariox", "logs")
   if (workspaceLogDir) {
     return workspaceLogDir
   }
 
   if (process.env.XDG_STATE_HOME) {
-    return path.join(process.env.XDG_STATE_HOME, "arroba", "logs")
+    return path.join(process.env.XDG_STATE_HOME, "chariox", "logs")
   }
 
   if (homedir()) {
-    return path.join(homedir(), ".local", "state", "arroba", "logs")
+    return path.join(homedir(), ".local", "state", "chariox", "logs")
   }
 
-  return path.join(process.cwd(), ".arroba", "logs")
+  return path.join(process.cwd(), ".chariox", "logs")
 }
 
 export function readAllLogRecords(logDir = defaultLogDir()): LogRecord[] {
@@ -218,7 +218,7 @@ export function seedLogOffsets(logDir = defaultLogDir()) {
 }
 
 function configuredLogLevel(): LogLevel {
-  const value = (process.env.ARROBA_LOG_LEVEL ?? "info").toLowerCase()
+  const value = (process.env.CHARIOX_LOG_LEVEL ?? "info").toLowerCase()
   if (value === "debug" || value === "warn" || value === "error" || value === "off") {
     return value
   }

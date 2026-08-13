@@ -11,7 +11,7 @@ export async function bridgeRemoteNativeProviderEndpoint(
   endpoint: string,
   label: string,
 ): Promise<EndpointBridge> {
-  const sshHost = process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_HOST?.trim()
+  const sshHost = process.env.CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_HOST?.trim()
   if (!sshHost) {
     return { endpoint, close: async () => {} }
   }
@@ -25,8 +25,8 @@ export async function bridgeRemoteNativeProviderEndpoint(
   }
 
   const localPort = await reservePort()
-  const remoteHost = process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_REMOTE_HOST?.trim() || "127.0.0.1"
-  const sshKey = process.env.ARROBA_NATIVE_PROVIDER_ENDPOINT_SSH_KEY?.trim() || undefined
+  const remoteHost = process.env.CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_REMOTE_HOST?.trim() || "127.0.0.1"
+  const sshKey = process.env.CHARIOX_NATIVE_PROVIDER_ENDPOINT_SSH_KEY?.trim() || undefined
   const child = spawn("ssh", sshForwardArgs({
     sshHost,
     ...(sshKey ? { sshKey } : {}),

@@ -1,5 +1,5 @@
-export const hiddenInstructionsStart = "<<<ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>"
-export const hiddenInstructionsEnd = "<<<END_ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>"
+export const hiddenInstructionsStart = "<<<CHARIOX_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>"
+export const hiddenInstructionsEnd = "<<<END_CHARIOX_NATIVE_TUI_HIDDEN_INSTRUCTIONS>>>"
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")

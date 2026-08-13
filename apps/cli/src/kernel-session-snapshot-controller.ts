@@ -4,8 +4,8 @@ import type {
 } from "./cli-types.js"
 import {
   sessionSnapshotRefreshTransition,
-} from "@arroba/kernel-client/session-runtime-transition"
-import { sessionShouldRecoverMissingActiveProviderRun } from "@arroba/kernel-client/provider-run-recovery"
+} from "@chariox/kernel-client/session-runtime-transition"
+import { sessionShouldRecoverMissingActiveProviderRun } from "@chariox/kernel-client/provider-run-recovery"
 
 type KernelSessionSnapshotControllerDeps = {
   getSession: () => RuntimeSession

@@ -15,7 +15,7 @@ import {
 import { createSessionBrowserController } from "./session-browser-controller.js"
 import {
   clampSessionBrowserIndex,
-} from "@arroba/kernel-client/session-browser-policy"
+} from "@chariox/kernel-client/session-browser-policy"
 import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 

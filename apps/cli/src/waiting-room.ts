@@ -15,7 +15,7 @@ export {
   normalizeWaitingRoomState,
 } from "./waiting-room-state.js"
 export { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
-export { arrobaArtFrame } from "./waiting-room-art.js"
+export { charioxArtFrame } from "./waiting-room-art.js"
 export { waitingRoomRows } from "./waiting-room-rows.js"
 export {
   waitingRoomRemoteKernelCanDelete,

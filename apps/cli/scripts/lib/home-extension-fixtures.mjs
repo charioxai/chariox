@@ -124,7 +124,7 @@ rl.on('line', (line) => {
 kind: connector_adapter
 name: home_stub
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${process.execPath}
 args:
   - ${connectorAdapterScript}

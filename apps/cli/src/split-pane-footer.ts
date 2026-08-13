@@ -1,9 +1,9 @@
-import type { SessionStatusBadgeTone } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionStatusBadgeTone } from "@chariox/kernel-client/session-runtime-status"
 import {
   formatPromptMetaParts,
   type PromptMetaPart,
   type PromptMetaTone,
-} from "@arroba/kernel-client/prompt-meta"
+} from "@chariox/kernel-client/prompt-meta"
 
 export type StatusBadgeTone = SessionStatusBadgeTone
 

@@ -2,7 +2,7 @@ import type { RuntimeSession } from "./cli-types.js"
 import {
   resolvePromptRecoveryProviderLaunch,
   type SessionLifecycleLaunchSelection,
-} from "@arroba/kernel-client/session-lifecycle-state"
+} from "@chariox/kernel-client/session-lifecycle-state"
 
 type ProviderRecoveryLaunchInput = {
   sessionId: string

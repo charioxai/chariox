@@ -13,7 +13,7 @@ import type {
   WorkflowWatchdogDefinition,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import { createWorkflowCommandContext } from "./workflow-command-context.js"
 import {
   handleWorkflowEdgeCommand,

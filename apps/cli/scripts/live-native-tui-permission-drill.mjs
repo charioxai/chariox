@@ -30,9 +30,9 @@ const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
 const kernelBinary = resolveBuiltBinarySync(
-  path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel"),
+  path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel"),
   path.join(repoRoot, "apps/kernel/Cargo.toml"),
-  "arroba-kernel",
+  "chariox-kernel",
 )
 const marker = `NTPERM_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
@@ -363,7 +363,7 @@ async function waitForAgentIdle(socketPath, alias, timeoutMs = 120_000) {
 }
 
 async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
       "run",
@@ -441,23 +441,23 @@ async function runProvider(provider, options) {
   const workspace = repoRoot
   const worktree = repoRoot
   const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-perm`
-  const screenNative = `arroba-${provider}-perm-${process.pid}`
-  const screenCli = `arroba-${provider}-perm-cli-${process.pid}`
+  const screenNative = `chariox-${provider}-perm-${process.pid}`
+  const screenCli = `chariox-${provider}-perm-cli-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
-    cliDir: path.join(root, "arroba-cli-screen"),
+    cliDir: path.join(root, "chariox-cli-screen"),
     historyDir: path.join(root, "history"),
     native: path.join(root, "native-screen", "screenlog.0"),
-    cli: path.join(root, "arroba-cli-screen", "screenlog.0"),
+    cli: path.join(root, "chariox-cli-screen", "screenlog.0"),
     proxy: path.join(root, "native.proxy.log"),
   }
   const markers = {
     nativePrompt: `${marker}_${provider}_NATIVE_PERMISSION`,
-    arrobaPrompt: `${marker}_${provider}_ARROBA_PERMISSION`,
+    charioxPrompt: `${marker}_${provider}_CHARIOX_PERMISSION`,
   }
   const files = {
-    nativePrompt: `/tmp/arroba-${provider}-native-permission-${process.pid}.txt`,
-    arrobaPrompt: `/tmp/arroba-${provider}-arroba-permission-${process.pid}.txt`,
+    nativePrompt: `/tmp/chariox-${provider}-native-permission-${process.pid}.txt`,
+    charioxPrompt: `/tmp/chariox-${provider}-chariox-permission-${process.pid}.txt`,
   }
   const automationSocket = path.join("/tmp", `arb-${provider}-perm-cli-${process.pid}.sock`)
   const sessionAlias = `native-permission-${provider}-${marker}`
@@ -476,13 +476,13 @@ async function runProvider(provider, options) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-permission-${provider}-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: logs.historyDir,
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-permission-${provider}-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: logs.historyDir,
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -529,13 +529,13 @@ async function runProvider(provider, options) {
     }
     await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
     })
 
-    const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
+    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
       : null
@@ -543,7 +543,7 @@ async function runProvider(provider, options) {
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
     if (provider === "claude") {
-      providerScreen = (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
+      providerScreen = (await waitForFileMatch(logs.native, /screen:\s+(chariox-claude-[^\s]+)/)).match[1]
     }
 
     client = new LocalIpcClient(kernelUrl)
@@ -581,7 +581,7 @@ async function runProvider(provider, options) {
       await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.nativePrompt, logs.historyDir)
       await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
       await waitForAgentIdle(automationSocket, alias)
-      console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
+      console.log(JSON.stringify({ provider, direction: "native_tui_to_chariox", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     } else {
       const nativeInteraction = await answerPermissionFromCli(automationSocket, alias)
       if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.nativePrompt, logs.historyDir)
@@ -589,19 +589,19 @@ async function runProvider(provider, options) {
       if (provider === "claude") await waitForFileContent(files.nativePrompt, `native-${provider}`)
       else await waitForFileContent(files.nativePrompt, `native-${provider}`, 5_000).catch(() => {})
       await waitForAgentIdle(automationSocket, alias)
-      console.log(JSON.stringify({ provider, direction: "native_tui_to_arroba", interaction: nativeInteraction.title ?? nativeInteraction.message }))
+      console.log(JSON.stringify({ provider, direction: "native_tui_to_chariox", interaction: nativeInteraction.title ?? nativeInteraction.message }))
     }
 
     await automationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt ${alias} ${permissionPrompt(provider, markers.arrobaPrompt, files.arrobaPrompt, `arroba-${provider}`)}`,
+      command: `prompt ${alias} ${permissionPrompt(provider, markers.charioxPrompt, files.charioxPrompt, `chariox-${provider}`)}`,
     })
-    const arrobaInteraction = await answerPermissionFromCli(automationSocket, alias)
-    if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.arrobaPrompt, logs.historyDir)
-    if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.arrobaPrompt, logs.historyDir)
-    if (provider === "claude") await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`)
-    else await waitForFileContent(files.arrobaPrompt, `arroba-${provider}`, 5_000).catch(() => {})
-    console.log(JSON.stringify({ provider, direction: "arroba_cli_to_provider", interaction: arrobaInteraction.title ?? arrobaInteraction.message }))
+    const charioxInteraction = await answerPermissionFromCli(automationSocket, alias)
+    if (provider !== "claude") await waitForHistoryMarker(client, sessionId, attachment.id, agent.id, markers.charioxPrompt, logs.historyDir)
+    if (provider !== "claude") await waitForProviderToolCompletion(client, sessionId, attachment.id, agent.id, files.charioxPrompt, logs.historyDir)
+    if (provider === "claude") await waitForFileContent(files.charioxPrompt, `chariox-${provider}`)
+    else await waitForFileContent(files.charioxPrompt, `chariox-${provider}`, 5_000).catch(() => {})
+    console.log(JSON.stringify({ provider, direction: "chariox_cli_to_provider", interaction: charioxInteraction.title ?? charioxInteraction.message }))
 
     succeeded = true
     return { provider, status: "ok", sessionId, alias, markers, logs }
@@ -631,7 +631,7 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_PERMISSION_ARTIFACTS === "1"
+    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.CHARIOX_KEEP_NATIVE_TUI_PERMISSION_ARTIFACTS === "1"
     const finalized = await finalizeDrillArtifacts({
       rootDir: root,
       passed: succeeded,
@@ -649,7 +649,7 @@ async function runProvider(provider, options) {
       await rm(automationSocket, { force: true }).catch(() => {})
     }
     await rm(files.nativePrompt, { force: true }).catch(() => {})
-    await rm(files.arrobaPrompt, { force: true }).catch(() => {})
+    await rm(files.charioxPrompt, { force: true }).catch(() => {})
     if (processCleanupFailure) throw processCleanupFailure
   }
 }

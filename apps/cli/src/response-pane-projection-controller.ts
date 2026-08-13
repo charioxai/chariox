@@ -2,7 +2,7 @@ import type { RuntimeSession } from "./cli-types.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   selectResponsePaneAgents,
-} from "@arroba/kernel-client/response-pane-selection"
+} from "@chariox/kernel-client/response-pane-selection"
 import {
   responsePaneRowSlots,
 } from "./response-panes.js"

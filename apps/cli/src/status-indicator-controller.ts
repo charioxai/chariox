@@ -1,4 +1,4 @@
-import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
 
 export type StatusIndicatorControllerDeps<TBox = unknown> = {
   isAttached: () => boolean

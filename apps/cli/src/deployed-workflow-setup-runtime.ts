@@ -10,7 +10,7 @@ import {
   writeWorkflowPublicationExportPackage,
   type WorkflowPublicationDefinition,
   type WorkflowPublicationPackageFile,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 import {
   createDeploymentProject,
@@ -169,7 +169,7 @@ async function prepareSetupPackage(
     }),
   )
   const exported = parsePackageExport(response)
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployment-setup-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployment-setup-"))
   try {
     await writeWorkflowPublicationExportPackage(root, exported.packageFiles)
     const prepared = await preparePublicationReleasePackage(root)

@@ -111,15 +111,15 @@ async function run(command, args, options = {}) {
 
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
-  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
   const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
   if (!cliReady) {
-    const result = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
+    const result = await run('pnpm', ['--filter', '@chariox/cli', 'run', 'build'])
     if (result.code !== 0) throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
   }
   if (!kernelReady) {
-    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
     if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
   return { cliDist, kernelBinary }
@@ -336,16 +336,16 @@ async function main() {
   const env = {
     ...process.env,
     HOME: process.env.HOME,
-    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
-    ARROBA_LOG_LEVEL: 'debug',
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `native-permission-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
+    CHARIOX_LOG_LEVEL: 'debug',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `native-permission-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -464,7 +464,7 @@ async function main() {
       : provider.startsWith('claude')
         ? ['Approve Claude Code Write?', 'Approve Claude Code Edit?', 'Approve Claude Code Bash?']
         : 'Approve OpenCode edit request?'
-    const codexSandboxEscapePath = `/tmp/arroba-codex-native-bash-${process.pid}.txt`
+    const codexSandboxEscapePath = `/tmp/chariox-codex-native-bash-${process.pid}.txt`
     const bashPrompt = provider === 'codex'
       ? `Use the shell to run \`printf 'native-bash\\n' > ${codexSandboxEscapePath}\`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE.`
       : "Use the shell to run `python3 -c \"print('native-bash')\"`. After the command succeeds, reply with exactly NATIVE_BASH_PERMISSION_DONE."

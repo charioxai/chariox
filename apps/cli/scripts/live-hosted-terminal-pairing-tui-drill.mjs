@@ -33,13 +33,13 @@ async function main() {
   let failure = null
   const env = {
     ...process.env,
-    ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING: "1",
-    ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER:
-      process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex",
-    ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL:
-      process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex",
-    ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT:
-      process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low",
+    CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PAIRING: "1",
+    CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER:
+      process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex",
+    CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL:
+      process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex",
+    CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT:
+      process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low",
   }
 
   try {
@@ -81,9 +81,9 @@ async function main() {
       metadata: {
         drill: "live-hosted-terminal-pairing-tui",
         childDrill: drill,
-        provider: env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER,
-        model: env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL,
-        effort: env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT,
+        provider: env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER,
+        model: env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL,
+        effort: env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT,
         exitCode,
         exitSignal,
         stdoutTail: tailLines(stdout),

@@ -174,7 +174,7 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
     })
     return jsonResponse({
       claim: claimSummary(),
-      claimToken: "arroba_claim_secret",
+      claimToken: "chariox_claim_secret",
       state: projectState(),
       access: accessState(),
     })
@@ -189,9 +189,9 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
       targetEmail: "owner@customer.test",
       expiresInSeconds: 600,
     })
-    await reviewDeploymentClaim(profile, "arroba_claim_secret")
+    await reviewDeploymentClaim(profile, "chariox_claim_secret")
     await acceptDeploymentClaim(profile, {
-      claimToken: "arroba_claim_secret",
+      claimToken: "chariox_claim_secret",
       projectName: "Customer App",
       projectSlug: "customer-app",
       runtimeMode: "local_runtime",
@@ -226,7 +226,7 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
     })
     assert.deepEqual(calls[2]?.body, {
       accountId: "account-1",
-      claimToken: "arroba_claim_secret",
+      claimToken: "chariox_claim_secret",
       projectName: "Customer App",
       projectSlug: "customer-app",
       runtimeMode: "local_runtime",
@@ -640,7 +640,7 @@ function claimSummary() {
     createdByUserId: "user-1",
     ownershipMode: "customer_owned",
     builderRole: "maintainer",
-    tokenPrefix: "arroba_claim_",
+    tokenPrefix: "chariox_claim_",
     status: "pending",
     expiresAt: "2026-01-02T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",

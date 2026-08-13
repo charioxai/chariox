@@ -55,7 +55,7 @@ export function createPollerDegradationController(
         deps.setDaemonDisconnected(false)
         deps.setStatusLine(deps.connectedStatusLine)
         deps.updateSessionChrome()
-        deps.appendNotice("Reconnected to the Arroba daemon.")
+        deps.appendNotice("Reconnected to the Chariox daemon.")
       }
     },
 

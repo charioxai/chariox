@@ -126,7 +126,7 @@ test("builds shared drill validation suite manifest", () => {
       requiredMatrices: ["sample-matrix"],
     }],
   }), {
-    schema: "arroba.drill.validation_suite.v1",
+    schema: "chariox.drill.validation_suite.v1",
     testCount: 2,
     command: 'node --test one.test.mjs "two words.test.mjs"',
     coverage: [{
@@ -210,7 +210,7 @@ test("builds validation suite artifact metadata from manifest and run report", (
     requiredFailureClassifications: EXPECTED_REQUIRED_FAILURE_CLASSIFICATIONS,
   })
   assert.deepEqual(drillValidationSuiteArtifactMetadata({
-    schema: "arroba.drill.validation_suite_run.v1",
+    schema: "chariox.drill.validation_suite_run.v1",
     status: "passed",
     manifest,
   }), {
@@ -282,7 +282,7 @@ test("normalizes validation suite preset contracts", () => {
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
     requiredPlatformCoverageAreas: ["runtime-fixtures", "matrix-validation", "matrix-validation"],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run", "validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report", "matrix-report"],
     requiredArtifactGeneratedEvidenceRepos: ["oss", "cloud", "oss"],
@@ -290,7 +290,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix", "workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["oss", "cloud", "oss"],
-    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json", "/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json", "/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss", "cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "codex=work", "opencode=zen"],
@@ -313,14 +313,14 @@ test("normalizes validation suite preset contracts", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run", "matrix-report"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage", "dry-run-classification-coverage"],
-    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json", "/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json", "/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run", "/tmp/generated-suite/failed-run"],
   }]), [{
     name: "workspace-live-sync",
     description: "Workspace Live Sync",
     requiredPlatformCoverageAreas: ["matrix-validation", "runtime-fixtures"],
     requiredArtifactCoverageAreas: [],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["matrix-report"],
     requiredArtifactGeneratedEvidenceRepos: ["cloud", "oss"],
@@ -328,7 +328,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["cloud", "oss"],
-    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["cloud", "oss"],
     requiredArtifactProviderAccountAliases: ["codex=work", "opencode=zen"],
@@ -356,7 +356,7 @@ test("normalizes validation suite preset contracts", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
-    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   }])
   assert.deepEqual(normalizeValidationSuitePresetContracts([{

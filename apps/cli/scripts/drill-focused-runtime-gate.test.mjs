@@ -35,11 +35,11 @@ test("focused runtime gate accepts option separator forwarding", async () => {
 })
 
 test("focused runtime gate passes runtime authority and distributed state health presets", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-focused-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-focused-runtime-gate-"))
   try {
     const matrixRoot = path.join(rootDir, "matrices")
     const outputPath = path.join(rootDir, "focused-runtime-gate.json")
-    const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
     await writeFocusedRuntimeMatrices(matrixRoot)
 
     const { stdout } = await execFile(process.execPath, [
@@ -59,7 +59,7 @@ test("focused runtime gate passes runtime authority and distributed state health
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileReport, report)
-    assert.equal(report.schema, "arroba.drill.focused_runtime_gate.v1")
+    assert.equal(report.schema, "chariox.drill.focused_runtime_gate.v1")
     assert.equal(report.status, "passed")
     assert.deepEqual(report.presets, ["runtime-authority", "distributed-state-health"])
     assert.deepEqual(report.reports.map((entry) => [entry.preset, entry.report.status]), [
@@ -82,7 +82,7 @@ test("focused runtime gate passes runtime authority and distributed state health
 })
 
 test("focused runtime gate reports owner-routed gaps from incomplete evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-focused-runtime-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-focused-runtime-gate-"))
   try {
     const matrixRoot = path.join(rootDir, "matrices")
     await mkdir(matrixRoot, { recursive: true })
@@ -155,7 +155,7 @@ async function writeFocusedRuntimeMatrices(matrixRoot) {
 
 function matrixReport({ matrix, deploymentPresets, providers, scenarios }) {
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix,
     status: "passed",
     dryRun: false,

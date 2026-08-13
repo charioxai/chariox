@@ -60,7 +60,7 @@ test("formats failed and skipped scenarios with next actions", () => {
         classification: "provider-account",
         reason: "insufficient balance",
         exitCriteria: ["remote worker executes the selected provider turn", "home observes completion"],
-        artifactHints: ["/tmp/arroba-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
+        artifactHints: ["/tmp/chariox-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("cloud", "failed", { classification: "cloud-runtime", reason: "deployment did not become ready" }),
@@ -77,7 +77,7 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /runtime_signal_owners: kernel-authority=1 provider-runtime=1/)
   assert.match(text, /- remote classification=provider-account owner=provider-account reason=insufficient balance/)
   assert.match(text, /criteria: remote worker executes the selected provider turn; home observes completion/)
-  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote, manifest:\.artifacts\/remote\.json/)
+  assert.match(text, /artifacts: \/tmp\/chariox-drill-remote, manifest:\.artifacts\/remote\.json/)
   assert.match(text, /next: check provider quota or billing/)
   assert.match(text, /- cloud classification=cloud-runtime owner=cloud-deployment reason=deployment did not become ready/)
   assert.match(text, /next: inspect Cloud deployment\/control-plane status/)

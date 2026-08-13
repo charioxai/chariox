@@ -24,7 +24,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const marker = `NP_${process.pid.toString(36)}_${Date.now().toString(36)}`
 const MAX_LOG_CHARS = 128_000
 
@@ -225,22 +225,22 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const screenA = `arroba-codex-a-${process.pid}`
-  const screenB = `arroba-codex-b-${process.pid}`
-  const screenCli = `arroba-codex-cli-${process.pid}`
+  const screenA = `chariox-codex-a-${process.pid}`
+  const screenB = `chariox-codex-b-${process.pid}`
+  const screenCli = `chariox-codex-cli-${process.pid}`
   const logs = {
     aDir: path.join(root, "codex-a-screen"),
     bDir: path.join(root, "codex-b-screen"),
-    cliDir: path.join(root, "arroba-cli-screen"),
+    cliDir: path.join(root, "chariox-cli-screen"),
     a: path.join(root, "codex-a-screen", "screenlog.0"),
     b: path.join(root, "codex-b-screen", "screenlog.0"),
-    cli: path.join(root, "arroba-cli-screen", "screenlog.0"),
+    cli: path.join(root, "chariox-cli-screen", "screenlog.0"),
     proxyA: path.join(root, "codex-a.proxy.log"),
     proxyB: path.join(root, "codex-b.proxy.log"),
   }
   const markers = {
-    arrobaA: `${marker}_ARROBA_TO_A`,
-    arrobaB: `${marker}_ARROBA_TO_B`,
+    charioxA: `${marker}_CHARIOX_TO_A`,
+    charioxB: `${marker}_CHARIOX_TO_B`,
     tuiA: `${marker}_TUI_A`,
     tuiB: `${marker}_TUI_B`,
   }
@@ -264,13 +264,13 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `codex-native-tui-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `codex-native-tui-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -299,10 +299,10 @@ async function main() {
       `Reply with exactly ${markers.tuiA} and nothing else.`,
     ], {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: "1",
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
+      CHARIOX_CODEX_NATIVE_DEBUG: "1",
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxyA,
     })
-    sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    sessionId = (await waitForFileMatch(logs.a, /chariox session:\s+([^\s(]+)/)).match[1]
 
     await startScreen(screenB, logs.bDir, "bun", [
       cliPath,
@@ -324,8 +324,8 @@ async function main() {
       `Reply with exactly ${markers.tuiB} and nothing else.`,
     ], {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: "1",
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
+      CHARIOX_CODEX_NATIVE_DEBUG: "1",
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: logs.proxyB,
     })
 
     client = new LocalIpcClient(kernelUrl)
@@ -343,7 +343,7 @@ async function main() {
       "--session",
       sessionId,
       "--client-id",
-      `arroba-observer-${process.pid}`,
+      `chariox-observer-${process.pid}`,
       "--automation-socket",
       automationSocket,
       "--provider",
@@ -386,25 +386,25 @@ async function main() {
     }
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt cdx-a Reply with exactly ${markers.arrobaA} and nothing else.`,
+      command: `prompt cdx-a Reply with exactly ${markers.charioxA} and nothing else.`,
     })
     badgeTransitions["cdx-a"].during = await waitForAgentBadgeTone(automationSocket, "cdx-a", "working")
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt cdx-b Reply with exactly ${markers.arrobaB} and nothing else.`,
+      command: `prompt cdx-b Reply with exactly ${markers.charioxB} and nothing else.`,
     })
     badgeTransitions["cdx-b"].during = await waitForAgentBadgeTone(automationSocket, "cdx-b", "working")
 
     const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
-      "cdx-a": { prompts: [markers.arrobaA, markers.tuiA], outputs: [markers.arrobaA, markers.tuiA] },
-      "cdx-b": { prompts: [markers.arrobaB, markers.tuiB], outputs: [markers.arrobaB, markers.tuiB] },
+      "cdx-a": { prompts: [markers.charioxA, markers.tuiA], outputs: [markers.charioxA, markers.tuiA] },
+      "cdx-b": { prompts: [markers.charioxB, markers.tuiB], outputs: [markers.charioxB, markers.tuiB] },
     })
     badgeTransitions["cdx-a"].after = await waitForAgentBadgeTone(automationSocket, "cdx-a", "idle")
     badgeTransitions["cdx-b"].after = await waitForAgentBadgeTone(automationSocket, "cdx-b", "idle")
-    if (histories["cdx-a"].all.includes(markers.arrobaB) || histories["cdx-a"].all.includes(markers.tuiB)) {
+    if (histories["cdx-a"].all.includes(markers.charioxB) || histories["cdx-a"].all.includes(markers.tuiB)) {
       throw new Error("agent cdx-a history was contaminated with cdx-b markers")
     }
-    if (histories["cdx-b"].all.includes(markers.arrobaA) || histories["cdx-b"].all.includes(markers.tuiA)) {
+    if (histories["cdx-b"].all.includes(markers.charioxA) || histories["cdx-b"].all.includes(markers.tuiA)) {
       throw new Error("agent cdx-b history was contaminated with cdx-a markers")
     }
 
@@ -413,14 +413,14 @@ async function main() {
     const cliLog = await readFile(logs.cli, "utf8").catch(() => "")
     const expectedCliMarkers = Object.values(markers)
     if (expectedCliMarkers.some((expected) => !cliLog.includes(expected))) {
-      throw new Error("observer Arroba CLI screen did not include all native and Arroba-submitted markers")
+      throw new Error("observer Chariox CLI screen did not include all native and Chariox-submitted markers")
     }
     const tuiALog = await readFile(logs.a, "utf8").catch(() => "")
     const tuiBLog = await readFile(logs.b, "utf8").catch(() => "")
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
     const proxyBLog = await readFile(logs.proxyB, "utf8").catch(() => "")
     for (const [label, log] of [["cdx-a", tuiALog], ["cdx-b", tuiBLog]]) {
-      const own = label === "cdx-a" ? [markers.arrobaA, markers.tuiA] : [markers.arrobaB, markers.tuiB]
+      const own = label === "cdx-a" ? [markers.charioxA, markers.tuiA] : [markers.charioxB, markers.tuiB]
       for (const expected of own) {
         if (!log.includes(expected)) throw new Error(`${label} TUI log did not include ${expected}`)
       }
@@ -440,7 +440,7 @@ async function main() {
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
     console.log(JSON.stringify({
       status: "ok",
-      architecture: "codex-tui + arroba-cli -> native proxy -> single codex app-server websocket",
+      architecture: "codex-tui + chariox-cli -> native proxy -> single codex app-server websocket",
       kernelUrl,
       sessionId,
       marker,
@@ -465,7 +465,7 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+    if (passed && process.env.CHARIOX_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
       console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket }))
     } else {
       await finalizeDrillArtifacts({

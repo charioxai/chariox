@@ -100,7 +100,7 @@ test("formatToolTranscriptUpdate renders read output with a compact header", () 
         limit: 220,
       },
       output: [
-        "<path>/Users/miguel/arroba/apps/kernel/src/provider/service.rs</path>",
+        "<path>/Users/miguel/chariox/apps/kernel/src/provider/service.rs</path>",
         "<type>file</type>",
         "<content>1: first",
         "2: second",
@@ -130,7 +130,7 @@ test("formatToolTranscriptUpdate collapses long read output in the middle", () =
       input: {
         filePath: "apps/cli/src/runtime.ts",
       },
-      output: `<path>/Users/miguel/arroba/apps/cli/src/runtime.ts</path>\n<type>file</type>\n<content>${content}\n</content>`,
+      output: `<path>/Users/miguel/chariox/apps/cli/src/runtime.ts</path>\n<type>file</type>\n<content>${content}\n</content>`,
     }),
     [
       "**read** · COMPLETED",
@@ -154,7 +154,7 @@ test("formatToolTranscriptUpdate infers read syntax from common file extensions"
       input: {
         filePath: "apps/cli/src/index.tsx",
       },
-      output: "<path>/Users/miguel/arroba/apps/cli/src/index.tsx</path>\n<type>file</type>\n<content>1: const value = 1\n</content>",
+      output: "<path>/Users/miguel/chariox/apps/cli/src/index.tsx</path>\n<type>file</type>\n<content>1: const value = 1\n</content>",
     }),
     [
       "**read** · COMPLETED",
@@ -175,11 +175,11 @@ test("formatToolTranscriptUpdate renders grep output with a compact header", () 
       status: "completed",
       input: {
         pattern: "status_updates.push|provider_idle = true|OpenCode is idle|thinking|idle",
-        path: "/Users/miguel/arroba",
+        path: "/Users/miguel/chariox",
       },
       output: [
         "Found 13 matches",
-        "/Users/miguel/arroba/apps/kernel/src/provider/service.rs:",
+        "/Users/miguel/chariox/apps/kernel/src/provider/service.rs:",
         "  Line 416:             status_updates.push(delta)",
         "  Line 418:             provider_idle = true;",
       ].join("\n"),
@@ -204,14 +204,14 @@ test("formatToolTranscriptUpdate renders grep no-files-found compactly", () => {
       status: "completed",
       input: {
         pattern: "handleSessionCommand|submitPrompt\\(|transitionToNoSession|buildNoSessionRenderable",
-        path: "/Users/miguel/arroba/apps/cli/src",
+        path: "/Users/miguel/chariox/apps/cli/src",
         include: "*.test.ts",
       },
       output: "No files found",
     }),
     [
       "**grep** · COMPLETED",
-      "Pattern: `handleSessionCommand|submitPrompt\\(|transitionToNoSession|buildNoSessionRenderable` in /Users/miguel/arroba/apps/cli/src [*.test.ts] (0 matches)",
+      "Pattern: `handleSessionCommand|submitPrompt\\(|transitionToNoSession|buildNoSessionRenderable` in /Users/miguel/chariox/apps/cli/src [*.test.ts] (0 matches)",
       "```text",
       "No files found",
       "```",
@@ -227,13 +227,13 @@ test("formatToolTranscriptUpdate renders multi-file grep output with per-file sy
       status: "completed",
       input: {
         pattern: "highlight|syntax",
-        path: "/Users/miguel/arroba/opencode-dev",
+        path: "/Users/miguel/chariox/opencode-dev",
       },
       output: [
         "Found 3 matches",
-        "/Users/miguel/arroba/opencode-dev/package.json:",
+        "/Users/miguel/chariox/opencode-dev/package.json:",
         '  Line 55:       "marked-shiki": "1.2.1",',
-        "/Users/miguel/arroba/opencode-dev/script/publish.ts:",
+        "/Users/miguel/chariox/opencode-dev/script/publish.ts:",
         "  Line 7: const highlightsTemplate = `",
       ].join("\n"),
     }),
@@ -255,9 +255,9 @@ test("formatToolTranscriptUpdate renders multi-file grep output with per-file sy
 test("formatToolTranscriptUpdate truncates multi-file grep collections as one blob", () => {
   const output = [
     "Found 24 matches",
-    "/Users/miguel/arroba/apps/cli/src/index.tsx:",
+    "/Users/miguel/chariox/apps/cli/src/index.tsx:",
     ...Array.from({ length: 12 }, (_, index) => `  Line ${index + 1}: index line ${index + 1}`),
-    "/Users/miguel/arroba/apps/cli/src/transcript.ts:",
+    "/Users/miguel/chariox/apps/cli/src/transcript.ts:",
     ...Array.from({ length: 12 }, (_, index) => `  Line ${index + 20}: transcript line ${index + 20}`),
   ].join("\n")
 
@@ -268,7 +268,7 @@ test("formatToolTranscriptUpdate truncates multi-file grep collections as one bl
       status: "completed",
       input: {
         pattern: "line",
-        path: "/Users/miguel/arroba/apps/cli/src",
+        path: "/Users/miguel/chariox/apps/cli/src",
       },
       output,
     }),
@@ -345,13 +345,13 @@ test("formatToolTranscriptUpdate infers embedded file payloads generically", () 
       id: "tool-10c",
       tool: "custom",
       status: "completed",
-      output: "<path>/Users/miguel/arroba/apps/cli/src/transcript.ts</path>\n<type>file</type>\n<content>1: export const value = 1\n</content>",
+      output: "<path>/Users/miguel/chariox/apps/cli/src/transcript.ts</path>\n<type>file</type>\n<content>1: export const value = 1\n</content>",
     }),
     [
       "**custom** · COMPLETED",
       [
         "**Output**",
-        "`/Users/miguel/arroba/apps/cli/src/transcript.ts`",
+        "`/Users/miguel/chariox/apps/cli/src/transcript.ts`",
         "```typescript",
         "1: export const value = 1",
         "```",
@@ -474,7 +474,7 @@ test("readApplyPatchFiles normalizes absolute paths and bare hunk markers", () =
     input: {
       patchText: [
         "*** Begin Patch",
-        "*** Update File: /Users/miguel/arroba/apps/cli/src/transcript.test.ts",
+        "*** Update File: /Users/miguel/chariox/apps/cli/src/transcript.test.ts",
         "@@",
         " test(\"a\", () => {",
         "-  old()",
@@ -488,9 +488,9 @@ test("readApplyPatchFiles normalizes absolute paths and bare hunk markers", () =
   assert.equal(
     file?.diff,
     [
-      "diff --git a/Users/miguel/arroba/apps/cli/src/transcript.test.ts b/Users/miguel/arroba/apps/cli/src/transcript.test.ts",
-      "--- a/Users/miguel/arroba/apps/cli/src/transcript.test.ts",
-      "+++ b/Users/miguel/arroba/apps/cli/src/transcript.test.ts",
+      "diff --git a/Users/miguel/chariox/apps/cli/src/transcript.test.ts b/Users/miguel/chariox/apps/cli/src/transcript.test.ts",
+      "--- a/Users/miguel/chariox/apps/cli/src/transcript.test.ts",
+      "+++ b/Users/miguel/chariox/apps/cli/src/transcript.test.ts",
       "@@ -1,3 +1,3 @@",
       ' test("a", () => {',
       "-  old()",
@@ -562,7 +562,7 @@ test("readApplyPatchFiles renders Codex patch_apply_end change maps", () => {
     tool: "apply_patch",
     raw: JSON.stringify({
       changes: {
-        "/Users/miguel/arroba/apps/cli/src/index.tsx": {
+        "/Users/miguel/chariox/apps/cli/src/index.tsx": {
           type: "update",
           unified_diff: [
             "@@ -1 +1 @@",
@@ -578,12 +578,12 @@ test("readApplyPatchFiles renders Codex patch_apply_end change maps", () => {
   assert.deepEqual(files, [
     {
       kind: "update",
-      filePath: "/Users/miguel/arroba/apps/cli/src/index.tsx",
-      title: "Patched /Users/miguel/arroba/apps/cli/src/index.tsx",
+      filePath: "/Users/miguel/chariox/apps/cli/src/index.tsx",
+      title: "Patched /Users/miguel/chariox/apps/cli/src/index.tsx",
       diff: [
-        "diff --git a/Users/miguel/arroba/apps/cli/src/index.tsx b/Users/miguel/arroba/apps/cli/src/index.tsx",
-        "--- a/Users/miguel/arroba/apps/cli/src/index.tsx",
-        "+++ b/Users/miguel/arroba/apps/cli/src/index.tsx",
+        "diff --git a/Users/miguel/chariox/apps/cli/src/index.tsx b/Users/miguel/chariox/apps/cli/src/index.tsx",
+        "--- a/Users/miguel/chariox/apps/cli/src/index.tsx",
+        "+++ b/Users/miguel/chariox/apps/cli/src/index.tsx",
         "@@ -1 +1 @@",
         "-old()",
         "+next()",
@@ -641,7 +641,7 @@ test("formatToolTranscriptUpdate summarizes workspace live sync diffs", () => {
   assert.equal(
     formatToolTranscriptUpdate({
       id: "tool-managed-1",
-      tool: "arroba.apply_patch",
+      tool: "chariox.apply_patch",
       status: "completed",
       output,
     }),
@@ -654,7 +654,7 @@ test("formatToolTranscriptUpdate summarizes workspace live sync diffs", () => {
 
   assert.deepEqual(readApplyPatchFiles({
     id: "tool-managed-1",
-    tool: "arroba.apply_patch",
+    tool: "chariox.apply_patch",
     status: "completed",
     output,
   }), [

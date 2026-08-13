@@ -175,7 +175,7 @@ test("provider transcript assertions remain strict for missing OpenCode assistan
   )
 })
 
-test("provider limitations distinguish semantic provider output gaps from Arroba import loss", () => {
+test("provider limitations distinguish semantic provider output gaps from Chariox import loss", () => {
   const providerOutputLimitation = assistantTextLimitation({
     provider: "codex",
     providerMarkers: ["ASSISTANT_STEP_20"],
@@ -184,13 +184,13 @@ test("provider limitations distinguish semantic provider output gaps from Arroba
   assert.equal(providerOutputLimitation.status, "not_observed")
   assert.equal(providerOutputLimitation.classification, "provider_output_limitation")
 
-  const arrobaBug = assistantTextLimitation({
+  const charioxBug = assistantTextLimitation({
     provider: "claude",
     providerMarkers: requiredAssistantMarkers,
     kernelMarkers: ["ASSISTANT_STEP_20"],
   })
-  assert.equal(arrobaBug.status, "not_observed")
-  assert.equal(arrobaBug.classification, "arroba_bug")
+  assert.equal(charioxBug.status, "not_observed")
+  assert.equal(charioxBug.classification, "chariox_bug")
 })
 
 test("provider limitations classify missing semantic tool events as provider output gaps", () => {

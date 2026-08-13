@@ -134,8 +134,8 @@ function defaultEffortForProvider(provider) {
 }
 
 function liveSyncWriteToolName(provider) {
-  if (provider === 'opencode') return 'arroba_write_artifact'
-  return 'mcp__arroba__write_artifact'
+  if (provider === 'opencode') return 'chariox_write_artifact'
+  return 'mcp__chariox__write_artifact'
 }
 
 async function seedCodexAuth(home) {
@@ -185,12 +185,12 @@ async function initGitRepo(dir, label) {
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
   const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
-  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const cliBuild = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
+  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const cliBuild = await run('pnpm', ['--filter', '@chariox/cli', 'run', 'build'])
   if (cliBuild.code !== 0) throw new Error(`cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
-  const kernelBuild = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
+  const kernelBuild = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'chariox-kernel'])
   if (kernelBuild.code !== 0) throw new Error(`kernel build failed\n${kernelBuild.stdout}\n${kernelBuild.stderr}`)
-  const kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel')
+  const kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'chariox-kernel')
   await stat(cliDist)
   return { cliDist, kernelBinary }
 }
@@ -480,15 +480,15 @@ async function main() {
   const env = {
     ...process.env,
     HOME: options.useRealHome || needsClaudeHome ? (process.env.HOME ?? home) : home,
-    ARROBA_HOME: path.join(home, '.arroba'),
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `workspace-live-sync-permission-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_HOME: path.join(home, '.chariox'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `workspace-live-sync-permission-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -607,11 +607,11 @@ async function main() {
       attachmentId,
       agentId,
       [
-        'This is a live Arroba workspace live sync permission smoke test.',
-        'Use only Arroba workspace live sync. Do not use Bash, shell, native file tools, shell redirection, direct filesystem writes, or provider edit/write/patch tools for this step.',
+        'This is a live Chariox workspace live sync permission smoke test.',
+        'Use only Chariox workspace live sync. Do not use Bash, shell, native file tools, shell redirection, direct filesystem writes, or provider edit/write/patch tools for this step.',
         `The session live sync mode is ${options.mode}.`,
-        `Call the Arroba runtime MCP write tool ${liveSyncWriteToolName(provider)} exactly once with path "${targetFileName}", content_text "${expectedContent}", and domain "text".`,
-        'If the tool name is displayed with another Arroba alias such as write_artifact or arroba.write_artifact, use that same Arroba workspace live sync write tool.',
+        `Call the Chariox runtime MCP write tool ${liveSyncWriteToolName(provider)} exactly once with path "${targetFileName}", content_text "${expectedContent}", and domain "text".`,
+        'If the tool name is displayed with another Chariox alias such as write_artifact or chariox.write_artifact, use that same Chariox workspace live sync write tool.',
         'After the write succeeds, reply with exactly WORKSPACE_LIVE_SYNC_PERMISSION_DONE.',
       ].join(' '),
     ))
@@ -621,7 +621,7 @@ async function main() {
       sessionId,
       attachmentId,
       agentId,
-      `Allow writing \`${targetFileName}\` through Arroba workspace live sync?`,
+      `Allow writing \`${targetFileName}\` through Chariox workspace live sync?`,
       options.timeoutMs,
       options.pollMs,
       launchFailureProbe,
@@ -651,11 +651,11 @@ async function main() {
       attachmentId,
       agentId,
       [
-        `Invoke your provider-native bash/shell tool, not Arroba workspace live sync tools, to create the absolute file ${outsideFilePath}.`,
+        `Invoke your provider-native bash/shell tool, not Chariox workspace live sync tools, to create the absolute file ${outsideFilePath}.`,
         `Run this exact portable shell command: ${outsideWriteCommand}`,
         `The file content must be exactly ${outsideExpectedContent}.`,
         'This path is a separate Git repository outside the live-synced workspace and should be edited normally.',
-        'Do not use Python, Node, Perl, Ruby, or any Arroba file/write tool for this step.',
+        'Do not use Python, Node, Perl, Ruby, or any Chariox file/write tool for this step.',
         'Do not only print a command; execute it through the provider-native tool.',
         'After the write succeeds, reply with exactly OUTSIDE_REPO_DIRECT_WRITE_DONE.',
       ].join(' '),

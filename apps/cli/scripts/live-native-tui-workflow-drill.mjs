@@ -31,9 +31,9 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const marker = `NTWF_${process.pid.toString(36)}_${Date.now().toString(36)}`
-const hiddenMarker = "ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS"
+const hiddenMarker = "CHARIOX_NATIVE_TUI_HIDDEN_INSTRUCTIONS"
 
 function parseArgs(argv) {
   const options = {
@@ -219,7 +219,7 @@ async function main() {
   const logs = options.providers.map((provider, index) => ({
     provider,
     alias: aliases[index],
-    screen: `arroba-native-workflow-${provider}-${index + 1}-${process.pid}`,
+    screen: `chariox-native-workflow-${provider}-${index + 1}-${process.pid}`,
     dir: path.join(root, `${provider}-${index + 1}-screen`),
     native: path.join(root, `${provider}-${index + 1}-screen`, "screenlog.0"),
     proxy: path.join(root, `${provider}-${index + 1}.proxy.log`),
@@ -237,13 +237,13 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-workflow-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-workflow-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -257,12 +257,12 @@ async function main() {
       worktree,
     }), {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: options.providers[0] === "codex" ? "1" : undefined,
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: options.providers[0] === "codex" ? logs[0].proxy : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG: options.providers[0] === "opencode" ? "1" : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: options.providers[0] === "opencode" ? logs[0].proxy : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG: options.providers[0] === "codex" ? "1" : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: options.providers[0] === "codex" ? logs[0].proxy : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: options.providers[0] === "opencode" ? "1" : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: options.providers[0] === "opencode" ? logs[0].proxy : undefined,
     })
-    sessionId = (await waitForFileMatch(logs[0].native, /arroba session:\s+([^\s(]+)/)).match[1]
+    sessionId = (await waitForFileMatch(logs[0].native, /chariox session:\s+([^\s(]+)/)).match[1]
 
     for (let index = 1; index < options.providers.length; index += 1) {
       await startScreen(logs[index].screen, logs[index].dir, "bun", nativeArgs(options.providers[index], {
@@ -274,10 +274,10 @@ async function main() {
         worktree,
       }), {
         ...process.env,
-        ARROBA_CODEX_NATIVE_DEBUG: options.providers[index] === "codex" ? "1" : undefined,
-        ARROBA_CODEX_NATIVE_DEBUG_FILE: options.providers[index] === "codex" ? logs[index].proxy : undefined,
-        ARROBA_OPENCODE_NATIVE_DEBUG: options.providers[index] === "opencode" ? "1" : undefined,
-        ARROBA_OPENCODE_NATIVE_DEBUG_FILE: options.providers[index] === "opencode" ? logs[index].proxy : undefined,
+        CHARIOX_CODEX_NATIVE_DEBUG: options.providers[index] === "codex" ? "1" : undefined,
+        CHARIOX_CODEX_NATIVE_DEBUG_FILE: options.providers[index] === "codex" ? logs[index].proxy : undefined,
+        CHARIOX_OPENCODE_NATIVE_DEBUG: options.providers[index] === "opencode" ? "1" : undefined,
+        CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: options.providers[index] === "opencode" ? logs[index].proxy : undefined,
       })
     }
 
@@ -341,12 +341,12 @@ async function main() {
       const leakedWorkflowInjection = [
         hiddenMarker,
         "list_extensions",
-        "You are an agent participating in an Arroba workflow turn",
+        "You are an agent participating in a Chariox workflow turn",
         "<system-node-level-prompt>",
         "<node-instruction-reference>",
       ].find((needle) => nativeLog.includes(needle))
       if (leakedWorkflowInjection) {
-        throw new Error(`${log.alias} native TUI displayed hidden Arroba workflow prompt injection: ${leakedWorkflowInjection}`)
+        throw new Error(`${log.alias} native TUI displayed hidden Chariox workflow prompt injection: ${leakedWorkflowInjection}`)
       }
     }
 
@@ -378,7 +378,7 @@ async function main() {
     await finalizeDrillArtifacts({
       rootDir: root,
       passed: completed,
-      preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_WORKFLOW_ARTIFACTS === "1",
+      preserveOnFailure: options.keepArtifactsOnFailure || process.env.CHARIOX_KEEP_NATIVE_TUI_WORKFLOW_ARTIFACTS === "1",
       failure,
       metadata: {
         drill: "native-tui-workflow",

@@ -5,7 +5,7 @@ import {
   replaceCollapsedTranscriptTurnIds,
   updateCollapsedTranscriptTurnState,
   type CollapsedTranscriptTurnIdsByAgent,
-} from "@arroba/kernel-client/transcript-display-state"
+} from "@chariox/kernel-client/transcript-display-state"
 
 export type CollapsedTurnIdsByAgent = CollapsedTranscriptTurnIdsByAgent
 

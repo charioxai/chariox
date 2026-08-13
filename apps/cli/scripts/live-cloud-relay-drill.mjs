@@ -33,15 +33,15 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const cloudRoot = process.env.ARROBA_CLOUD_REPO
-  ? path.resolve(process.env.ARROBA_CLOUD_REPO)
-  : path.resolve(repoRoot, "..", "arroba-cloud")
+const cloudRoot = process.env.CHARIOX_CLOUD_REPO
+  ? path.resolve(process.env.CHARIOX_CLOUD_REPO)
+  : path.resolve(repoRoot, "..", "chariox-cloud")
 const DATABASE_URL =
-  process.env.DATABASE_URL ?? "postgresql://arroba:arroba@localhost:5432/arroba_cloud"
-const CLOUD_SECRET = "arroba-cloud-live-drill-secret"
-const CLOUD_ISSUER = "arroba-cloud-live-drill"
-const DEV_AUTH_SECRET = "arroba-cloud-live-drill-dev-auth-secret"
-const machineCredentialOnly = process.env.ARROBA_CLOUD_MACHINE_CREDENTIAL_ONLY === "1"
+  process.env.DATABASE_URL ?? "postgresql://chariox:chariox@localhost:5432/chariox_cloud"
+const CLOUD_SECRET = "chariox-cloud-live-drill-secret"
+const CLOUD_ISSUER = "chariox-cloud-live-drill"
+const DEV_AUTH_SECRET = "chariox-cloud-live-drill-dev-auth-secret"
+const machineCredentialOnly = process.env.CHARIOX_CLOUD_MACHINE_CREDENTIAL_ONLY === "1"
 
 async function main() {
   const ports = makePorts()
@@ -59,35 +59,35 @@ async function main() {
 
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: "127.0.0.1",
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_SCOPED_ISSUER: CLOUD_ISSUER,
-    ARROBA_RELAY_SCOPED_HMAC_SECRET: CLOUD_SECRET,
+    CHARIOX_RELAY_HOST: "127.0.0.1",
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_SCOPED_ISSUER: CLOUD_ISSUER,
+    CHARIOX_RELAY_SCOPED_HMAC_SECRET: CLOUD_SECRET,
   }
   const daemonEnv = {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, "session-history"),
   }
   const cloudEnv = {
     ...process.env,
     HOST: "127.0.0.1",
     PORT: String(ports.cloudPort),
     DATABASE_URL,
-    ARROBA_CLOUD_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_CLOUD_ISSUER_ID: CLOUD_ISSUER,
-    ARROBA_CLOUD_RELAY_TOKEN_SECRET: CLOUD_SECRET,
-    ARROBA_CLOUD_TEST_AUTH0_IDENTITY_HEADER: "1",
-    ARROBA_CLOUD_DEV_AUTH_SECRET: DEV_AUTH_SECRET,
+    CHARIOX_CLOUD_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_CLOUD_ISSUER_ID: CLOUD_ISSUER,
+    CHARIOX_CLOUD_RELAY_TOKEN_SECRET: CLOUD_SECRET,
+    CHARIOX_CLOUD_TEST_AUTH0_IDENTITY_HEADER: "1",
+    CHARIOX_CLOUD_DEV_AUTH_SECRET: DEV_AUTH_SECRET,
   }
 
   let relay = null
@@ -115,25 +115,25 @@ async function main() {
     log("build-cli")
     const cliBuild = await run("pnpm", ["run", "build"], { cwd: cliRoot, env: process.env })
     if (cliBuild.code !== 0) {
-      throw new Error(`arroba cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
+      throw new Error(`chariox cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
     }
 
     log("build-cloud-db")
-    const cloudDbBuild = await run("pnpm", ["--filter", "@arroba-cloud/db", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
+    const cloudDbBuild = await run("pnpm", ["--filter", "@chariox-cloud/db", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
     if (cloudDbBuild.code !== 0) {
-      throw new Error(`arroba-cloud db build failed\n${cloudDbBuild.stdout}\n${cloudDbBuild.stderr}`)
+      throw new Error(`chariox-cloud db build failed\n${cloudDbBuild.stdout}\n${cloudDbBuild.stderr}`)
     }
     log("build-cloud-api")
-    const cloudApiBuild = await run("pnpm", ["--filter", "@arroba-cloud/api", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
+    const cloudApiBuild = await run("pnpm", ["--filter", "@chariox-cloud/api", "run", "build"], { cwd: cloudRoot, env: cloudEnv })
     if (cloudApiBuild.code !== 0) {
-      throw new Error(`arroba-cloud api build failed\n${cloudApiBuild.stdout}\n${cloudApiBuild.stderr}`)
+      throw new Error(`chariox-cloud api build failed\n${cloudApiBuild.stdout}\n${cloudApiBuild.stderr}`)
     }
-    const migrate = await run("pnpm", ["--filter", "@arroba-cloud/db", "run", "prisma:migrate"], {
+    const migrate = await run("pnpm", ["--filter", "@chariox-cloud/db", "run", "prisma:migrate"], {
       cwd: cloudRoot,
       env: cloudEnv,
     })
     if (migrate.code !== 0) {
-      throw new Error(`arroba-cloud migrate failed\n${migrate.stdout}\n${migrate.stderr}`)
+      throw new Error(`chariox-cloud migrate failed\n${migrate.stdout}\n${migrate.stderr}`)
     }
 
     log("start-cloud")
@@ -145,7 +145,7 @@ async function main() {
     await waitForHttp(`${apiUrl}/health`)
 
     log("start-relay-and-kernel")
-    relay = spawnProcess("cargo", ["run", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "arroba-relay"], {
+    relay = spawnProcess("cargo", ["run", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "chariox-relay"], {
       cwd: repoRoot,
       env: relayEnv,
       name: "relay",

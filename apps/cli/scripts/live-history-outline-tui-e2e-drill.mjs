@@ -56,15 +56,15 @@ async function run(command, args, options = {}) {
 }
 
 async function buildRuntime() {
-  const kernel = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const kernel = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (kernel.code !== 0) {
     throw new Error(`kernel build failed\n${kernel.stdout}\n${kernel.stderr}`)
   }
-  const kernelClient = await run('pnpm', ['--filter', '@arroba/kernel-client', 'run', 'build'])
+  const kernelClient = await run('pnpm', ['--filter', '@chariox/kernel-client', 'run', 'build'])
   if (kernelClient.code !== 0) {
     throw new Error(`kernel-client build failed\n${kernelClient.stdout}\n${kernelClient.stderr}`)
   }
-  const toolDisplay = await run('pnpm', ['--filter', '@arroba/tool-display', 'run', 'build'])
+  const toolDisplay = await run('pnpm', ['--filter', '@chariox/tool-display', 'run', 'build'])
   if (toolDisplay.code !== 0) {
     throw new Error(`tool-display build failed\n${toolDisplay.stdout}\n${toolDisplay.stderr}`)
   }
@@ -72,7 +72,7 @@ async function buildRuntime() {
   if (cli.code !== 0) {
     throw new Error(`cli build failed\n${cli.stdout}\n${cli.stderr}`)
   }
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
 async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
@@ -268,7 +268,7 @@ async function main() {
   const home = path.join(rootDir, 'home')
   const configRoot = path.join(rootDir, 'config')
   const stateRoot = path.join(rootDir, 'state')
-  const automationSocket = path.join(os.tmpdir(), `arroba-history-outline-tui-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-history-outline-tui-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
@@ -276,14 +276,14 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configRoot,
     XDG_STATE_HOME: stateRoot,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `history-outline-tui-e2e-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `history-outline-tui-e2e-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -298,9 +298,9 @@ async function main() {
     await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
-    await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
+    await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
     await mkdir(stateRoot, { recursive: true })
-    await writeFile(path.join(configRoot, 'arroba', 'config.toml'), [
+    await writeFile(path.join(configRoot, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[history.archive]',

@@ -2,7 +2,7 @@ import type { WorkflowDefinition } from "../cli-types.js"
 import {
   resolveSelectedWorkflow as sharedResolveSelectedWorkflow,
   resolveSelectedWorkflowNodeId as sharedResolveSelectedWorkflowNodeId,
-} from "@arroba/kernel-client/workflow-prompt-state"
+} from "@chariox/kernel-client/workflow-prompt-state"
 
 export function resolveSelectedWorkflow(
   workflows: WorkflowDefinition[],

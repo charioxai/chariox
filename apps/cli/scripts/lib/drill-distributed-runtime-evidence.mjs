@@ -326,7 +326,7 @@ export async function runDistributedRuntimeValidationSuiteCommand({
   scriptPath,
 }) {
   const outputPath = path.join(outputDir, reportFileName)
-  const artifactIndexPath = path.join(outputDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(outputDir, "chariox-drill-artifacts.json")
   const args = [
     scriptPath,
     "--run-json",
@@ -376,7 +376,7 @@ export function distributedRuntimeValidationSuiteCommandsFor({
 }
 
 export function distributedRuntimeValidationSuiteCommandSummary(command) {
-  const artifactIndexPath = path.join(command.outputDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(command.outputDir, "chariox-drill-artifacts.json")
   const reportPath = path.join(command.outputDir, command.reportFileName)
   const args = ["--run-json", "--preserve-failure-root", command.preserveFailureRoot]
   return {

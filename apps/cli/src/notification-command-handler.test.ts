@@ -8,7 +8,7 @@ test("TUI notification command renders installed services without session state"
   await handleNotificationSlashCommand({
     sendWorkflowEventPublicationRequest: async () => ({ EventConnectionsPage: { page: {
       connections: [{
-        generator_id: "dev.arroba.github",
+        generator_id: "dev.chariox.github",
         connection_id: "connection-1",
         status: "ready",
         created_at_ms: 1,

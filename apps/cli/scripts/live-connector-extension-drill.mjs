@@ -51,15 +51,15 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
 
 async function buildHttpAdapter() {
-  const binary = path.join(repoRoot, 'adapters/rust/target/debug/arroba-adapter-http')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'adapters/rust/Cargo.toml'), '--bin', 'arroba-adapter-http'])
+  const binary = path.join(repoRoot, 'adapters/rust/target/debug/chariox-adapter-http')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'adapters/rust/Cargo.toml'), '--bin', 'chariox-adapter-http'])
   if (result.code !== 0) throw new Error(`HTTP adapter build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -158,7 +158,7 @@ async function main() {
   const root = path.join(repoRoot, 'target', 'live-connector-extension-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
   const home = path.join(root, 'home')
-  const arrobaHome = path.join(root, 'arroba-home')
+  const charioxHome = path.join(root, 'chariox-home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
   const kernelPort = 50000 + Math.floor(Math.random() * 1000)
@@ -167,16 +167,16 @@ async function main() {
   const vaultKey = `connector-drill-${process.pid}-${Date.now()}`
   const env = {
     ...process.env,
-    ARROBA_HOME: arrobaHome,
+    CHARIOX_HOME: charioxHome,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_DAEMON_ID: `connector-extension-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1000),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_DAEMON_ID: `connector-extension-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
   }
 
   let daemon = null
@@ -193,8 +193,8 @@ async function main() {
   try {
     await prepareDrillArtifacts(root)
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), [
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[credential_vault]',
@@ -221,7 +221,7 @@ async function main() {
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${httpAdapterBinary}
 description: HTTP adapter drill build.
 `, 'utf8')
@@ -264,7 +264,7 @@ for line in sys.stdin:
 kind: connector_adapter
 name: python_echo
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: /usr/bin/python3
 args:
   - ${path.join(pyAdapterDir, 'adapter.py')}
@@ -275,7 +275,7 @@ description: Python adapter drill.
 kind: connector_adapter
 name: typescript_echo
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${process.execPath}
 args:
   - ${path.join(tsAdapterDir, 'adapter.mjs')}

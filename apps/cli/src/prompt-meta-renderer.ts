@@ -6,7 +6,7 @@ import {
 import type {
   PromptMetaPart,
   PromptUsageMeta,
-} from "@arroba/kernel-client/prompt-meta"
+} from "@chariox/kernel-client/prompt-meta"
 import { theme } from "./theme.js"
 
 export type PromptMetaRenderableRefs = {

@@ -49,8 +49,8 @@ const DEFAULT_WORKSPACE = repoRoot
 const DEFAULT_WORKTREE = repoRoot
 const DEFAULT_TIMEOUT_MS = 180_000
 const DEFAULT_POLL_MS = 1_000
-const RELAY_ISSUER = 'arroba-remote-machine-runtime-drill'
-const RELAY_SECRET = 'arroba-remote-machine-runtime-drill-secret'
+const RELAY_ISSUER = 'chariox-remote-machine-runtime-drill'
+const RELAY_SECRET = 'chariox-remote-machine-runtime-drill-secret'
 const RELAY_REALM = 'remote-machine-runtime-drill'
 
 function nowStamp() {
@@ -64,7 +64,7 @@ function base64url(input) {
 function signRelayToken(claims) {
   const payload = base64url(JSON.stringify(claims))
   const signature = createHmac('sha256', RELAY_SECRET).update(payload).digest('base64url')
-  return `arroba-scoped-v1.${payload}.${signature}`
+  return `chariox-scoped-v1.${payload}.${signature}`
 }
 
 function relayClaims({ subject, subjectKind, actions, userId = null, targets = null }) {
@@ -150,19 +150,19 @@ function makePorts() {
 function makeDaemonEnv({ ports, rootDir, relayToken, daemonId, daemonAlias, machineId, machineAlias, acceptRemoteLeases, socketName, kernelPort, mcpPort, opencodePort, codexPort }) {
   return {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
     XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
     XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
     XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
@@ -298,10 +298,10 @@ async function main() {
 
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-    ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+    CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
   }
   const homeDaemonId = `remote-machine-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `remote-machine-worker-${process.pid}-${Date.now()}`
@@ -395,14 +395,14 @@ async function main() {
       submitPromptRequest,
     } } = await loadCliModules(cliRuntimeDir))
     const relayBinary = await resolveBuiltBinary(
-      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
-      'arroba-relay',
+      'chariox-relay',
     )
     const daemonBinary = await resolveBuiltBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     relayChild = spawnProcess(relayBinary, [], { cwd: repoRoot, env: relayEnv })
     homeChild = spawnProcess(daemonBinary, [], { cwd: repoRoot, env: homeEnv })

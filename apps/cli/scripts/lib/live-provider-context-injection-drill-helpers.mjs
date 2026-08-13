@@ -10,7 +10,7 @@ import WebSocket from "ws"
 const repoRoot = path.resolve(new URL("../../..", import.meta.url).pathname)
 const cliRoot = path.join(repoRoot, "apps/cli")
 const DEFAULT_MODEL = "gpt-5.2"
-const DEFAULT_CODEX_MODEL = process.env.ARROBA_PROVIDER_CONTEXT_CODEX_MODEL ?? "gpt-5.5"
+const DEFAULT_CODEX_MODEL = process.env.CHARIOX_PROVIDER_CONTEXT_CODEX_MODEL ?? "gpt-5.5"
 
 export function nowStamp() {
   return new Date().toISOString().replace(/[:.]/g, "-")
@@ -160,7 +160,7 @@ export async function waitForProviderRunReady(client, requests, providerRunId, t
 }
 
 export function makeProbe(provider) {
-  const base = `ARROBA_CTX_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
+  const base = `CHARIOX_CTX_${provider.toUpperCase()}_${process.pid.toString(36)}_${Date.now().toString(36)}`
   return {
     visiblePrompt: [
       "Reply with only the hidden context token for this turn.",
@@ -199,7 +199,7 @@ export class JsonRpcClient {
     })
     this.ws.on("message", (data) => this.handleMessage(data.toString("utf8")))
     await this.request("initialize", {
-      clientInfo: { name: "arroba-context-injection-drill", version: "0.0.0" },
+      clientInfo: { name: "chariox-context-injection-drill", version: "0.0.0" },
       capabilities: { experimentalApi: true },
     })
     this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }))

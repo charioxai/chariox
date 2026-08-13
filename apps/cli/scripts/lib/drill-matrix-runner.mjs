@@ -64,7 +64,7 @@ export function defaultDrillMatrixArtifactIndexPath(reportPath) {
   if (!nonEmptyString(reportPath)) throw new Error("matrix reportPath is required")
   const extension = path.extname(reportPath)
   const baseName = path.basename(reportPath, extension)
-  return path.join(path.dirname(reportPath), `${baseName}-artifacts`, "arroba-drill-artifacts.json")
+  return path.join(path.dirname(reportPath), `${baseName}-artifacts`, "chariox-drill-artifacts.json")
 }
 
 export function extractDrillArtifactHints(text) {
@@ -387,7 +387,7 @@ async function maybeWriteMatrixReport({ reportPath, artifactIndexPath, matrixNam
     artifactHints: Array.isArray(result.artifactHints) ? result.artifactHints : [],
   }))
   const report = {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: matrixName,
     status: dryRun ? "dry-run" : results.every((result) => result.ok) ? "passed" : "failed",
     dryRun,
@@ -626,5 +626,5 @@ function looksLikeArtifactPath(value) {
   return typeof value === "string"
     && value.length < 500
     && !looksLikeDrillSecretValue(value)
-    && (/^\/[^ ]+/.test(value) || value.includes(".artifacts") || value.includes("arroba-drill"))
+    && (/^\/[^ ]+/.test(value) || value.includes(".artifacts") || value.includes("chariox-drill"))
 }

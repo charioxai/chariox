@@ -54,13 +54,13 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
 async function buildServerGateway() {
-  const result = await run('pnpm', ['--filter', '@arroba/server', 'run', 'build'])
+  const result = await run('pnpm', ['--filter', '@chariox/server', 'run', 'build'])
   if (result.code !== 0) throw new Error(`server gateway build failed\n${result.stdout}\n${result.stderr}`)
   const serverEntry = path.join(repoRoot, 'apps/server/dist/index.js')
   await access(serverEntry)
@@ -167,20 +167,20 @@ async function startKernelEnvironment(root, kernelBinary, name) {
   const codexPort = await freePort()
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   await mkdir(workspace, { recursive: true })
-  await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-  await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+  await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+  await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
   const env = {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: `w2w-publication-${name}-${process.pid}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, `${name}.sock`),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, `${name}-history`),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_DAEMON_ID: `w2w-publication-${name}-${process.pid}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, `${name}.sock`),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, `${name}-history`),
   }
   const kernel = startProcess(kernelBinary, [], env, `kernel-${name}`)
   await waitForKernel(kernelUrl)
@@ -239,9 +239,9 @@ async function createPublishedWorkflow(envState, alias, route, parser, gatewayPo
       ...envState.env,
       HOST: '127.0.0.1',
       PORT: String(gatewayPort),
-      ARROBA_KERNEL_URL: envState.kernelUrl,
-      ARROBA_PUBLICATION_SESSION_ID: session.id,
-      ARROBA_PUBLICATION_ID: publication.id,
+      CHARIOX_KERNEL_URL: envState.kernelUrl,
+      CHARIOX_PUBLICATION_SESSION_ID: session.id,
+      CHARIOX_PUBLICATION_ID: publication.id,
     },
     `gateway-${alias}`,
   )
@@ -260,7 +260,7 @@ async function createPublishedWorkflow(envState, alias, route, parser, gatewayPo
 }
 
 async function main() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'arroba-w2w-publication-drill-'))
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-w2w-publication-drill-'))
   let home = null
   let worker = null
   let gatewayA = null

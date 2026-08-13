@@ -16,8 +16,8 @@ import {
   promptSubmissionAttachmentsToParts,
   parsePromptAgentAliasRoute,
   resolvePromptSubmissionTargetAgentId,
-} from "@arroba/kernel-client/prompt-submission"
-import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/prompt-submission"
+import type { TranscriptPromptMetadata } from "@chariox/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 
 export type NormalPromptSubmitControllerDeps = {

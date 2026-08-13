@@ -1,4 +1,4 @@
-import { externalProviderSessionPage } from "@arroba/kernel-client/external-provider-sessions"
+import { externalProviderSessionPage } from "@chariox/kernel-client/external-provider-sessions"
 import {
   normalizeRuntimeSession,
   type AgentInstance,

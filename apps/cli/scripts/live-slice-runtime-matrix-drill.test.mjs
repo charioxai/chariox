@@ -13,9 +13,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-slice-runtime-matrix-drill.mjs", import.meta.url))
 
 test("slice runtime matrix dry-run covers lifecycle auth session agent UI and relay metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-slice-runtime-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-slice-runtime-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -32,7 +32,7 @@ test("slice runtime matrix dry-run covers lifecycle auth session agent UI and re
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "slice-runtime-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [

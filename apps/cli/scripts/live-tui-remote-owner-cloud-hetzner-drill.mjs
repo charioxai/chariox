@@ -27,16 +27,16 @@ function parseArgs(argv) {
     workspace: repoRoot,
     worktree: repoRoot,
     timeoutMs: DEFAULT_TIMEOUT_MS,
-    hetznerHost: process.env.ARROBA_TUI_REMOTE_OWNER_HETZNER_HOST
-      ?? process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST
+    hetznerHost: process.env.CHARIOX_TUI_REMOTE_OWNER_HETZNER_HOST
+      ?? process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST
       ?? "root@195.201.123.115",
-    hetznerKey: process.env.ARROBA_TUI_REMOTE_OWNER_HETZNER_KEY
-      ?? process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY
-      ?? path.join(os.homedir(), ".ssh", "arroba_hetzner_staging"),
-    hetznerRepo: process.env.ARROBA_TUI_REMOTE_OWNER_HETZNER_REPO
-      ?? "/tmp/arroba-tui-owner-remote-build/repo",
-    profilePath: process.env.ARROBA_TUI_REMOTE_OWNER_PROFILE
-      ?? path.join(os.homedir(), ".arroba", "daemon", "config.json"),
+    hetznerKey: process.env.CHARIOX_TUI_REMOTE_OWNER_HETZNER_KEY
+      ?? process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY
+      ?? path.join(os.homedir(), ".ssh", "chariox_hetzner_staging"),
+    hetznerRepo: process.env.CHARIOX_TUI_REMOTE_OWNER_HETZNER_REPO
+      ?? "/tmp/chariox-tui-owner-remote-build/repo",
+    profilePath: process.env.CHARIOX_TUI_REMOTE_OWNER_PROFILE
+      ?? path.join(os.homedir(), ".chariox", "daemon", "config.json"),
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -104,7 +104,7 @@ function spawnProcessWithInput(command, args, input, options) {
 
 function baseChildEnv() {
   const env = { ...process.env }
-  delete env.ARROBA_CLOUD_DEV_AUTH_SECRET
+  delete env.CHARIOX_CLOUD_DEV_AUTH_SECRET
   return env
 }
 
@@ -162,7 +162,7 @@ async function readCloudProfile(profilePath) {
 }
 
 async function refreshCloudProfileViaDevDeviceLogin(profile, localMachineId) {
-  const devSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET
+  const devSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET
   if (!devSecret) return profile
   const clientId = `tui-cloud-owner-${process.pid}-${Date.now()}`
   const started = await postJson(`${profile.api_url}/auth/device/start`, {
@@ -177,7 +177,7 @@ async function refreshCloudProfileViaDevDeviceLogin(profile, localMachineId) {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-arroba-dev-auth-secret": devSecret,
+      "x-chariox-dev-auth-secret": devSecret,
     },
     body: JSON.stringify({
       userCode: started.userCode,
@@ -474,9 +474,9 @@ async function main() {
   const localConfig = path.join(localHome, ".config")
   const localState = path.join(localHome, ".local", "state")
   const remoteRoot = `/tmp/${runId}`
-  const automationSocket = path.join("/tmp", `arroba-tui-cloud-owner-${process.pid}.sock`)
+  const automationSocket = path.join("/tmp", `chariox-tui-cloud-owner-${process.pid}.sock`)
   await prepareDrillArtifacts(rootDir)
-  await mkdir(path.join(localConfig, "arroba", "daemon"), { recursive: true })
+  await mkdir(path.join(localConfig, "chariox", "daemon"), { recursive: true })
   await mkdir(localState, { recursive: true })
 
   let profile = await readCloudProfile(options.profilePath)
@@ -487,7 +487,7 @@ async function main() {
   const remoteDaemonId = `tui-cloud-hetzner-${process.pid}-${Date.now()}`
   const remoteAlias = `hetzner-tui-owner-${process.pid}`
 
-  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
   const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
   let localKernel = null
   let remoteKernel = null
@@ -513,30 +513,30 @@ async function main() {
     const persistedCloudConfig = `${JSON.stringify({
       cloud_relay: profile,
     }, null, 2)}\n`
-    await writeFile(path.join(localConfig, "arroba", "daemon", "config.json"), persistedCloudConfig, "utf8")
-    await mkdir(path.join(localHome, ".arroba", "daemon"), { recursive: true })
-    await writeFile(path.join(localHome, ".arroba", "daemon", "config.json"), persistedCloudConfig, "utf8")
+    await writeFile(path.join(localConfig, "chariox", "daemon", "config.json"), persistedCloudConfig, "utf8")
+    await mkdir(path.join(localHome, ".chariox", "daemon"), { recursive: true })
+    await writeFile(path.join(localHome, ".chariox", "daemon", "config.json"), persistedCloudConfig, "utf8")
 
     const localEnv = {
       ...baseChildEnv(),
       HOME: localHome,
       XDG_CONFIG_HOME: localConfig,
       XDG_STATE_HOME: localState,
-      ARROBA_KERNEL_PORT: String(ports.localKernelPort),
-      ARROBA_MCP_PORT: String(ports.localMcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.localOpenCodePort),
-      ARROBA_CODEX_PORT: String(ports.localCodexPort),
-      ARROBA_DAEMON_ID: localDaemonId,
-      ARROBA_DAEMON_ALIAS: "local-tui-cloud",
-      ARROBA_MACHINE_ID: localMachineId,
-      ARROBA_MACHINE_ALIAS: "local-tui-cloud-machine",
-      ARROBA_CLOUD_RELAY_CONFIG_JSON: persistedCloudConfig,
-      ARROBA_ACCEPT_REMOTE_LEASES: "1",
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, "local.sock"),
-      ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "local-history"),
+      CHARIOX_KERNEL_PORT: String(ports.localKernelPort),
+      CHARIOX_MCP_PORT: String(ports.localMcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.localOpenCodePort),
+      CHARIOX_CODEX_PORT: String(ports.localCodexPort),
+      CHARIOX_DAEMON_ID: localDaemonId,
+      CHARIOX_DAEMON_ALIAS: "local-tui-cloud",
+      CHARIOX_MACHINE_ID: localMachineId,
+      CHARIOX_MACHINE_ALIAS: "local-tui-cloud-machine",
+      CHARIOX_CLOUD_RELAY_CONFIG_JSON: persistedCloudConfig,
+      CHARIOX_ACCEPT_REMOTE_LEASES: "1",
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, "local.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, "local-history"),
     }
     const tuiEnv = { ...localEnv }
-    delete tuiEnv.ARROBA_CLOUD_RELAY_CONFIG_JSON
+    delete tuiEnv.CHARIOX_CLOUD_RELAY_CONFIG_JSON
     localKernel = spawnProcess(kernelBinary, [], { cwd: repoRoot, env: localEnv })
     localKernel.stdout.on("data", (chunk) => {
       localKernelStdout += chunk.toString()
@@ -554,7 +554,7 @@ async function main() {
     const remoteToken = await issueMachineToken(profile, remoteMachineId)
     const remotePreflight = await runSsh(options, [
       "set -e",
-      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel"))}`,
+      `test -x ${shellQuote(path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/chariox-kernel"))}`,
       `mkdir -p ${shellQuote(remoteRoot)}`,
     ].join("; "))
     if (remotePreflight.code !== 0) {
@@ -566,20 +566,20 @@ async function main() {
       `HOME=${shellQuote(path.posix.join(remoteRoot, "home"))}`,
       `XDG_CONFIG_HOME=${shellQuote(path.posix.join(remoteRoot, "config"))}`,
       `XDG_STATE_HOME=${shellQuote(path.posix.join(remoteRoot, "state"))}`,
-      `ARROBA_KERNEL_PORT=${shellQuote(String(ports.remoteKernelPort))}`,
-      `ARROBA_MCP_PORT=${shellQuote(String(ports.remoteMcpPort))}`,
-      `ARROBA_OPENCODE_PORT=${shellQuote(String(ports.remoteKernelPort + 1000))}`,
-      `ARROBA_CODEX_PORT=${shellQuote(String(ports.remoteKernelPort + 1001))}`,
-      `ARROBA_RELAY_URL=${shellQuote(profile.relay_url)}`,
-      `ARROBA_RELAY_TOKEN=${shellQuote(remoteToken)}`,
-      `ARROBA_DAEMON_ID=${shellQuote(remoteDaemonId)}`,
-      `ARROBA_DAEMON_ALIAS=${shellQuote(remoteAlias)}`,
-      `ARROBA_MACHINE_ID=${shellQuote(remoteMachineId)}`,
-      `ARROBA_MACHINE_ALIAS=${shellQuote("hetzner-tui-owner-machine")}`,
-      "ARROBA_ACCEPT_REMOTE_LEASES=1",
-      `ARROBA_DAEMON_SOCKET=${shellQuote(path.posix.join(remoteRoot, "kernel.sock"))}`,
-      `ARROBA_SESSION_HISTORY_DIR=${shellQuote(path.posix.join(remoteRoot, "history"))}`,
-      "./apps/kernel/target/debug/arroba-kernel",
+      `CHARIOX_KERNEL_PORT=${shellQuote(String(ports.remoteKernelPort))}`,
+      `CHARIOX_MCP_PORT=${shellQuote(String(ports.remoteMcpPort))}`,
+      `CHARIOX_OPENCODE_PORT=${shellQuote(String(ports.remoteKernelPort + 1000))}`,
+      `CHARIOX_CODEX_PORT=${shellQuote(String(ports.remoteKernelPort + 1001))}`,
+      `CHARIOX_RELAY_URL=${shellQuote(profile.relay_url)}`,
+      `CHARIOX_RELAY_TOKEN=${shellQuote(remoteToken)}`,
+      `CHARIOX_DAEMON_ID=${shellQuote(remoteDaemonId)}`,
+      `CHARIOX_DAEMON_ALIAS=${shellQuote(remoteAlias)}`,
+      `CHARIOX_MACHINE_ID=${shellQuote(remoteMachineId)}`,
+      `CHARIOX_MACHINE_ALIAS=${shellQuote("hetzner-tui-owner-machine")}`,
+      "CHARIOX_ACCEPT_REMOTE_LEASES=1",
+      `CHARIOX_DAEMON_SOCKET=${shellQuote(path.posix.join(remoteRoot, "kernel.sock"))}`,
+      `CHARIOX_SESSION_HISTORY_DIR=${shellQuote(path.posix.join(remoteRoot, "history"))}`,
+      "./apps/kernel/target/debug/chariox-kernel",
     ].join(" ")
     const remoteCommand = [
       "set -e",

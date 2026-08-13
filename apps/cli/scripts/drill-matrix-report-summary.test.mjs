@@ -13,7 +13,7 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-matrix-report-summary.mjs", import.meta.url))
 
 test("matrix report summary max-depth limits discovery", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-matrix-summary-"))
   const rootReport = path.join(dir, "matrix.json")
   const nestedReport = path.join(dir, ".artifacts", "drill-matrices", "nested", "matrix.json")
   await writeReport(rootReport, matrixReport({ matrix: "root" }))
@@ -38,11 +38,11 @@ test("matrix report summary rejects invalid max-depth", async () => {
 })
 
 test("matrix report summary writes artifact index for output", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-matrix-summary-"))
   try {
     const reportPath = path.join(dir, "matrix.json")
     const outputPath = path.join(dir, "aggregate.json")
-    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(dir, "chariox-drill-artifacts.json")
     await writeReport(reportPath, matrixReport({ matrix: "root" }))
 
     const aggregate = await runSummary([
@@ -72,7 +72,7 @@ test("matrix report summary writes artifact index for output", async () => {
       schema: artifact.schema,
     })), [{
       path: "aggregate.json",
-      schema: "arroba.drill.matrix.aggregate.v1",
+      schema: "chariox.drill.matrix.aggregate.v1",
     }])
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -80,11 +80,11 @@ test("matrix report summary writes artifact index for output", async () => {
 })
 
 test("matrix report summary indexes exit criterion status metadata", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-matrix-summary-"))
   try {
     const reportPath = path.join(dir, "matrix.json")
     const outputPath = path.join(dir, "aggregate.json")
-    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(dir, "chariox-drill-artifacts.json")
     await writeReport(reportPath, matrixReport({
       matrix: "criteria",
       status: "dry-run",
@@ -139,11 +139,11 @@ test("matrix report summary indexes exit criterion status metadata", async () =>
 })
 
 test("matrix report summary indexes failure owner and classification metadata", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-matrix-summary-"))
   try {
     const reportPath = path.join(dir, "matrix.json")
     const outputPath = path.join(dir, "aggregate.json")
-    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(dir, "chariox-drill-artifacts.json")
     await writeReport(reportPath, matrixReport({
       matrix: "remote-agent-runtime-matrix",
       status: "failed",
@@ -198,7 +198,7 @@ test("matrix report summary indexes failure owner and classification metadata", 
 })
 
 test("matrix report summary prints incomplete exit criteria", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-matrix-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-matrix-summary-"))
   try {
     const reportPath = path.join(dir, "dry-run-matrix.json")
     await writeReport(reportPath, matrixReport({
@@ -234,7 +234,7 @@ test("matrix report summary prints incomplete exit criteria", async () => {
 
 test("matrix report summary rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -270,7 +270,7 @@ function matrixReport({ matrix, ...overrides }) {
   }]
   const status = overrides.status ?? "passed"
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix,
     status,
     dryRun: overrides.dryRun ?? status === "dry-run",

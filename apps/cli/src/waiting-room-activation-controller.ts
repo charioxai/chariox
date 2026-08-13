@@ -18,7 +18,7 @@ import type {
   WaitingRoomRemoteState,
   WaitingRoomState,
 } from "./waiting-room-types.js"
-import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,

@@ -5,7 +5,7 @@ import {
   nextQueuedPromptSelectionId,
   selectedQueuedPromptId,
   selectedQueuedPromptIndex,
-} from "@arroba/kernel-client/queued-prompt-selection"
+} from "@chariox/kernel-client/queued-prompt-selection"
 
 test("queued prompt selection defaults to the first available prompt", () => {
   const items = prompts("prompt-1", "prompt-2")

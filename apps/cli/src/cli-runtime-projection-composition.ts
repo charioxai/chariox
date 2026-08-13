@@ -8,13 +8,13 @@ import { createResponsePaneProjectionController } from "./response-pane-projecti
 import {
   sessionActiveInteractionForAgent,
   sessionFocusedInteraction,
-} from "@arroba/kernel-client/session-runtime-lookup"
-import { sessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
-import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-lookup"
+import { sessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
+import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-transition"
 import { createTranscriptEntryProjectionController } from "./transcript-entry-projection-controller.js"
 import {
   deriveWorkflowPromptState,
-} from "@arroba/kernel-client/workflow-prompt-state"
+} from "@chariox/kernel-client/workflow-prompt-state"
 
 type AnyFn = (...args: any[]) => any
 

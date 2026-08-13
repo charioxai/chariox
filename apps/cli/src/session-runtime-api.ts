@@ -6,7 +6,7 @@ import type {
   TerminalOutputRecord,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 import {
   pollRuntimeNoticesRequest,
   pumpTerminalOutputRequest,
@@ -14,7 +14,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { describeCliError } from "./runtime.js"
-import { sessionNeedsAttachedRuntimeCatchUp } from "@arroba/kernel-client/provider-run-recovery"
+import { sessionNeedsAttachedRuntimeCatchUp } from "@chariox/kernel-client/provider-run-recovery"
 
 export async function pumpTerminalOutput(
   client: LocalIpcClient,
@@ -41,7 +41,7 @@ export async function catchUpAttachedSession(
   sessionId: string,
   attachmentId: string,
   session: RuntimeSession,
-  logger?: ArrobaLogger | null,
+  logger?: CharioxLogger | null,
 ): Promise<void> {
   if (!sessionNeedsAttachedRuntimeCatchUp(session)) {
     return

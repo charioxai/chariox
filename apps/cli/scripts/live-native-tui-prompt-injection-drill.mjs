@@ -25,8 +25,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-const hiddenMarker = "ARROBA_NATIVE_TUI_HIDDEN_INSTRUCTIONS"
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
+const hiddenMarker = "CHARIOX_NATIVE_TUI_HIDDEN_INSTRUCTIONS"
 const marker = `NTINJ_${process.pid.toString(36)}_${Date.now().toString(36)}`
 
 function parseArgs(argv) {
@@ -123,8 +123,8 @@ async function screenQuit(name) {
 }
 
 function nativeTempRootForClaudeScreen(screenName) {
-  const suffix = screenName.replace(/^arroba-claude-/, "")
-  return path.join(os.tmpdir(), `arroba-claude-native-${suffix}`)
+  const suffix = screenName.replace(/^chariox-claude-/, "")
+  return path.join(os.tmpdir(), `chariox-claude-native-${suffix}`)
 }
 
 function startScreen(name, logDir, command, args, env) {
@@ -215,7 +215,7 @@ async function waitForClaudeHookPrompt(eventsFile, visiblePrompt, timeoutMs = 12
     const prompt = prompts.find((entry) => entry.includes(visiblePrompt))
     if (prompt) {
       if (prompt.includes(hiddenMarker) || prompt.includes("list_extensions") || prompt.includes("native approval request")) {
-        throw new Error(`Claude hook prompt showed hidden Arroba instructions in ${eventsFile}`)
+        throw new Error(`Claude hook prompt showed hidden Chariox instructions in ${eventsFile}`)
       }
       return prompt
     }
@@ -227,12 +227,12 @@ async function waitForClaudeHookPrompt(eventsFile, visiblePrompt, timeoutMs = 12
 async function assertNativeTuiDidNotShowHiddenInstructions(logFile) {
   const text = await readFile(logFile, "utf8").catch(() => "")
   if (text.includes(hiddenMarker) || text.includes("list_extensions") || text.includes("native approval request")) {
-    throw new Error(`native TUI log showed hidden Arroba instructions in ${logFile}`)
+    throw new Error(`native TUI log showed hidden Chariox instructions in ${logFile}`)
   }
 }
 
 async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
       "run",
@@ -275,7 +275,7 @@ async function runProvider(provider, options) {
   const workspace = repoRoot
   const worktree = repoRoot
   const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-injection`
-  const screenNative = `arroba-${provider}-injection-${process.pid}`
+  const screenNative = `chariox-${provider}-injection-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
     native: path.join(root, "native-screen", "screenlog.0"),
@@ -293,13 +293,13 @@ async function runProvider(provider, options) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-injection-${provider}-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-injection-${provider}-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -341,14 +341,14 @@ async function runProvider(provider, options) {
     }
     await startScreen(screenNative, logs.nativeDir, "bun", nativeArgs, {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
-      ARROBA_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
-      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      CHARIOX_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
+      CHARIOX_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
     })
-    const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
+    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "opencode"
       ? (await waitForFileMatch(logs.native, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
       : null
@@ -356,7 +356,7 @@ async function runProvider(provider, options) {
       ? (await waitForFileMatch(logs.native, /opencode sess:\s+([^\s]+)/)).match[1]
       : null
     const claudeScreen = provider === "claude"
-      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
+      ? (await waitForFileMatch(logs.native, /screen:\s+(chariox-claude-[^\s]+)/)).match[1]
       : null
     if (claudeScreen) {
       logs.claudeScreen = path.join(nativeTempRootForClaudeScreen(claudeScreen), "screen", "screenlog.0")
@@ -407,7 +407,7 @@ async function runProvider(provider, options) {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1"
+    const preserveOnFailure = options.keepArtifactsOnFailure || process.env.CHARIOX_KEEP_NATIVE_TUI_INJECTION_ARTIFACTS === "1"
     const finalized = await finalizeDrillArtifacts({
       rootDir: root,
       passed: succeeded,

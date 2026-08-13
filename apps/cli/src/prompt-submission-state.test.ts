@@ -5,7 +5,7 @@ import {
   formatPromptSubmissionBody,
   formatPromptSubmissionStatusLine,
   promptSubmissionAttachmentsToParts,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 import type { PendingPromptAttachment } from "./prompt-attachment-state.js"
 
 test("formatPromptSubmissionBody terminates non-empty prompts", () => {

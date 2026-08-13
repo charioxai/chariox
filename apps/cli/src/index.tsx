@@ -2,7 +2,7 @@ import process from "node:process"
 
 import { render } from "@opentui/solid"
 
-import { ArrobaCliApp } from "./cli-app-root.js"
+import { CharioxCliApp } from "./cli-app-root.js"
 import { bootstrapCliRuntime } from "./cli-runtime-bootstrap.js"
 import {
   OPEN_CONSOLE_ON_ERROR,
@@ -55,7 +55,7 @@ async function main() {
     return
   }
   await render(
-    () => <ArrobaCliApp bootstrap={runtimeBootstrap.bootstrap} />,
+    () => <CharioxCliApp bootstrap={runtimeBootstrap.bootstrap} />,
     {
       targetFps: 60,
       gatherStats: false,

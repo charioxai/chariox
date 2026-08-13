@@ -16,7 +16,7 @@ test("drill failure taxonomy prints scenario manifest", async () => {
   const { stdout } = await execFile(process.execPath, [scriptPath])
   const manifest = JSON.parse(stdout)
 
-  assert.equal(manifest.schema, "arroba.drill.failure_taxonomy.v1")
+  assert.equal(manifest.schema, "chariox.drill.failure_taxonomy.v1")
   assert.equal(manifest.target, "scenario")
   assert(manifest.classifications.some((entry) => (
     entry.kind === "kernel-authority"
@@ -37,9 +37,9 @@ test("drill failure taxonomy prints drill-target next actions", async () => {
 })
 
 test("drill failure taxonomy writes manifest", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-"))
   const outputPath = path.join(rootDir, "taxonomy.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -63,7 +63,7 @@ test("drill failure taxonomy writes manifest", async () => {
       schema: artifact.schema,
     })), [{
       path: "taxonomy.json",
-      schema: "arroba.drill.failure_taxonomy.v1",
+      schema: "chariox.drill.failure_taxonomy.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -72,7 +72,7 @@ test("drill failure taxonomy writes manifest", async () => {
 
 test("drill failure taxonomy rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)

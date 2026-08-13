@@ -329,14 +329,14 @@ export function appendMissingValidationGateAggregateNextActions(nextActions, mis
 }
 
 export function appendMissingArtifactSchemaNextActions(nextActions, missingArtifactSchemas) {
-  if (missingArtifactSchemas.includes("arroba.drill.validation_suite_run.v1")) {
+  if (missingArtifactSchemas.includes("chariox.drill.validation_suite_run.v1")) {
     countDrillAggregateNextAction(nextActions, {
       owner: "validation-harness",
       classification: "artifact-coverage",
       nextAction: "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate",
     })
   }
-  const remainingSchemas = missingArtifactSchemas.filter((schema) => schema !== "arroba.drill.validation_suite_run.v1")
+  const remainingSchemas = missingArtifactSchemas.filter((schema) => schema !== "chariox.drill.validation_suite_run.v1")
   if (remainingSchemas.length > 0) {
     countDrillAggregateNextAction(nextActions, {
       owner: "validation-harness",

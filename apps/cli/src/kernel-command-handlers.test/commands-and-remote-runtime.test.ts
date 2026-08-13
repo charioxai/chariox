@@ -18,10 +18,10 @@ test("kernel health command reports duplicate provider-run bindings", async () =
     provider_runs: {
       projected_runs: 2,
       active_runs: 2,
-      arroba_active_runs: 2,
+      chariox_active_runs: 2,
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [{
+      duplicate_chariox_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
         provider_run_ids: ["provider-run-1", "provider-run-2"],
@@ -42,11 +42,11 @@ test("kernel health command reports duplicate provider-run bindings", async () =
     transitionToNoSession: () => {},
   }, { kind: "kernel", raw: "/kernel health", args: ["health"] })
 
-  assert.match(notices.at(-1) ?? "", /duplicate Arroba provider run bindings/)
+  assert.match(notices.at(-1) ?? "", /duplicate Chariox provider run bindings/)
   assert.match(notices.at(-1) ?? "", /provider-run-1,provider-run-2/)
-  assert.match(notices.at(-1) ?? "", /invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates/)
+  assert.match(notices.at(-1) ?? "", /invariant: normal Chariox launches should replace idle same-agent runs instead of creating duplicates/)
   assert.match(notices.at(-1) ?? "", /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
-  assert.match(notices.at(-1) ?? "", /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell/)
+  assert.match(notices.at(-1) ?? "", /support bundle: after reproducing, run \/kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from chariox-shell/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 
@@ -57,10 +57,10 @@ test("kernel health command reports duplicate native TUI provider-run bindings",
     provider_runs: {
       projected_runs: 2,
       active_runs: 2,
-      arroba_active_runs: 0,
+      chariox_active_runs: 0,
       native_tui_active_runs: 2,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
@@ -102,7 +102,7 @@ test("kernel remote-runtime command opens health projection with remote footer",
   }, { kind: "kernel", raw: "/kernel remote-runtime", args: ["remote-runtime"] })
 
   assert.match(notices.at(-1) ?? "", /^remote runtime/)
-  assert.match(notices.at(-1) ?? "", /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
+  assert.match(notices.at(-1) ?? "", /provider runs: projected=1 active=1 chariox=1 native_tui=0/)
   assert.match(notices.at(-1) ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(notices.at(-1) ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.match(notices.at(-1) ?? "", /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only; audit=durable-transitions-required/)
@@ -115,10 +115,10 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
     provider_runs: {
       projected_runs: 2,
       active_runs: 2,
-      arroba_active_runs: 2,
+      chariox_active_runs: 2,
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [{
+      duplicate_chariox_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
         provider_run_ids: ["provider-run-1", "provider-run-2"],
@@ -135,11 +135,11 @@ test("kernel remote-runtime formatter treats provider-run invariants as blockers
   assert.equal(kernelRemoteRuntimeIssueCount(unhealthy), 1)
   assert.match(rendered, /^remote runtime/)
   assert.match(rendered, /workspace live sync scope: selected workspace\/worktree only; other repositories unrestricted/)
-  assert.match(rendered, /provider runs: projected=2 active=2 arroba=2 native_tui=0/)
+  assert.match(rendered, /provider runs: projected=2 active=2 chariox=2 native_tui=0/)
   assert.match(rendered, /provider run invariants: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
   assert.match(rendered, /remote runtime invariants: provider_runs=attention duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0; worker_runs=ok; slices=ok; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /provider run issues: duplicate=1 mixed=0 orphaned=0 pointer=0 terminal=0 actor_rejects=0/)
-  assert.match(rendered, /duplicate_arroba session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
+  assert.match(rendered, /duplicate_chariox session=session-1 agent=agent-1 runs=provider-run-1,provider-run-2/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
   assert.match(rendered, /remote runtime readiness: blocked \(1 issue, 1 attention\)/)
   assert.match(rendered, /remote runtime readiness next: run \/provider processes and \/agent inspect for the affected agent; close or relaunch duplicate, orphaned, or mismatched provider runs/)
@@ -180,7 +180,7 @@ test("kernel remote-runtime formatter avoids placeholder recovery targets", () =
     provider_runs: {
       projected_runs: 1,
       active_runs: 1,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 0,
       terminal_diagnostics: [{
         provider_run_id: "provider-run-1",
@@ -190,7 +190,7 @@ test("kernel remote-runtime formatter avoids placeholder recovery targets", () =
         state: "Running",
         diagnostic: "provider produced no terminal output within 10m",
       }],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
@@ -297,15 +297,15 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
     provider_runs: {
       projected_runs: 2,
       active_runs: 2,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 1,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
-        provider_run_ids: ["provider-run-1:arroba", "provider-run-2:native_tui"],
+        provider_run_ids: ["provider-run-1:chariox", "provider-run-2:native_tui"],
       }],
       orphaned_active_runs: [],
       session_active_run_mismatches: [],
@@ -323,8 +323,8 @@ test("kernel health command reports multi-interface provider-run bindings", asyn
 
   assert.doesNotMatch(notices.at(-1) ?? "", /provider run invariants: ok/)
   assert.match(notices.at(-1) ?? "", /multi-interface provider run bindings/)
-  assert.match(notices.at(-1) ?? "", /provider-run-1:arroba,provider-run-2:native_tui/)
-  assert.match(notices.at(-1) ?? "", /next: run \/agent inspect agent-1; run \/provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent/)
+  assert.match(notices.at(-1) ?? "", /provider-run-1:chariox,provider-run-2:native_tui/)
+  assert.match(notices.at(-1) ?? "", /next: run \/agent inspect agent-1; run \/provider processes; close the extra native TUI or Chariox provider run before sending prompts to that agent/)
   assert.deepEqual(flashes.at(-1), { message: "kernel health: 1 issue", tone: "error" })
 })
 

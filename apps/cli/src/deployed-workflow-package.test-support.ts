@@ -2,10 +2,10 @@ import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { workflowPublicationPackageDigest } from "@arroba/kernel-client/workflow-publication-package-digest"
+import { workflowPublicationPackageDigest } from "@chariox/kernel-client/workflow-publication-package-digest"
 
 export async function deployedWorkflowPackageFixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "arroba-deployed-release-package-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-deployed-release-package-"))
   await mkdir(join(root, "public"))
   const publication = Buffer.from(JSON.stringify({
     schema_version: 1,

@@ -16,8 +16,8 @@ import {
   queuedPromptActionState,
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
-} from "@arroba/kernel-client/queued-prompt-controls"
-import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
+} from "@chariox/kernel-client/queued-prompt-controls"
+import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import { theme } from "./theme.js"
 
 type InteractionStripRenderOptions = {

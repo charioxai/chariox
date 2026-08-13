@@ -50,7 +50,7 @@ import {
 } from "./lib/live-provider-thread-transfer-slice-scenarios.mjs"
 
 async function runWorkerResumeMatrix({ options, root, ports }) {
-  await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "arroba-relay")
+  await assertBinary(relayBinary, path.join(repoRoot, "apps/relay/Cargo.toml"), "chariox-relay")
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
   const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
@@ -77,10 +77,10 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
   const workerProvider = isolatedWorker?.providerEnv ?? realProvider
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: "127.0.0.1",
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
-    ARROBA_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
+    CHARIOX_RELAY_HOST: "127.0.0.1",
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
+    CHARIOX_RELAY_SCOPED_HMAC_SECRET: RELAY_SECRET,
   }
   const homeDaemonId = `provider-thread-home-${process.pid}-${Date.now()}`
   const workerDaemonId = `provider-thread-worker-${process.pid}-${Date.now()}`
@@ -215,7 +215,7 @@ async function runWorkerResumeMatrix({ options, root, ports }) {
           provider,
           root,
           kernelUrl: homeKernelUrl,
-          historyDir: homeEnv.ARROBA_SESSION_HISTORY_DIR,
+          historyDir: homeEnv.CHARIOX_SESSION_HISTORY_DIR,
           workerMachineId,
           workerKernelId: workerKernel.kernel_id,
           workerKernelUrl,
@@ -264,7 +264,7 @@ async function main() {
     printHelp()
     return
   }
-  await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "arroba-kernel")
+  await assertBinary(kernelBinary, path.join(repoRoot, "apps/kernel/Cargo.toml"), "chariox-kernel")
 
   const runId = `${Date.now()}-${process.pid}`
   const root = path.join(artifactsRoot, runId)
@@ -351,23 +351,23 @@ async function main() {
         ...process.env,
         ...(sliceModeProviderEnv ? {
           ...sliceModeProviderEnv,
-          ARROBA_LOG_DIR: path.join(root, "logs"),
+          CHARIOX_LOG_DIR: path.join(root, "logs"),
         } : {}),
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.openCodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `provider-thread-transfer-${runId}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: historyDir,
-        ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
-        ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_DAEMON_ID: `provider-thread-transfer-${runId}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: historyDir,
+        CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+        CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
       }
       if (sliceMode) {
-        delete daemonEnv.ARROBA_RELAY_URL
-        delete daemonEnv.ARROBA_RELAY_TOKEN
-        delete daemonEnv.ARROBA_CLOUD_RELAY_URL
-        delete daemonEnv.ARROBA_CLOUD_RELAY_TOKEN
+        delete daemonEnv.CHARIOX_RELAY_URL
+        delete daemonEnv.CHARIOX_RELAY_TOKEN
+        delete daemonEnv.CHARIOX_CLOUD_RELAY_URL
+        delete daemonEnv.CHARIOX_CLOUD_RELAY_TOKEN
       }
       daemonChild = spawn(kernelBinary, [], {
         cwd: repoRoot,

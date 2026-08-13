@@ -186,7 +186,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
         `  opencode server:${upstreamBaseUrl}`,
         `  proxy:          ${proxyUrl}`,
       ],
-      promptPolicy: "native prompts pass through; Arroba observes the session",
+      promptPolicy: "native prompts pass through; Chariox observes the session",
     }))
     pump = startNativeKernelPumpLoop(client, session.id, attachment.id, {
       debug: debugNativeMutation,
@@ -218,7 +218,7 @@ export async function runOpenCodeNativeTui(args: string[]): Promise<void> {
 
 export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   const options: NativeOpenCodeOptions = {
-    clientId: `arroba-opencode-native-${process.pid}`,
+    clientId: `chariox-opencode-native-${process.pid}`,
     model: "default",
     mode: "build",
     permissions: "yolo",
@@ -316,7 +316,7 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
   }
 
   if (positional.length > 1) {
-    throw new Error("usage: arroba opencode [session-ref]")
+    throw new Error("usage: chariox opencode [session-ref]")
   }
   if (options.relayUrl && !options.relayToken) {
     throw new Error("--relay-url requires --relay-token")
@@ -353,18 +353,18 @@ export function parseNativeOpenCodeArgs(args: string[]): NativeOpenCodeOptions {
 
 function printNativeOpenCodeUsage() {
   process.stdout.write([
-    "usage: arroba opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--model MODEL] [--mode build|plan] [--permissions required|yolo]",
-    "       arroba opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
+    "usage: chariox opencode [session-ref] [--socket PATH|--kernel-url URL|--kernel-port PORT] [--model MODEL] [--mode build|plan] [--permissions required|yolo]",
+    "       chariox opencode [session-ref] --relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)",
     "",
     "placement:",
-    "  --machine, --kernel-ref REF       Run the Arroba agent/provider on a remote worker kernel",
-    "  --slice REF                       Run the Arroba agent/provider on a home-managed slice worker",
+    "  --machine, --kernel-ref REF       Run the Chariox agent/provider on a remote worker kernel",
+    "  --slice REF                       Run the Chariox agent/provider on a home-managed slice worker",
     "",
     "behavior:",
     "  --model <model>                OpenCode model argument (default default)",
-    "  --grant-mcp NAME                Grant an installed Arroba MCP to the native agent before provider launch",
-    "  --grant-skill NAME              Grant an installed Arroba skill to the native agent before provider launch",
-    "  creates a new Arroba agent in the selected session and launches native `opencode attach` for it.",
+    "  --grant-mcp NAME                Grant an installed Chariox MCP to the native agent before provider launch",
+    "  --grant-skill NAME              Grant an installed Chariox skill to the native agent before provider launch",
+    "  creates a new Chariox agent in the selected session and launches native `opencode attach` for it.",
   ].join("\n") + "\n")
 }
 
@@ -396,9 +396,9 @@ function formatError(error: unknown): string {
 }
 
 function debugNativeMutation(label: string, payload: unknown) {
-  if (!process.env.ARROBA_OPENCODE_NATIVE_DEBUG) return
-  const line = `[arroba opencode native-tui] ${label}: ${JSON.stringify(payload)}\n`
-  const debugFile = process.env.ARROBA_OPENCODE_NATIVE_DEBUG_FILE
+  if (!process.env.CHARIOX_OPENCODE_NATIVE_DEBUG) return
+  const line = `[chariox opencode native-tui] ${label}: ${JSON.stringify(payload)}\n`
+  const debugFile = process.env.CHARIOX_OPENCODE_NATIVE_DEBUG_FILE
   if (debugFile) {
     appendFileSync(debugFile, line)
     return

@@ -5,14 +5,14 @@ import {
   waitingRoomSessionRecencyMs,
   waitingRoomSessionStatusLabel,
   waitingRoomTimestampLabel,
-} from "@arroba/kernel-client/waiting-room-activity"
-import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
-import { formatWorkspaceLiveSyncModeCompactLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
+} from "@chariox/kernel-client/waiting-room-activity"
+import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
+import { formatWorkspaceLiveSyncModeCompactLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   DEFAULT_SESSION_BROWSER_PREVIEW_LIMIT,
   sessionBrowserPreviewSessions,
   sessionBrowserVisibleSessions,
-} from "@arroba/kernel-client/session-browser-policy"
+} from "@chariox/kernel-client/session-browser-policy"
 
 import {
   type SessionListEntry,

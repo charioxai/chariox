@@ -48,7 +48,7 @@ test("relay cloud client-token pairs a client and emits the relay command", asyn
 
   assert.equal(savedClientId, "client-1")
   assert.equal(issuedSessionId, "session-1")
-  assert.match(notices[0] ?? "", /command=arroba --relay-url wss:\/\/relay\.example --relay-token relay-token --target-daemon-alias builder-kernel/)
+  assert.match(notices[0] ?? "", /command=chariox --relay-url wss:\/\/relay\.example --relay-token relay-token --target-daemon-alias builder-kernel/)
   assert.equal(notices.at(-1), "cloud client token minted for builder-kernel")
 })
 

@@ -41,22 +41,22 @@ import {
 import {
   loadPreferences,
   resolveMaxAgentsPerScreen,
-  type ArrobaPreferences,
+  type CharioxPreferences,
 } from "./preferences.js"
 import {
   bootstrapSession,
 } from "./session-bootstrap.js"
 import {
   sessionResponseLayout,
-} from "@arroba/kernel-client/session-config-projection"
+} from "@chariox/kernel-client/session-config-projection"
 import {
   sessionFocusedAgentId,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import {
   selectResponsePaneAgents,
-} from "@arroba/kernel-client/response-pane-selection"
-import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
-import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/response-pane-selection"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 import {
   inferWorkspaceTargetsFromLaunchDirectory,
 } from "./workspace-launch-targets.js"
@@ -76,7 +76,7 @@ import {
 import {
   describeCliError,
 } from "./runtime.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 
 type RelayClientOptions = {
   relayAuthToken?: string
@@ -89,14 +89,14 @@ type BootstrapAttachedSession = (
   options: CliOptions,
   workspace: string,
   worktree: string,
-  preferences: ArrobaPreferences,
-  logger?: ArrobaLogger | null,
+  preferences: CharioxPreferences,
+  logger?: CharioxLogger | null,
 ) => Promise<BootstrapState>
 
 export type CliRuntimeBootstrapDeps = {
   parseArgs: (argv: string[]) => CliOptions
-  loadPreferences: () => Promise<ArrobaPreferences>
-  applyProviderPreferenceDefaults: (options: CliOptions, preferences: ArrobaPreferences) => CliOptions
+  loadPreferences: () => Promise<CharioxPreferences>
+  applyProviderPreferenceDefaults: (options: CliOptions, preferences: CharioxPreferences) => CliOptions
   defaultKernelEndpoint: () => string
   createClient: (endpoint: string, relayOptions?: RelayClientOptions) => LocalIpcClient
   inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
@@ -120,7 +120,7 @@ export type CliRuntimeBootstrapDeps = {
 export type CliRuntimeBootstrapOptions = {
   argv: string[]
   cwd: string
-  logger?: ArrobaLogger | null
+  logger?: CharioxLogger | null
 }
 
 export type CliRuntimeBootstrapResult =
@@ -269,7 +269,7 @@ export async function bootstrapCliRuntime(
 export function buildDetachedBootstrap(
   client: LocalIpcClient,
   options: CliOptions,
-  preferences: ArrobaPreferences,
+  preferences: CharioxPreferences,
 ): BootstrapState {
   return {
     client,
@@ -288,8 +288,8 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
   options: CliOptions,
   workspace: string,
   worktree: string,
-  preferences: ArrobaPreferences,
-  logger?: ArrobaLogger | null,
+  preferences: CharioxPreferences,
+  logger?: CharioxLogger | null,
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
     logger: logger ?? null,

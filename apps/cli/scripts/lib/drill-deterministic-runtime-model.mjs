@@ -12,7 +12,7 @@ import {
 } from "./drill-runtime-convergence-invariants.mjs"
 
 export const DETERMINISTIC_RUNTIME_CHAOS_SCENARIO = "deterministic-runtime-convergence"
-export const DEFAULT_DETERMINISTIC_RUNTIME_CHAOS_SEED = "arroba-runtime-chaos-v1"
+export const DEFAULT_DETERMINISTIC_RUNTIME_CHAOS_SEED = "chariox-runtime-chaos-v1"
 
 export const DETERMINISTIC_RUNTIME_CHAOS_FAULT_PLAN = Object.freeze([
   fault({

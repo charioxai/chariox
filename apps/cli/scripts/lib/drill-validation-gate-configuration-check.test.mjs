@@ -15,7 +15,7 @@ test("passes when artifact evidence is configured", () => {
     artifactRoots: ["/tmp/artifacts"],
   })), { status: "passed" })
   assert.deepEqual(configurationValidationGateCheck(configuration({
-    artifactIndexes: ["/tmp/artifacts/arroba-drill-artifacts.json"],
+    artifactIndexes: ["/tmp/artifacts/chariox-drill-artifacts.json"],
   })), { status: "passed" })
 })
 
@@ -24,7 +24,7 @@ test("passes when failure evidence is configured", () => {
     failureRoots: ["/tmp/failures"],
   })), { status: "passed" })
   assert.deepEqual(configurationValidationGateCheck(configuration({
-    failureInputs: ["/tmp/failures/arroba-drill-failure.json"],
+    failureInputs: ["/tmp/failures/chariox-drill-failure.json"],
   })), { status: "passed" })
 })
 
@@ -42,7 +42,7 @@ test("passes when platform evidence or aggregate requirements are configured", (
     { platformBundleDir: "/tmp/platform" },
     { requiredPlatformCoverageAreas: ["matrix-validation"] },
     { requiredArtifactCoverageAreas: ["distributed-observability"] },
-    { requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"] },
+    { requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"] },
     { requiredArtifactKinds: ["validation-suite-run"] },
     { requiredArtifactGeneratedEvidenceKinds: ["matrix-report"] },
     { requiredArtifactGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"] },

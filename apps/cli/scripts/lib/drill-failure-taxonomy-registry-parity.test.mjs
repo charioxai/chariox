@@ -11,9 +11,9 @@ import {
 import { drillFailureTaxonomyManifest } from "./drill-failure-taxonomy.mjs"
 
 test("accepts Cloud failure taxonomy classifications known by OSS", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
@@ -51,9 +51,9 @@ test("accepts Cloud contextual diagnostics in embedded artifact manifests", () =
 })
 
 test("rejects missing Cloud failure classifications required by OSS diagnostics", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications.filter((classification) => classification.kind !== "remote-extension-sync"),
@@ -69,9 +69,9 @@ test("rejects missing Cloud failure classifications required by OSS diagnostics"
 })
 
 test("rejects Cloud failure classifications unknown to OSS", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: [
@@ -94,9 +94,9 @@ test("rejects Cloud failure classifications unknown to OSS", async () => {
 })
 
 test("rejects Cloud failure classification owner drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: manifest.classifications
@@ -115,9 +115,9 @@ test("rejects Cloud failure classification owner drift", async () => {
 })
 
 test("rejects missing Cloud failure taxonomy registry exports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-failure-taxonomy.mjs")
     await mkdir(path.dirname(registryPath), { recursive: true })
     await writeFile(registryPath, "export const noManifest = true\n", "utf8")
@@ -132,9 +132,9 @@ test("rejects missing Cloud failure taxonomy registry exports", async () => {
 })
 
 test("rejects malformed Cloud failure taxonomy manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: [{ kind: "kernel-authority", owner: "kernel-authority" }],
     })
@@ -149,9 +149,9 @@ test("rejects malformed Cloud failure taxonomy manifests", async () => {
 })
 
 test("rejects duplicate Cloud failure classifications", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-taxonomy-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-taxonomy-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: [
         ...drillFailureTaxonomyManifest().classifications,
@@ -175,7 +175,7 @@ async function writeCloudFailureTaxonomyRegistry(cloudRoot, {
   await mkdir(path.dirname(registryPath), { recursive: true })
   await writeFile(registryPath, [
     "export function cloudFailureTaxonomyManifest() {",
-    `  return { schema: "arroba.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
+    `  return { schema: "chariox.drill.failure_taxonomy.v1", target: "scenario", classifications: ${JSON.stringify(classifications)} }`,
     "}",
     "",
   ].join("\n"), "utf8")

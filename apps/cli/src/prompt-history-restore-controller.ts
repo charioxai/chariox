@@ -1,11 +1,11 @@
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import {
   sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
 } from "./preferences.js"
 
 export type PromptHistoryRestoreControllerDeps = {
-  getPreferences: () => ArrobaPreferences
+  getPreferences: () => CharioxPreferences
   setPromptHistoryEntries: (entries: string[]) => void
   resetPromptHistoryNavigation: () => void
   setPromptText: (text: string) => void

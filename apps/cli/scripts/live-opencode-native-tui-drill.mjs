@@ -24,7 +24,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const marker = `NOP_${process.pid.toString(36)}_${Date.now().toString(36)}`
 const MAX_LOG_CHARS = 128_000
 
@@ -220,7 +220,7 @@ async function waitForAgentBadgeTone(socketPath, alias, tone, timeoutMs = 90_000
 }
 
 async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, logFile) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const output = await new Promise((resolve, reject) => {
     const child = spawn(executable, [
       "run",
@@ -270,24 +270,24 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const screenA = `arroba-opencode-a-${process.pid}`
-  const screenB = `arroba-opencode-b-${process.pid}`
-  const screenCli = `arroba-opencode-cli-${process.pid}`
+  const screenA = `chariox-opencode-a-${process.pid}`
+  const screenB = `chariox-opencode-b-${process.pid}`
+  const screenCli = `chariox-opencode-cli-${process.pid}`
   const logs = {
     aDir: path.join(root, "opencode-a-screen"),
     bDir: path.join(root, "opencode-b-screen"),
-    cliDir: path.join(root, "arroba-cli-screen"),
+    cliDir: path.join(root, "chariox-cli-screen"),
     a: path.join(root, "opencode-a-screen", "screenlog.0"),
     b: path.join(root, "opencode-b-screen", "screenlog.0"),
-    cli: path.join(root, "arroba-cli-screen", "screenlog.0"),
+    cli: path.join(root, "chariox-cli-screen", "screenlog.0"),
     nativeA: path.join(root, "opencode-a-native-run.log"),
     nativeB: path.join(root, "opencode-b-native-run.log"),
     proxyA: path.join(root, "opencode-a.proxy.log"),
     proxyB: path.join(root, "opencode-b.proxy.log"),
   }
   const markers = {
-    arrobaA: `${marker}_ARROBA_A`,
-    arrobaB: `${marker}_ARROBA_B`,
+    charioxA: `${marker}_CHARIOX_A`,
+    charioxB: `${marker}_CHARIOX_B`,
     nativeA: `${marker}_NATIVE_A`,
     nativeB: `${marker}_NATIVE_B`,
   }
@@ -313,13 +313,13 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `opencode-native-proxy-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `opencode-native-proxy-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -342,10 +342,10 @@ async function main() {
       worktree,
     ], {
       ...process.env,
-      ARROBA_OPENCODE_NATIVE_DEBUG: "1",
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyA,
     })
-    sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    sessionId = (await waitForFileMatch(logs.a, /chariox session:\s+([^\s(]+)/)).match[1]
     proxyA = (await waitForFileMatch(logs.a, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
     providerSessionA = (await waitForFileMatch(logs.a, /opencode sess:\s+([^\s]+)/)).match[1]
 
@@ -363,8 +363,8 @@ async function main() {
       worktree,
     ], {
       ...process.env,
-      ARROBA_OPENCODE_NATIVE_DEBUG: "1",
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: "1",
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: logs.proxyB,
     })
     proxyB = (await waitForFileMatch(logs.b, /proxy:\s+(http:\/\/127\.0\.0\.1:\d+)/)).match[1]
     providerSessionB = (await waitForFileMatch(logs.b, /opencode sess:\s+([^\s]+)/)).match[1]
@@ -384,7 +384,7 @@ async function main() {
       "--session",
       sessionId,
       "--client-id",
-      `arroba-observer-${process.pid}`,
+      `chariox-observer-${process.pid}`,
       "--automation-socket",
       automationSocket,
       "--provider",
@@ -428,25 +428,25 @@ async function main() {
 
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt oc-a Reply with exactly ${markers.arrobaA} and nothing else.`,
+      command: `prompt oc-a Reply with exactly ${markers.charioxA} and nothing else.`,
     })
     badgeTransitions["oc-a"].during = await waitForAgentBadgeTone(automationSocket, "oc-a", "working")
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt oc-b Reply with exactly ${markers.arrobaB} and nothing else.`,
+      command: `prompt oc-b Reply with exactly ${markers.charioxB} and nothing else.`,
     })
     badgeTransitions["oc-b"].during = await waitForAgentBadgeTone(automationSocket, "oc-b", "working")
 
     const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
-      "oc-a": { prompts: [markers.arrobaA, markers.nativeA], outputs: [markers.arrobaA, markers.nativeA] },
-      "oc-b": { prompts: [markers.arrobaB, markers.nativeB], outputs: [markers.arrobaB, markers.nativeB] },
+      "oc-a": { prompts: [markers.charioxA, markers.nativeA], outputs: [markers.charioxA, markers.nativeA] },
+      "oc-b": { prompts: [markers.charioxB, markers.nativeB], outputs: [markers.charioxB, markers.nativeB] },
     })
     badgeTransitions["oc-a"].after = await waitForAgentBadgeTone(automationSocket, "oc-a", "idle")
     badgeTransitions["oc-b"].after = await waitForAgentBadgeTone(automationSocket, "oc-b", "idle")
-    if (histories["oc-a"].all.includes(markers.arrobaB) || histories["oc-a"].all.includes(markers.nativeB)) {
+    if (histories["oc-a"].all.includes(markers.charioxB) || histories["oc-a"].all.includes(markers.nativeB)) {
       throw new Error("agent oc-a history was contaminated with oc-b markers")
     }
-    if (histories["oc-b"].all.includes(markers.arrobaA) || histories["oc-b"].all.includes(markers.nativeA)) {
+    if (histories["oc-b"].all.includes(markers.charioxA) || histories["oc-b"].all.includes(markers.nativeA)) {
       throw new Error("agent oc-b history was contaminated with oc-a markers")
     }
 
@@ -455,12 +455,12 @@ async function main() {
     const cliLog = await readFile(logs.cli, "utf8").catch(() => "")
     const expectedCliMarkers = Object.values(markers)
     if (expectedCliMarkers.some((expected) => !cliLog.includes(expected))) {
-      throw new Error("observer Arroba CLI screen did not include all native and Arroba-submitted markers")
+      throw new Error("observer Chariox CLI screen did not include all native and Chariox-submitted markers")
     }
     const tuiALog = await readFile(logs.a, "utf8").catch(() => "")
     const tuiBLog = await readFile(logs.b, "utf8").catch(() => "")
     for (const [label, log] of [["oc-a", tuiALog], ["oc-b", tuiBLog]]) {
-      const own = label === "oc-a" ? [markers.arrobaA, markers.nativeA] : [markers.arrobaB, markers.nativeB]
+      const own = label === "oc-a" ? [markers.charioxA, markers.nativeA] : [markers.charioxB, markers.nativeB]
       for (const expected of own) {
         if (!log.includes(expected)) throw new Error(`${label} TUI log did not include ${expected}`)
       }
@@ -468,14 +468,14 @@ async function main() {
     const proxyALog = await readFile(logs.proxyA, "utf8").catch(() => "")
     const proxyBLog = await readFile(logs.proxyB, "utf8").catch(() => "")
     if (!proxyALog.includes(markers.nativeA) || !proxyBLog.includes(markers.nativeB)) {
-      throw new Error("native OpenCode prompts did not pass through both Arroba proxies")
+      throw new Error("native OpenCode prompts did not pass through both Chariox proxies")
     }
 
     const stateResponse = await client.send(getSessionStateRequest(sessionId))
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
     console.log(JSON.stringify({
       status: "ok",
-      architecture: "opencode-tui + opencode-native-cli + arroba-cli -> native HTTP proxy -> cli-managed opencode server",
+      architecture: "opencode-tui + opencode-native-cli + chariox-cli -> native HTTP proxy -> cli-managed opencode server",
       kernelUrl,
       sessionId,
       marker,
@@ -507,7 +507,7 @@ async function main() {
       await Promise.race([new Promise((resolve) => daemon.once("exit", resolve)), sleep(2_000)])
       if (daemon.exitCode == null) daemon.kill("SIGKILL")
     }
-    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+    if (passed && process.env.CHARIOX_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
       console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket }))
     } else {
       await finalizeDrillArtifacts({

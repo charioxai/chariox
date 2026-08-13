@@ -123,19 +123,19 @@ function daemonEnv({
     XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? path.join(realHomeDir, '.config'),
     XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
     XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
   }
 }
 
@@ -269,13 +269,13 @@ function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, 
 }
 
 async function writeMcp(root, config) {
-  const dir = path.join(root, '.arroba', 'mcps')
+  const dir = path.join(root, '.chariox', 'mcps')
   await mkdir(dir, { recursive: true })
   await writeFile(path.join(dir, `${config.name}.json`), `${JSON.stringify(config, null, 2)}\n`, 'utf8')
 }
 
 async function clearProjectMcps(workspace) {
-  await rm(path.join(workspace, '.arroba', 'mcps'), { recursive: true, force: true })
+  await rm(path.join(workspace, '.chariox', 'mcps'), { recursive: true, force: true })
 }
 
 function mcpConfig(name, command, extra = {}) {
@@ -388,7 +388,7 @@ async function waitForHistoryToolCall({ historyDir, timeoutMs }) {
           continue
         }
         const tool = String(update.tool ?? '').toLowerCase()
-        if (update.status === 'completed' && !tool.includes('arroba') && (tool.includes('playwright') || tool.includes('browser'))) {
+        if (update.status === 'completed' && !tool.includes('chariox') && (tool.includes('playwright') || tool.includes('browser'))) {
           return update
         }
       }
@@ -407,7 +407,7 @@ async function main() {
 
   const ports = makePorts()
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-mcp-${runId}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-mcp-${runId}`)
   const workspace = path.join(rootDir, 'workspace')
   const homeHomeDir = path.join(rootDir, 'home-home')
   const workerHomeDir = path.join(rootDir, 'worker-home')
@@ -416,9 +416,9 @@ async function main() {
   const relayToken = `remote-mcp-token-${process.pid}`
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
@@ -453,14 +453,14 @@ async function main() {
       listRemoteMachinesRequest,
     } = requests
     const relayBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
-      'arroba-relay',
+      'chariox-relay',
     )
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForTcpPort(ports.relayPort)
@@ -523,8 +523,8 @@ async function main() {
 
     const matching = mcpConfig('remote-mcp-drill', 'node', { args: ['--version'] })
     const mismatch = mcpConfig('remote-mcp-drill', 'node', { args: ['--eval', 'console.log("mismatch")'] })
-    const missingCommand = mcpConfig('remote-mcp-missing-command', 'arroba-definitely-missing-mcp-command')
-    const missingEnv = mcpConfig('remote-mcp-missing-env', 'node', { env_vars: ['ARROBA_REMOTE_MCP_DRILL_REQUIRED_ENV'] })
+    const missingCommand = mcpConfig('remote-mcp-missing-command', 'chariox-definitely-missing-mcp-command')
+    const missingEnv = mcpConfig('remote-mcp-missing-env', 'node', { env_vars: ['CHARIOX_REMOTE_MCP_DRILL_REQUIRED_ENV'] })
 
     const scenarioResults = []
     const events = []
@@ -654,10 +654,10 @@ async function main() {
       const before = events.filter((event) => event.event === 'assistant_message_completed').length
       await client.send(submitPromptRequest(session.id, attachment.id, liveAgent.id, [
         'This is a remote live MCP grant drill.',
-        'Use the provider-native Playwright MCP tool that is available to this remote agent, not Arroba list_extensions/request_extension.',
+        'Use the provider-native Playwright MCP tool that is available to this remote agent, not Chariox list_extensions/request_extension.',
         'The tool is usually named `mcp__playwright__browser_navigate`, `mcp__playwright__browser_snapshot`, `browser_navigate`, or similar.',
         'Prefer a non-mutating browser snapshot/title/text tool first; navigating to https://example.com is optional.',
-        'After any Playwright/browser MCP tool call completes successfully, use Arroba workspace live sync to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',
+        'After any Playwright/browser MCP tool call completes successfully, use Chariox workspace live sync to write `outputs/remote-playwright-mcp.txt` with exactly `M7_REMOTE_PLAYWRIGHT_MCP_OK`.',
         'Then reply exactly M7_REMOTE_PLAYWRIGHT_MCP_DONE.',
         'If Playwright MCP is unavailable, reply exactly M7_REMOTE_PLAYWRIGHT_MCP_UNAVAILABLE and do not write the marker file.',
       ].join('\n'), []))

@@ -12,7 +12,7 @@ import {
 
 test("project selector offers Default, same-workspace named projects, then New", () => {
   const projects = [
-    project("default", "arroba", "default", "/repo", 100),
+    project("default", "chariox", "default", "/repo", 100),
     project("other", "Other", "named", "/other", 500),
     project("older", "Docs", "named", "/repo", 200),
     project("newer", "Frontend", "named", "/repo", 400),

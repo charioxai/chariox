@@ -16,17 +16,17 @@ const reservedKernelPortLocks: string[] = []
 export type CodexAppServerProcess = ChildProcess
 
 export async function reserveCodexKernelServerPort(): Promise<number> {
-  const range = process.env.ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE?.trim()
+  const range = process.env.CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE?.trim()
   if (!range) return reservePort()
   const match = range.match(/^(\d+)-(\d+)$/)
-  if (!match) throw new Error("ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE must use START-END TCP port range syntax")
+  if (!match) throw new Error("CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE must use START-END TCP port range syntax")
   const start = Number.parseInt(match[1]!, 10)
   const end = Number.parseInt(match[2]!, 10)
   if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > 65535 || start > end) {
-    throw new Error("ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE must be a valid TCP port range")
+    throw new Error("CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE must be a valid TCP port range")
   }
   for (let port = start; port <= end; port += 1) {
-    const lockPath = path.join("/tmp", `arroba-codex-kernel-server-port-${port}.lock`)
+    const lockPath = path.join("/tmp", `chariox-codex-kernel-server-port-${port}.lock`)
     try {
       const fd = openSync(lockPath, "wx")
       closeSync(fd)
@@ -36,7 +36,7 @@ export async function reserveCodexKernelServerPort(): Promise<number> {
       continue
     }
   }
-  throw new Error(`no available port in ARROBA_CODEX_KERNEL_SERVER_PORT_RANGE=${range}`)
+  throw new Error(`no available port in CHARIOX_CODEX_KERNEL_SERVER_PORT_RANGE=${range}`)
 }
 
 export function releaseKernelPortLocks() {
@@ -52,7 +52,7 @@ export function releaseKernelPortLocks() {
 }
 
 export async function startCodexAppServer(endpoint: string, workingDirectory: string): Promise<CodexAppServerProcess> {
-  const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
+  const executable = process.env.CHARIOX_CODEX_BIN?.trim() || "codex"
   const child = spawn(executable, ["app-server", "--listen", endpoint], {
     cwd: workingDirectory,
     stdio: ["ignore", "ignore", "inherit"],
@@ -78,8 +78,8 @@ export async function startCodexAppServerInKernel(options: {
   listenEndpoint: string
   workingDirectory: string
 }): Promise<string> {
-  const executable = process.env.ARROBA_CODEX_BIN?.trim() || "codex"
-  const logFile = path.join("/tmp", `arroba-codex-kernel-server-${process.pid}-${Date.now()}.log`)
+  const executable = process.env.CHARIOX_CODEX_BIN?.trim() || "codex"
+  const logFile = path.join("/tmp", `chariox-codex-kernel-server-${process.pid}-${Date.now()}.log`)
   const command = [
     `cd ${shellQuote(options.workingDirectory)}`,
     `(${shellQuote(executable)} app-server --listen ${shellQuote(options.listenEndpoint)} > ${shellQuote(logFile)} 2>&1 & echo $!)`,

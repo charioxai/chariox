@@ -8,15 +8,15 @@ import type {
 import {
   refreshAgentPaneState,
   shouldRefreshAgentPanesForSessionChange,
-} from "@arroba/kernel-client/agent-pane-state"
+} from "@chariox/kernel-client/agent-pane-state"
 import {
   selectResponsePaneAgents,
   splitPaneAuxiliaryAgentIds,
-} from "@arroba/kernel-client/response-pane-selection"
-import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
-import { sessionAgentHasTurnWork } from "@arroba/kernel-client/session-prompt-work"
-import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
-import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+} from "@chariox/kernel-client/response-pane-selection"
+import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-transition"
+import { sessionAgentHasTurnWork } from "@chariox/kernel-client/session-prompt-work"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 
 type AgentPaneRefreshControllerDeps = {
   getCurrentAgents: () => readonly AgentInstance[]

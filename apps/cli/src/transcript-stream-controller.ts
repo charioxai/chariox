@@ -1,6 +1,6 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { cloneCompactTranscriptDisplayEntries } from "@arroba/kernel-client/transcript-display-state"
-import { getToolActivityLabel } from "@arroba/kernel-client/provider-status"
+import { cloneCompactTranscriptDisplayEntries } from "@chariox/kernel-client/transcript-display-state"
+import { getToolActivityLabel } from "@chariox/kernel-client/provider-status"
 import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,
@@ -8,7 +8,7 @@ import {
   transcriptStreamRuntimeTransition,
   type TranscriptStreamApplyResult,
   type TranscriptStreamMetadata,
-} from "@arroba/kernel-client/transcript-stream-state"
+} from "@chariox/kernel-client/transcript-stream-state"
 import type { ToolTranscriptUpdate } from "./transcript.js"
 
 export type TranscriptStreamControllerDeps = {

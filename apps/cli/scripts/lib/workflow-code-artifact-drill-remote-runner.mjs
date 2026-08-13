@@ -129,7 +129,7 @@ export async function startKernel(repo, bundle, timeoutMs, LocalIpcClient, reque
   await mkdir(worktree, { recursive: true })
   const stdoutFd = openSync(stdoutPath, 'a')
   const stderrFd = openSync(stderrPath, 'a')
-  const child = spawn(path.join(repo, 'apps/kernel/target/debug/arroba-kernel'), [], {
+  const child = spawn(path.join(repo, 'apps/kernel/target/debug/chariox-kernel'), [], {
     cwd: repo,
     env: {
       ...process.env,
@@ -137,13 +137,13 @@ export async function startKernel(repo, bundle, timeoutMs, LocalIpcClient, reque
       XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
       XDG_STATE_HOME: path.join(root, 'xdg-state'),
       XDG_CACHE_HOME: path.join(root, 'xdg-cache'),
-      ARROBA_HOME: path.join(root, 'arroba-home'),
-      ARROBA_KERNEL_PORT: String(port),
-      ARROBA_MCP_PORT: String(port + 1000),
-      ARROBA_OPENCODE_PORT: String(port + 2000),
-      ARROBA_CODEX_PORT: String(port + 2001),
-      ARROBA_DAEMON_SOCKET: path.join(os.tmpdir(), runId + '.sock'),
-      ARROBA_DAEMON_ID: runId,
+      CHARIOX_HOME: path.join(root, 'chariox-home'),
+      CHARIOX_KERNEL_PORT: String(port),
+      CHARIOX_MCP_PORT: String(port + 1000),
+      CHARIOX_OPENCODE_PORT: String(port + 2000),
+      CHARIOX_CODEX_PORT: String(port + 2001),
+      CHARIOX_DAEMON_SOCKET: path.join(os.tmpdir(), runId + '.sock'),
+      CHARIOX_DAEMON_ID: runId,
     },
     stdio: ['ignore', stdoutFd, stderrFd],
   })

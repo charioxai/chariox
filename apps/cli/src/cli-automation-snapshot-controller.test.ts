@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { ShellContext } from "@arroba/kernel-client/shell-core"
+import type { ShellContext } from "@chariox/kernel-client/shell-core"
 
 import { createCliAutomationSnapshotController } from "./cli-automation-snapshot-controller.js"
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"

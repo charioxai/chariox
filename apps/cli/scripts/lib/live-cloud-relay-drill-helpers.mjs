@@ -7,7 +7,7 @@ import { resolveBuiltBinary } from "./drill-runtime-helpers.mjs"
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const DEV_AUTH_SECRET = "arroba-cloud-live-drill-dev-auth-secret"
+const DEV_AUTH_SECRET = "chariox-cloud-live-drill-dev-auth-secret"
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -78,10 +78,10 @@ export async function waitForHttp(url, timeoutMs = 30_000) {
 
 export async function buildKernelIfNeeded() {
   const manifest = path.join(repoRoot, "apps/kernel/Cargo.toml")
-  const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const result = await run("cargo", ["build", "--manifest-path", manifest, "--bin", "arroba-kernel"])
+  const binary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
+  const result = await run("cargo", ["build", "--manifest-path", manifest, "--bin", "chariox-kernel"])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return await resolveBuiltBinary(binary, manifest, "arroba-kernel")
+  return await resolveBuiltBinary(binary, manifest, "chariox-kernel")
 }
 
 export async function terminateChild(child, signal = "SIGTERM") {
@@ -332,18 +332,18 @@ export async function browserMutationHeaders(apiUrl, identity) {
   return {
     cookie: csrfCookie,
     "csrf-token": csrf.body.csrfToken,
-    "x-arroba-test-auth0-identity": JSON.stringify(identity),
+    "x-chariox-test-auth0-identity": JSON.stringify(identity),
   }
 }
 
 export function devDeviceApprovalHeaders() {
   return {
-    "x-arroba-dev-auth-secret": DEV_AUTH_SECRET,
+    "x-chariox-dev-auth-secret": DEV_AUTH_SECRET,
   }
 }
 
 export async function removePersistedCloudSessionToken(configHome) {
-  const configPath = path.join(configHome, "arroba", "daemon", "config.json")
+  const configPath = path.join(configHome, "chariox", "daemon", "config.json")
   const config = JSON.parse(await readFile(configPath, "utf8"))
   assert(config.cloud_relay?.machine_credential, "persisted cloud profile should include machine credential before token removal", config.cloud_relay)
   delete config.cloud_relay.cloud_session_token

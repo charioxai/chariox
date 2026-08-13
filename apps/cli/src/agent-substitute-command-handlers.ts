@@ -6,8 +6,8 @@ import type {
 import {
   formatAgentSubstituteSummary as formatSharedAgentSubstituteSummary,
   type AgentInstance as SharedAgentInstance,
-} from "@arroba/kernel-client"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+} from "@chariox/kernel-client"
+import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 
 type FooterTone = "info" | "error"
 

@@ -270,7 +270,7 @@ export async function createRealProviderDashboardPublicationSession(client, sess
       'Generate a compact, complete, self-contained HTML document for a vibrant dashboard and write it to `dashboard.html` in the current workspace.',
       'Keep `dashboard.html` compact enough for a drill, preferably under 4000 bytes. Use short inline CSS and a few metric blocks.',
       'The HTML must visibly include the title text `Real Provider Workflow Dashboard`.',
-      'The HTML must include `data-arroba-real-provider-dashboard="true"` on the main dashboard element.',
+      'The HTML must include `data-chariox-real-provider-dashboard="true"` on the main dashboard element.',
       'Include at least four KPI cards, one chart-like visual using HTML/CSS only, and one operational status section.',
       'Make the design responsive for both desktop and narrow mobile widths without scripts.',
       'Use inline CSS only; do not use scripts, external assets, network, or unrelated workspace inspection.',

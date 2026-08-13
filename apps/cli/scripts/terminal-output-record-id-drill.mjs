@@ -46,7 +46,7 @@ const steps = [
   {
     name: "kernel client TypeScript build",
     command: "pnpm",
-    args: ["--filter", "@arroba/kernel-client", "run", "build"],
+    args: ["--filter", "@chariox/kernel-client", "run", "build"],
   },
 ]
 

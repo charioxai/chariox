@@ -3,7 +3,7 @@ import process from "node:process"
 import {
   sessionHasTurnWork as kernelSessionHasTurnWork,
   sessionProjectedStreamingAgentId,
-} from "@arroba/kernel-client/session-prompt-work"
+} from "@chariox/kernel-client/session-prompt-work"
 import {
   type CliOptions,
   type RuntimeSession,

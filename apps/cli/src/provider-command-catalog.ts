@@ -7,7 +7,7 @@ import {
   providerNamespace,
   providerSupportsNamespaceCommands,
   type ParsedProviderNamespaceCommand as SharedParsedProviderNamespaceCommand,
-} from "@arroba/kernel-client/provider-namespace-command"
+} from "@chariox/kernel-client/provider-namespace-command"
 
 export type ProviderCommandDescriptor = {
   id: string
@@ -52,14 +52,14 @@ const EMPTY_PROVIDER_COMMAND_CATALOGS: ProviderCommandCatalogs = {
     provider: "claude-headless",
     source: "shipped",
     discovery: "none",
-    // Claude Code CLI commands are not exposed through Arroba forwarding yet.
+    // Claude Code CLI commands are not exposed through Chariox forwarding yet.
     commands: [],
   },
   "claude-p": {
     provider: "claude-p",
     source: "shipped",
     discovery: "none",
-    // Claude Code CLI commands are not exposed through Arroba forwarding yet.
+    // Claude Code CLI commands are not exposed through Chariox forwarding yet.
     commands: [],
   },
 }

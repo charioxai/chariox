@@ -45,7 +45,7 @@ async function main() {
 
   const completedAt = new Date()
   console.log(JSON.stringify({
-    schema: "arroba.tui_web_terminal_parity_drill.v1",
+    schema: "chariox.tui_web_terminal_parity_drill.v1",
     status: "passed",
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),

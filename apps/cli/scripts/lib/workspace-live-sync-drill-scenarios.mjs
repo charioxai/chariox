@@ -37,7 +37,7 @@ export async function waitForTrackedFanout({
       [path.join(sourceOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
       [path.join(sourceOutputs, `${provider}-tracked-rebase.txt`), expectedSourceRebase],
       [path.join(sourceOutputs, `${provider}-tracked-conflict.txt`), expectedSourceConflict],
-      [path.join(sourceWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
+      [path.join(sourceWorkspace, '.charioxignore'), 'ignored/\n*.secret\n'],
     ]
     for (const targetWorkspace of targetWorkspaces) {
       const targetOutputs = path.join(targetWorkspace, 'outputs')
@@ -47,7 +47,7 @@ export async function waitForTrackedFanout({
         [path.join(targetOutputs, `${provider}-tracked-renamed.txt`), expectedRenamed],
         [path.join(targetOutputs, `${provider}-tracked-rebase.txt`), expectedTargetRebase],
         [path.join(targetOutputs, `${provider}-tracked-conflict.txt`), expectedTargetConflict],
-        [path.join(targetWorkspace, '.arrobaignore'), 'ignored/\n*.secret\n'],
+        [path.join(targetWorkspace, '.charioxignore'), 'ignored/\n*.secret\n'],
       )
     }
     let contentOk = true
@@ -215,8 +215,8 @@ export async function runTrackedTargetOriginPhase({
     `printf '${provider}-target-origin-added\\n' > outputs/${provider}-target-origin-added.txt`,
   ].join('\n')
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-    'This is a live Arroba workspace live sync tracked-mode target-origin drill.',
-    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    'This is a live Chariox workspace live sync tracked-mode target-origin drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Chariox workspace live sync MCP/runtime tools.',
     'Run this exact POSIX shell script once from the current workspace directory:',
     targetOriginScript,
     'Do not inspect, read, list, or verify any files before or after running the script.',
@@ -311,8 +311,8 @@ export async function runTrackedConflictResolutionPhase({
   const alignSinceMs = Date.now()
   const alignMarker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_CONFLICT_ALIGNED`
   await client.send(submitPromptRequest(session.id, attachment.id, resolverAgent.id, [
-    'This is a live Arroba workspace live sync tracked-mode conflict alignment drill.',
-    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    'This is a live Chariox workspace live sync tracked-mode conflict alignment drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Chariox workspace live sync MCP/runtime tools.',
     `Run a direct write in the current workspace so that ${relativePath} becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`,
     ...targetConflictPaths.slice(1).map((targetPath) =>
       `Also run a direct write so that ${targetPath} becomes exactly "one\\n${provider}-tracked-source-conflict\\nthree\\n".`
@@ -368,8 +368,8 @@ export async function runTrackedConflictResolutionPhase({
   const resolveSinceMs = Date.now()
   const resolveMarker = `${provider.toUpperCase()}_TRACKED_WORKSPACE_LIVE_SYNC_CONFLICT_RESOLVED`
   await client.send(submitPromptRequest(session.id, attachment.id, sourceAgent.id, [
-    'This is a live Arroba workspace live sync tracked-mode conflict resolution drill.',
-    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    'This is a live Chariox workspace live sync tracked-mode conflict resolution drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Chariox workspace live sync MCP/runtime tools.',
     `Run a direct write in the current workspace so that ${relativePath} becomes exactly "one\\n${provider}-tracked-resolved\\nthree\\n".`,
     `After that direct filesystem write completes, reply exactly ${resolveMarker} and nothing else.`,
   ].join('\n'), []))
@@ -469,7 +469,7 @@ export async function runTrackedOutsideWorkspacePhase({
     }
   }
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-    'This is a live Arroba workspace live sync outside-workspace permission drill.',
+    'This is a live Chariox workspace live sync outside-workspace permission drill.',
     'Run this exact POSIX shell script once from the current workspace directory:',
     outsideWorkspaceScript,
     'Do not edit files in the current workspace.',
@@ -604,8 +604,8 @@ export async function runTrackedWorkspaceLiveSyncDrill({
     `printf '${provider}-ignored\\n' > ignored/${provider}-ignored.txt`,
   ].join('\n')
   await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-    'This is a live Arroba workspace live sync tracked-mode drill.',
-    'Use direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+    'This is a live Chariox workspace live sync tracked-mode drill.',
+    'Use direct filesystem writes through shell/native file tools. Do not use any Chariox workspace live sync MCP/runtime tools.',
     'Run this exact POSIX shell script once from the current workspace directory:',
     trackedScript,
     'Do not inspect, read, list, or verify any files before or after running the script.',
@@ -803,9 +803,9 @@ export async function runTrackedWorkspaceLiveSyncDrill({
       targetHeadAfter: targetHeadsAfter[targetWorkspace],
       targetHeadsBefore,
       targetHeadsAfter,
-      sourceArrobaignore: await readFile(path.join(workspace, '.arrobaignore'), 'utf8'),
-      targetArrobaignore: await readFile(path.join(targetWorkspace, '.arrobaignore'), 'utf8'),
-      targetArrobaignores: Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await readFile(path.join(target, '.arrobaignore'), 'utf8')]))),
+      sourceCharioxignore: await readFile(path.join(workspace, '.charioxignore'), 'utf8'),
+      targetCharioxignore: await readFile(path.join(targetWorkspace, '.charioxignore'), 'utf8'),
+      targetCharioxignores: Object.fromEntries(await Promise.all(trackedTargetWorkspaces.map(async (target) => [target, await readFile(path.join(target, '.charioxignore'), 'utf8')]))),
     },
     bidirectional,
     resolution,

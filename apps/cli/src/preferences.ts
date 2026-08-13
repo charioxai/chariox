@@ -3,7 +3,7 @@ import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import type { ThemeName } from "./theme-registry.js"
 
-export type ArrobaPreferences = {
+export type CharioxPreferences = {
   providers?: Record<string, ProviderPreferences>
   relay?: RelayPreferences
   ui?: UiPreferences
@@ -63,9 +63,9 @@ export function resolveMaxAgentsPerScreen(value?: number | null) {
 }
 
 export function mergeUiPreferences(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   next: UiPreferences,
-): ArrobaPreferences {
+): CharioxPreferences {
   return {
     ...current,
     ui: {
@@ -76,10 +76,10 @@ export function mergeUiPreferences(
 }
 
 export function mergeSessionPromptHistory(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   sessionId: string,
   entries: readonly string[],
-): ArrobaPreferences {
+): CharioxPreferences {
   return {
     ...current,
     sessions: {
@@ -93,13 +93,13 @@ export function mergeSessionPromptHistory(
 }
 
 export function mergeSessionPromptState(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   sessionId: string,
   next: {
     promptHistory?: readonly string[]
     promptDraft?: string | null
   },
-): ArrobaPreferences {
+): CharioxPreferences {
   const promptDraft = normalizePromptDraftEntry(next.promptDraft)
   return {
     ...current,
@@ -115,14 +115,14 @@ export function mergeSessionPromptState(
 }
 
 export function sessionPromptHistoryEntries(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   sessionId: string,
 ): string[] {
   return normalizePromptHistoryEntries(current.sessions?.[sessionId]?.promptHistory ?? [])
 }
 
 export function sessionPromptDraftEntry(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   sessionId: string,
 ): string {
   return normalizePromptDraftEntry(current.sessions?.[sessionId]?.promptDraft) ?? ""
@@ -130,9 +130,9 @@ export function sessionPromptDraftEntry(
 
 export async function loadPreferences() {
   try {
-    return JSON.parse(await readFile(preferencesPath(), "utf8")) as ArrobaPreferences
+    return JSON.parse(await readFile(preferencesPath(), "utf8")) as CharioxPreferences
   } catch {
-    return {} as ArrobaPreferences
+    return {} as CharioxPreferences
   }
 }
 
@@ -154,9 +154,9 @@ export async function saveUiPreferences(next: UiPreferences) {
 }
 
 export function mergeRelayCloudProfile(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
   profile: RelayCloudProfile | null,
-): ArrobaPreferences {
+): CharioxPreferences {
   return {
     ...current,
     relay: {
@@ -167,7 +167,7 @@ export function mergeRelayCloudProfile(
 }
 
 export function relayCloudProfile(
-  current: ArrobaPreferences,
+  current: CharioxPreferences,
 ): RelayCloudProfile | null {
   return current.relay?.cloud ?? null
 }
@@ -193,13 +193,13 @@ export async function saveSessionPromptState(
 export function preferencesPath() {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
   if (xdg) {
-    return path.join(xdg, "arroba", "config.json")
+    return path.join(xdg, "chariox", "config.json")
   }
-  return path.join(os.homedir(), ".arroba", "config.json")
+  return path.join(os.homedir(), ".chariox", "config.json")
 }
 
 async function updatePreferences(
-  apply: (current: ArrobaPreferences) => ArrobaPreferences,
+  apply: (current: CharioxPreferences) => CharioxPreferences,
 ) {
   preferencesSaveQueue = preferencesSaveQueue
     .catch(() => {

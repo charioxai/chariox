@@ -7,7 +7,7 @@ import {
   kernelRemoteRuntimeIssueCount,
   kernelRemoteRuntimeReadiness,
   type DaemonHealthProjection,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 export {
   formatKernelHealth,

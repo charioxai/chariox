@@ -9,7 +9,7 @@ import WebSocket from 'ws'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 
 const repoRoot = new URL('../../..', import.meta.url).pathname
-const issuer = 'arroba-cloud-drill'
+const issuer = 'chariox-cloud-drill'
 const secret = 'relay-identity-drill-secret'
 
 function parseArgs(argv) {
@@ -34,7 +34,7 @@ function base64url(input) {
 function signToken(claims) {
   const claimsPayload = base64url(JSON.stringify(claims))
   const signature = createHmac('sha256', secret).update(claimsPayload).digest('base64url')
-  return `arroba-scoped-v1.${claimsPayload}.${signature}`
+  return `chariox-scoped-v1.${claimsPayload}.${signature}`
 }
 
 function claims({
@@ -164,7 +164,7 @@ function requireCondition(condition, message, detail = null) {
 
 async function main() {
   const preserveOnFailure = process.argv.slice(2).includes('--keep-artifacts-on-failure')
-  const rootDir = path.join(os.tmpdir(), `arroba-relay-identity-security-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-relay-identity-security-${process.pid}-${Date.now()}`)
   let options = { keepArtifactsOnFailure: preserveOnFailure }
   let succeeded = false
   let failure = null
@@ -179,14 +179,14 @@ async function main() {
     options = parseArgs(process.argv.slice(2))
     port = await freePort()
     url = `ws://127.0.0.1:${port}`
-    relay = spawn('cargo', ['run', '--manifest-path', `${repoRoot}/apps/relay/Cargo.toml`, '--bin', 'arroba-relay'], {
+    relay = spawn('cargo', ['run', '--manifest-path', `${repoRoot}/apps/relay/Cargo.toml`, '--bin', 'chariox-relay'], {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_RELAY_HOST: '127.0.0.1',
-        ARROBA_RELAY_PORT: String(port),
-        ARROBA_RELAY_SCOPED_ISSUER: issuer,
-        ARROBA_RELAY_SCOPED_HMAC_SECRET: secret,
+        CHARIOX_RELAY_HOST: '127.0.0.1',
+        CHARIOX_RELAY_PORT: String(port),
+        CHARIOX_RELAY_SCOPED_ISSUER: issuer,
+        CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -325,7 +325,7 @@ async function main() {
       await sleep(200)
       if (relay.exitCode == null) relay.kill('SIGKILL')
     }
-    if (process.env.ARROBA_DEBUG_DRILL === '1' && stderr.trim()) {
+    if (process.env.CHARIOX_DEBUG_DRILL === '1' && stderr.trim()) {
       console.error(stderr)
     }
     await finalizeDrillArtifacts({

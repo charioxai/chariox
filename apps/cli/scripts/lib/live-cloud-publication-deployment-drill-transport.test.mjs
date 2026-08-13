@@ -8,7 +8,7 @@ import test from 'node:test'
 import { validateTransport } from './live-cloud-publication-deployment-drill-transport.mjs'
 
 test('human HTTP transport writes viewer and completed SSE evidence', async (t) => {
-  const artifactsDir = await mkdtemp(path.join(os.tmpdir(), 'arroba-publication-transport-'))
+  const artifactsDir = await mkdtemp(path.join(os.tmpdir(), 'chariox-publication-transport-'))
   const server = http.createServer((request, response) => {
     if (request.url === '/publication/events') {
       response.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -23,7 +23,7 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
       return
     }
     response.writeHead(200, { 'content-type': 'text/html' })
-    response.end('<!doctype html><script>window.__arrobaPublicationViewerConfig = {"eventsUrl":"/events"}; const stream = new EventSource("/events");</script>')
+    response.end('<!doctype html><script>window.__charioxPublicationViewerConfig = {"eventsUrl":"/events"}; const stream = new EventSource("/events");</script>')
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   t.after(async () => {

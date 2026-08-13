@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { waitingRoomTimestampLabel } from "@arroba/kernel-client/waiting-room-activity"
+import { waitingRoomTimestampLabel } from "@chariox/kernel-client/waiting-room-activity"
 
 import type { SessionListEntry } from "./sessions.js"
 import {

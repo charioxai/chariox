@@ -2,7 +2,7 @@ import {
   externalProviderSessionPageHasMore,
   externalProviderSessionPageSessions,
   externalProviderSessionSelectionIndex,
-} from "@arroba/kernel-client/external-provider-sessions"
+} from "@chariox/kernel-client/external-provider-sessions"
 import type { SessionListEntry } from "./sessions.js"
 import { waitingRoomRemoteKernels, waitingRoomRemoteMachines } from "./waiting-room-remote-rows.js"
 import { waitingRoomPreviewSessions, waitingRoomSessions } from "./waiting-room-session-rows.js"

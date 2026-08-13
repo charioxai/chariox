@@ -449,21 +449,21 @@ function parseJsonLike(value) {
 function runtimeToolNames(provider) {
   if (provider === 'opencode') {
     return {
-      read: 'arroba_read_artifact',
-      write: 'arroba_write_artifact',
-      edit: 'arroba_edit_artifact',
-      patch: 'arroba_patch_artifact',
-      move: 'arroba_move_artifact',
-      delete: 'arroba_delete_artifact',
+      read: 'chariox_read_artifact',
+      write: 'chariox_write_artifact',
+      edit: 'chariox_edit_artifact',
+      patch: 'chariox_patch_artifact',
+      move: 'chariox_move_artifact',
+      delete: 'chariox_delete_artifact',
     }
   }
   return {
-    read: 'arroba.read_artifact',
-    write: 'arroba.write_artifact',
-    edit: 'arroba.edit_artifact',
-    patch: 'mcp__arroba__patch_artifact',
-    move: 'arroba.move_artifact',
-    delete: 'arroba.delete_artifact',
+    read: 'chariox.read_artifact',
+    write: 'chariox.write_artifact',
+    edit: 'chariox.edit_artifact',
+    patch: 'mcp__chariox__patch_artifact',
+    move: 'chariox.move_artifact',
+    delete: 'chariox.delete_artifact',
   }
 }
 
@@ -502,21 +502,21 @@ async function main() {
     const LocalIpcClient = loaded.LocalIpcClient
     requests = loaded.requests
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     daemonChild = spawn(daemonBinary, [], {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: `tool-display-fixtures-${runId}`,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: historyDir,
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_DAEMON_ID: `tool-display-fixtures-${runId}`,
+        CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: historyDir,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -645,11 +645,11 @@ async function runTargetFixture({
     'AgentSpawned',
   ).agent
   await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
-    'This is an Arroba tool-display fixture drill.',
+    'This is a Chariox tool-display fixture drill.',
     'You must actually call tools now. Do not describe, plan, or summarize the steps without calling tools.',
     'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
     'Keep all changes inside this disposable workspace.',
-    `Step 1: call the Arroba runtime tool \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
+    `Step 1: call the Chariox runtime tool \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
     `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"write-target.txt","content_text":"write-before\\n","domain":"text"}.`,
     `Step 3: call \`${tools.read}\` exactly once with JSON arguments {"path":"write-target.txt","domain":"text"} and remember the returned snapshot_id.`,
     `Step 4: call \`${tools.edit}\` exactly once using that snapshot_id, with JSON arguments {"path":"write-target.txt","old_text":"write-before\\n","new_text":"write-after\\n","domain":"text","snapshot_id":"THE_SNAPSHOT_ID_FROM_STEP_3"}. Replace THE_SNAPSHOT_ID_FROM_STEP_3 with the exact snapshot_id from Step 3.`,
@@ -678,10 +678,10 @@ async function runTargetFixture({
     pollMs,
   })
   await client.send(requests.submitPromptRequest(session.id, attachment.id, agent.id, [
-    'This is phase 2 of the Arroba tool-display fixture drill.',
+    'This is phase 2 of the Chariox tool-display fixture drill.',
     'You must actually call the patch and move tools now. Do not describe or summarize without calling them.',
     'Do not print XML, JSON, markdown, or pseudo-tool-call text. Use the provider tool-call mechanism only.',
-    `Step 1: call the Arroba runtime tool \`${tools.patch}\` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.`,
+    `Step 1: call the Chariox runtime tool \`${tools.patch}\` exactly once with JSON arguments {"patch_text":"*** Begin Patch\\n*** Update File: patch-target.txt\\n@@\\n-before\\n+after\\n*** End Patch","domain":"text"}.`,
     `Step 2: call \`${tools.move}\` exactly once with JSON arguments {"from_path":"patch-target.txt","to_path":"moved-target.txt","old_text":"after\\n","new_text":"moved-after\\n","domain":"text"}.`,
     'Only after both tools succeed, reply with TOOL_DISPLAY_FIXTURE_DONE.',
     'If you cannot call the patch or move tool, reply with TOOL_DISPLAY_FIXTURE_NO_PATCH and include the exact reason.',
@@ -720,7 +720,7 @@ async function runTargetFixture({
 
 async function writeRenderedFixture(targetPath, events) {
   try {
-    const { formatToolDisplay } = await import('@arroba/tool-display')
+    const { formatToolDisplay } = await import('@chariox/tool-display')
     const rendered = parsedToolEvents(events)
       .map((event) => JSON.stringify(formatToolDisplay(event)))
     if (rendered.length > 0) {

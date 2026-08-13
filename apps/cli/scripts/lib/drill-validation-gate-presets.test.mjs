@@ -98,7 +98,7 @@ test("describes stable validation gate presets", () => {
       description: "End-to-end distributed runtime authority evidence across native TUI, remote agents, home extensions, slices, and Workspace Live Sync.",
       requiredPlatformCoverageAreas: ["failure-diagnostics", "matrix-validation", "runtime-fixtures"],
       requiredArtifactCoverageAreas: ["distributed-observability"],
-      requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+      requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedEvidenceRepos: ["cloud", "oss"],
@@ -440,7 +440,7 @@ test("expands validation gate preset requirements", () => {
     presets: ["remote-home-extension"],
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
     requiredArtifactCoverageAreas: [],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     requiredFailureClassifications: ["workspace-live-sync-conflict"],
     requiredMatrices: ["custom-matrix"],
     requiredMatrixClassifications: ["workspace-live-sync-conflict"],
@@ -451,7 +451,7 @@ test("expands validation gate preset requirements", () => {
   }), {
     requiredPlatformCoverageAreas: ["runtime-fixtures", "failure-diagnostics", "matrix-validation", "runtime-fixtures"],
     requiredArtifactCoverageAreas: [],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     requiredArtifactKinds: [],
     requiredArtifactGeneratedEvidenceKinds: [],
       requiredArtifactGeneratedEvidenceRepos: [],
@@ -517,7 +517,7 @@ test("expands validation gate preset requirements", () => {
     requiredDeploymentPresets: [],
     requiredProviders: [],
     requiredScenarios: [],
-  }).requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+  }).requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
   assert.deepEqual(expandValidationGatePresetRequirements({
     presets: ["distributed-runtime"],
     requiredPlatformCoverageAreas: [],
@@ -662,9 +662,9 @@ test("normalizes validation gate requirements", () => {
     "distributed-observability",
     "matrix-validation",
   ])
-  assert.deepEqual(normalizeRequiredArtifactSchemas(["arroba.drill.matrix.v1,arroba.drill.validation_suite_run.v1", "arroba.drill.matrix.v1"]), [
-    "arroba.drill.matrix.v1",
-    "arroba.drill.validation_suite_run.v1",
+  assert.deepEqual(normalizeRequiredArtifactSchemas(["chariox.drill.matrix.v1,chariox.drill.validation_suite_run.v1", "chariox.drill.matrix.v1"]), [
+    "chariox.drill.matrix.v1",
+    "chariox.drill.validation_suite_run.v1",
   ])
   assert.deepEqual(normalizeRequiredArtifactKinds(["validation-suite-run,matrix-report", "matrix-report"]), [
     "matrix-report",

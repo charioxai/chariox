@@ -28,6 +28,6 @@ test("reconnect storm drill requires isolated slow-lane closure", async () => {
   assert.match(source, /peakKernelRssMb <= 1_024/)
   assert.match(source, /\["SIGINT", "SIGTERM"\]/)
   assert.match(source, /appendNativeProviderOutputBatchRequest/)
-  assert.match(source, /ARROBA_RELAY_OUTGOING_QUEUE_CAPACITY: "32"/)
+  assert.match(source, /CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "32"/)
   assert.match(source, /terminateOwnedTree/)
 })

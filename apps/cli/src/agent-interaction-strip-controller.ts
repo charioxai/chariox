@@ -1,5 +1,5 @@
 import type { RuntimeInteraction } from "./cli-types.js"
-import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
+import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 
 type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: string }> = {
   renderer: TRenderer

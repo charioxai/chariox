@@ -7,7 +7,7 @@ import WebSocket from "ws"
 import { sendTerminalInputRequest } from "../../dist/ipc-requests.js"
 
 export async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, worktree, prompt, logFile, filePath = null) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const args = [
     "run",
     "--attach",
@@ -54,7 +54,7 @@ export async function runNativeOpenCodePrompt(proxyUrl, providerSessionId, workt
 }
 
 export async function runNativeOpenCodePromptDetached(proxyUrl, providerSessionId, worktree, prompt) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const child = spawn(executable, [
     "run",
     "--attach",

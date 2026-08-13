@@ -47,7 +47,7 @@ test("fails when platform evidence is required but no bundle is provided", async
 })
 
 test("passes with platform bundle coverage and failure taxonomy evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-platform-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-platform-"))
   try {
     await writeDrillPlatformBundle(rootDir)
 
@@ -101,7 +101,7 @@ test("passes with platform bundle coverage and failure taxonomy evidence", async
 })
 
 test("fails when platform bundle misses required coverage dimensions", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-platform-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-platform-"))
   try {
     await writeDrillPlatformBundle(rootDir)
 
@@ -126,11 +126,11 @@ test("fails when platform bundle misses required coverage dimensions", async () 
 })
 
 test("fails when platform bundle taxonomy evidence is tampered", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-platform-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-platform-"))
   try {
     await writeDrillPlatformBundle(rootDir)
     await writeFile(path.join(rootDir, "failure-taxonomy-drill.json"), JSON.stringify({
-      schema: "arroba.drill.failure_taxonomy.v1",
+      schema: "chariox.drill.failure_taxonomy.v1",
       target: "scenario",
       classifications: [],
     }), "utf8")

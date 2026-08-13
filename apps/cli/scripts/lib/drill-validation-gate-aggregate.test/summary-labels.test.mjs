@@ -15,7 +15,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     normalizedRequiredPresets: ["workspace-live-sync"],
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["runtime-fixtures"],
-      requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+      requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
       requiredArtifactKinds: ["validation-suite-run"],
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactEvidenceRepos: ["oss"],
@@ -59,7 +59,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "runtime-state": 1,
   })
   assert.deepEqual(aggregate.coverage.artifactSchemas, {
-    "arroba.drill.validation_suite_run.v1": 1,
+    "chariox.drill.validation_suite_run.v1": 1,
   })
   assert.deepEqual(aggregate.coverage.artifactOwners, {
     "validation-platform": 1,
@@ -119,7 +119,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   assert.deepEqual(aggregate.requiredArtifactRuntimeAuthorityInvariants, ["home-session-authority"])
   assert.deepEqual(aggregate.missingArtifactRuntimeAuthorityInvariants, [])
   assert.deepEqual(aggregate.reports[0].source, "workspace-live-sync.json")
-  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+  assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactKinds, ["validation-suite-run"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactEvidenceRepos, ["oss"])
   assert.deepEqual(aggregate.reports[0].artifactCoverage.requiredArtifactProviderAccountAliases, ["codex=work"])
@@ -155,7 +155,7 @@ test("summarizes validation gate reports with aggregate requirements", () => {
     "/tmp/generated-suite/failed-run": 1,
   })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.generatedValidationSuiteArtifactIndexes, {
-    "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+    "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
   })
   assert.deepEqual(aggregate.reports[0].artifactCoverage.evidenceRepos, {
     oss: 1,
@@ -185,11 +185,11 @@ test("summarizes validation gate reports with aggregate requirements", () => {
   const text = formatDrillValidationGateAggregateSummary(aggregate)
   assert.match(text, /required_providers=codex missing=none/)
   assert.match(text, /- artifact_coverage_input_sources: artifact metadata inputs=1/)
-  assert.match(text, /required_artifact_schemas=arroba\.drill\.validation_suite_run\.v1 missing=none/)
+  assert.match(text, /required_artifact_schemas=chariox\.drill\.validation_suite_run\.v1 missing=none/)
   assert.match(text, /required_artifact_kinds=validation-suite-run missing=none/)
   assert.match(text, /required_artifact_evidence_repos=oss missing=none/)
   assert.match(text, /required_artifact_validation_presets=distributed-runtime missing=none/)
-  assert.match(text, /- artifact_schemas: arroba.drill.validation_suite_run.v1=1/)
+  assert.match(text, /- artifact_schemas: chariox.drill.validation_suite_run.v1=1/)
   assert.match(text, /- artifact_runtime_signals: session-authority=2 workspace-live-sync-state=1/)
   assert.match(text, /- artifact_runtime_signal_owners: kernel-authority=1 runtime-state=1/)
   assert.match(text, /- artifact_owners: validation-platform=1/)
@@ -276,7 +276,7 @@ test("summarizes stale failure manifests from gate reports", () => {
         status: "failed",
         requiredFailureMaxAgeMs: 100,
         staleFailureManifests: [{
-          source: "/tmp/arroba-drill-failure.json",
+          source: "/tmp/chariox-drill-failure.json",
           drill: "workspace-live-sync",
           failedAt: "2026-01-01T00:00:00.000Z",
           ageMs: 1000,
@@ -298,16 +298,16 @@ test("summarizes stale failure manifests from gate reports", () => {
 
   assert.equal(aggregate.status, "failed")
   assert.deepEqual(aggregate.coverage.failureStaleManifests, {
-    "/tmp/arroba-drill-failure.json": 1,
+    "/tmp/chariox-drill-failure.json": 1,
   })
   assert.deepEqual(aggregate.reports[0].failureCoverage.staleFailureManifests, [{
-    source: "/tmp/arroba-drill-failure.json",
+    source: "/tmp/chariox-drill-failure.json",
     drill: "workspace-live-sync",
     failedAt: "2026-01-01T00:00:00.000Z",
     ageMs: 1000,
     maxAgeMs: 100,
   }])
-  assert.match(text, /- failure_stale_manifests: \/tmp\/arroba-drill-failure\.json=1/)
+  assert.match(text, /- failure_stale_manifests: \/tmp\/chariox-drill-failure\.json=1/)
   assert.match(text, /classification=failure-artifacts count=1/)
 })
 
@@ -513,12 +513,12 @@ test("rejects unknown generated matrix limitation labels in aggregate reports", 
           artifactIndexFlag: "--artifact-index",
           artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
           args: ["--dry-run"],
-          cwd: "/repo/arroba",
+          cwd: "/repo/chariox",
           matrix: "workspace-live-sync-matrix",
-          nodeArgs: ["/repo/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs", "--dry-run", "--report", "/tmp/generated-matrix/workspace-live-sync-matrix.json", "--artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+          nodeArgs: ["/repo/chariox/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs", "--dry-run", "--report", "/tmp/generated-matrix/workspace-live-sync-matrix.json", "--artifact-index", "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
           repo: "oss",
           reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
-          scriptPath: "/repo/arroba/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+          scriptPath: "/repo/chariox/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
         }],
         dryRun: true,
         continueOnFailure: false,

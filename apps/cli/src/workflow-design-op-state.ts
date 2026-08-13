@@ -1,4 +1,4 @@
-import type { WorkflowDesignOp } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignOp } from "@chariox/kernel-client/kernel-types"
 
 import type {
   WorkflowDefinition,

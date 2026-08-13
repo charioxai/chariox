@@ -88,11 +88,11 @@ test("hosted Cloud cleanup attempts revocation and logout after an earlier clean
 })
 
 test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {
-  const source = { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "0" }
+  const source = { PATH: "/usr/bin", CHARIOX_PROVIDER_DEV_STUB: "0" }
   const enabled = withDevStubProviderInventory(source)
 
-  assert.deepEqual(enabled, { PATH: "/usr/bin", ARROBA_PROVIDER_DEV_STUB: "1" })
-  assert.equal(source.ARROBA_PROVIDER_DEV_STUB, "0")
+  assert.deepEqual(enabled, { PATH: "/usr/bin", CHARIOX_PROVIDER_DEV_STUB: "1" })
+  assert.equal(source.CHARIOX_PROVIDER_DEV_STUB, "0")
 })
 
 test("available port selection retries when another host rejects the first candidate", async () => {
@@ -124,10 +124,10 @@ test("non-ephemeral drill ports stay below the default Linux ephemeral range", (
 })
 
 test("built binary resolution chooses the newest Cargo target candidate", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-binary-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-binary-"))
   const manifestPath = path.join(root, "apps", "kernel", "Cargo.toml")
-  const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "arroba-kernel")
-  const workspaceBinary = path.join(root, "target", "debug", "arroba-kernel")
+  const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "chariox-kernel")
+  const workspaceBinary = path.join(root, "target", "debug", "chariox-kernel")
   try {
     await mkdir(path.dirname(crateBinary), { recursive: true })
     await mkdir(path.dirname(workspaceBinary), { recursive: true })
@@ -136,12 +136,12 @@ test("built binary resolution chooses the newest Cargo target candidate", async 
     await utimes(crateBinary, new Date(1_000), new Date(1_000))
     await utimes(workspaceBinary, new Date(2_000), new Date(2_000))
 
-    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
-    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), workspaceBinary)
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
 
     await utimes(crateBinary, new Date(3_000), new Date(3_000))
-    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
-    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "arroba-kernel"), crateBinary)
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -255,7 +255,7 @@ test("waitForTcpPort reports the last reachability observation", async () => {
 test("findMatchingProcessIdsFromPsOutput finds run-owned drill processes", () => {
   const psOutput = `
   101 /usr/bin/login -fq user /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js opencode --relay-token remote-native-token-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
-  102 /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js --client-id arroba-remote-native-observer-opencode-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  102 /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js --client-id chariox-remote-native-observer-opencode-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
   103 /Applications/Codex.app/Contents/MacOS/Codex
   `
 
@@ -282,7 +282,7 @@ test("findMatchingProcessIdsFromPsOutput ignores the current process", () => {
 
 test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patterns", () => {
   const psOutput = `
-  301 screen -dmS arroba-rnt-codex-a-4242 -L bun /repo/apps/cli/dist/index.js
+  301 screen -dmS chariox-rnt-codex-a-4242 -L bun /repo/apps/cli/dist/index.js
   302 screen -dmS unrelated -L node server.js
   `
 
@@ -290,17 +290,17 @@ test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patter
     findMatchingProcessIdsFromPsOutput(psOutput, [
       "",
       null,
-      /arroba-rnt-codex-[ab]-4242/,
+      /chariox-rnt-codex-[ab]-4242/,
     ], 999),
     [301],
   )
 })
 
 test("screenSessionListContains identifies an exact detached screen name", () => {
-  const output = `There are screens on:\n\t301.arroba-rnt-claude-a-4242\t(Detached)\n\t302.unrelated\t(Detached)\n`
+  const output = `There are screens on:\n\t301.chariox-rnt-claude-a-4242\t(Detached)\n\t302.unrelated\t(Detached)\n`
 
-  assert.equal(screenSessionListContains(output, "arroba-rnt-claude-a-4242"), true)
-  assert.equal(screenSessionListContains(output, "arroba-rnt-claude-b-4242"), false)
+  assert.equal(screenSessionListContains(output, "chariox-rnt-claude-a-4242"), true)
+  assert.equal(screenSessionListContains(output, "chariox-rnt-claude-b-4242"), false)
 })
 
 async function listenOnEphemeralPort() {

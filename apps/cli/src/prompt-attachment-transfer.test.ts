@@ -12,7 +12,7 @@ import {
 import type { PromptAttachmentPart } from "./cli-types.js"
 
 test("preparePromptAttachmentsForSubmit keeps local fast path when inline disabled", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-attachment-transfer-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-attachment-transfer-"))
   try {
     const file = path.join(dir, "note.txt")
     await writeFile(file, "hello")
@@ -25,7 +25,7 @@ test("preparePromptAttachmentsForSubmit keeps local fast path when inline disabl
 })
 
 test("preparePromptAttachmentsForSubmit inlines absolute paths and file URLs", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-attachment-transfer-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-attachment-transfer-"))
   try {
     const first = path.join(dir, "one.txt")
     const second = path.join(dir, "two words.txt")

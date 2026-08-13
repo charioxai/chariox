@@ -98,7 +98,7 @@ export async function platformValidationGateCheck(
 
 async function readPlatformBundleRuntimeSignals(platformBundleDir) {
   const manifest = JSON.parse(await readFile(path.join(platformBundleDir, "runtime-signals.json"), "utf8"))
-  if (manifest.schema !== "arroba.drill.runtime_signals.v1") {
+  if (manifest.schema !== "chariox.drill.runtime_signals.v1") {
     throw new Error(`runtime signals has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
   if (!Array.isArray(manifest.signals)) {

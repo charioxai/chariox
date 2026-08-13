@@ -1,12 +1,12 @@
 import type {
   AgentInstance,
-  ArrobaConnectorAdapterDefinition,
-  ArrobaConnectorDefinition,
-  ArrobaCredentialConfig,
-  ArrobaEnvironmentConfig,
-  ArrobaMcpServerConfig,
-  ArrobaScriptMetadata,
-  ArrobaSkillMetadata,
+  CharioxConnectorAdapterDefinition,
+  CharioxConnectorDefinition,
+  CharioxCredentialConfig,
+  CharioxEnvironmentConfig,
+  CharioxMcpServerConfig,
+  CharioxScriptMetadata,
+  CharioxSkillMetadata,
   McpImportOutcome,
   SkillImportOutcome,
 } from "./cli-types.js"
@@ -56,31 +56,31 @@ import { expectVariant } from "./ipc-response.js"
 export async function listMcpServers(
   client: LocalIpcClient,
   workspaceTarget: string,
-): Promise<ArrobaMcpServerConfig[]> {
+): Promise<CharioxMcpServerConfig[]> {
   const response = await client.send<Record<string, unknown>>(listMcpServersRequest(workspaceTarget))
-  return expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
+  return expectVariant<{ mcps: CharioxMcpServerConfig[] }>(response, "McpServersListed").mcps
 }
 
 export async function installMcpServer(
   client: LocalIpcClient,
   workspaceTarget: string,
-  config: ArrobaMcpServerConfig,
-): Promise<ArrobaMcpServerConfig> {
+  config: CharioxMcpServerConfig,
+): Promise<CharioxMcpServerConfig> {
   const response = await client.send<Record<string, unknown>>(
     installMcpServerRequest(workspaceTarget, config as unknown as Record<string, unknown>),
   )
-  return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerInstalled").mcp
+  return expectVariant<{ mcp: CharioxMcpServerConfig }>(response, "McpServerInstalled").mcp
 }
 
 export async function updateMcpServer(
   client: LocalIpcClient,
   workspaceTarget: string,
-  config: ArrobaMcpServerConfig,
-): Promise<ArrobaMcpServerConfig> {
+  config: CharioxMcpServerConfig,
+): Promise<CharioxMcpServerConfig> {
   const response = await client.send<Record<string, unknown>>(
     updateMcpServerRequest(workspaceTarget, config as unknown as Record<string, unknown>),
   )
-  return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServerUpdated").mcp
+  return expectVariant<{ mcp: CharioxMcpServerConfig }>(response, "McpServerUpdated").mcp
 }
 
 export async function uninstallMcpServer(
@@ -106,9 +106,9 @@ export async function getMcpServer(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaMcpServerConfig> {
+): Promise<CharioxMcpServerConfig> {
   const response = await client.send<Record<string, unknown>>(getMcpServerRequest(workspaceTarget, name))
-  return expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
+  return expectVariant<{ mcp: CharioxMcpServerConfig }>(response, "McpServer").mcp
 }
 
 export async function grantAgentMcp(
@@ -135,36 +135,36 @@ export async function revokeAgentMcp(
 export async function listSkills(
   client: LocalIpcClient,
   workspaceTarget: string,
-): Promise<ArrobaSkillMetadata[]> {
+): Promise<CharioxSkillMetadata[]> {
   const response = await client.send<Record<string, unknown>>(listSkillsRequest(workspaceTarget))
-  return expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
+  return expectVariant<{ skills: CharioxSkillMetadata[] }>(response, "SkillsListed").skills
 }
 
 export async function installSkill(
   client: LocalIpcClient,
   workspaceTarget: string,
   sourcePath: string,
-): Promise<ArrobaSkillMetadata> {
+): Promise<CharioxSkillMetadata> {
   const response = await client.send<Record<string, unknown>>(installSkillRequest(workspaceTarget, sourcePath))
-  return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillInstalled").skill
+  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillInstalled").skill
 }
 
 export async function updateSkill(
   client: LocalIpcClient,
   workspaceTarget: string,
   sourcePath: string,
-): Promise<ArrobaSkillMetadata> {
+): Promise<CharioxSkillMetadata> {
   const response = await client.send<Record<string, unknown>>(updateSkillRequest(workspaceTarget, sourcePath))
-  return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUpdated").skill
+  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUpdated").skill
 }
 
 export async function uninstallSkill(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaSkillMetadata> {
+): Promise<CharioxSkillMetadata> {
   const response = await client.send<Record<string, unknown>>(uninstallSkillRequest(workspaceTarget, name))
-  return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUninstalled").skill
+  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUninstalled").skill
 }
 
 export async function importSkills(
@@ -181,9 +181,9 @@ export async function getSkill(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaSkillMetadata> {
+): Promise<CharioxSkillMetadata> {
   const response = await client.send<Record<string, unknown>>(getSkillRequest(workspaceTarget, name))
-  return expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
+  return expectVariant<{ skill: CharioxSkillMetadata }>(response, "Skill").skill
 }
 
 export async function grantAgentSkill(
@@ -210,55 +210,55 @@ export async function revokeAgentSkill(
 export async function listEnvironments(
   client: LocalIpcClient,
   workspaceTarget: string,
-): Promise<ArrobaEnvironmentConfig[]> {
+): Promise<CharioxEnvironmentConfig[]> {
   const response = await client.send<Record<string, unknown>>(listEnvironmentsRequest(workspaceTarget))
-  return expectVariant<{ environments: ArrobaEnvironmentConfig[] }>(response, "EnvironmentsListed").environments
+  return expectVariant<{ environments: CharioxEnvironmentConfig[] }>(response, "EnvironmentsListed").environments
 }
 
 export async function getEnvironment(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaEnvironmentConfig> {
+): Promise<CharioxEnvironmentConfig> {
   const response = await client.send<Record<string, unknown>>(getEnvironmentRequest(workspaceTarget, name))
-  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "Environment").environment
+  return expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "Environment").environment
 }
 
 export async function registerEnvironment(
   client: LocalIpcClient,
   workspaceTarget: string,
-  config: ArrobaEnvironmentConfig,
-): Promise<ArrobaEnvironmentConfig> {
+  config: CharioxEnvironmentConfig,
+): Promise<CharioxEnvironmentConfig> {
   const response = await client.send<Record<string, unknown>>(
     registerEnvironmentRequest(workspaceTarget, config as unknown as Record<string, unknown>),
   )
-  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRegistered").environment
+  return expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRegistered").environment
 }
 
 export async function removeEnvironment(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaEnvironmentConfig> {
+): Promise<CharioxEnvironmentConfig> {
   const response = await client.send<Record<string, unknown>>(removeEnvironmentRequest(workspaceTarget, name))
-  return expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRemoved").environment
+  return expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRemoved").environment
 }
 
 export async function listScripts(
   client: LocalIpcClient,
   workspaceTarget: string,
-): Promise<ArrobaScriptMetadata[]> {
+): Promise<CharioxScriptMetadata[]> {
   const response = await client.send<Record<string, unknown>>(listScriptsRequest(workspaceTarget))
-  return expectVariant<{ scripts: ArrobaScriptMetadata[] }>(response, "ScriptsListed").scripts
+  return expectVariant<{ scripts: CharioxScriptMetadata[] }>(response, "ScriptsListed").scripts
 }
 
 export async function getScript(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaScriptMetadata> {
+): Promise<CharioxScriptMetadata> {
   const response = await client.send<Record<string, unknown>>(getScriptRequest(workspaceTarget, name))
-  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "Script").script
+  return expectVariant<{ script: CharioxScriptMetadata }>(response, "Script").script
 }
 
 export async function validateScript(
@@ -267,11 +267,11 @@ export async function validateScript(
   sourcePath: string,
   environment: string,
   name?: string | null,
-): Promise<ArrobaScriptMetadata> {
+): Promise<CharioxScriptMetadata> {
   const response = await client.send<Record<string, unknown>>(
     validateScriptRequest(workspaceTarget, sourcePath, environment, name),
   )
-  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptValidated").script
+  return expectVariant<{ script: CharioxScriptMetadata }>(response, "ScriptValidated").script
 }
 
 export async function registerScript(
@@ -280,20 +280,20 @@ export async function registerScript(
   sourcePath: string,
   environment: string,
   name?: string | null,
-): Promise<ArrobaScriptMetadata> {
+): Promise<CharioxScriptMetadata> {
   const response = await client.send<Record<string, unknown>>(
     registerScriptRequest(workspaceTarget, sourcePath, environment, name),
   )
-  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptRegistered").script
+  return expectVariant<{ script: CharioxScriptMetadata }>(response, "ScriptRegistered").script
 }
 
 export async function removeScript(
   client: LocalIpcClient,
   workspaceTarget: string,
   name: string,
-): Promise<ArrobaScriptMetadata> {
+): Promise<CharioxScriptMetadata> {
   const response = await client.send<Record<string, unknown>>(removeScriptRequest(workspaceTarget, name))
-  return expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptRemoved").script
+  return expectVariant<{ script: CharioxScriptMetadata }>(response, "ScriptRemoved").script
 }
 
 export async function grantAgentScript(
@@ -318,64 +318,64 @@ export async function revokeAgentScript(
   return expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionRevoked").agent
 }
 
-export async function listCredentials(client: LocalIpcClient): Promise<ArrobaCredentialConfig[]> {
+export async function listCredentials(client: LocalIpcClient): Promise<CharioxCredentialConfig[]> {
   const response = await client.send<Record<string, unknown>>(listCredentialsRequest())
-  return expectVariant<{ credentials: ArrobaCredentialConfig[] }>(response, "CredentialsListed").credentials
+  return expectVariant<{ credentials: CharioxCredentialConfig[] }>(response, "CredentialsListed").credentials
 }
 
-export async function getCredential(client: LocalIpcClient, id: string): Promise<ArrobaCredentialConfig> {
+export async function getCredential(client: LocalIpcClient, id: string): Promise<CharioxCredentialConfig> {
   const response = await client.send<Record<string, unknown>>(getCredentialRequest(id))
-  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "Credential").credential
+  return expectVariant<{ credential: CharioxCredentialConfig }>(response, "Credential").credential
 }
 
-export async function registerCredential(client: LocalIpcClient, sourcePath: string): Promise<ArrobaCredentialConfig> {
+export async function registerCredential(client: LocalIpcClient, sourcePath: string): Promise<CharioxCredentialConfig> {
   const response = await client.send<Record<string, unknown>>(registerCredentialRequest(sourcePath))
-  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "CredentialRegistered").credential
+  return expectVariant<{ credential: CharioxCredentialConfig }>(response, "CredentialRegistered").credential
 }
 
-export async function removeCredential(client: LocalIpcClient, id: string): Promise<ArrobaCredentialConfig> {
+export async function removeCredential(client: LocalIpcClient, id: string): Promise<CharioxCredentialConfig> {
   const response = await client.send<Record<string, unknown>>(removeCredentialRequest(id))
-  return expectVariant<{ credential: ArrobaCredentialConfig }>(response, "CredentialRemoved").credential
+  return expectVariant<{ credential: CharioxCredentialConfig }>(response, "CredentialRemoved").credential
 }
 
-export async function listConnectors(client: LocalIpcClient): Promise<ArrobaConnectorDefinition[]> {
+export async function listConnectors(client: LocalIpcClient): Promise<CharioxConnectorDefinition[]> {
   const response = await client.send<Record<string, unknown>>(listConnectorsRequest())
-  return expectVariant<{ connectors: ArrobaConnectorDefinition[] }>(response, "ConnectorsListed").connectors
+  return expectVariant<{ connectors: CharioxConnectorDefinition[] }>(response, "ConnectorsListed").connectors
 }
 
-export async function listConnectorAdapters(client: LocalIpcClient): Promise<ArrobaConnectorAdapterDefinition[]> {
+export async function listConnectorAdapters(client: LocalIpcClient): Promise<CharioxConnectorAdapterDefinition[]> {
   const response = await client.send<Record<string, unknown>>(listConnectorAdaptersRequest())
-  return expectVariant<{ adapters: ArrobaConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
+  return expectVariant<{ adapters: CharioxConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
 }
 
-export async function getConnectorAdapter(client: LocalIpcClient, name: string): Promise<ArrobaConnectorAdapterDefinition> {
+export async function getConnectorAdapter(client: LocalIpcClient, name: string): Promise<CharioxConnectorAdapterDefinition> {
   const response = await client.send<Record<string, unknown>>(getConnectorAdapterRequest(name))
-  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
+  return expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
 }
 
-export async function registerConnectorAdapter(client: LocalIpcClient, sourcePath: string): Promise<ArrobaConnectorAdapterDefinition> {
+export async function registerConnectorAdapter(client: LocalIpcClient, sourcePath: string): Promise<CharioxConnectorAdapterDefinition> {
   const response = await client.send<Record<string, unknown>>(registerConnectorAdapterRequest(sourcePath))
-  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
+  return expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
 }
 
-export async function removeConnectorAdapter(client: LocalIpcClient, name: string): Promise<ArrobaConnectorAdapterDefinition> {
+export async function removeConnectorAdapter(client: LocalIpcClient, name: string): Promise<CharioxConnectorAdapterDefinition> {
   const response = await client.send<Record<string, unknown>>(removeConnectorAdapterRequest(name))
-  return expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
+  return expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
 }
 
-export async function getConnector(client: LocalIpcClient, name: string): Promise<ArrobaConnectorDefinition> {
+export async function getConnector(client: LocalIpcClient, name: string): Promise<CharioxConnectorDefinition> {
   const response = await client.send<Record<string, unknown>>(getConnectorRequest(name))
-  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "Connector").connector
+  return expectVariant<{ connector: CharioxConnectorDefinition }>(response, "Connector").connector
 }
 
-export async function registerConnector(client: LocalIpcClient, sourcePath: string): Promise<ArrobaConnectorDefinition> {
+export async function registerConnector(client: LocalIpcClient, sourcePath: string): Promise<CharioxConnectorDefinition> {
   const response = await client.send<Record<string, unknown>>(registerConnectorRequest(sourcePath))
-  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRegistered").connector
+  return expectVariant<{ connector: CharioxConnectorDefinition }>(response, "ConnectorRegistered").connector
 }
 
-export async function removeConnector(client: LocalIpcClient, name: string): Promise<ArrobaConnectorDefinition> {
+export async function removeConnector(client: LocalIpcClient, name: string): Promise<CharioxConnectorDefinition> {
   const response = await client.send<Record<string, unknown>>(removeConnectorRequest(name))
-  return expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRemoved").connector
+  return expectVariant<{ connector: CharioxConnectorDefinition }>(response, "ConnectorRemoved").connector
 }
 
 export async function testConnector(

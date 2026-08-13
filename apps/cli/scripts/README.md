@@ -1,11 +1,11 @@
 # Live Drill Policy
 
-These scripts exercise Arroba against real provider sessions. Keep them deterministic, cheap, and explicit so future agents can rerun them safely.
+These scripts exercise Chariox against real provider sessions. Keep them deterministic, cheap, and explicit so future agents can rerun them safely.
 
 ## Provider Models
 
 - Default live-drill model: use an explicit provider override that is accepted by the current provider account.
-- Workspace Live Sync Codex aliases use `gpt-5.5`; the matrix runner can be overridden with `ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL`.
+- Workspace Live Sync Codex aliases use `gpt-5.5`; the matrix runner can be overridden with `CHARIOX_WORKSPACE_LIVE_SYNC_CODEX_MODEL`.
 - Use reasoning effort `low` unless the drill is specifically validating reasoning-heavy behavior.
 - For `opencode`, always pass an explicit `opencode/...` Zen model when running live drills. Do not use the OpenAI-backed OpenCode model path for validation.
 - If an OpenCode drill receives an unqualified model such as `gpt-5.2`, treat it as ambiguous; pass an explicit `opencode/...` override.
@@ -24,15 +24,15 @@ Use `opencode/gpt-5.2` for OpenCode workspace live sync drills.
 Workspace Live Sync validation aliases:
 
 ```bash
-pnpm --filter @arroba/cli run workspace-live-sync:matrix-drill -- --dry-run
-pnpm --filter @arroba/cli run workspace-live-sync:managed-drill
-pnpm --filter @arroba/cli run workspace-live-sync:same-branch-tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:permission-drill
-pnpm --filter @arroba/cli run workspace-live-sync:remote-managed-drill
-pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:remote-tracked-restart-drill
-pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
+pnpm --filter @chariox/cli run workspace-live-sync:matrix-drill -- --dry-run
+pnpm --filter @chariox/cli run workspace-live-sync:managed-drill
+pnpm --filter @chariox/cli run workspace-live-sync:same-branch-tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:permission-drill
+pnpm --filter @chariox/cli run workspace-live-sync:remote-managed-drill
+pnpm --filter @chariox/cli run workspace-live-sync:remote-tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:remote-tracked-restart-drill
+pnpm --filter @chariox/cli run workspace-live-sync:remote-permission-drill
 ```
 
 `live-workspace-live-sync-matrix-drill.mjs` wraps the existing local, remote, Hetzner, Codex, and OpenCode Zen Workspace Live Sync drills into explicit scenario ids. By default it selects local Codex scenarios only; pass `--include-remote`, `--include-hetzner`, and `--include-opencode` to expand the matrix. Use `--dry-run` before long provider-backed runs. Matrix runs keep child-drill artifacts on failure so provider and kernel state can be inspected.
@@ -40,13 +40,13 @@ pnpm --filter @arroba/cli run workspace-live-sync:remote-permission-drill
 OpenCode parity aliases use the same scenarios with explicit OpenCode Zen model selection:
 
 ```bash
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-managed-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-same-branch-tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-permission-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-managed-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-tracked-drill
-pnpm --filter @arroba/cli run workspace-live-sync:opencode-remote-permission-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-managed-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-same-branch-tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-permission-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-managed-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-tracked-drill
+pnpm --filter @chariox/cli run workspace-live-sync:opencode-remote-permission-drill
 node apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs --include-opencode --include-hetzner --only hetzner-managed-opencode,hetzner-tracked-opencode,hetzner-permission-opencode --continue-on-failure
 ```
 
@@ -65,7 +65,7 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --require-complete
 ```
 
-The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../arroba-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, requires indexed `arroba.drill.validation_suite_run.v1` evidence and `distributed-observability` artifact coverage metadata from `--include-default-artifacts`, and fails on incomplete scenarios, unresolved exit criteria, or preserved failure manifests when `--require-complete` / `--include-default-failures` are present. Cloud staging can run the same evidence pipeline from `scripts/staging-retail-smoke.mjs --validation-platform`, which produces Cloud validation-suite run and matrix artifacts before invoking this gate.
+The gate discovers matrix reports under `./.artifacts/drill-matrices` and `../chariox-cloud/.artifacts/drill-matrices`, validates the distributed-runtime preset, requires indexed `chariox.drill.validation_suite_run.v1` evidence and `distributed-observability` artifact coverage metadata from `--include-default-artifacts`, and fails on incomplete scenarios, unresolved exit criteria, or preserved failure manifests when `--require-complete` / `--include-default-failures` are present. Cloud staging can run the same evidence pipeline from `scripts/staging-retail-smoke.mjs --validation-platform`, which produces Cloud validation-suite run and matrix artifacts before invoking this gate.
 
 The gate can also generate its own release evidence:
 
@@ -86,7 +86,7 @@ distributed-runtime gate:
 
 ```bash
 pnpm run validation:focused-runtime-gate
-pnpm --filter @arroba/cli run validation:focused-runtime-gate
+pnpm --filter @chariox/cli run validation:focused-runtime-gate
 node apps/cli/scripts/drill-focused-runtime-gate.mjs --matrix-root .artifacts/drill-matrices --require-complete
 node apps/cli/scripts/drill-validation-gate.mjs --preset runtime-authority --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
 node apps/cli/scripts/drill-validation-gate.mjs --preset distributed-state-health --platform-bundle .artifacts/drill-platform --matrix-root .artifacts/drill-matrices --require-complete
@@ -107,7 +107,7 @@ node apps/cli/scripts/drill-validation-gate-summary.mjs \
   --gate-report .artifacts/validation-gates/distributed-runtime-gate.json \
   --require-generated-evidence-kind validation-suite-run \
   --require-generated-evidence-kind matrix-report \
-  --require-generated-validation-suite-artifact-index .artifacts/validation-suite/distributed-runtime-gate/arroba-drill-artifacts.json
+  --require-generated-validation-suite-artifact-index .artifacts/validation-suite/distributed-runtime-gate/chariox-drill-artifacts.json
 ```
 
 When the evidence is consumed through artifact indexes instead of validation-gate reports, gate the same provenance at the artifact layer with `--require-artifact-generated-evidence-kind validation-suite-run --require-artifact-generated-evidence-kind matrix-report --require-artifact-generated-validation-suite-artifact-index PATH` and require owner coverage with `--require-artifact-runtime-signal-owner OWNER` or `drill-artifact-index-summary.mjs --require-runtime-signal-owner OWNER`. For generated matrix evidence, require identity metadata with `drill-artifact-index-summary.mjs --require-generated-matrix-name NAME --require-generated-matrix-repo REPO` so stale or wrong-repo matrix bundles cannot satisfy a distributed gate accidentally. For dry-run matrix evidence, require planned diagnostics with `--require-artifact-planned-owner OWNER` and `--require-artifact-planned-classification CLASSIFICATION`, or with `drill-artifact-index-summary.mjs --require-planned-owner OWNER --require-planned-classification CLASSIFICATION`. Missing planned diagnostics produce owner-routed next actions, which keeps staging failures actionable even before the live matrix is executed. Use `drill-artifact-index-summary.mjs --require-generated-validation-suite-artifact-index PATH` when the artifact-index bundle must also prove which generated validation-suite artifact index was preserved outside the validation gate.
@@ -120,7 +120,7 @@ Live drills should own their daemon/session/port/artifact lifecycle and clean up
 
 ## Shell Scriptability Drill
 
-`live-shell-scriptability-drill.mjs` validates `arroba-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `arroba-shell run` seed variables, `source <file>` loading, and `--continue-on-error` line diagnostics.
+`live-shell-scriptability-drill.mjs` validates `chariox-shell` against an isolated local kernel with a temporary `HOME`, workspace, daemon socket, ports, and history directory. It does not launch real provider model turns. It creates sessions and dev-stub agents, mutates config, installs/grants/revokes/uninstalls a deterministic MCP and skill, exercises workflow graph/config/watchdog/queue commands, runs `stop`, and verifies `chariox-shell run` seed variables, `source <file>` loading, and `--continue-on-error` line diagnostics.
 
 The shell `prompt [agent-ref] <prompt> [--wait] [--show-reply|--show-summary]` command is covered by shared executor tests. Live provider response quality and completion timing remain covered by the freeform/provider drills; shell scriptability drills should not depend on model-specific wording unless the drill is explicitly provider-backed.
 
@@ -129,8 +129,8 @@ The embedded workflow-pane shell uses the same script runner. Manual TUI drills 
 `live-embedded-shell-automation-drill.mjs` launches the real CLI under a PTY but drives it through `--automation-socket` instead of raw keystrokes. The automation API returns structured snapshots for the current screen, selected workflow, workflow graph counts, workflow runs, shell context, and shell transcript, so embedded-shell drills can assert CLI state without parsing ANSI terminal output. Keep the automation socket path short; Unix socket path limits are strict on macOS.
 
 ```bash
-pnpm --filter @arroba/cli run shell:drill
-pnpm --filter @arroba/cli run embedded-shell:drill
+pnpm --filter @chariox/cli run shell:drill
+pnpm --filter @chariox/cli run embedded-shell:drill
 ```
 
 ## Workflow-Code Artifact Drill
@@ -148,8 +148,8 @@ node apps/cli/scripts/workflow-code-artifact-drill.mjs --example-suite --second-
 Use `--hetzner-second-kernel` to copy the generated package, inline source, and
 source-directory bundle to the configured Hetzner checkout, launch a clean
 kernel there, import/apply/run each export form, and assert fresh workflow ids.
-The remote host must have the Arroba checkout, built kernel binary, and a built
-`@arroba/kernel-client` package or working pnpm install. The checkout must be
+The remote host must have the Chariox checkout, built kernel binary, and a built
+`@chariox/kernel-client` package or working pnpm install. The checkout must be
 on the same commit as the local workspace and the kernel binary must be newer
 than that commit; the drill fails fast on version skew before running exports.
 
@@ -161,9 +161,9 @@ node apps/cli/scripts/workflow-code-artifact-drill.mjs \
   --discard-artifacts-on-success
 ```
 
-Override the remote target with `ARROBA_WORKFLOW_CODE_HETZNER_HOST`,
-`ARROBA_WORKFLOW_CODE_HETZNER_KEY`, `ARROBA_WORKFLOW_CODE_HETZNER_REPO`, and
-`ARROBA_WORKFLOW_CODE_HETZNER_ROOT`, or the matching `--hetzner-*` flags. Use
+Override the remote target with `CHARIOX_WORKFLOW_CODE_HETZNER_HOST`,
+`CHARIOX_WORKFLOW_CODE_HETZNER_KEY`, `CHARIOX_WORKFLOW_CODE_HETZNER_REPO`, and
+`CHARIOX_WORKFLOW_CODE_HETZNER_ROOT`, or the matching `--hetzner-*` flags. Use
 `--dry-run --hetzner-second-kernel` to inspect the remote target selection
 without opening SSH or starting kernels.
 
@@ -176,73 +176,73 @@ Workspace live sync drills coordinate only while the provider run remains in the
 Use this after touching session membership, relay caller identity, per-user projection/redaction, or workflow graph authorization:
 
 ```bash
-pnpm --filter @arroba/cli run multi-user-workflow:drill
+pnpm --filter @chariox/cli run multi-user-workflow:drill
 ```
 
 It launches a scoped-token relay plus a local kernel, connects three relay clients with different `user_id`s, joins them into one session through an invite, and verifies the live transport path for per-user agent visibility, workflow node ownership, cross-owner edge creation, unrelated edge-removal denial, stale workflow revision rejection, endpoint-owner invocation denial, incident-edge removal by node owner, and private node-instruction redaction. It uses `dev-stub` agents only, so it does not spend provider turns.
 
 ## Hosted Cloud Relay Drill
 
-Use this after touching Arroba Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:
+Use this after touching Chariox Cloud device login, cloud relay pairing, hosted relay token issuance, or CLI/kernel relay setup:
 
 ```bash
 node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs
 ```
 
-By default the drill targets `https://arroba-cloud-staging.osc-fr1.scalingo.io`, whose hosted relay URL is the Caddy-fronted `wss://195.201.123.115.sslip.io` endpoint. Set `ARROBA_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
+By default the drill targets `https://chariox-cloud-staging.osc-fr1.scalingo.io`, whose hosted relay URL is the Caddy-fronted `wss://195.201.123.115.sslip.io` endpoint. Set `CHARIOX_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
 
-For non-interactive staging drills, set `ARROBA_CLOUD_DEV_AUTH_SECRET` to the matching staging secret. The cloud API must have its guarded dev device approval endpoint enabled. This still starts device login and polls through the kernel; only the browser/Auth0 approval step is replaced by a synthetic verified user.
+For non-interactive staging drills, set `CHARIOX_CLOUD_DEV_AUTH_SECRET` to the matching staging secret. The cloud API must have its guarded dev device approval endpoint enabled. This still starts device login and polls through the kernel; only the browser/Auth0 approval step is replaced by a synthetic verified user.
 
-Set `ARROBA_CLOUD_HOSTED_MULTI_USER=1` to add the hosted multi-user path. With the dev secret, the drill creates distinct synthetic owner, peer, and third users, accepts a cloud session invite, joins the kernel session through the hosted relay, and verifies multi-user workflow ownership and redaction over the remote relay transport.
+Set `CHARIOX_CLOUD_HOSTED_MULTI_USER=1` to add the hosted multi-user path. With the dev secret, the drill creates distinct synthetic owner, peer, and third users, accepts a cloud session invite, joins the kernel session through the hosted relay, and verifies multi-user workflow ownership and redaction over the remote relay transport.
 
-Set `ARROBA_CLOUD_HOSTED_REMOTE_CLI=1` to launch a real CLI over SSH on the configured remote host and verify it creates a session through the hosted relay. The default remote target is `root@195.201.123.115` with key `~/.ssh/arroba_hetzner_staging` and repo `/opt/arroba-cli-drill`; override them with `ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST`, `ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY`, and `ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO`. The remote host must have Node, Bun, and a built Arroba CLI.
+Set `CHARIOX_CLOUD_HOSTED_REMOTE_CLI=1` to launch a real CLI over SSH on the configured remote host and verify it creates a session through the hosted relay. The default remote target is `root@195.201.123.115` with key `~/.ssh/chariox_hetzner_staging` and repo `/opt/chariox-cli-drill`; override them with `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST`, `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY`, and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_REPO`. The remote host must have Node, Bun, and a built Chariox CLI.
 
 For the terminal-pairing QR/link path, run:
 
 ```bash
-pnpm --filter @arroba/cli run hosted-terminal-pairing-tui:drill
+pnpm --filter @chariox/cli run hosted-terminal-pairing-tui:drill
 ```
 
-This drill targets the same staging cloud API and Hetzner host, but it launches the remote CLI with `--terminal-pairing-link` generated by the local kernel instead of passing `--relay-url` and `--relay-token` explicitly. It starts a local TUI and an orphan remote TUI, creates one session from each CLI, submits one prompt from each CLI through a real provider, and verifies both completed prompt markers through both the local kernel path and the hosted relay path. Set `ARROBA_CLOUD_DEV_AUTH_SECRET` for non-interactive staging validation. The default provider is `codex` with `gpt-5.2-codex`; override with `ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER`, `ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL`, and `ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT`.
+This drill targets the same staging cloud API and Hetzner host, but it launches the remote CLI with `--terminal-pairing-link` generated by the local kernel instead of passing `--relay-url` and `--relay-token` explicitly. It starts a local TUI and an orphan remote TUI, creates one session from each CLI, submits one prompt from each CLI through a real provider, and verifies both completed prompt markers through both the local kernel path and the hosted relay path. Set `CHARIOX_CLOUD_DEV_AUTH_SECRET` for non-interactive staging validation. The default provider is `codex` with `gpt-5.2-codex`; override with `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER`, `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL`, and `CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT`.
 
-Set `ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1` to launch a second local kernel as a cloud-paired remote machine through the hosted relay. That path uses a `dev-stub` remote agent so it validates remote-machine leasing, prompt dispatch, completion, and home-owned script/MCP/connector projection, invocation, and revoke without requiring provider-account login or local extension credentials on the worker machine.
+Set `CHARIOX_CLOUD_HOSTED_SECOND_KERNEL=1` to launch a second local kernel as a cloud-paired remote machine through the hosted relay. That path uses a `dev-stub` remote agent so it validates remote-machine leasing, prompt dispatch, completion, and home-owned script/MCP/connector projection, invocation, and revoke without requiring provider-account login or local extension credentials on the worker machine.
 
-Set `ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC=1` with `ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1` to run the hosted tracked Workspace Live Sync drill through the second-kernel path. The `scripts/run-hosted-oss-drill.mjs` wrapper exposes this as `pnpm run smoke:hosted-oss-drill -- --second-kernel --tracked-workspace-live-sync --tracked-provider opencode --tracked-model gpt-5.2`. Use the bare OpenCode model id for `--tracked-model`; the wrapper expands it to `--provider-model opencode=<model>` for the child drill.
+Set `CHARIOX_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC=1` with `CHARIOX_CLOUD_HOSTED_SECOND_KERNEL=1` to run the hosted tracked Workspace Live Sync drill through the second-kernel path. The `scripts/run-hosted-oss-drill.mjs` wrapper exposes this as `pnpm run smoke:hosted-oss-drill -- --second-kernel --tracked-workspace-live-sync --tracked-provider opencode --tracked-model gpt-5.2`. Use the bare OpenCode model id for `--tracked-model`; the wrapper expands it to `--provider-model opencode=<model>` for the child drill.
 
-Set `ARROBA_CLOUD_HOSTED_TOKEN_ROTATION=1` to force a hosted machine relay-token refresh while a relay client continuously probes the kernel. This catches token-refresh presence gaps on the WSS hosted path.
+Set `CHARIOX_CLOUD_HOSTED_TOKEN_ROTATION=1` to force a hosted machine relay-token refresh while a relay client continuously probes the kernel. This catches token-refresh presence gaps on the WSS hosted path.
 
 ## MCP/Skill Drills
 
-`live-mcp-skill-drill.mjs` is local-only for now. It installs a real Playwright MCP into an isolated Arroba registry, optionally installs GitHub MCP when `--include-github-mcp` is set and `GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is present, installs a deterministic local drill skill, attempts to install a public web skill repo, and verifies per-agent grants plus same-turn skill requests.
+`live-mcp-skill-drill.mjs` is local-only for now. It installs a real Playwright MCP into an isolated Chariox registry, optionally installs GitHub MCP when `--include-github-mcp` is set and `GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is present, installs a deterministic local drill skill, attempts to install a public web skill repo, and verifies per-agent grants plus same-turn skill requests.
 
 Use `--require-web-skill` when the network/web-skill install itself is the thing being validated. Without it, public skill clone failures are reported but do not fail the drill, so local registry/runtime coverage can still run offline.
 
-Use `--live-mcp-use` to also require provider-native Playwright tool calls. The drill covers both user-triggered MCP grants, where `/mcp grant` causes Arroba to relaunch the idle provider conversation, and agent-triggered `request_extension`, where Arroba reloads after the current turn and sends an automatic continuation prompt before requiring a Playwright/browser tool call and workspace live sync marker write.
+Use `--live-mcp-use` to also require provider-native Playwright tool calls. The drill covers both user-triggered MCP grants, where `/mcp grant` causes Chariox to relaunch the idle provider conversation, and agent-triggered `request_extension`, where Chariox reloads after the current turn and sends an automatic continuation prompt before requiring a Playwright/browser tool call and workspace live sync marker write.
 
-`live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching workspace live sync agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Arroba MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_extensions` plus `read_artifact` runtime MCP calls and writes before/after marker files through Arroba workspace live sync.
+`live-runtime-mcp-reattach-drill.mjs` is the local regression drill for stale provider servers and CLI rejoin. It warms provider catalog endpoints before launching workspace live sync agents, forcing Codex/OpenCode through the path where a provider server may already be alive without run-specific Chariox MCP config. It then detaches the CLI, reattaches to the same session, submits another prompt to the same agents, and fails unless each agent completes `list_extensions` plus `read_artifact` runtime MCP calls and writes before/after marker files through Chariox workspace live sync.
 
 ## External Provider Live Parity Drill
 
-`live-external-provider-live-parity-drill.mjs` validates externally-created provider sessions after they are imported into Arroba. It launches a fresh external provider turn for Codex, Claude, and OpenCode, imports the newly discovered unattached provider session, and monitors kernel history, product web terminal, and TUI automation snapshots while the external turn runs. Each provider prompt requires 20 assistant progress markers and 20 observable tool markers so the drill can verify that the badge remains `WORKING`, transcripts match, scrolling stays pinned, and the completed turn collapses only after the final summary.
+`live-external-provider-live-parity-drill.mjs` validates externally-created provider sessions after they are imported into Chariox. It launches a fresh external provider turn for Codex, Claude, and OpenCode, imports the newly discovered unattached provider session, and monitors kernel history, product web terminal, and TUI automation snapshots while the external turn runs. Each provider prompt requires 20 assistant progress markers and 20 observable tool markers so the drill can verify that the badge remains `WORKING`, transcripts match, scrolling stays pinned, and the completed turn collapses only after the final summary.
 
 ```bash
-pnpm --filter @arroba/cli run external-provider-live-parity:drill -- \
+pnpm --filter @chariox/cli run external-provider-live-parity:drill -- \
   --provider-model codex=gpt-5.5 \
   --provider-model claude=sonnet \
   --provider-model opencode=opencode/kimi-k2.6
 ```
 
-Use `--dry-run` to inspect the generated provider prompt and command without launching providers. Use `ARROBA_EXTERNAL_PARITY_<PROVIDER>_COMMAND` when a local provider CLI needs a different invocation shape; the template supports `{provider}`, `{model}`, `{prompt}`, and `{workspace}`. Every completed run must include a provider-by-provider limitations section in its artifact manifest, clarifying which metadata was available live, which metadata was missing, and whether each gap is an Arroba bug, provider persistence limitation, or drill-observation limitation.
+Use `--dry-run` to inspect the generated provider prompt and command without launching providers. Use `CHARIOX_EXTERNAL_PARITY_<PROVIDER>_COMMAND` when a local provider CLI needs a different invocation shape; the template supports `{provider}`, `{model}`, `{prompt}`, and `{workspace}`. Every completed run must include a provider-by-provider limitations section in its artifact manifest, clarifying which metadata was available live, which metadata was missing, and whether each gap is a Chariox bug, provider persistence limitation, or drill-observation limitation.
 
-`live-script-extension-drill.mjs` validates the v1 script extension control plane. It runs an isolated daemon, registers an external Python environment, validates and registers a realistic vector-lookup script with `run`/`test_run`, lists environments/scripts, creates an agent, grants the script extension with its environment, and verifies the durable `extension_grants` shape. Run it with `pnpm --filter @arroba/cli run script-extension:drill`.
+`live-script-extension-drill.mjs` validates the v1 script extension control plane. It runs an isolated daemon, registers an external Python environment, validates and registers a realistic vector-lookup script with `run`/`test_run`, lists environments/scripts, creates an agent, grants the script extension with its environment, and verifies the durable `extension_grants` shape. Run it with `pnpm --filter @chariox/cli run script-extension:drill`.
 
-`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @arroba/cli run script-extension-agent:drill -- --providers codex,opencode,claude-p,claude-headless --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude-p=sonnet --provider-model claude-headless=sonnet`.
+`live-script-extension-agent-drill.mjs` validates script extensions through real provider agents. It registers one Python script and one TypeScript script, grants both to each requested agent, requires the provider to call both tools with fixed inputs, verifies per-run hidden tokens returned by plain `run` return values, and verifies the agent writes those observed values through workspace live sync. Run all local providers with `pnpm --filter @chariox/cli run script-extension-agent:drill -- --providers codex,opencode,claude-p,claude-headless --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --provider-model claude-p=sonnet --provider-model claude-headless=sonnet`.
 
-`live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Arroba user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Arroba workspace live sync. Because the drill isolates `HOME` for Arroba registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
+`live-remote-mcp-drill.mjs` is the remote MCP v1 drill. It launches isolated relay/home/worker daemons with different `HOME` roots so home and worker Chariox user-global MCP registries can diverge on one machine. It verifies worker-missing MCPs, worker global definition mismatches, project-local worker override, missing stdio commands, and missing worker env vars. V1 remote MCPs must already be installed on the worker; the drill does not remotely install MCPs. Pass `--live-mcp-use` to also require a provider-native remote Playwright/browser MCP tool call on the worker and a marker write through Chariox workspace live sync. Because the drill isolates `HOME` for Chariox registries, it preserves provider auth/config/cache via `CODEX_HOME`, `OPENCODE_CONFIG_DIR`, and `XDG_*` provider environment variables.
 
-`live-remote-home-extension-matrix-drill.mjs` runs the home-owned remote extension drill across local self-host single-user, local self-host collab, Hetzner single-user, and Hetzner collab scenarios. It defaults to local scenarios only; pass `--include-hetzner` to include remote infrastructure, or use `--dry-run` to print the selected commands. The `remote-home-extension` validation preset requires all four scenario ids plus `local`, `self-hosted-relay`, and `hetzner` deployment metadata. Run local parity with `pnpm --filter @arroba/cli run remote-home-extension:local-matrix-drill`.
+`live-remote-home-extension-matrix-drill.mjs` runs the home-owned remote extension drill across local self-host single-user, local self-host collab, Hetzner single-user, and Hetzner collab scenarios. It defaults to local scenarios only; pass `--include-hetzner` to include remote infrastructure, or use `--dry-run` to print the selected commands. The `remote-home-extension` validation preset requires all four scenario ids plus `local`, `self-hosted-relay`, and `hetzner` deployment metadata. Run local parity with `pnpm --filter @chariox/cli run remote-home-extension:local-matrix-drill`.
 
-`live-workflow-runtime-drill.mjs --scenario mcp-echo-workflow` validates workflow-node MCP grants. It installs a deterministic stdio MCP named `workflow_echo`, grants it to the workflow agent before provider launch, requires a provider-native MCP tool call, writes an exact marker through Arroba workspace live sync, and submits final workflow output through `validate_and_submit_workflow_run_output`. The scenario is single-provider by design; run it separately for Codex and OpenCode. The remote wrapper installs the same deterministic MCP in the worker registry before launching the remote workflow drill, matching the v1 remote MCP rule that worker kernels must already have the required MCP definition. For Codex, pass `--provider-model codex=gpt-5.2`; the workflow drill's bare `--model gpt-5.2` fallback maps to `gpt-5.2-codex`, which can be rejected by ChatGPT-backed Codex accounts.
+`live-workflow-runtime-drill.mjs --scenario mcp-echo-workflow` validates workflow-node MCP grants. It installs a deterministic stdio MCP named `workflow_echo`, grants it to the workflow agent before provider launch, requires a provider-native MCP tool call, writes an exact marker through Chariox workspace live sync, and submits final workflow output through `validate_and_submit_workflow_run_output`. The scenario is single-provider by design; run it separately for Codex and OpenCode. The remote wrapper installs the same deterministic MCP in the worker registry before launching the remote workflow drill, matching the v1 remote MCP rule that worker kernels must already have the required MCP definition. For Codex, pass `--provider-model codex=gpt-5.2`; the workflow drill's bare `--model gpt-5.2` fallback maps to `gpt-5.2-codex`, which can be rejected by ChatGPT-backed Codex accounts.
 
 ## Before Commit
 
@@ -260,7 +260,7 @@ Claude Code provider. It launches a kernel, creates a session, launches
 fails unless the marker reaches history and the prompt settles.
 
 ```bash
-pnpm --filter @arroba/cli run claude-provider:drill
+pnpm --filter @chariox/cli run claude-provider:drill
 node apps/cli/scripts/live-claude-provider-drill.mjs --scenario attachment
 ```
 
@@ -273,8 +273,8 @@ Use this after touching the workflow gateway, publication export packaging, or
 HTTP invocation path:
 
 ```bash
-pnpm --filter @arroba/cli run publication:drill
-pnpm --filter @arroba/cli run publication:container-drill
+pnpm --filter @chariox/cli run publication:drill
+pnpm --filter @chariox/cli run publication:container-drill
 ```
 
 It launches an isolated kernel and gateway, creates a kernel-owned HTTP
@@ -283,7 +283,7 @@ invokes the same publication over WebSocket, restarts the gateway with
 self-signed HTTPS/TLS and invokes it again over HTTPS and WSS, exports it with
 `workflow publication export`, starts the gateway from the exported
 `publication.config.json`, invokes the exported package through
-`arroba-workflow-call`, and validates accepted workflow-run metadata. The
+`chariox-workflow-call`, and validates accepted workflow-run metadata. The
 container variant also builds `docker/publication/Dockerfile`, runs exported
 `human_http` and `api_sse_json` packages in standalone kernel+gateway
 containers, and verifies missing requirements fail before the gateway listens.
@@ -292,7 +292,7 @@ Use this after touching cross-kernel publication calls or the custom parser
 path:
 
 ```bash
-pnpm --filter @arroba/cli run workflow-to-workflow-publication:drill
+pnpm --filter @chariox/cli run workflow-to-workflow-publication:drill
 ```
 
 It launches two isolated kernels and gateways. Workflow A's published gateway
@@ -305,7 +305,7 @@ Use this after touching workflow-code artifacts, source export, source-directory
 export, schema import roots, provider rebindings, or package portability:
 
 ```bash
-pnpm --filter @arroba/cli run workflow-code:artifact-drill
+pnpm --filter @chariox/cli run workflow-code:artifact-drill
 node apps/cli/scripts/workflow-code-artifact-drill.mjs --second-kernel --discard-artifacts-on-success
 ```
 
@@ -314,7 +314,7 @@ workflow-code artifact, applies it with provider/model rebindings, exports and
 imports the package, runs the imported artifact, verifies schema-backed partial
 and final outputs, checks existing-agent bindings, and can apply every
 canonical example with `--example-suite`. The `--second-kernel` variant starts
-a clean second local kernel with its own `ARROBA_HOME`, transfers the exported
+a clean second local kernel with its own `CHARIOX_HOME`, transfers the exported
 package plus live-workflow single-source and source-directory exports, then
 imports, validates, applies, and runs each form with fresh workflow ids.
 
@@ -322,7 +322,7 @@ Use this to validate the semantic URL renderer application shape on top of
 workflow publication:
 
 ```bash
-pnpm --filter @arroba/cli run semantic-url-renderer:drill
+pnpm --filter @chariox/cli run semantic-url-renderer:drill
 ```
 
 It creates a CLI/shell-driven session with one Codex `gpt-5.4` agent, builds a
@@ -336,7 +336,7 @@ rendered HTML page with prompt-driven styling.
 Use this after touching CLI/kernel transport recovery:
 
 ```bash
-pnpm --filter @arroba/cli run build
+pnpm --filter @chariox/cli run build
 node apps/cli/scripts/live-kernel-reconnect-drill.mjs
 ```
 
@@ -347,8 +347,8 @@ It kills the event subscription lane while a control request is pending and fail
 Use this after touching local prompt dispatch, provider working directories, operational recall search, or Git observation:
 
 ```bash
-pnpm --filter @arroba/cli run git-observation:drill
-pnpm --filter @arroba/cli run remote-git-observation:drill
+pnpm --filter @chariox/cli run git-observation:drill
+pnpm --filter @chariox/cli run remote-git-observation:drill
 ```
 
 It launches an isolated local kernel and dev-stub provider inside a temporary Git repo, waits for a prompt to be dispatched, commits a file during the turn, completes the prompt, and fails unless operational history contains a searchable `git_commit_detected` event with the expected commit, path, provider/model, agent, and prompt attribution.
@@ -360,17 +360,17 @@ The remote variant launches isolated relay/home/worker kernels, spawns a remote 
 Use this after touching operational history archive export, outbox checkpointing, archive adapter auth, or external archive protocol handling:
 
 ```bash
-pnpm --filter @arroba/cli run postgres-archive:drill
+pnpm --filter @chariox/cli run postgres-archive:drill
 ```
 
-It launches an isolated kernel plus real `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers, runs a small HTTP archive adapter in front of Postgres and MinIO, creates transcript events and a transferred artifact through a dev-stub provider/session, and flushes Arroba's durable archive outboxes through `arroba-history-archive-flush`. The drill validates bearer-token auth, `GET /arroba/history/capabilities`, `POST /arroba/history/events`, `POST /arroba/history/search`, `POST /arroba/history/semantic-search`, `PUT /arroba/artifacts/blobs/:artifact_id`, `POST /arroba/artifacts/manifest`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, operational-only recall search when external archive search is disabled, Postgres-backed archive search after deleting the matching operational row, semantic archive-search protocol handling, artifact blob storage in MinIO, and artifact manifest storage in Postgres.
+It launches an isolated kernel plus real `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers, runs a small HTTP archive adapter in front of Postgres and MinIO, creates transcript events and a transferred artifact through a dev-stub provider/session, and flushes Chariox's durable archive outboxes through `chariox-history-archive-flush`. The drill validates bearer-token auth, `GET /chariox/history/capabilities`, `POST /chariox/history/events`, `POST /chariox/history/search`, `POST /chariox/history/semantic-search`, `PUT /chariox/artifacts/blobs/:artifact_id`, `POST /chariox/artifacts/manifest`, adapter idempotency by `event_id`, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, retry to acceptance, operational-only recall search when external archive search is disabled, Postgres-backed archive search after deleting the matching operational row, semantic archive-search protocol handling, artifact blob storage in MinIO, and artifact manifest storage in Postgres.
 
 ## Remote Restart Drill
 
 Use this after touching durable remote agents, relay registration, leased prompt dispatch, or remote restart recovery:
 
 ```bash
-pnpm --filter @arroba/cli run remote-restart:drill
+pnpm --filter @chariox/cli run remote-restart:drill
 ```
 
 It launches isolated relay, home, and worker kernels, spawns a remote dev-stub agent, prompts it, restarts home, restarts worker, restarts both, and fails unless the home kernel restores the durable remote agent and refreshes stale worker leases. Pass `--keep-artifacts-on-failure` to preserve the isolated logs.

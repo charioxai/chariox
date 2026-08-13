@@ -19,7 +19,7 @@ const eventName = input.hook_event_name ?? "unknown"
 const hookContextRequestId = eventName === "UserPromptSubmit"
   ? \`\${Date.now()}-\${process.pid}-\${Math.random().toString(36).slice(2)}\`
   : null
-appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
   at: new Date().toISOString(),
   hook_event_name: eventName,
   hook_context_request_id: hookContextRequestId,
@@ -35,10 +35,10 @@ appendFileSync(process.env.ARROBA_CLAUDE_NATIVE_EVENTS, JSON.stringify({
 if (eventName === "UserPromptSubmit") {
   let additionalContext = ""
   try {
-    additionalContext = readFileSync(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT, "utf8")
+    additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
-  if (!additionalContext && hookContextRequestId && process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
-    const responseFile = join(process.env.ARROBA_CLAUDE_NATIVE_CONTEXT_RESPONSES, \`\${hookContextRequestId}.txt\`)
+  if (!additionalContext && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+    const responseFile = join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, \`\${hookContextRequestId}.txt\`)
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
@@ -56,7 +56,7 @@ if (eventName === "UserPromptSubmit") {
     }
   }))
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  const bridgeUrl = process.env.ARROBA_CLAUDE_NATIVE_HOOK_BRIDGE_URL
+  const bridgeUrl = process.env.CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL
   if (bridgeUrl) {
     try {
       const response = await fetch(new URL("/permission", bridgeUrl), {
@@ -71,7 +71,7 @@ if (eventName === "UserPromptSubmit") {
             hookSpecificOutput: {
               hookEventName: eventName,
               permissionDecision: decision.permissionDecision,
-              permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Arroba."
+              permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
             }
           }))
         }

@@ -3,7 +3,7 @@ import {
   type TextRenderable,
 } from "@opentui/core"
 
-import type { SessionStatusBadgePart } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionStatusBadgePart } from "@chariox/kernel-client/session-runtime-status"
 import type { StatusBadgeTone } from "./split-pane-footer.js"
 import { theme } from "./theme.js"
 

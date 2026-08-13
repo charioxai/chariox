@@ -9,7 +9,7 @@ import {
   removeWorkspaceLiveSyncProviderProfile,
 } from './workspace-live-sync-drill-environment.mjs'
 
-test('isolates Arroba state and copies only provider credentials', async (t) => {
+test('isolates Chariox state and copies only provider credentials', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'workspace-live-sync-env-'))
   const sourceHome = path.join(root, 'source-home')
   const runRoot = path.join(root, 'run')

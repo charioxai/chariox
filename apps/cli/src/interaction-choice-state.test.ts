@@ -10,7 +10,7 @@ import {
   resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
   shouldEditCustomInteractionOnEnter,
-} from "@arroba/kernel-client/interaction-choice"
+} from "@chariox/kernel-client/interaction-choice"
 
 test("resolveInteractionChoiceSubmission submits regular choices", () => {
   assert.deepEqual(resolveInteractionChoiceSubmission({

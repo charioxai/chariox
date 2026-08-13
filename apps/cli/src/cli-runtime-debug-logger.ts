@@ -2,7 +2,7 @@ import type {
   RuntimeProviderRun,
   TranscriptEntry,
 } from "./cli-types.js"
-import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
 
 type RuntimeDebugLogSink = {
   debug?: (message: string, fields?: Record<string, unknown>) => void

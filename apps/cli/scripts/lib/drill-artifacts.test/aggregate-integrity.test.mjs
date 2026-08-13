@@ -35,10 +35,10 @@ import {
 } from '../drill-artifacts.test-support.mjs'
 
 test("rejects inconsistent drill artifact index aggregates", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
-    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"chariox.drill.validation_gate.v1\"}\n", "utf8")
     const index = await writeDrillArtifactIndex({
       rootDir: root,
       artifacts: ["reports/gate.json"],
@@ -86,7 +86,7 @@ test("rejects inconsistent drill artifact index aggregates", async () => {
     assert.throws(
       () => validateDrillArtifactIndexAggregate({
         ...aggregate,
-        schemas: { "arroba.drill.matrix.v1": 1 },
+        schemas: { "chariox.drill.matrix.v1": 1 },
       }),
       /schemas do not match indexes/,
     )
@@ -329,7 +329,7 @@ test("rejects invalid drill artifact diagnostic dimensions", () => {
 })
 
 test("rejects unsafe drill artifact index paths", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await assert.rejects(
       writeDrillArtifactIndex({
@@ -414,7 +414,7 @@ test("rejects unsafe drill artifact index paths", async () => {
         metadata: { generatedValidationSuiteFailureRoots: "/tmp/Bearer abcdefghijklmnop" },
         artifacts: [{
           path: "reports/gate.json",
-          schema: "arroba.drill.validation_gate.v1",
+          schema: "chariox.drill.validation_gate.v1",
           sha256: "0".repeat(64),
           sizeBytes: 0,
         }],
@@ -595,10 +595,10 @@ test("rejects unsafe drill artifact index paths", async () => {
 })
 
 test("rejects duplicate drill artifact index records", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
-    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeFile(path.join(root, "reports", "gate.json"), "{\"schema\":\"chariox.drill.validation_gate.v1\"}\n", "utf8")
     await assert.rejects(
       writeDrillArtifactIndex({
         rootDir: root,
@@ -636,12 +636,12 @@ test("rejects duplicate drill artifact index records", async () => {
 })
 
 test("verifies drill artifact index integrity", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "reports"), { recursive: true })
     const reportPath = path.join(root, "reports", "gate.json")
     await writeFile(reportPath, `${JSON.stringify({
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
       status: "passed",
     })}\n`, "utf8")
     await writeDrillArtifactIndex({
@@ -649,12 +649,12 @@ test("verifies drill artifact index integrity", async () => {
       artifacts: ["reports/gate.json"],
     })
     await writeFile(reportPath, `${JSON.stringify({
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
       status: "failed",
     })}\n`, "utf8")
 
     await assert.rejects(
-      verifyDrillArtifactIndex(path.join(root, "arroba-drill-artifacts.json")),
+      verifyDrillArtifactIndex(path.join(root, "chariox-drill-artifacts.json")),
       /sha256 mismatch/,
     )
   } finally {

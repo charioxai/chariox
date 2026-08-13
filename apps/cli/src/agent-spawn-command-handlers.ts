@@ -14,7 +14,7 @@ import {
 import {
   remoteKernelReadiness,
   remoteKernelReadinessForProvider,
-} from "@arroba/kernel-client/shell-remote-format"
+} from "@chariox/kernel-client/shell-remote-format"
 
 type FooterTone = "info" | "error"
 

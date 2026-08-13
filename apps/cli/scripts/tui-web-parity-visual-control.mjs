@@ -443,7 +443,7 @@ async function writeEvidence(manifest, label, snapshot, summary) {
 
 async function writeReport(manifest) {
   const report = {
-    schema: 'arroba.tui_web_parity_visual_validation_report.v1',
+    schema: 'chariox.tui_web_parity_visual_validation_report.v1',
     completedAt: new Date().toISOString(),
     manifestPath: manifest.manifestPath,
     rootDir: manifest.rootDir,

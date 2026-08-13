@@ -169,9 +169,9 @@ export async function runHostedRemoteCliPairingAssertions({
   const remoteId = `${process.pid}-${Date.now()}`
   const localAlias = `hosted-pairing-local-cli-${remoteId}`
   const remoteAlias = `hosted-pairing-cli-${remoteId}`
-  const remoteWorkspace = `/tmp/arroba-hosted-pairing-cli-${remoteId}`
-  const localSocket = path.join(os.tmpdir(), `arroba-hosted-local-cli-${remoteId}.sock`)
-  const remoteSocket = `/tmp/arroba-hosted-pairing-cli-${remoteId}.sock`
+  const remoteWorkspace = `/tmp/chariox-hosted-pairing-cli-${remoteId}`
+  const localSocket = path.join(os.tmpdir(), `chariox-hosted-local-cli-${remoteId}.sock`)
+  const remoteSocket = `/tmp/chariox-hosted-pairing-cli-${remoteId}.sock`
   const localMarker = `HOSTED_PAIRING_LOCAL_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const remoteMarker = `HOSTED_PAIRING_REMOTE_CLI_OK_${remoteId.replace(/[^a-zA-Z0-9]/g, "_")}`
   const pairing = unwrap(
@@ -184,7 +184,7 @@ export async function runHostedRemoteCliPairingAssertions({
   const remoteCommand = [
     "set -e",
     "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
-    "export ARROBA_TEST_TUI=1",
+    "export CHARIOX_TEST_TUI=1",
     `mkdir -p ${shellQuote(remoteWorkspace)}`,
     `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
     [
@@ -223,7 +223,7 @@ export async function runHostedRemoteCliPairingAssertions({
       "-q",
       "/dev/null",
       "env",
-      "ARROBA_TEST_TUI=1",
+      "CHARIOX_TEST_TUI=1",
       "bun",
       path.join(cliRoot, "dist/index.js"),
       "--kernel-url",
@@ -414,12 +414,12 @@ export async function runHostedRemoteCliAssertions({
   const remoteId = `${process.pid}-${Date.now()}`
   const remoteAlias = `hosted-remote-cli-${remoteId}`
   const remoteClientId = `hosted-remote-client-${remoteId}`
-  const remoteWorkspace = `/tmp/arroba-hosted-remote-cli-${remoteId}`
-  const remoteSocket = `/tmp/arroba-hosted-remote-cli-${remoteId}.sock`
+  const remoteWorkspace = `/tmp/chariox-hosted-remote-cli-${remoteId}`
+  const remoteSocket = `/tmp/chariox-hosted-remote-cli-${remoteId}.sock`
   const remoteCommand = [
     "set -e",
     "export PATH=/root/.bun/bin:/opt/node-v22/bin:$PATH",
-    "export ARROBA_TEST_TUI=1",
+    "export CHARIOX_TEST_TUI=1",
     `mkdir -p ${shellQuote(remoteWorkspace)}`,
     `cd ${shellQuote(path.posix.join(remoteCliRepo, "apps/cli"))}`,
     [

@@ -23,14 +23,14 @@ export function remoteEnvCommand(env, command) {
   const assignments = Object.entries(env)
     .map(([key, value]) => `${key}=${shellQuote(String(value))}`)
     .join(" ")
-  return `cd ${shellQuote(env.ARROBA_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
+  return `cd ${shellQuote(env.CHARIOX_REMOTE_REPO)} && env ${assignments} bash -lc ${shellQuote(command)}`
 }
 
-export async function assertHetznerArrobaBinaries(options) {
-  const kernelBinary = path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/arroba-kernel")
-  const relayBinary = path.posix.join(options.hetznerRepo, "apps/relay/target/debug/arroba-relay")
+export async function assertHetznerCharioxBinaries(options) {
+  const kernelBinary = path.posix.join(options.hetznerRepo, "apps/kernel/target/debug/chariox-kernel")
+  const relayBinary = path.posix.join(options.hetznerRepo, "apps/relay/target/debug/chariox-relay")
   const message = [
-    `Hetzner Arroba checkout is not ready at ${options.hetznerRepo}.`,
+    `Hetzner Chariox checkout is not ready at ${options.hetznerRepo}.`,
     `Expected executable binaries: ${kernelBinary} and ${relayBinary}.`,
     "Prepare the worker with:",
     `  git clone https://github.com/charioxai/chariox.git ${options.hetznerRepo}`,
@@ -38,8 +38,8 @@ export async function assertHetznerArrobaBinaries(options) {
     "  git checkout main && git reset --hard origin/main",
     "  export PATH=/root/.cargo/bin:$PATH",
     "  rustup toolchain install stable --profile minimal",
-    "  CARGO_TARGET_DIR=apps/kernel/target cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel",
-    "  CARGO_TARGET_DIR=apps/relay/target cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay",
+    "  CARGO_TARGET_DIR=apps/kernel/target cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel",
+    "  CARGO_TARGET_DIR=apps/relay/target cargo build --manifest-path apps/relay/Cargo.toml --bin chariox-relay",
   ].join("\n")
   await runHetznerCommand(options, [
     `repo=${shellQuote(options.hetznerRepo)}`,
@@ -53,7 +53,7 @@ export async function assertHetznerArrobaBinaries(options) {
 
 export async function prepareHetznerWorktree(options, localWorktree) {
   const parent = path.posix.dirname(localWorktree)
-  await assertHetznerArrobaBinaries(options)
+  await assertHetznerCharioxBinaries(options)
   const [{ stdout: localCommit }, remoteCommit] = await Promise.all([
     execFileAsync("git", ["-C", localWorktree, "rev-parse", "HEAD"]),
     runHetznerCommand(options, `git -C ${shellQuote(options.hetznerRepo)} rev-parse HEAD`),
@@ -63,7 +63,7 @@ export async function prepareHetznerWorktree(options, localWorktree) {
     remoteCommit,
     remoteRepo: options.hetznerRepo,
   })
-  await assertHetznerArrobaBinaryFreshness(options)
+  await assertHetznerCharioxBinaryFreshness(options)
   await execFileAsync("ssh", sshArgs(options, [
     "set -e",
     `mkdir -p ${shellQuote(parent)}`,
@@ -73,10 +73,10 @@ export async function prepareHetznerWorktree(options, localWorktree) {
   ].join("; ")))
 }
 
-export async function assertHetznerArrobaBinaryFreshness(options) {
+export async function assertHetznerCharioxBinaryFreshness(options) {
   const repo = options.hetznerRepo
-  const kernelBinary = path.posix.join(repo, "apps/kernel/target/debug/arroba-kernel")
-  const relayBinary = path.posix.join(repo, "apps/relay/target/debug/arroba-relay")
+  const kernelBinary = path.posix.join(repo, "apps/kernel/target/debug/chariox-kernel")
+  const relayBinary = path.posix.join(repo, "apps/relay/target/debug/chariox-relay")
   const command = [
     "set -euo pipefail",
     `repo=${shellQuote(repo)}`,
@@ -114,7 +114,7 @@ export function assertHetznerBinaryFreshness({ remoteRepo, kernelNewerPath, rela
   ].filter(Boolean)
   if (stale.length === 0) return
   throw new Error([
-    `Hetzner Arroba binaries are stale at ${remoteRepo}: ${stale.join("; ")}.`,
+    `Hetzner Chariox binaries are stale at ${remoteRepo}: ${stale.join("; ")}.`,
     "Rebuild into apps/kernel/target and apps/relay/target before running the drill.",
   ].join("\n"))
 }
@@ -383,7 +383,7 @@ const configText = fs.existsSync(configPath) ? fs.readFileSync(configPath, "utf8
 const prepared = prepareClaudeWorkspaceTrustConfigText(configText, workspace)
 fs.mkdirSync(path.dirname(statePath), { recursive: true })
 fs.writeFileSync(statePath, JSON.stringify(prepared.state), { mode: 0o600 })
-const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+const tempPath = configPath + ".chariox-" + process.pid + "-" + Date.now()
 fs.writeFileSync(tempPath, JSON.stringify(prepared.config, null, 2), { mode: 0o600 })
 fs.renameSync(tempPath, configPath)
 fs.chmodSync(configPath, 0o600)
@@ -410,7 +410,7 @@ if (fs.existsSync(statePath)) {
     if (originalConfigText === null) {
       fs.rmSync(configPath, { force: true })
     } else {
-      const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+      const tempPath = configPath + ".chariox-" + process.pid + "-" + Date.now()
       fs.writeFileSync(tempPath, originalConfigText, { mode: 0o600 })
       fs.renameSync(tempPath, configPath)
       fs.chmodSync(configPath, 0o600)
@@ -421,7 +421,7 @@ if (fs.existsSync(statePath)) {
   } else {
     const config = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {}
     const restored = restoreClaudeWorkspaceTrust(config, state)
-    const tempPath = configPath + ".arroba-" + process.pid + "-" + Date.now()
+    const tempPath = configPath + ".chariox-" + process.pid + "-" + Date.now()
     fs.writeFileSync(tempPath, JSON.stringify(restored, null, 2), { mode: 0o600 })
     fs.renameSync(tempPath, configPath)
     fs.chmodSync(configPath, 0o600)

@@ -58,15 +58,15 @@ async function run(command, args, options = {}) {
 
 async function ensureBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
-  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const kernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
   const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
   if (!cliReady) {
-    const result = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
+    const result = await run('pnpm', ['--filter', '@chariox/cli', 'run', 'build'])
     if (result.code !== 0) throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
   }
   if (!kernelReady) {
-    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+    const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
     if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
   return { cliDist, kernelBinary }
@@ -179,20 +179,20 @@ async function main() {
   const rootDir = path.join(repoRoot, 'target', 'live-tui-plan-mode-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
-  const automationSocket = path.join(os.tmpdir(), `arroba-tui-plan-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-tui-plan-${process.pid}-${Date.now()}.sock`)
   const kernelPort = 52000 + Math.floor(Math.random() * 1000)
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_DAEMON_ID: `tui-plan-mode-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1000),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_DAEMON_ID: `tui-plan-mode-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null

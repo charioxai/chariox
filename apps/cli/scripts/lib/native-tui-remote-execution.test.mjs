@@ -29,7 +29,7 @@ test("accepts a Hetzner checkout at the home commit", () => {
   assert.doesNotThrow(() => assertMatchingHetznerCheckoutCommit({
     localCommit: `${LOCAL_COMMIT}\n`,
     remoteCommit: LOCAL_COMMIT,
-    remoteRepo: "/tmp/arroba-run",
+    remoteRepo: "/tmp/chariox-run",
   }))
 })
 
@@ -38,9 +38,9 @@ test("rejects a stale Hetzner checkout before running a drill", () => {
     () => assertMatchingHetznerCheckoutCommit({
       localCommit: LOCAL_COMMIT,
       remoteCommit: REMOTE_COMMIT,
-      remoteRepo: "/tmp/arroba-run",
+      remoteRepo: "/tmp/chariox-run",
     }),
-    /remote worker checkout `\/tmp\/arroba-run` is at commit 2222.*home checkout expects 1111/,
+    /remote worker checkout `\/tmp\/chariox-run` is at commit 2222.*home checkout expects 1111/,
   )
 })
 
@@ -49,7 +49,7 @@ test("rejects unverifiable checkout revisions", () => {
     () => assertMatchingHetznerCheckoutCommit({
       localCommit: "not-a-commit",
       remoteCommit: REMOTE_COMMIT,
-      remoteRepo: "/tmp/arroba-run",
+      remoteRepo: "/tmp/chariox-run",
     }),
     /could not verify local and remote checkout commits/,
   )
@@ -57,7 +57,7 @@ test("rejects unverifiable checkout revisions", () => {
 
 test("accepts Hetzner binaries newer than their tracked inputs", () => {
   assert.doesNotThrow(() => assertHetznerBinaryFreshness({
-    remoteRepo: "/tmp/arroba-run",
+    remoteRepo: "/tmp/chariox-run",
     kernelNewerPath: "",
     relayNewerPath: "",
   }))
@@ -66,7 +66,7 @@ test("accepts Hetzner binaries newer than their tracked inputs", () => {
 test("rejects stale Hetzner component binaries with the newer input", () => {
   assert.throws(
     () => assertHetznerBinaryFreshness({
-      remoteRepo: "/tmp/arroba-run",
+      remoteRepo: "/tmp/chariox-run",
       kernelNewerPath: "apps/kernel/src/app.rs",
       relayNewerPath: "apps/relay/src/server.rs",
     }),
@@ -76,8 +76,8 @@ test("rejects stale Hetzner component binaries with the newer input", () => {
 
 test("builds scoped Hetzner worktree cleanup", () => {
   assert.equal(
-    hetznerWorktreeCleanupCommand("/tmp/arroba-run", "/remote/worktree/arroba"),
-    "git -C '/tmp/arroba-run' worktree remove --force '/remote/worktree/arroba' 2>/dev/null || rm -rf -- '/remote/worktree/arroba'; git -C '/tmp/arroba-run' worktree prune",
+    hetznerWorktreeCleanupCommand("/tmp/chariox-run", "/remote/worktree/chariox"),
+    "git -C '/tmp/chariox-run' worktree remove --force '/remote/worktree/chariox' 2>/dev/null || rm -rf -- '/remote/worktree/chariox'; git -C '/tmp/chariox-run' worktree prune",
   )
 })
 
@@ -111,7 +111,7 @@ test("scopes the Hetzner worker temp directory to its removable runtime root", (
 })
 
 test("seeds only OpenCode credentials and model catalog into an isolated runtime", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-opencode-profile-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-profile-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const sourceDataHome = path.join(root, "source-data")
   const sourceCacheHome = path.join(root, "source-cache")
@@ -147,7 +147,7 @@ test("seeds only OpenCode credentials and model catalog into an isolated runtime
 })
 
 test("removes a copied OpenCode credential when catalog seeding fails", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-opencode-profile-failure-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-profile-failure-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const sourceDataHome = path.join(root, "source-data")
   const sourceCacheHome = path.join(root, "source-cache")
@@ -170,7 +170,7 @@ test("removes a copied OpenCode credential when catalog seeding fails", async (t
 })
 
 test("does not seed a partial OpenCode model catalog", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-opencode-partial-catalog-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-opencode-partial-catalog-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const sourceDataHome = path.join(root, "source-data")
   const sourceCacheHome = path.join(root, "source-cache")
@@ -285,7 +285,7 @@ test("Claude workspace trust removes config created during a drill when none exi
 })
 
 test("same-host execution artifacts stay on the local machine", async (t) => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-native-execution-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-native-execution-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const outputDir = path.join(root, "nested", "outputs")
   const outputFile = path.join(outputDir, "permission.txt")

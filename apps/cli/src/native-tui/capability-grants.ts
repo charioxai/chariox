@@ -15,14 +15,14 @@ export async function grantNativeCapabilities(
     const response = await client.send<Record<string, unknown>>(grantAgentExtensionRequest(workspace, agentId, "mcp", name))
     const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
     if (!agent.extension_grants?.some((grant) => grant.kind === "mcp" && grant.name === name)) {
-      throw new Error(`Arroba MCP grant ${name} was accepted but is missing from agent ${agentId}`)
+      throw new Error(`Chariox MCP grant ${name} was accepted but is missing from agent ${agentId}`)
     }
   }
   for (const name of skills) {
     const response = await client.send<Record<string, unknown>>(grantAgentExtensionRequest(workspace, agentId, "skill", name))
     const agent = expectVariant<{ agent: AgentInstance }>(response, "AgentExtensionGranted").agent
     if (!agent.extension_grants?.some((grant) => grant.kind === "skill" && grant.name === name)) {
-      throw new Error(`Arroba skill grant ${name} was accepted but is missing from agent ${agentId}`)
+      throw new Error(`Chariox skill grant ${name} was accepted but is missing from agent ${agentId}`)
     }
   }
 }

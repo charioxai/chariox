@@ -3,7 +3,7 @@ import type {
   WorkflowDefinition,
   WorkflowEdgeDefinition,
 } from "./cli-types.js"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 
 type FooterTone = "info" | "error"
 

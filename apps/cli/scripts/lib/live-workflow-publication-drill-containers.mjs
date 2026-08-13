@@ -38,7 +38,7 @@ export async function runContainerPublicationValidation({
 }) {
   if (enabled) {
     logStep('container_publication_build')
-    const publicationContainerImage = `arroba-publication-drill:${process.pid}`
+    const publicationContainerImage = `chariox-publication-drill:${process.pid}`
     dockerImages.push(publicationContainerImage)
     await buildPublicationContainerImage(publicationContainerImage)
 
@@ -61,7 +61,7 @@ export async function runContainerPublicationValidation({
     await createContainerPortablePackage(humanHttpContainerExportDir, humanHttpContainerPackageDir)
     const containerHumanPort = await freePort()
     const containerHumanUrl = `http://127.0.0.1:${containerHumanPort}`
-    const containerHumanName = `arroba-publication-human-${process.pid}`
+    const containerHumanName = `chariox-publication-human-${process.pid}`
     dockerContainers.push(containerHumanName)
     let containerHumanPromptRuntimeSessionId = null
     let containerProcess = startPublicationContainer({
@@ -73,7 +73,7 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerHumanUrl, containerProcess, 60_000)
-      const containerStatusResponse = await fetch(`${containerHumanUrl}/.well-known/arroba/publication/status`)
+      const containerStatusResponse = await fetch(`${containerHumanUrl}/.well-known/chariox/publication/status`)
       const containerStatusBody = await containerStatusResponse.json()
       if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
         throw new Error(`expected container human_http status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
@@ -104,7 +104,7 @@ export async function runContainerPublicationValidation({
     }
     const containerHumanRootPort = await freePort()
     const containerHumanRootUrl = `http://127.0.0.1:${containerHumanRootPort}`
-    const containerHumanRootName = `arroba-publication-human-root-${process.pid}`
+    const containerHumanRootName = `chariox-publication-human-root-${process.pid}`
     dockerContainers.push(containerHumanRootName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -115,7 +115,7 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerHumanRootUrl, containerProcess, 60_000)
-      const containerStatusResponse = await fetch(`${containerHumanRootUrl}/.well-known/arroba/publication/status`)
+      const containerStatusResponse = await fetch(`${containerHumanRootUrl}/.well-known/chariox/publication/status`)
       const containerStatusBody = await containerStatusResponse.json()
       if (containerStatusResponse.status !== 200 || typeof containerStatusBody.runtime_session_id !== 'string') {
         throw new Error(`expected container human_http root status with runtime session id, got ${containerStatusResponse.status}: ${JSON.stringify(containerStatusBody)}`)
@@ -154,7 +154,7 @@ export async function runContainerPublicationValidation({
     await createContainerPortablePackage(apiSseContainerExportDir, apiSseContainerPackageDir)
     const containerApiPort = await freePort()
     const containerApiUrl = `http://127.0.0.1:${containerApiPort}`
-    const containerApiName = `arroba-publication-api-${process.pid}`
+    const containerApiName = `chariox-publication-api-${process.pid}`
     dockerContainers.push(containerApiName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -165,7 +165,7 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerApiUrl, containerProcess, 60_000)
-      const containerApiStatusResponse = await fetch(`${containerApiUrl}/.well-known/arroba/publication/status`)
+      const containerApiStatusResponse = await fetch(`${containerApiUrl}/.well-known/chariox/publication/status`)
       const containerApiStatusBody = await containerApiStatusResponse.json()
       if (containerApiStatusResponse.status !== 200 || typeof containerApiStatusBody.runtime_session_id !== 'string') {
         throw new Error(`expected container api_sse_json status with runtime session id, got ${containerApiStatusResponse.status}: ${JSON.stringify(containerApiStatusBody)}`)
@@ -214,7 +214,7 @@ export async function runContainerPublicationValidation({
     await createContainerPortablePackage(websocketContainerExportDir, websocketContainerPackageDir)
     const containerWebSocketPort = await freePort()
     const containerWebSocketUrl = `http://127.0.0.1:${containerWebSocketPort}`
-    const containerWebSocketName = `arroba-publication-websocket-${process.pid}`
+    const containerWebSocketName = `chariox-publication-websocket-${process.pid}`
     dockerContainers.push(containerWebSocketName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -225,13 +225,13 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerWebSocketUrl, containerProcess, 60_000)
-      const containerWebSocketStatusResponse = await fetch(`${containerWebSocketUrl}/.well-known/arroba/publication/status`)
+      const containerWebSocketStatusResponse = await fetch(`${containerWebSocketUrl}/.well-known/chariox/publication/status`)
       const containerWebSocketStatusBody = await containerWebSocketStatusResponse.json()
       if (containerWebSocketStatusResponse.status !== 200 || typeof containerWebSocketStatusBody.runtime_session_id !== 'string') {
         throw new Error(`expected container websocket_json status with runtime session id, got ${containerWebSocketStatusResponse.status}: ${JSON.stringify(containerWebSocketStatusBody)}`)
       }
       const containerWebSocket = await invokePublicationWebSocket(
-        `ws://127.0.0.1:${containerWebSocketPort}/.well-known/arroba/publication/ws`,
+        `ws://127.0.0.1:${containerWebSocketPort}/.well-known/chariox/publication/ws`,
         { prompt: 'container-websocket-publication' },
         { waitForFinal: true },
       )
@@ -274,7 +274,7 @@ export async function runContainerPublicationValidation({
     await createContainerPortablePackage(mcpContainerExportDir, mcpContainerPackageDir)
     const containerMcpPort = await freePort()
     const containerMcpUrl = `http://127.0.0.1:${containerMcpPort}`
-    const containerMcpName = `arroba-publication-mcp-${process.pid}`
+    const containerMcpName = `chariox-publication-mcp-${process.pid}`
     dockerContainers.push(containerMcpName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -285,7 +285,7 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerMcpUrl, containerProcess, 60_000)
-      const containerMcpStatusResponse = await fetch(`${containerMcpUrl}/.well-known/arroba/publication/status`)
+      const containerMcpStatusResponse = await fetch(`${containerMcpUrl}/.well-known/chariox/publication/status`)
       const containerMcpStatusBody = await containerMcpStatusResponse.json()
       if (containerMcpStatusResponse.status !== 200 || typeof containerMcpStatusBody.runtime_session_id !== 'string') {
         throw new Error(`expected container mcp status with runtime session id, got ${containerMcpStatusResponse.status}: ${JSON.stringify(containerMcpStatusBody)}`)
@@ -331,7 +331,7 @@ export async function runContainerPublicationValidation({
     await createContainerPortablePackage(scheduleExportDir, scheduleContainerPackageDir)
     const containerSchedulePort = await freePort()
     const containerScheduleUrl = `http://127.0.0.1:${containerSchedulePort}`
-    const containerScheduleName = `arroba-publication-schedule-${process.pid}`
+    const containerScheduleName = `chariox-publication-schedule-${process.pid}`
     dockerContainers.push(containerScheduleName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -342,7 +342,7 @@ export async function runContainerPublicationValidation({
     })
     try {
       await waitForContainerGateway(containerScheduleUrl, containerProcess, 60_000)
-      const containerScheduleStatusResponse = await fetch(`${containerScheduleUrl}/.well-known/arroba/publication/status`)
+      const containerScheduleStatusResponse = await fetch(`${containerScheduleUrl}/.well-known/chariox/publication/status`)
       const containerScheduleStatusBody = await containerScheduleStatusResponse.json()
       const containerScheduleWatchdogs = publicationStatusWatchdogs(containerScheduleStatusBody)
       if (
@@ -377,7 +377,7 @@ export async function runContainerPublicationValidation({
     }, null, 2))
     const containerMissingPort = await freePort()
     const containerMissingUrl = `http://127.0.0.1:${containerMissingPort}`
-    const containerMissingName = `arroba-publication-missing-${process.pid}`
+    const containerMissingName = `chariox-publication-missing-${process.pid}`
     dockerContainers.push(containerMissingName)
     containerProcess = startPublicationContainer({
       image: publicationContainerImage,
@@ -398,6 +398,6 @@ export async function runContainerPublicationValidation({
     containerProcess = null
     logStep('container_missing_requirements_fail_before_listen_ok')
   } else {
-    logStep('container_publication_skipped', { reason: 'set ARROBA_PUBLICATION_CONTAINER_DRILL=1 to run Docker container validation' })
+    logStep('container_publication_skipped', { reason: 'set CHARIOX_PUBLICATION_CONTAINER_DRILL=1 to run Docker container validation' })
   }
 }

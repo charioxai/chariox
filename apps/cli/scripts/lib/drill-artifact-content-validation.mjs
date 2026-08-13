@@ -38,7 +38,7 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
     "missingRuntimeAuthorityInvariants",
   ])
   const cloudOnlyEvidence = isCloudOnlyEvidence(metadata)
-  if (parsed?.schema === "arroba.drill.validation_suite.v1") {
+  if (parsed?.schema === "chariox.drill.validation_suite.v1") {
     validateValidationSuiteManifestArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({
       artifactPath,
@@ -73,7 +73,7 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
       )
     }
   }
-  if (parsed?.schema === "arroba.drill.validation_suite_run.v1") {
+  if (parsed?.schema === "chariox.drill.validation_suite_run.v1") {
     validateValidationSuiteRunArtifact(parsed, artifactPath)
     validateValidationSuiteArtifactMetadata({
       artifactPath,
@@ -109,11 +109,11 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
       )
     }
   }
-  if (parsed?.schema === "arroba.drill.matrix.v1") {
+  if (parsed?.schema === "chariox.drill.matrix.v1") {
     validateDrillMatrixReport(parsed, artifactPath)
     validateMatrixArtifactMetadata(parsed, artifactPath, metadata)
   }
-  if (parsed?.schema === "arroba.drill.focused_runtime_gate.v1") {
+  if (parsed?.schema === "chariox.drill.focused_runtime_gate.v1") {
     validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
     validateFocusedRuntimeGateArtifactMetadata(parsed, artifactPath, metadata)
   }
@@ -269,7 +269,7 @@ function validateValidationSuiteManifestArtifact(manifest, source) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`drill artifact ${source} is not an object`)
   }
-  if (manifest.schema !== "arroba.drill.validation_suite.v1") {
+  if (manifest.schema !== "chariox.drill.validation_suite.v1") {
     throw new Error(`drill artifact ${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
   if (!nonEmptyString(manifest.command)) {

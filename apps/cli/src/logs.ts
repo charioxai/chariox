@@ -24,7 +24,7 @@ export async function runLogViewer(args: string[]) {
 
   if (options.bundleDir) {
     const bundle = writeLogBundle(logDir, options.bundleDir, options, matching)
-    process.stdout.write(`wrote Arroba log bundle: ${bundle.bundleDir}\n`)
+    process.stdout.write(`wrote Chariox log bundle: ${bundle.bundleDir}\n`)
     process.stdout.write(`records: ${bundle.recordCount}\n`)
     return
   }
@@ -125,7 +125,7 @@ export function writeLogBundle(
   const resolvedBundleDir = path.resolve(bundleDir)
   mkdirSync(resolvedBundleDir, { recursive: true })
   const manifest = {
-    schema: "arroba.log_bundle.v1",
+    schema: "chariox.log_bundle.v1",
     created_at_ms: Date.now(),
     log_root: logDir,
     filters: {
@@ -176,6 +176,6 @@ function recordMatches(record: LogRecord, options: Pick<LogViewerOptions, "compo
 
 export function printLogUsage() {
   process.stdout.write(
-    "usage: arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]\n",
+    "usage: chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]\n",
   )
 }

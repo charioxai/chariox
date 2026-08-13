@@ -216,7 +216,7 @@ test("provider-native Claude setup fails closed without an attached TUI", async 
       executeDeployedWorkflowCommand(cloudProfile, [
         "credentials", "setup", "provider", "claude", "Customer Claude",
       ]),
-      /requires an attached Arroba TUI/,
+      /requires an attached Chariox TUI/,
     )
     assert.deepEqual(paths, ["/deployment-credentials", "/deployment-credentials"])
   } finally {

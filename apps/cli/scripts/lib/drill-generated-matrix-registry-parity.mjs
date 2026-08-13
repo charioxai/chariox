@@ -6,7 +6,7 @@ import {
   drillGeneratedMatrixNamesManifest,
 } from "./drill-generated-matrix-names.mjs"
 
-const CLOUD_GENERATED_MATRIX_NAMES_SCHEMA = "arroba.cloud.drill.generated_matrix_names.v1"
+const CLOUD_GENERATED_MATRIX_NAMES_SCHEMA = "chariox.cloud.drill.generated_matrix_names.v1"
 
 export async function verifyDrillGeneratedMatrixRegistryParity({ cloudRoot }) {
   const cloudRegistryPath = path.join(cloudRoot, "scripts", "lib", "cloud-drill-generated-matrix-names.mjs")

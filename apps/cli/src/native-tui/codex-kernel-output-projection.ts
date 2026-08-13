@@ -1,9 +1,9 @@
 import type { TerminalOutputRecord } from "../cli-types.js"
-import { isProviderIdleStatus } from "@arroba/kernel-client/provider-status"
+import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import {
   terminalRecordTranscriptProjection,
   type TerminalRecordTranscriptProjection,
-} from "@arroba/kernel-client/terminal-record-transcript"
+} from "@chariox/kernel-client/terminal-record-transcript"
 
 type ProjectedItem = {
   key: string
@@ -42,7 +42,7 @@ export function createCodexKernelOutputProjection(options: {
 
   const startProjectedTurn = (timestampMs: number) => {
     if (!projectedThreadId) return null
-    const turnId = `arroba-projected-turn-${nextProjectedTurnId++}`
+    const turnId = `chariox-projected-turn-${nextProjectedTurnId++}`
     options.broadcast({
       jsonrpc: "2.0",
       method: "thread/status/changed",
@@ -138,7 +138,7 @@ export function createCodexKernelOutputProjection(options: {
       if (recordProjection.transcriptRole === "user") {
         const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
-        const itemId = `arroba-projected-user-${timestampMs}-${nextProjectedTurnId}`
+        const itemId = `chariox-projected-user-${timestampMs}-${nextProjectedTurnId}`
         options.broadcast({
           jsonrpc: "2.0",
           method: "item/started",
@@ -183,7 +183,7 @@ export function createCodexKernelOutputProjection(options: {
       if (!itemProjection) {
         const turnId = startProjectedTurn(timestampMs)
         if (!turnId) continue
-        const itemId = `arroba-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
+        const itemId = `chariox-projected-${itemKind}-${timestampMs}-${nextProjectedTurnId}`
         itemProjection = { key: itemKey, turnId, itemId, kind: itemKind, text: "", completedAtMs: timestampMs, timer: null }
         projectedItems.set(itemKey, itemProjection)
         options.broadcast({

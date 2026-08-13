@@ -19,9 +19,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-validation-gate.mjs", import.meta.url))
 
 test("drill validation gate writes passing JSON report", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   const outputPath = path.join(rootDir, "gate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -59,7 +59,7 @@ test("drill validation gate writes passing JSON report", async () => {
       schema: artifact.schema,
     })), [{
       path: "gate.json",
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -88,7 +88,7 @@ test("drill validation gate rejects unknown required failure classifications", a
 
 test("drill validation gate rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -133,9 +133,9 @@ test("drill validation gate rejects aggregate-only generated evidence requiremen
 })
 
 test("drill validation gate forwards failure freshness requirement", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
-    const manifestPath = path.join(rootDir, "arroba-drill-failure.json")
+    const manifestPath = path.join(rootDir, "chariox-drill-failure.json")
     await writeFailureManifest(manifestPath, {
       drill: "cli-stale-failure",
       failedAt: new Date(Date.now() - 500).toISOString(),
@@ -205,7 +205,7 @@ test("drill validation gate lists selected presets as JSON", async () => {
 })
 
 test("drill validation gate accepts explicit matrix report paths", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath)
@@ -227,7 +227,7 @@ test("drill validation gate accepts explicit matrix report paths", async () => {
 })
 
 test("drill validation gate requires platform coverage areas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
@@ -261,7 +261,7 @@ test("drill validation gate requires platform coverage areas", async () => {
 })
 
 test("drill validation gate applies requirement presets", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const reportPath = path.join(rootDir, "workspace-live-sync.json")
@@ -309,7 +309,7 @@ test("drill validation gate rejects unknown presets", async () => {
 })
 
 test("drill validation gate requires matrix name coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath)
@@ -342,7 +342,7 @@ test("drill validation gate requires matrix name coverage", async () => {
 })
 
 test("drill validation gate requires matrix classification coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeClassifiedMatrixReport(reportPath)
@@ -395,7 +395,7 @@ test("drill validation gate rejects unknown matrix classification requirements",
 })
 
 test("drill validation gate requires deployment preset coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, { deploymentPresets: "local,self-hosted-relay" })
@@ -428,7 +428,7 @@ test("drill validation gate requires deployment preset coverage", async () => {
 })
 
 test("drill validation gate requires provider coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, { providers: "codex,opencode" })
@@ -461,7 +461,7 @@ test("drill validation gate requires provider coverage", async () => {
 })
 
 test("drill validation gate requires scenario coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath)
@@ -510,11 +510,11 @@ test("drill validation gate rejects unknown deployment preset requirements", asy
 })
 
 test("drill validation gate accepts artifact roots", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const reportPath = path.join(rootDir, "reports", "gate.json")
     await mkdir(path.dirname(reportPath), { recursive: true })
-    await writeFile(reportPath, "{\"schema\":\"arroba.drill.validation_gate.v1\"}\n", "utf8")
+    await writeFile(reportPath, "{\"schema\":\"chariox.drill.validation_gate.v1\"}\n", "utf8")
     await writeDrillArtifactIndex({
       rootDir,
       artifacts: ["reports/gate.json"],
@@ -550,10 +550,10 @@ test("drill validation gate rejects empty configuration", async () => {
 })
 
 test("drill validation gate exits non-zero for preserved failures", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-cli-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-cli-"))
   try {
     const failureRoot = path.join(rootDir, "failed")
-    await writeFailureManifest(path.join(failureRoot, "arroba-drill-failure.json"))
+    await writeFailureManifest(path.join(failureRoot, "chariox-drill-failure.json"))
 
     await assert.rejects(
       execFile(process.execPath, [scriptPath, "--failure-manifest", failureRoot, "--json"]),
@@ -563,7 +563,7 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
         assert.equal(report.status, "failed")
         assert.equal(report.checks.failures.aggregate.total, 1)
         assert.deepEqual(report.checks.failures.inputs, [failureRoot])
-        assert.deepEqual(report.checks.failures.manifestPaths, [path.join(failureRoot, "arroba-drill-failure.json")])
+        assert.deepEqual(report.checks.failures.manifestPaths, [path.join(failureRoot, "chariox-drill-failure.json")])
         assert.deepEqual(report.nextActions.map(({ owner, classification }) => ({ owner, classification })), [
           { owner: "provider-account", classification: "provider-auth" },
         ])
@@ -578,7 +578,7 @@ test("drill validation gate exits non-zero for preserved failures", async () => 
 async function writeMatrixReport(file, metadata = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "cli-matrix",
     status: "passed",
     dryRun: false,
@@ -606,7 +606,7 @@ async function writeMatrixReport(file, metadata = {}) {
 async function writeClassifiedMatrixReport(file) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "cli-matrix",
     status: "passed",
     dryRun: false,
@@ -624,7 +624,7 @@ async function writeClassifiedMatrixReport(file) {
 async function writeWorkspaceLiveSyncPresetReport(file) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "workspace-live-sync-matrix",
     status: "passed",
     dryRun: false,
@@ -666,7 +666,7 @@ function scenario(id, classification, runtimeSignals = []) {
 async function writeFailureManifest(file) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.failure.v1",
+    schema: "chariox.drill.failure.v1",
     rootDir: path.dirname(file),
     failedAt: "2026-06-13T00:00:00.000Z",
     metadata: { drill: "failed-drill" },

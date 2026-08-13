@@ -110,7 +110,7 @@ function validationGateReport({
 } = {}) {
   const checkStatus = status === "passed" ? "passed" : "failed"
   return {
-    schema: "arroba.drill.validation_gate.v1",
+    schema: "chariox.drill.validation_gate.v1",
     status,
     presets: [preset],
     checks: {

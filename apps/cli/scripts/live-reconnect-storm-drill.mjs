@@ -32,7 +32,7 @@ if (dryRun) {
 
 const basePort = await availablePortBand()
 const ports = { relay: basePort, kernel: basePort + 1, mcp: basePort + 2, opencode: basePort + 3, codex: basePort + 4 }
-const root = path.join(os.tmpdir(), `arroba-reconnect-storm-${process.pid}-${Date.now()}`)
+const root = path.join(os.tmpdir(), `chariox-reconnect-storm-${process.pid}-${Date.now()}`)
 const relayToken = `reconnect-storm-${process.pid}-${Date.now()}`
 const children = []
 const clients = []
@@ -51,8 +51,8 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 try {
   await mkdir(root, { recursive: true })
-  children.push(spawnOwned(path.join(repoRoot, "target", "release", "arroba-relay"), relayEnv()))
-  children.push(spawnOwned(path.join(repoRoot, "target", "release", "arroba-kernel"), kernelEnv()))
+  children.push(spawnOwned(path.join(repoRoot, "target", "release", "chariox-relay"), relayEnv()))
+  children.push(spawnOwned(path.join(repoRoot, "target", "release", "chariox-kernel"), kernelEnv()))
   resourceTimer = setInterval(() => {
     try { resourceSamples.push({ at: Date.now(), processes: processMetrics(children) }) } catch {}
   }, 1_000)
@@ -241,10 +241,10 @@ function relayClient() {
 function relayEnv() {
   return {
     ...process.env,
-    ARROBA_RELAY_HOST: "127.0.0.1",
-    ARROBA_RELAY_PORT: String(ports.relay),
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_RELAY_OUTGOING_QUEUE_CAPACITY: "32",
+    CHARIOX_RELAY_HOST: "127.0.0.1",
+    CHARIOX_RELAY_PORT: String(ports.relay),
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY: "32",
   }
 }
 function kernelEnv() {
@@ -254,16 +254,16 @@ function kernelEnv() {
     XDG_CONFIG_HOME: path.join(root, "config"),
     XDG_STATE_HOME: path.join(root, "state"),
     XDG_CACHE_HOME: path.join(root, "cache"),
-    ARROBA_KERNEL_PORT: String(ports.kernel),
-    ARROBA_MCP_PORT: String(ports.mcp),
-    ARROBA_OPENCODE_PORT: String(ports.opencode),
-    ARROBA_CODEX_PORT: String(ports.codex),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relay}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: "reconnect-storm-home",
-    ARROBA_DAEMON_ALIAS: "home",
-    ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+    CHARIOX_KERNEL_PORT: String(ports.kernel),
+    CHARIOX_MCP_PORT: String(ports.mcp),
+    CHARIOX_OPENCODE_PORT: String(ports.opencode),
+    CHARIOX_CODEX_PORT: String(ports.codex),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relay}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: "reconnect-storm-home",
+    CHARIOX_DAEMON_ALIAS: "home",
+    CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
   }
 }
 function spawnOwned(command, env) { return spawn(command, [], { cwd: repoRoot, env, detached: true, stdio: "ignore" }) }

@@ -6,11 +6,11 @@ import {
   markSessionHistoryBlobLoading,
   replaceSessionHistoryBlobPlaceholder,
   resolveSessionHistoryBlobLoadTarget,
-} from "@arroba/kernel-client/session-history-transcript"
+} from "@chariox/kernel-client/session-history-transcript"
 import {
   projectTranscriptBlobToggleDisplayState,
   projectTranscriptTurnToggleDisplayState,
-} from "@arroba/kernel-client/transcript-display-state"
+} from "@chariox/kernel-client/transcript-display-state"
 
 export type AgentPaneTranscriptInteractionControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]

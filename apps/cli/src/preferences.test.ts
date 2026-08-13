@@ -16,11 +16,11 @@ import {
   saveSessionPromptState,
   sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
-  type ArrobaPreferences,
+  type CharioxPreferences,
 } from "./preferences.js"
 
 test("mergeUiPreferences updates the global response layout without losing other preferences", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     providers: {
       opencode: {
         model: "openai/gpt-5",
@@ -46,12 +46,12 @@ test("mergeUiPreferences updates the global response layout without losing other
         multiAgentResponseLayout: "split",
         theme: "sober",
       },
-    } satisfies ArrobaPreferences,
+    } satisfies CharioxPreferences,
   )
 })
 
 test("mergeSessionPromptHistory stores prompt history without losing other sessions or preferences", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     providers: {
       opencode: {
         model: "openai/gpt-5",
@@ -80,12 +80,12 @@ test("mergeSessionPromptHistory stores prompt history without losing other sessi
           promptHistory: ["git diff", "git log"],
         },
       },
-    } satisfies ArrobaPreferences,
+    } satisfies CharioxPreferences,
   )
 })
 
 test("sessionPromptHistoryEntries returns normalized prompt history for one session only", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     sessions: {
       "session-1": {
         promptHistory: ["git status", "git diff\n", "", "   "],
@@ -102,7 +102,7 @@ test("sessionPromptHistoryEntries returns normalized prompt history for one sess
 })
 
 test("mergeSessionPromptState stores prompt history and draft together", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     sessions: {
       "session-1": {
         promptHistory: ["git status"],
@@ -123,12 +123,12 @@ test("mergeSessionPromptState stores prompt history and draft together", () => {
           promptDraft: "draft two",
         },
       },
-    } satisfies ArrobaPreferences,
+    } satisfies CharioxPreferences,
   )
 })
 
 test("sessionPromptDraftEntry returns normalized draft text for one session", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     sessions: {
       "session-1": {
         promptDraft: "hello\r\nworld",
@@ -145,7 +145,7 @@ test("sessionPromptDraftEntry returns normalized draft text for one session", ()
 })
 
 test("mergeRelayCloudProfile stores and clears the cloud relay profile", () => {
-  const current: ArrobaPreferences = {
+  const current: CharioxPreferences = {
     providers: {
       opencode: {
         model: "openai/gpt-5",
@@ -170,7 +170,7 @@ test("mergeRelayCloudProfile stores and clears the cloud relay profile", () => {
 
 test("saveSessionPromptState preserves prompt history across queued draft-only writes", async () => {
   const previousConfigHome = process.env.XDG_CONFIG_HOME
-  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "arroba-preferences-"))
+  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "chariox-preferences-"))
   process.env.XDG_CONFIG_HOME = tempConfigHome
 
   try {
@@ -185,7 +185,7 @@ test("saveSessionPromptState preserves prompt history across queued draft-only w
     ])
 
     const current = await loadPreferences()
-    assert.equal(preferencesPath(), path.join(tempConfigHome, "arroba", "config.json"))
+    assert.equal(preferencesPath(), path.join(tempConfigHome, "chariox", "config.json"))
     assert.deepEqual(sessionPromptHistoryEntries(current, "session-1"), ["prompt 1", "prompt 2"])
     assert.equal(sessionPromptDraftEntry(current, "session-1"), "draft prompt")
   } finally {
@@ -200,7 +200,7 @@ test("saveSessionPromptState preserves prompt history across queued draft-only w
 
 test("saveRelayCloudProfile persists the configured cloud relay profile", async () => {
   const previousConfigHome = process.env.XDG_CONFIG_HOME
-  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "arroba-preferences-"))
+  const tempConfigHome = await mkdtemp(path.join(os.tmpdir(), "chariox-preferences-"))
   process.env.XDG_CONFIG_HOME = tempConfigHome
 
   try {

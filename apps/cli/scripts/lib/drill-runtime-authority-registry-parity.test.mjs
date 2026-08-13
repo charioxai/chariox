@@ -11,9 +11,9 @@ import {
 import { drillRuntimeAuthorityManifest } from "./drill-runtime-authority-invariants.mjs"
 
 test("accepts matching OSS and Cloud runtime authority registries", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot)
 
     await assert.doesNotReject(verifyDrillRuntimeAuthorityRegistryParity({ cloudRoot }))
@@ -23,9 +23,9 @@ test("accepts matching OSS and Cloud runtime authority registries", async () => 
 })
 
 test("accepts Cloud control-plane invariant alias and owner override", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: drillRuntimeAuthorityManifest().invariants.map((invariant) => invariant.id === "relay-cloud-transport-only"
         ? { ...invariant, id: "cloud-control-plane-only", owner: "cloud-deployment" }
@@ -51,9 +51,9 @@ test("accepts Cloud control-plane aliases in embedded artifact manifests", () =>
 })
 
 test("rejects missing Cloud runtime authority registry exports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-authority-invariants.mjs")
     await mkdir(path.dirname(registryPath), { recursive: true })
     await writeFile(registryPath, "export const noManifest = true\n", "utf8")
@@ -68,9 +68,9 @@ test("rejects missing Cloud runtime authority registry exports", async () => {
 })
 
 test("rejects missing Cloud runtime authority invariants", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: drillRuntimeAuthorityManifest().invariants.filter((invariant) => invariant.id !== "worker-execution-authority"),
     })
@@ -85,9 +85,9 @@ test("rejects missing Cloud runtime authority invariants", async () => {
 })
 
 test("rejects Cloud runtime authority owner drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: drillRuntimeAuthorityManifest().invariants.map((invariant) => invariant.id === "worker-execution-authority"
         ? { ...invariant, owner: "kernel-authority" }
@@ -104,9 +104,9 @@ test("rejects Cloud runtime authority owner drift", async () => {
 })
 
 test("rejects Cloud runtime authority signal drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: drillRuntimeAuthorityManifest().invariants.map((invariant) => invariant.id === "home-session-authority"
         ? { ...invariant, requiredRuntimeSignals: ["session-authority"] }
@@ -123,16 +123,16 @@ test("rejects Cloud runtime authority signal drift", async () => {
 })
 
 test("rejects unsupported Cloud runtime authority schemas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
-      schema: "arroba.cloud.runtime_authority_invariants.v1",
+      schema: "chariox.cloud.runtime_authority_invariants.v1",
     })
 
     await assert.rejects(
       verifyDrillRuntimeAuthorityRegistryParity({ cloudRoot }),
-      /Cloud runtime authority registry has unsupported schema "arroba.cloud.runtime_authority_invariants.v1"/,
+      /Cloud runtime authority registry has unsupported schema "chariox.cloud.runtime_authority_invariants.v1"/,
     )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -140,9 +140,9 @@ test("rejects unsupported Cloud runtime authority schemas", async () => {
 })
 
 test("rejects duplicate Cloud runtime authority invariant ids after aliases", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-runtime-authority-parity-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-runtime-authority-parity-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const relayInvariant = drillRuntimeAuthorityManifest().invariants.find((invariant) => invariant.id === "relay-cloud-transport-only")
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: [
@@ -161,7 +161,7 @@ test("rejects duplicate Cloud runtime authority invariant ids after aliases", as
 })
 
 async function writeCloudRuntimeAuthorityRegistry(cloudRoot, {
-  schema = "arroba.drill.runtime_authority_invariants.v1",
+  schema = "chariox.drill.runtime_authority_invariants.v1",
   invariants = drillRuntimeAuthorityManifest().invariants,
 } = {}) {
   const registryPath = path.join(cloudRoot, "scripts", "lib", "cloud-runtime-authority-invariants.mjs")

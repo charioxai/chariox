@@ -111,10 +111,10 @@ async function assertScreenEndpointReady(url) {
 
 async function buildKernel() {
   const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return await resolveBuiltBinary(binary, manifestPath, 'arroba-kernel')
+  return await resolveBuiltBinary(binary, manifestPath, 'chariox-kernel')
 }
 
 function startDaemon(binary, env) {
@@ -378,19 +378,19 @@ async function main() {
       HOME: home,
       XDG_CONFIG_HOME: configHome,
       XDG_STATE_HOME: stateHome,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.openCodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_ID: `slice-lifecycle-drill-${process.pid}-${Date.now()}`,
+      CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
       ...(dockerHost ? { DOCKER_HOST: dockerHost } : {}),
     }
     await mkdir(workspace, { recursive: true })
     await mkdir(otherWorktree, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
     await mkdir(path.join(home, '.codex'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     await writeProviderAuthFixtures(home, 'slice-drill-account-1')
 
     const kernelBinary = await buildKernel()

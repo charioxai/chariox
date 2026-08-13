@@ -4,7 +4,7 @@ import type {
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { RecallEvent } from "@arroba/kernel-client"
+import type { RecallEvent } from "@chariox/kernel-client"
 import {
   formatWorkspaceLiveSyncDefaultModeChangeMessage,
   formatWorkspaceLiveSyncModeChangeMessage,
@@ -12,11 +12,11 @@ import {
   workspaceLiveSyncModeProtocolValue,
   type WorkspaceLiveSyncModeProtocolValue,
   type WorkspaceLiveSyncProviderReloadSummary,
-} from "@arroba/kernel-client/workspace-live-sync-mode"
+} from "@chariox/kernel-client/workspace-live-sync-mode"
 import {
   workspaceLiveSyncHealthLabel,
   workspaceLiveSyncProblems,
-} from "@arroba/kernel-client/shell-workspace-format"
+} from "@chariox/kernel-client/shell-workspace-format"
 import {
   prepareLocalGitWorktree,
   suggestNamedWorktreePath,

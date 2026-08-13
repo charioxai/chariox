@@ -46,8 +46,8 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -55,7 +55,7 @@ async function buildKernel() {
 }
 
 async function buildKernelClient() {
-  const result = await run('pnpm', ['--filter', '@arroba/kernel-client', 'build'])
+  const result = await run('pnpm', ['--filter', '@chariox/kernel-client', 'build'])
   if (result.code !== 0) {
     throw new Error(`kernel-client build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -221,15 +221,15 @@ async function pumpTerminalContains(client, requests, sessionId, attachmentId, e
 }
 
 async function writeConfig(configRoot) {
-  await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
-  await writeFile(path.join(configRoot, 'arroba', 'config.toml'), [
+  await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
+  await writeFile(path.join(configRoot, 'chariox', 'config.toml'), [
     'version = 1',
     '',
   ].join('\n'), 'utf8')
 }
 
 async function writeCredentialRegistry(homeDir, verifierHost, credentialId, tokenEnv, terminalId, terminalEnv) {
-  const credentialsDir = path.join(homeDir, '.arroba', 'credentials')
+  const credentialsDir = path.join(homeDir, '.chariox', 'credentials')
   await mkdir(credentialsDir, { recursive: true })
   await writeFile(path.join(credentialsDir, `${credentialId}.yaml`), [
     `id: ${credentialId}`,
@@ -264,14 +264,14 @@ function daemonEnv({ baseEnv, rootDir, configRoot, homeDir, kernelPort, mcpPort,
     ...baseEnv,
     XDG_CONFIG_HOME: configRoot,
     HOME: homeDir,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_MACHINE_ID: `${daemonId}-machine`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, `${daemonId}.sock`),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_MACHINE_ID: `${daemonId}-machine`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, `${daemonId}.sock`),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, `${daemonId}-history`),
     [tokenEnv]: token,
     [terminalEnv]: terminalSecret,
   }
@@ -290,10 +290,10 @@ async function main() {
   const workerToken = `worker-token-${process.pid}`
   const terminalSecret = `terminal-secret-${process.pid}`
   const workerTerminalSecret = `worker-terminal-secret-${process.pid}`
-  const localTokenEnv = 'ARROBA_SECRET_DRILL_LOCAL_TOKEN'
-  const workerTokenEnv = 'ARROBA_SECRET_DRILL_WORKER_TOKEN'
-  const localTerminalEnv = 'ARROBA_SECRET_DRILL_LOCAL_TERMINAL'
-  const workerTerminalEnv = 'ARROBA_SECRET_DRILL_WORKER_TERMINAL'
+  const localTokenEnv = 'CHARIOX_SECRET_DRILL_LOCAL_TOKEN'
+  const workerTokenEnv = 'CHARIOX_SECRET_DRILL_WORKER_TOKEN'
+  const localTerminalEnv = 'CHARIOX_SECRET_DRILL_LOCAL_TERMINAL'
+  const workerTerminalEnv = 'CHARIOX_SECRET_DRILL_WORKER_TERMINAL'
   let localDaemon = null
   let workerDaemon = null
   let localClient = null

@@ -1,4 +1,4 @@
-import { navigatePromptHistory } from "@arroba/kernel-client/prompt-history"
+import { navigatePromptHistory } from "@chariox/kernel-client/prompt-history"
 
 type PromptHistoryNavigationControllerOptions = {
   getPromptText: () => string

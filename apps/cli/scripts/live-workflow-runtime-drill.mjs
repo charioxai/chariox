@@ -174,17 +174,17 @@ function deriveSpawnedKernelUrl() {
   const mcpPort = kernelPort + 1000
   const opencodePort = kernelPort + 2000
   const codexPort = kernelPort + 2001
-  const socketPath = path.join(os.tmpdir(), `arroba-drill-${process.pid}-${Date.now()}.sock`)
+  const socketPath = path.join(os.tmpdir(), `chariox-drill-${process.pid}-${Date.now()}.sock`)
   return {
     kernelUrl: `ws://127.0.0.1:${kernelPort}`,
     env: {
       ...process.env,
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(mcpPort),
-      ARROBA_OPENCODE_PORT: String(opencodePort),
-      ARROBA_CODEX_PORT: String(codexPort),
-      ARROBA_DAEMON_SOCKET: socketPath,
-      ARROBA_DAEMON_ID: `drill-${process.pid}-${Date.now()}`,
+      CHARIOX_KERNEL_PORT: String(kernelPort),
+      CHARIOX_MCP_PORT: String(mcpPort),
+      CHARIOX_OPENCODE_PORT: String(opencodePort),
+      CHARIOX_CODEX_PORT: String(codexPort),
+      CHARIOX_DAEMON_SOCKET: socketPath,
+      CHARIOX_DAEMON_ID: `drill-${process.pid}-${Date.now()}`,
     },
   }
 }
@@ -256,9 +256,9 @@ async function main() {
     const spawned = deriveSpawnedKernelUrl()
     kernelUrl = spawned.kernelUrl
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'target/debug/arroba-kernel'),
+      path.join(repoRoot, 'target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     daemonChild = spawn(
       daemonBinary,

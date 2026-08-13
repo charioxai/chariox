@@ -23,10 +23,10 @@ import {
 } from '../drill-cross-repo-validation-gate.test-support.mjs'
 
 test("cross repo validation gate requires artifact generated matrix limitation metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       metadata: { generatedMatrixLimitations: "dry-run-classification-coverage" },
     })
@@ -75,10 +75,10 @@ test("cross repo validation gate requires artifact generated matrix limitation m
 })
 
 test("cross repo validation gate requires artifact generated matrix artifact-index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const generatedMatrixArtifactIndex = path.join(rootDir, "generated-matrix", "workspace-live-sync-matrix-artifacts.json")
     const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       metadata: { generatedMatrixArtifactIndexes: generatedMatrixArtifactIndex },
@@ -134,10 +134,10 @@ test("cross repo validation gate requires artifact generated matrix artifact-ind
 })
 
 test("cross repo validation gate requires artifact generated validation-suite failure-root metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const generatedFailureRoot = path.join(rootDir, "generated-suite", "failed-run")
     const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       metadata: { generatedValidationSuiteFailureRoots: generatedFailureRoot },
@@ -193,11 +193,11 @@ test("cross repo validation gate requires artifact generated validation-suite fa
 })
 
 test("cross repo validation gate requires artifact generated validation-suite artifact-index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
-    const generatedArtifactIndex = path.join(rootDir, "generated-suite", "arroba-drill-artifacts.json")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
+    const generatedArtifactIndex = path.join(rootDir, "generated-suite", "chariox-drill-artifacts.json")
     const artifactIndexPath = await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"), {
       metadata: { generatedValidationSuiteArtifactIndexes: generatedArtifactIndex },
     })

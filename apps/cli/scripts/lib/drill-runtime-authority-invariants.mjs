@@ -3,7 +3,7 @@ import {
   validateDrillRuntimeSignals,
 } from "./drill-runtime-signals.mjs"
 
-export const DRILL_RUNTIME_AUTHORITY_INVARIANTS_SCHEMA = "arroba.drill.runtime_authority_invariants.v1"
+export const DRILL_RUNTIME_AUTHORITY_INVARIANTS_SCHEMA = "chariox.drill.runtime_authority_invariants.v1"
 
 const RUNTIME_AUTHORITY_INVARIANTS = Object.freeze({
   "client-render-request": {

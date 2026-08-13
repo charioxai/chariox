@@ -45,8 +45,8 @@ function parseArgs(argv) {
       console.log([
         'Usage: node apps/cli/scripts/live-agent-vault-credential-drill.mjs [options]',
         '',
-        'Prompts live Arroba agents to create generated and user-entered vault credentials,',
-        'then use those handles through arroba.http_request_with_credential.',
+        'Prompts live Chariox agents to create generated and user-entered vault credentials,',
+        'then use those handles through chariox.http_request_with_credential.',
         '',
         'Options:',
         `  --providers ${DEFAULT_PROVIDERS.join(',')}`,
@@ -90,13 +90,13 @@ async function run(command, args, options = {}) {
 }
 
 async function resolveKernelBinary() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const result = await run('cargo', [
     'build',
     '--manifest-path',
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
     '--bin',
-    'arroba-kernel',
+    'chariox-kernel',
   ])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   await access(binary)
@@ -290,7 +290,7 @@ async function respondToSecretInteraction({ client, sessionId, agentId, secret, 
     const interaction = (session.active_interactions ?? [])
       .find((entry) => entry.agent_id === agentId &&
         entry.custom_choice?.input_kind === 'secret' &&
-        !String(entry.title ?? '').includes('Unlock Arroba Vault'))
+        !String(entry.title ?? '').includes('Unlock Chariox Vault'))
     if (interaction) {
       observed = interaction
       await client.send(respondToInteractionRequest(sessionId, interaction.id, interaction.custom_choice.id, secret))
@@ -309,7 +309,7 @@ async function respondToVaultUnlockInteraction({ client, sessionId, agentId, pas
     const interaction = (session.active_interactions ?? [])
       .find((entry) => entry.agent_id === agentId &&
         entry.custom_choice?.input_kind === 'secret' &&
-        String(entry.title ?? '').includes('Unlock Arroba Vault'))
+        String(entry.title ?? '').includes('Unlock Chariox Vault'))
     if (interaction) {
       const choice = (interaction.choices ?? []).find((entry) => entry.id === choiceId)
       if (!choice) {
@@ -320,7 +320,7 @@ async function respondToVaultUnlockInteraction({ client, sessionId, agentId, pas
     }
     await sleep(pollMs)
   }
-  throw new Error(`timed out waiting for Arroba vault unlock interaction for ${agentId}`)
+  throw new Error(`timed out waiting for Chariox vault unlock interaction for ${agentId}`)
 }
 
 function startCredentialEchoServer(expectedUserSecret) {
@@ -401,25 +401,25 @@ async function main() {
   const workspace = path.join(rootDir, 'workspace')
   const historyDir = path.join(rootDir, 'history')
   const capabilityRoot = path.join(rootDir, 'capabilities')
-  const arrobaHome = path.join(rootDir, 'arroba-home')
+  const charioxHome = path.join(rootDir, 'chariox-home')
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
-  const vaultService = `arroba-m17-drill-${process.pid}-${Date.now()}`
+  const vaultService = `chariox-m17-drill-${process.pid}-${Date.now()}`
   const vaultPath = path.join(rootDir, 'vault', 'vault.db')
   const vaultPassphrase = `m26-vault-passphrase-${process.pid}-${Date.now()}`
   const daemonEnv = {
     ...process.env,
-    ARROBA_HOME: arrobaHome,
+    CHARIOX_HOME: charioxHome,
     XDG_CONFIG_HOME: path.join(rootDir, 'xdg-config'),
     XDG_STATE_HOME: path.join(rootDir, 'xdg-state'),
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `m17-vault-credential-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
-    ARROBA_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `m17-vault-credential-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: capabilityRoot,
   }
 
   const userSecret = `m17-user-secret-${process.pid}-${Date.now()}`
@@ -437,16 +437,16 @@ async function main() {
   try {
     await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
-    await mkdir(arrobaHome, { recursive: true })
+    await mkdir(charioxHome, { recursive: true })
     await writeFile(path.join(workspace, 'README.md'), '# M17 agent vault credential live drill\n', 'utf8')
-    await mkdir(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba'), { recursive: true })
-    await writeFile(path.join(daemonEnv.XDG_CONFIG_HOME, 'arroba', 'config.toml'), [
+    await mkdir(path.join(daemonEnv.XDG_CONFIG_HOME, 'chariox'), { recursive: true })
+    await writeFile(path.join(daemonEnv.XDG_CONFIG_HOME, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[credential_vault]',
       `service = "${vaultService}"`,
       `path = "${vaultPath}"`,
-      'backend = "arroba_encrypted"',
+      'backend = "chariox_encrypted"',
       'unlock_policy = "ttl"',
       'default_ttl_minutes = 30',
       'max_ttl_minutes = 240',
@@ -534,9 +534,9 @@ async function main() {
       const generatedStartedAt = Date.now()
       const generatedEchoStart = echo.calls.length
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-        'This is an M17/M26 Arroba vault credential creation live drill.',
-        'Use Arroba runtime MCP tools only. Do not write files for this task.',
-        'Step 1: call `arroba.create_generated_credential` with this exact JSON argument:',
+        'This is an M17/M26 Chariox vault credential creation live drill.',
+        'Use Chariox runtime MCP tools only. Do not write files for this task.',
+        'Step 1: call `chariox.create_generated_credential` with this exact JSON argument:',
         JSON.stringify({
           credential: {
             id: generatedCredentialId,
@@ -548,7 +548,7 @@ async function main() {
           generator: { kind: 'password', length: 24, symbols: true, avoid_ambiguous: true },
           overwrite: false,
         }),
-        'Step 2: call `arroba.http_request_with_credential` with this exact JSON argument:',
+        'Step 2: call `chariox.http_request_with_credential` with this exact JSON argument:',
         JSON.stringify({
           credential_id: generatedCredentialId,
           method: 'GET',
@@ -601,8 +601,8 @@ async function main() {
       const userEchoStart = echo.calls.length
       await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
         'This is the user-entered credential half of the M17 live drill.',
-        'Use Arroba runtime MCP tools only. Do not ask me in chat for the secret.',
-        'Step 1: call `arroba.request_credential_secret` with this exact JSON argument:',
+        'Use Chariox runtime MCP tools only. Do not ask me in chat for the secret.',
+        'Step 1: call `chariox.request_credential_secret` with this exact JSON argument:',
         JSON.stringify({
           credential: {
             id: userCredentialId,
@@ -613,7 +613,7 @@ async function main() {
           },
           prompt: {
             title: 'M17 credential drill',
-            message: 'Enter the drill password to store in Arroba Vault.',
+            message: 'Enter the drill password to store in Chariox Vault.',
             placeholder: 'Password',
             min_length: 8,
             max_length: 128,
@@ -621,7 +621,7 @@ async function main() {
           },
           overwrite: false,
         }),
-        'After the tool returns status stored, call `arroba.http_request_with_credential` with this exact JSON argument:',
+        'After the tool returns status stored, call `chariox.http_request_with_credential` with this exact JSON argument:',
         JSON.stringify({
           credential_id: userCredentialId,
           method: 'GET',
@@ -688,12 +688,12 @@ async function main() {
         'utf8',
       )
       const screenshot = await renderTerminalScreenshot(`m17-agent-vault-credential-${provider}.png`, `M17 Agent Vault Credential Drill (${provider})`, [
-        `PASS encrypted Arroba vault popup title="${vaultUnlock.title}" input_kind=${vaultUnlock.custom_choice?.input_kind ?? 'missing'}`,
+        `PASS encrypted Chariox vault popup title="${vaultUnlock.title}" input_kind=${vaultUnlock.custom_choice?.input_kind ?? 'missing'}`,
         'PASS vault popup was answered with a fixed TTL choice plus kernel-only custom passphrase',
-        'PASS provider agent called arroba.create_generated_credential',
+        'PASS provider agent called chariox.create_generated_credential',
         `PASS generated credential used through ${generatedUseCall.tool}`,
         `PASS verifier received generated credential request auth_length=${generatedEchoCall.authLength}`,
-        'PASS provider agent called arroba.request_credential_secret',
+        'PASS provider agent called chariox.request_credential_secret',
         `PASS redacted interaction input_kind=${interaction.custom_choice?.input_kind ?? 'missing'}`,
         `PASS user-entered credential used through ${userUseCall.tool}`,
         `PASS verifier received user credential request auth_length=${userEchoCall.authLength}`,

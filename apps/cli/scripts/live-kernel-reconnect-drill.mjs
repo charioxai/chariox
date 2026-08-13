@@ -30,7 +30,7 @@ function parseArgs(argv) {
 
 async function main() {
   const preserveOnFailure = process.argv.slice(2).includes('--keep-artifacts-on-failure')
-  const rootDir = path.join(os.tmpdir(), `arroba-kernel-reconnect-${process.pid}-${Date.now()}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-kernel-reconnect-${process.pid}-${Date.now()}`)
   const artifactsDir = path.join(rootDir, 'artifacts')
   let options = { keepArtifactsOnFailure: preserveOnFailure }
   let server = null

@@ -34,9 +34,9 @@ export async function inferWorkspaceTargetsFromLaunchDirectory(cwd: string): Pro
 }
 
 export function defaultKernelEndpoint(kernelPort?: string): string {
-  if (process.env.ARROBA_KERNEL_URL) return process.env.ARROBA_KERNEL_URL
-  const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = kernelPort ?? process.env.ARROBA_KERNEL_PORT ?? "43119"
+  if (process.env.CHARIOX_KERNEL_URL) return process.env.CHARIOX_KERNEL_URL
+  const host = process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"
+  const port = kernelPort ?? process.env.CHARIOX_KERNEL_PORT ?? "43119"
   return `ws://${host}:${port}/kernel`
 }
 

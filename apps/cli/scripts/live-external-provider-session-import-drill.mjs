@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile)
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const providers = ["codex", "opencode", "claude"]
 const STEP_TIMEOUT_MS = 15_000
 
@@ -78,7 +78,7 @@ async function ensureKernelBinary() {
       "--manifest-path",
       path.join(repoRoot, "apps/kernel/Cargo.toml"),
       "--bin",
-      "arroba-kernel",
+      "chariox-kernel",
     ], { cwd: repoRoot, stdio: "inherit" })
   }
 }
@@ -92,7 +92,7 @@ async function seedProviderHomes(root, marker, workspace) {
     codex: {
       session: { providerSessionId: `codex-${marker}-session`, file: "codex-thread-drill-session.jsonl" },
       agent: { providerSessionId: `codex-${marker}-agent`, file: "codex-thread-drill-agent.jsonl" },
-      arroba: { providerSessionId: `codex-${marker}-arroba-owned`, file: "codex-thread-drill-arroba-owned.jsonl" },
+      chariox: { providerSessionId: `codex-${marker}-chariox-owned`, file: "codex-thread-drill-chariox-owned.jsonl" },
     },
     claude: {
       session: { providerSessionId: randomUUID(), file: "claude-session-drill-session.jsonl" },
@@ -115,7 +115,7 @@ async function seedProviderHomes(root, marker, workspace) {
         payload: { id: fixture.providerSessionId, cwd: workspace, model_provider: "openai" },
       }),
     ]
-    if (kind !== "arroba") {
+    if (kind !== "chariox") {
       lines.push(
         JSON.stringify({
           timestamp: "2026-06-09T12:00:01.000Z",
@@ -247,8 +247,8 @@ async function appendProviderNativeTurn(root, provider, marker, fixture, kind) {
 
 async function appendCodexProviderNativePromptTurn(root, marker, fixture) {
   const file = path.join(root, "provider-homes", "codex", "sessions", fixture.file)
-  const userText = `Codex Arroba-owned native prompt observed ${marker}.`
-  const assistantText = `Codex Arroba-owned native reply observed ${marker}.`
+  const userText = `Codex Chariox-owned native prompt observed ${marker}.`
+  const assistantText = `Codex Chariox-owned native reply observed ${marker}.`
   await writeFile(
     file,
     [
@@ -256,7 +256,7 @@ async function appendCodexProviderNativePromptTurn(root, marker, fixture) {
         timestamp: new Date().toISOString(),
         type: "response_item",
         payload: {
-          id: "codex-arroba-owned-user-2",
+          id: "codex-chariox-owned-user-2",
           type: "message",
           role: "user",
           content: [{ type: "input_text", text: userText }],
@@ -266,7 +266,7 @@ async function appendCodexProviderNativePromptTurn(root, marker, fixture) {
         timestamp: new Date().toISOString(),
         type: "response_item",
         payload: {
-          id: "codex-arroba-owned-assistant-2",
+          id: "codex-chariox-owned-assistant-2",
           type: "message",
           role: "assistant",
           content: [{ type: "output_text", text: assistantText }],
@@ -276,8 +276,8 @@ async function appendCodexProviderNativePromptTurn(root, marker, fixture) {
     { flag: "a" },
   )
   return {
-    userProviderTurnId: "codex-arroba-owned-user-2",
-    assistantProviderTurnId: "codex-arroba-owned-assistant-2",
+    userProviderTurnId: "codex-chariox-owned-user-2",
+    assistantProviderTurnId: "codex-chariox-owned-assistant-2",
     userText,
     text: assistantText,
   }
@@ -368,7 +368,7 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
     provider_session_id: sessionFixture.providerSessionId,
     agent_external_provider_session_id: agentExternalSessionId,
     agent_provider_session_id: agentFixture.providerSessionId,
-    arroba_session_id: imported?.session?.id ?? null,
+    chariox_session_id: imported?.session?.id ?? null,
     agent_id: imported?.agent?.id ?? null,
     imported_agent_session_id: existing?.id ?? null,
     imported_agent_id: importedAgent?.agent?.id ?? null,
@@ -382,13 +382,13 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
       assertion("refresh returned external session", Boolean(refreshedRecord)),
       assertion("external session listed", Boolean(listedRecord)),
       assertion("external row advertises observed history", listedRecord?.capabilities?.can_read_history === true),
-      assertion("import as new Arroba session created a session", Boolean(imported?.session?.id)),
-      assertion("import as new Arroba session created an agent", Boolean(imported?.agent?.id)),
+      assertion("import as new Chariox session created a session", Boolean(imported?.session?.id)),
+      assertion("import as new Chariox session created an agent", Boolean(imported?.agent?.id)),
       assertion("import as agent created an agent", Boolean(importedAgent?.agent?.id)),
       assertion("drill uses noninteractive provider adapter", imported?.provider_run?.adapter_key === "dev-stub"),
       assertion("observed external turns imported", observed.length >= 2),
       assertion("observed turns carry source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
-      assertion("new provider-native turn observed in imported Arroba session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
+      assertion("new provider-native turn observed in imported Chariox session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
       assertion("new provider-native turn observed in imported agent session", nativeAgentTurnResult.ok && observedAgent.some((entry) => entry.text === nativeAgentTurnResult.value.text)),
       assertion("external history read is advertised", listedRecord?.capabilities?.can_read_history === true),
     ],
@@ -414,16 +414,16 @@ async function runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, 
   return manifest
 }
 
-async function runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, fixtures) {
+async function runCharioxOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, fixtures) {
   const provider = "codex"
-  const fixture = fixtures.codex.arroba
-  const surfaceRoot = path.join(artifactRoot, "arroba-owned-codex")
+  const fixture = fixtures.codex.chariox
+  const surfaceRoot = path.join(artifactRoot, "chariox-owned-codex")
   await mkdir(path.join(surfaceRoot, "tui"), { recursive: true })
   await mkdir(path.join(surfaceRoot, "web"), { recursive: true })
-  const createResult = await step("create-arroba-owned-codex-session", () =>
-    client.send(createSessionRequest(repoRoot, repoRoot, `arroba-owned-codex-${marker}`)))
+  const createResult = await step("create-chariox-owned-codex-session", () =>
+    client.send(createSessionRequest(repoRoot, repoRoot, `chariox-owned-codex-${marker}`)))
   const created = createResult.ok ? unwrap(createResult.value, "SessionCreated") : null
-  const launchResult = created ? await step("launch-arroba-owned-codex-provider-run", () =>
+  const launchResult = created ? await step("launch-chariox-owned-codex-provider-run", () =>
     client.send(launchProviderRunRequest(
       created.session.id,
       "codex",
@@ -438,32 +438,32 @@ async function runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeR
     ))) : { ok: false, error: "session did not create" }
   const launched = launchResult.ok ? unwrapProviderRunLaunch(launchResult.value) : null
   const nativeTurnResult = launched
-    ? await step("append-arroba-owned-codex-native-turn", () => appendCodexProviderNativePromptTurn(runtimeRoot, marker, fixture))
+    ? await step("append-chariox-owned-codex-native-turn", () => appendCodexProviderNativePromptTurn(runtimeRoot, marker, fixture))
     : { ok: false, error: "provider run did not launch" }
   const observedHistoryResult = nativeTurnResult.ok && created
-    ? await step("observe-arroba-owned-codex-native-turn", () => waitForObservedHistory(historyRoot, created.session.id, nativeTurnResult.value.text))
+    ? await step("observe-chariox-owned-codex-native-turn", () => waitForObservedHistory(historyRoot, created.session.id, nativeTurnResult.value.text))
     : { ok: false, value: [], error: "native turn append did not complete" }
   const observedHistory = observedHistoryResult.ok ? observedHistoryResult.value : []
   const observed = observedHistory.filter((entry) => entry.source === "external_provider_observed")
   const manifest = {
     provider,
     marker,
-    mode: "arroba-owned-provider-session",
+    mode: "chariox-owned-provider-session",
     provider_session_id: fixture.providerSessionId,
     external_provider_session_id: `codex:${fixture.providerSessionId}`,
-    arroba_session_id: created?.session?.id ?? null,
+    chariox_session_id: created?.session?.id ?? null,
     agent_id: created?.agent?.id ?? null,
     provider_run_id: launched?.provider_run?.id ?? null,
     provider_run_provider_session_id: launched?.provider_run?.provider_session_id ?? null,
     screenshots: [],
     evidence_files: [],
     assertions: [
-      assertion("created Arroba-owned session", Boolean(created?.session?.id)),
-      assertion("created Arroba-owned agent", Boolean(created?.agent?.id)),
+      assertion("created Chariox-owned session", Boolean(created?.session?.id)),
+      assertion("created Chariox-owned agent", Boolean(created?.agent?.id)),
       assertion("launched provider run with seeded provider session id", launched?.provider_run?.provider_session_id === fixture.providerSessionId),
-      assertion("appended provider-native prompt outside Arroba", nativeTurnResult.ok),
-      assertion("provider-native turn observed in Arroba-created session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
-      assertion("observed Arroba-owned turn carries external source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
+      assertion("appended provider-native prompt outside Chariox", nativeTurnResult.ok),
+      assertion("provider-native turn observed in Chariox-created session", nativeTurnResult.ok && observed.some((entry) => entry.text === nativeTurnResult.value.text)),
+      assertion("observed Chariox-owned turn carries external source metadata", observed.every((entry) => entry.source === "external_provider_observed")),
     ],
     records: {
       observed_history: observed,
@@ -475,7 +475,7 @@ async function runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeR
       },
     },
   }
-  await writeEvidence(surfaceRoot, "arroba-owned-codex", manifest)
+  await writeEvidence(surfaceRoot, "chariox-owned-codex", manifest)
   return manifest
 }
 
@@ -506,9 +506,9 @@ async function writeEvidence(surfaceRoot, provider, manifest) {
 
 async function main() {
   const stamp = nowStamp()
-  const marker = `ARROBA_EXTERNAL_SESSION_DRILL_${stamp}_${process.pid}`
+  const marker = `CHARIOX_EXTERNAL_SESSION_DRILL_${stamp}_${process.pid}`
   const artifactRoot = path.join(repoRoot, ".artifacts", "external-provider-sessions", stamp)
-  const runtimeRoot = path.join(os.tmpdir(), `arroba-external-provider-session-drill-${process.pid}`)
+  const runtimeRoot = path.join(os.tmpdir(), `chariox-external-provider-session-drill-${process.pid}`)
   const workspace = repoRoot
   let daemon = null
   let client = null
@@ -527,13 +527,13 @@ async function main() {
     env: {
       ...process.env,
       ...providerSeed.env,
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(kernelPort + 1),
-      ARROBA_OPENCODE_PORT: String(kernelPort + 2),
-      ARROBA_CODEX_PORT: String(kernelPort + 3),
-      ARROBA_DAEMON_ID: `external-provider-session-drill-${process.pid}`,
-      ARROBA_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: historyRoot,
+      CHARIOX_KERNEL_PORT: String(kernelPort),
+      CHARIOX_MCP_PORT: String(kernelPort + 1),
+      CHARIOX_OPENCODE_PORT: String(kernelPort + 2),
+      CHARIOX_CODEX_PORT: String(kernelPort + 3),
+      CHARIOX_DAEMON_ID: `external-provider-session-drill-${process.pid}`,
+      CHARIOX_DAEMON_SOCKET: path.join(runtimeRoot, "daemon.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: historyRoot,
     },
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -550,7 +550,7 @@ async function main() {
     for (const provider of providers) {
       manifests.push(await runProviderDrill(client, artifactRoot, runtimeRoot, historyRoot, provider, marker, providerSeed.fixtures))
     }
-    manifests.push(await runArrobaOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, providerSeed.fixtures))
+    manifests.push(await runCharioxOwnedProviderSessionDrill(client, artifactRoot, runtimeRoot, historyRoot, marker, providerSeed.fixtures))
     const summary = {
       ok: manifests.every((manifest) => manifest.assertions.every((entry) => entry.passed)),
       marker,

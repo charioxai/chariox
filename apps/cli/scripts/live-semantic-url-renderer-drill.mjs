@@ -119,9 +119,9 @@ async function freePort() {
 }
 
 async function buildKernel() {
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
 async function waitForKernel(kernelUrl) {
@@ -199,8 +199,8 @@ async function waitForProviderRunReady(client, providerRunId) {
 
 async function startStaticSite(port) {
   const pages = new Map([
-    ['/about', '<!doctype html><html><head><title>About Arroba Foods</title></head><body><main><h1>About Arroba Foods</h1><p>We build practical grocery tools for neighborhood stores.</p><a href="/contact">Contact us</a></main></body></html>'],
-    ['/contact', '<!doctype html><html><head><title>Contact Arroba Foods</title></head><body><main><h1>Contact</h1><p>Email hello@arroba-foods.example for store onboarding.</p><a href="/about">About</a></main></body></html>'],
+    ['/about', '<!doctype html><html><head><title>About Chariox Foods</title></head><body><main><h1>About Chariox Foods</h1><p>We build practical grocery tools for neighborhood stores.</p><a href="/contact">Contact us</a></main></body></html>'],
+    ['/contact', '<!doctype html><html><head><title>Contact Chariox Foods</title></head><body><main><h1>Contact</h1><p>Email hello@chariox-foods.example for store onboarding.</p><a href="/about">About</a></main></body></html>'],
     ['/pricing', '<!doctype html><html><head><title>Pricing</title></head><body><main><h1>Pricing</h1><p>Starter, Market, and Fleet plans are available.</p></main></body></html>'],
   ])
   const server = http.createServer((req, res) => {
@@ -261,7 +261,7 @@ async function startSemanticSite({ port, gatewayUrl, kernelUrl, sessionId }) {
       const run = variant(await client.send(getWorkflowRunRequest(sessionId, runId)), 'WorkflowRun').workflow_run
       if (run.status !== 'Completed') {
         res.writeHead(202, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(`<!doctype html><html><head><meta http-equiv="refresh" content="1"><title>Loading render</title></head><body><main><h1>Loading...</h1><p>Rendering ${page} with Arroba workflow run ${runId}</p><p>Status: ${run.status}</p></main></body></html>`)
+        res.end(`<!doctype html><html><head><meta http-equiv="refresh" content="1"><title>Loading render</title></head><body><main><h1>Loading...</h1><p>Rendering ${page} with Chariox workflow run ${runId}</p><p>Status: ${run.status}</p></main></body></html>`)
         return
       }
       const message = run.final_output?.message ?? ''
@@ -331,7 +331,7 @@ async function fetchUntilRendered(url, options = {}) {
     }
     if (!firstBody) firstBody = { status: response.status, body }
     lastBody = { status: response.status, body }
-    if (response.status === 200 && body.includes('ARROBA_RENDER_NEON_GREEN') && body.includes('background') && body.includes('About Arroba Foods')) {
+    if (response.status === 200 && body.includes('CHARIOX_RENDER_NEON_GREEN') && body.includes('background') && body.includes('About Chariox Foods')) {
       return { firstBody, finalBody: lastBody }
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000))
@@ -340,9 +340,9 @@ async function fetchUntilRendered(url, options = {}) {
 }
 
 async function main() {
-  const provider = process.env.ARROBA_SEMANTIC_RENDER_PROVIDER ?? 'codex'
-  const model = process.env.ARROBA_SEMANTIC_RENDER_MODEL ?? 'gpt-5.4'
-  const effort = process.env.ARROBA_SEMANTIC_RENDER_EFFORT ?? 'low'
+  const provider = process.env.CHARIOX_SEMANTIC_RENDER_PROVIDER ?? 'codex'
+  const model = process.env.CHARIOX_SEMANTIC_RENDER_MODEL ?? 'gpt-5.4'
+  const effort = process.env.CHARIOX_SEMANTIC_RENDER_EFFORT ?? 'low'
   const root = path.join(repoRoot, '.artifacts', 'semantic-url-renderer', nowStamp())
   const workspace = path.join(root, 'workspace')
   const home = path.join(root, 'home')
@@ -364,13 +364,13 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: `semantic-url-renderer-drill-${process.pid}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_DAEMON_ID: `semantic-url-renderer-drill-${process.pid}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'history'),
   }
 
   let kernel = null
@@ -383,8 +383,8 @@ async function main() {
   let failure = null
   try {
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
 
     const parserFile = path.join(root, 'semantic-parser.mjs')
     await writeFile(parserFile, [
@@ -453,7 +453,7 @@ async function main() {
         'Generate a complete standalone HTML document.',
         'Preserve the source page semantic content, especially headings and contact/about/pricing facts.',
         'Apply the requested visual style strongly.',
-        'For green neon on black, use a black background, neon green accents, and include the exact marker text ARROBA_RENDER_NEON_GREEN in a data attribute or hidden text.',
+        'For green neon on black, use a black background, neon green accents, and include the exact marker text CHARIOX_RENDER_NEON_GREEN in a data attribute or hidden text.',
         'Submit final workflow run output. The output message must be JSON string content shaped exactly as {"kind":"http_response","status":200,"headers":{"content-type":"text/html; charset=utf-8"},"body":"<full html document>"}',
         'Also emit a final fenced json workflow output block whose output.message is that same http_response JSON string.',
       ].join('\n'),
@@ -484,9 +484,9 @@ async function main() {
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
         STATIC_SITE_BASE_URL: staticUrl,
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: sessionId,
-        ARROBA_PUBLICATION_ID: publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: sessionId,
+        CHARIOX_PUBLICATION_ID: publication.id,
       },
       'gateway',
     )
@@ -498,9 +498,9 @@ async function main() {
     const renderUrl = `${semanticUrl}/about/${encodeURIComponent('serve me this page with green neon colors in black background')}`
     logStep('invoke_semantic_url', { renderUrl })
     const render = await fetchUntilRendered(renderUrl, {
-      timeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_TIMEOUT_MS ?? 420_000),
-      fetchTimeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_FETCH_TIMEOUT_MS ?? 15_000),
-      pumpTimeoutMs: Number(process.env.ARROBA_SEMANTIC_RENDER_PUMP_TIMEOUT_MS ?? 5_000),
+      timeoutMs: Number(process.env.CHARIOX_SEMANTIC_RENDER_TIMEOUT_MS ?? 420_000),
+      fetchTimeoutMs: Number(process.env.CHARIOX_SEMANTIC_RENDER_FETCH_TIMEOUT_MS ?? 15_000),
+      pumpTimeoutMs: Number(process.env.CHARIOX_SEMANTIC_RENDER_PUMP_TIMEOUT_MS ?? 5_000),
       pump: async () => {
         if (context.attachmentId) {
           const response = await client.send(pumpTerminalOutputRequest(sessionId, context.attachmentId)).catch(() => null)
@@ -514,7 +514,7 @@ async function main() {
     if (render.firstBody.status !== 202 || !render.firstBody.body.includes('Loading...')) {
       throw new Error(`expected first semantic response to be a loading page, got ${render.firstBody.status}: ${render.firstBody.body.slice(0, 400)}`)
     }
-    if (!render.finalBody.body.includes('ARROBA_RENDER_NEON_GREEN') || !render.finalBody.body.includes('About Arroba Foods')) {
+    if (!render.finalBody.body.includes('CHARIOX_RENDER_NEON_GREEN') || !render.finalBody.body.includes('About Chariox Foods')) {
       throw new Error(`rendered page missing expected marker/content: ${render.finalBody.body.slice(0, 800)}`)
     }
     logStep('render_ok', {

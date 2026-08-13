@@ -11,7 +11,7 @@ import {
   readAgentBusyLatch,
   resolveActiveToolLabelForAgent,
   shouldPreserveAgentActivityLabel,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 
 function agent(id: string, overrides: Partial<AgentInstance> = {}): AgentInstance {
   return {

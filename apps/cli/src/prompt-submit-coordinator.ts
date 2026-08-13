@@ -1,11 +1,11 @@
 import { SESSION_NEW_ERROR_HINT } from "./sessions.js"
 import { isWorkspaceShellCommand } from "./workspace-shell.js"
 import type { WaitingRoomPromptBootstrapResult } from "./waiting-room-prompt-bootstrap-controller.js"
-import { isWorkflowCommandInput } from "@arroba/kernel-client/workflow-prompt-state"
+import { isWorkflowCommandInput } from "@chariox/kernel-client/workflow-prompt-state"
 import {
   detachedPromptSubmitDecision,
   promptSubmitPreparationDecision,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 
 export type PromptSubmitCoordinatorDeps = {
   getPromptText: () => string | null | undefined

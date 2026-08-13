@@ -1,8 +1,8 @@
-import { ARROBA_ASCII_ART } from "./sessions.js"
+import { CHARIOX_ASCII_ART } from "./sessions.js"
 
-export function arrobaArtFrame(step: number) {
+export function charioxArtFrame(step: number) {
   const progress = Math.max(0, Math.min(step, 12))
-  return ARROBA_ASCII_ART.split("\n")
+  return CHARIOX_ASCII_ART.split("\n")
     .map((line, row) =>
       [...line]
         .map((char, index) => {

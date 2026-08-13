@@ -31,7 +31,7 @@ export async function installNativeDrillCapabilities({
     path.join(scenarioRoot, "skill-source"),
     skillName,
     markers.nativeSkill,
-    markers.arrobaSkill,
+    markers.charioxSkill,
   )
   if (options.hetznerWorker) {
     if (!workerClient || !syncWorkerCapabilityFiles) {
@@ -73,11 +73,11 @@ export async function installNativeDrillCapabilities({
 
 export async function cleanupNativeDrillCapabilities(workspace, nativeCapabilities) {
   if (!nativeCapabilities) return
-  await rm(path.join(workspace, ".arroba", "skills", nativeCapabilities.skillName), {
+  await rm(path.join(workspace, ".chariox", "skills", nativeCapabilities.skillName), {
     recursive: true,
     force: true,
   }).catch(() => {})
-  await rm(path.join(workspace, ".arroba", "mcps", `${nativeCapabilities.mcpName}.json`), {
+  await rm(path.join(workspace, ".chariox", "mcps", `${nativeCapabilities.mcpName}.json`), {
     force: true,
   }).catch(() => {})
   await rm(nativeCapabilities.mcpServerPath, { force: true }).catch(() => {})
@@ -100,7 +100,7 @@ export async function waitForProviderRunMcpGrant(client, providerRunId, mcpName,
 }
 
 async function createNativeDrillMcpServer(workspace, name) {
-  const scriptDir = path.join(workspace, ".arroba", "native-tui-drill")
+  const scriptDir = path.join(workspace, ".chariox", "native-tui-drill")
   const scriptPath = path.join(scriptDir, `${name}.mjs`)
   await mkdir(scriptDir, { recursive: true })
   await writeFile(scriptPath, [
@@ -114,11 +114,11 @@ async function createNativeDrillMcpServer(workspace, name) {
     "  const { id, method, params } = message",
     "  if (method === 'notifications/initialized') return",
     "  if (method === 'initialize') {",
-    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-native-tui-drill', version: '1.0.0' } } })",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'chariox-native-tui-drill', version: '1.0.0' } } })",
     "    return",
     "  }",
     "  if (method === 'tools/list') {",
-    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba native TUI MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Chariox native TUI MCP drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
     "    return",
     "  }",
     "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
@@ -169,7 +169,7 @@ function nativeDrillMcpConfig(name, command) {
   }
 }
 
-async function createNativeDrillSkill(sourceRoot, name, nativeMarker, arrobaMarker) {
+async function createNativeDrillSkill(sourceRoot, name, nativeMarker, charioxMarker) {
   const skillDir = path.join(sourceRoot, name)
   await mkdir(skillDir, { recursive: true })
   await writeFile(path.join(skillDir, "SKILL.md"), [
@@ -179,7 +179,7 @@ async function createNativeDrillSkill(sourceRoot, name, nativeMarker, arrobaMark
     "short-description: Native TUI drill",
     "---",
     `If the prompt asks for the native skill marker, reply with exactly ${nativeMarker} and nothing else.`,
-    `If the prompt asks for the Arroba skill marker, reply with exactly ${arrobaMarker} and nothing else.`,
+    `If the prompt asks for the Chariox skill marker, reply with exactly ${charioxMarker} and nothing else.`,
     "",
   ].join("\n"))
   return skillDir

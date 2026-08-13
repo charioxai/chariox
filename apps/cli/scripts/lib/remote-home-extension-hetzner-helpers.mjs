@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import path from "node:path"
 import { waitForTcpPort } from "./drill-runtime-helpers.mjs"
 import {
-  assertHetznerArrobaBinaries,
+  assertHetznerCharioxBinaries,
   remoteEnvCommand,
   runHetznerCommand,
   shellQuote,
@@ -22,7 +22,7 @@ export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
     options.hetznerRepo,
     workerKernelBinary,
   )
-  if (!workerKernelBinary) await assertHetznerArrobaBinaries(options)
+  if (!workerKernelBinary) await assertHetznerCharioxBinaries(options)
   await runHetznerCommand(options, remoteHomeExtensionHetznerPreflightCommand({
     hetznerRepo: options.hetznerRepo,
     remoteRoot,
@@ -88,7 +88,7 @@ export function remoteHomeExtensionHetznerPreflightCommand({
 export function remoteHomeExtensionHetznerWorkerKernelBinary(hetznerRepo, workerKernelBinary = null) {
   const candidate = workerKernelBinary
     ? String(workerKernelBinary)
-    : path.posix.join(hetznerRepo, "apps/kernel/target/debug/arroba-kernel")
+    : path.posix.join(hetznerRepo, "apps/kernel/target/debug/chariox-kernel")
   if (!path.posix.isAbsolute(candidate)) {
     throw new Error(`remote worker kernel path must be absolute: ${candidate}`)
   }
@@ -120,7 +120,7 @@ export async function stopRemoteHomeExtensionHetznerRelay(options, remoteRoot) {
   await runHetznerCommand(options, [
     `if test -f ${shellQuote(pidFile)}; then`,
     `  pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || true);`,
-    `  if test -n "$pid" && test -r "/proc/$pid/environ" && tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx ${shellQuote(`ARROBA_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)}; then`,
+    `  if test -n "$pid" && test -r "/proc/$pid/environ" && tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx ${shellQuote(`CHARIOX_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)}; then`,
     '    kill "$pid" 2>/dev/null || true;',
     '  fi;',
     `  rm -f ${shellQuote(pidFile)};`,
@@ -139,8 +139,8 @@ export async function stopRemoteHomeExtensionHetznerWorker(options, {
     "  test -n \"$pid\" || return 0;",
     "  test -r \"/proc/$pid/environ\" || return 0;",
     `  env_text=$(tr '\\0' '\\n' < "/proc/$pid/environ" 2>/dev/null || true);`,
-    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`ARROBA_DAEMON_ID=${workerDaemonId}`)} || return 0;`,
-    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`ARROBA_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)} || return 0;`,
+    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`CHARIOX_DAEMON_ID=${workerDaemonId}`)} || return 0;`,
+    `  printf '%s\\n' "$env_text" | grep -qx ${shellQuote(`CHARIOX_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)} || return 0;`,
     "  kill \"$pid\" 2>/dev/null || true;",
     "  for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || return 0; sleep 0.2; done;",
     "  kill -9 \"$pid\" 2>/dev/null || true;",
@@ -174,16 +174,16 @@ export async function startRemoteHomeExtensionHetznerRelay({
   await assertRemoteRelayPortFree(options, relayPort)
   const relayPidFile = path.posix.join(remoteRoot, "relay.pid")
   const relay = spawn("ssh", sshArgs(options, remoteEnvCommand({
-    ARROBA_REMOTE_REPO: options.hetznerRepo,
-    ARROBA_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
-    ARROBA_RELAY_HOST: "127.0.0.1",
-    ARROBA_RELAY_PORT: String(relayPort),
-    ARROBA_RELAY_TOKEN: sharedRelayToken,
+    CHARIOX_REMOTE_REPO: options.hetznerRepo,
+    CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
+    CHARIOX_RELAY_HOST: "127.0.0.1",
+    CHARIOX_RELAY_PORT: String(relayPort),
+    CHARIOX_RELAY_TOKEN: sharedRelayToken,
     ...(collab ? {
-      ARROBA_RELAY_SCOPED_ISSUER: issuer,
-      ARROBA_RELAY_SCOPED_HMAC_SECRET: secret,
+      CHARIOX_RELAY_SCOPED_ISSUER: issuer,
+      CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret,
     } : {}),
-  }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/arroba-relay`)), { stdio: ["ignore", "ignore", "inherit"] })
+  }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/chariox-relay`)), { stdio: ["ignore", "ignore", "inherit"] })
   const tunnel = spawn("ssh", [
     "-i",
     options.hetznerKey,
@@ -220,29 +220,29 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     workerKernelBinary,
   )
   return spawn("ssh", sshArgs(options, remoteEnvCommand({
-    ARROBA_REMOTE_REPO: options.hetznerRepo,
-    ARROBA_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
+    CHARIOX_REMOTE_REPO: options.hetznerRepo,
+    CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     PATH: "/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     HOME: path.posix.join(remoteRoot, "worker-home"),
     CODEX_HOME: "/root/.codex",
     OPENCODE_CONFIG_DIR: "/root/.config/opencode",
     XDG_CONFIG_HOME: path.posix.join(remoteRoot, "worker-config"),
     XDG_STATE_HOME: path.posix.join(remoteRoot, "worker-state"),
-    ARROBA_KERNEL_PORT: String(workerKernelPort),
-    ARROBA_MCP_PORT: String(workerMcpPort),
-    ARROBA_OPENCODE_PORT: String(workerKernelPort + 2000),
-    ARROBA_CODEX_PORT: String(workerKernelPort + 2001),
-    ARROBA_PROVIDER_DEV_STUB: "1",
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
-    ARROBA_RELAY_TOKEN: workerRelayToken,
-    ARROBA_DAEMON_ID: workerDaemonId,
-    ARROBA_DAEMON_ALIAS: "worker",
-    ARROBA_MACHINE_ID: workerMachineId,
-    ARROBA_MACHINE_ALIAS: workerAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: "1",
-    ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
-    ARROBA_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, "worker-capabilities"),
+    CHARIOX_KERNEL_PORT: String(workerKernelPort),
+    CHARIOX_MCP_PORT: String(workerMcpPort),
+    CHARIOX_OPENCODE_PORT: String(workerKernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(workerKernelPort + 2001),
+    CHARIOX_PROVIDER_DEV_STUB: "1",
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+    CHARIOX_RELAY_TOKEN: workerRelayToken,
+    CHARIOX_DAEMON_ID: workerDaemonId,
+    CHARIOX_DAEMON_ALIAS: "worker",
+    CHARIOX_MACHINE_ID: workerMachineId,
+    CHARIOX_MACHINE_ALIAS: workerAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: "1",
+    CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, "worker-capabilities"),
   }, remoteHomeExtensionHetznerWorkerLaunchCommand({
     remoteRoot,
     workerWorktree,

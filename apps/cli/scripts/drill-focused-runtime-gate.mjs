@@ -28,7 +28,7 @@ import { writeDrillPlatformBundle } from "./lib/drill-platform-bundle.mjs"
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const defaultOssRoot = path.resolve(scriptDir, "..", "..", "..")
-const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "arroba-cloud")
+const defaultCloudRoot = path.resolve(defaultOssRoot, "..", "chariox-cloud")
 
 function printHelp() {
   console.log([
@@ -39,7 +39,7 @@ function printHelp() {
     "",
     "Options:",
     "  --oss-root DIR          OSS repo root; defaults to this script's repo root",
-    "  --cloud-root DIR        Cloud repo root; defaults to ../arroba-cloud",
+    "  --cloud-root DIR        Cloud repo root; defaults to ../chariox-cloud",
     "  --no-default-roots      Only use matrix roots passed explicitly with --matrix-root",
     "  --matrix-root ROOT      Discover matrix reports below ROOT; repeatable",
     "  --artifact-index PATH   Read and verify a specific artifact index; repeatable",
@@ -71,7 +71,7 @@ async function main() {
     return
   }
 
-  const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "arroba-focused-runtime-platform-"))
+  const generatedBundleDir = options.platformBundleDir ? null : await mkdtemp(path.join(os.tmpdir(), "chariox-focused-runtime-platform-"))
   try {
     const platformBundleDir = options.platformBundleDir ?? generatedBundleDir
     if (!options.platformBundleDir) {

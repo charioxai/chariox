@@ -7,7 +7,7 @@ import type {
   TerminalOutputRecord,
 } from "./cli-types.js"
 import { createKernelEventDispatchController } from "./kernel-event-dispatch-controller.js"
-import type { SliceRecord } from "@arroba/kernel-client/kernel-types"
+import type { SliceRecord } from "@chariox/kernel-client/kernel-types"
 import type { ProviderCatalog } from "./provider-catalog.js"
 
 test("kernel event dispatch applies normalized session snapshots with agent activity", async () => {

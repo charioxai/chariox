@@ -81,10 +81,10 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const existingBinary = path.join(repoRoot, 'target/debug/arroba-kernel')
+  const existingBinary = path.join(repoRoot, 'target/debug/chariox-kernel')
   const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
   if (existing) return existingBinary
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -181,13 +181,13 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configRoot,
     XDG_STATE_HOME: stateRoot,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
   }
 
   let daemon = null
@@ -241,11 +241,11 @@ async function main() {
     endSessionRequest = loaded.requests.endSessionRequest
 
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
+    await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
     await mkdir(stateRoot, { recursive: true })
     await mkdir(home, { recursive: true })
     await mkdir(skillDir, { recursive: true })
-    await writeFile(path.join(configRoot, 'arroba', 'config.toml'), [
+    await writeFile(path.join(configRoot, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[state]',

@@ -11,7 +11,7 @@ import {
 } from "./tree-view.js"
 
 test("buildDirectoryTreeRows includes root and nested entries", () => {
-  const state = createDirectoryTreeState("/Users/miguel/arroba", [
+  const state = createDirectoryTreeState("/Users/miguel/chariox", [
     { relative_path: "apps", kind: "directory" },
     { relative_path: "apps/cli", kind: "directory" },
     { relative_path: "apps/cli/src", kind: "directory" },
@@ -28,7 +28,7 @@ test("buildDirectoryTreeRows includes root and nested entries", () => {
 })
 
 test("toggleDirectoryTreeExpansion collapses and re-expands directories", () => {
-  let state = createDirectoryTreeState("/Users/miguel/arroba", [
+  let state = createDirectoryTreeState("/Users/miguel/chariox", [
     { relative_path: "apps", kind: "directory" },
     { relative_path: "apps/cli", kind: "directory" },
   ])
@@ -40,7 +40,7 @@ test("toggleDirectoryTreeExpansion collapses and re-expands directories", () => 
 })
 
 test("mergeDirectoryTreeEntries merges a lazily loaded subtree", () => {
-  let state = createDirectoryTreeState("/Users/miguel/arroba", [
+  let state = createDirectoryTreeState("/Users/miguel/chariox", [
     { relative_path: "apps", kind: "directory" },
   ])
 

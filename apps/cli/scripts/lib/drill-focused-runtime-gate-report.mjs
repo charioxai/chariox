@@ -5,7 +5,7 @@ import {
 import { validateDrillValidationGateReport } from "./drill-validation-gate-report.mjs"
 import { validateDrillValidationResultStatus } from "./drill-validation-statuses.mjs"
 
-export const DRILL_FOCUSED_RUNTIME_GATE_SCHEMA = "arroba.drill.focused_runtime_gate.v1"
+export const DRILL_FOCUSED_RUNTIME_GATE_SCHEMA = "chariox.drill.focused_runtime_gate.v1"
 export const FOCUSED_RUNTIME_GATE_PRESETS = Object.freeze(["runtime-authority", "distributed-state-health"])
 
 export function validateDrillFocusedRuntimeGateReport(report, source = "focused runtime gate report") {

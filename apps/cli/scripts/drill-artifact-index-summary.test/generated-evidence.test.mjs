@@ -15,11 +15,11 @@ import {
 } from '../drill-artifact-index-summary.test-support.mjs'
 
 test("drill artifact index summary gates generated validation-suite failure roots", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -94,18 +94,18 @@ test("drill artifact index summary gates generated validation-suite failure root
 })
 
 test("drill artifact index summary gates generated validation-suite artifact indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
       "--artifact-index",
       indexPath,
       "--require-generated-validation-suite-artifact-index",
-      "/tmp/generated-suite/arroba-drill-artifacts.json",
+      "/tmp/generated-suite/chariox-drill-artifacts.json",
       "--json",
       "--output",
       outputPath,
@@ -115,9 +115,9 @@ test("drill artifact index summary gates generated validation-suite artifact ind
     const aggregate = JSON.parse(stdout)
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths, ["/tmp/generated-suite/arroba-drill-artifacts.json"])
+    assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexPaths, ["/tmp/generated-suite/chariox-drill-artifacts.json"])
     assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexPaths, [])
-    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/arroba-drill-artifacts.json")
+    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/chariox-drill-artifacts.json")
     assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/missing-artifacts.json")
 
     await assert.rejects(
@@ -173,11 +173,11 @@ test("drill artifact index summary gates generated validation-suite artifact ind
 })
 
 test("drill artifact index summary gates generated evidence kinds", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -233,12 +233,12 @@ test("drill artifact index summary gates generated evidence kinds", async () => 
 })
 
 test("drill artifact index summary gates generated matrix limitations", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
-    const validationIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
+    const validationIndexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -294,12 +294,12 @@ test("drill artifact index summary gates generated matrix limitations", async ()
 })
 
 test("drill artifact index summary gates generated matrix names and repos", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
-    const validationIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const matrixIndexPath = await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
+    const validationIndexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -377,11 +377,11 @@ test("drill artifact index summary gates generated matrix names and repos", asyn
 })
 
 test("drill artifact index summary gates generated matrix artifact indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const indexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    const indexPath = await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,

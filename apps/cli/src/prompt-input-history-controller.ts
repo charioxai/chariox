@@ -1,7 +1,7 @@
 import {
   promptHistoryEntryListsEqual,
   pushPromptHistoryEntry,
-} from "@arroba/kernel-client/prompt-history"
+} from "@chariox/kernel-client/prompt-history"
 
 type PromptInputHistoryEntry = {
   sequence: number

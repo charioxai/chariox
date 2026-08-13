@@ -13,9 +13,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-remote-agent-runtime-matrix-drill.mjs", import.meta.url))
 
 test("remote agent runtime matrix dry-run covers required scenarios and deployment metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-remote-agent-runtime-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-agent-runtime-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -37,7 +37,7 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
     const scenarioIds = report.scenarios.map((scenario) => scenario.id)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "remote-agent-runtime-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(scenarioIds, [
@@ -101,7 +101,7 @@ test("remote agent runtime matrix dry-run covers required scenarios and deployme
       schema: artifact.schema,
     })), [{
       path: "matrix.json",
-      schema: "arroba.drill.matrix.v1",
+      schema: "chariox.drill.matrix.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -120,7 +120,7 @@ test("remote agent runtime matrix rejects gated scenarios without opt-in flags",
 })
 
 test("remote agent runtime matrix records provider binding overrides accurately", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-remote-agent-provider-override-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-agent-provider-override-"))
   const reportPath = path.join(rootDir, "matrix.json")
   try {
     await execFile(process.execPath, [

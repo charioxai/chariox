@@ -7,8 +7,8 @@ import { createPrimaryTranscriptEntryController } from "./primary-transcript-ent
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
 import { getSessionHistoryOutline } from "./session-history-api.js"
 import { createTranscriptHistoryAutoloadController } from "./transcript-history-autoload-controller.js"
-import { hydrateSessionHistoryOutlineAgentEntries } from "@arroba/kernel-client/session-history-transcript"
-import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 import {
   buildTranscriptEntryRenderable,
   transcriptRenderMode,

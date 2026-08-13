@@ -5,7 +5,7 @@ import {
   hydrateSessionHistoryOutlineAgentEntries,
   markSessionHistoryBlobLoading,
   replaceSessionHistoryBlobPlaceholder,
-} from "@arroba/kernel-client/session-history-transcript"
+} from "@chariox/kernel-client/session-history-transcript"
 
 const outlineAgent = {
   agent_id: "agent-history-drill",

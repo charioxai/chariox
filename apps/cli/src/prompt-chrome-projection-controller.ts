@@ -1,11 +1,11 @@
 import {
   derivePromptAreaBackground,
   derivePromptPlaceholder,
-} from "@arroba/kernel-client/prompt-surface-state"
+} from "@chariox/kernel-client/prompt-surface-state"
 import {
   sessionChromeProjection,
-} from "@arroba/kernel-client/shell-session-footer"
-import type { WorkflowPromptState } from "@arroba/kernel-client/workflow-prompt-state"
+} from "@chariox/kernel-client/shell-session-footer"
+import type { WorkflowPromptState } from "@chariox/kernel-client/workflow-prompt-state"
 
 export type PromptChromeProjectionControllerDeps<Color> = {
   daemonDisconnected: () => boolean

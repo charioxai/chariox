@@ -107,23 +107,23 @@ async function run(command, args, options = {}) {
 async function ensureCliBuilt() {
   const cliDist = path.join(repoRoot, 'apps/cli/dist/index.js')
   const manifestPath = path.join(repoRoot, 'apps/kernel/Cargo.toml')
-  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const expectedKernelBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
-  let kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel').catch(() => null)
+  let kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'chariox-kernel').catch(() => null)
   if (!cliReady) {
     log('build-cli')
-    const result = await run('pnpm', ['--filter', '@arroba/cli', 'run', 'build'])
+    const result = await run('pnpm', ['--filter', '@chariox/cli', 'run', 'build'])
     if (result.code !== 0) {
       throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
     }
   }
   if (!kernelBinary) {
     log('build-kernel')
-    const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'arroba-kernel'])
+    const result = await run('cargo', ['build', '--manifest-path', manifestPath, '--bin', 'chariox-kernel'])
     if (result.code !== 0) {
       throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
     }
-    kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'arroba-kernel')
+    kernelBinary = await resolveBuiltBinary(expectedKernelBinary, manifestPath, 'chariox-kernel')
   }
   return { cliDist, kernelBinary }
 }
@@ -334,20 +334,20 @@ async function main() {
   const rootDir = path.join(repoRoot, 'target', 'live-popup-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(rootDir, 'workspace')
   const home = path.join(rootDir, 'home')
-  const automationSocket = path.join(os.tmpdir(), `arroba-popup-auto-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-popup-auto-${process.pid}-${Date.now()}.sock`)
   const ports = await makePorts()
   const kernelUrl = options.kernelUrl ?? `ws://127.0.0.1:${ports.kernelPort}`
   const env = {
     ...process.env,
     HOME: options.useRealHome ? (process.env.HOME ?? home) : home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `popup-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `popup-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -472,7 +472,7 @@ async function main() {
         attachmentId,
         activeAgent.id,
         [
-          'Before any answer text, call the Arroba runtime MCP tool request_popup exactly once.',
+          'Before any answer text, call the Chariox runtime MCP tool request_popup exactly once.',
           'Call it with exactly this JSON argument object:',
           JSON.stringify({
             title: `Feedback drill ${provider}`,
@@ -507,7 +507,7 @@ async function main() {
         attachmentId,
         activeAgent.id,
         [
-          'Before any answer text, call the Arroba runtime MCP tool request_popup exactly once.',
+          'Before any answer text, call the Chariox runtime MCP tool request_popup exactly once.',
           'Call it with exactly this JSON argument object:',
           JSON.stringify({
             title: `Permission drill ${provider}`,
@@ -539,7 +539,7 @@ async function main() {
         attachmentId,
         activeAgent.id,
         [
-          'Before any answer text, call the Arroba runtime MCP tool request_popup exactly once.',
+          'Before any answer text, call the Chariox runtime MCP tool request_popup exactly once.',
           'Call it with exactly this JSON argument object:',
           JSON.stringify({
             title: `Timeout drill ${provider}`,

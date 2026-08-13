@@ -16,11 +16,11 @@ function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/drill-failure-summary.mjs [--find] [--max-depth N] [--json] [--output PATH] FAILURE_ROOT_OR_MANIFEST...",
     "",
-    "Summarizes arroba.drill.failure.v1 manifests from preserved drill artifact roots.",
-    "Pass either a preserved drill root directory or an arroba-drill-failure.json path.",
+    "Summarizes chariox.drill.failure.v1 manifests from preserved drill artifact roots.",
+    "Pass either a preserved drill root directory or an chariox-drill-failure.json path.",
     "",
     "Options:",
-    "  --find          Recursively discover arroba-drill-failure.json files below each input directory",
+    "  --find          Recursively discover chariox-drill-failure.json files below each input directory",
     "  --max-depth N   Limit --find traversal depth; defaults to 8",
     "  --require-failure-max-age-ms MS",
     "                 Exit non-zero when failure manifests are older than this many milliseconds",
@@ -163,7 +163,7 @@ function parseArgs(argv) {
 
 function emptyAggregate() {
   return {
-    schema: "arroba.drill.failure.aggregate.v1",
+    schema: "chariox.drill.failure.aggregate.v1",
     total: 0,
     owners: {},
     classifications: {},

@@ -7,14 +7,14 @@ import {
   selectCurrentAgentPaneEntries,
   shouldRefreshAgentPanesForSessionChange,
   trimAgentPaneEntries,
-} from "@arroba/kernel-client/agent-pane-state"
+} from "@chariox/kernel-client/agent-pane-state"
 import {
   applyTranscriptDisplayState,
   type TranscriptDisplayEntry,
-} from "@arroba/kernel-client/transcript-display-state"
+} from "@chariox/kernel-client/transcript-display-state"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 
 test("trimAgentPaneEntries drops the oldest entries and clears trimmed merge keys", () => {
   const trimmedMergeKeys: string[] = []
@@ -301,7 +301,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
         },
         {
           role: "user",
-          text: "queued arroba prompt",
+          text: "queued chariox prompt",
           queuedPrompt: {
             promptId: "prompt-1",
             agentId: "agent-a",
@@ -310,7 +310,7 @@ test("refreshAgentPaneState does not hide new external history behind a queued p
             steerDisabled: true,
             canSteer: false,
             canCancel: true,
-            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
             cancelDisabledReason: null,
           },
         },
@@ -386,7 +386,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
         },
         {
           role: "user",
-          text: "queued arroba prompt with enough text to make stale current entries look richer",
+          text: "queued chariox prompt with enough text to make stale current entries look richer",
           queuedPrompt: {
             promptId: "prompt-1",
             agentId: "agent-a",
@@ -395,7 +395,7 @@ test("refreshAgentPaneState does not preserve stale queued prompt rows over caug
             steerDisabled: true,
             canSteer: false,
             canCancel: true,
-            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+            steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
             cancelDisabledReason: null,
           },
         },

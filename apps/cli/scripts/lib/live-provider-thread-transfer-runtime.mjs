@@ -28,19 +28,19 @@ import {
 export const scriptDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 export const cliRoot = path.resolve(scriptDir, "..")
 export const repoRoot = path.resolve(cliRoot, "..", "..")
-export const kernelBinary = resolveBinaryPath("kernel", "arroba-kernel")
-export const relayBinary = resolveBinaryPath("relay", "arroba-relay")
+export const kernelBinary = resolveBinaryPath("kernel", "chariox-kernel")
+export const relayBinary = resolveBinaryPath("relay", "chariox-relay")
 export const artifactsRoot = path.join(repoRoot, ".artifacts", "provider-thread-transfer")
-export const defaultLocalDockerSliceImage = process.env.ARROBA_SLICE_DOCKER_IMAGE ?? "arroba-slice-linux:0.1.0"
+export const defaultLocalDockerSliceImage = process.env.CHARIOX_SLICE_DOCKER_IMAGE ?? "chariox-slice-linux:0.1.0"
 
 export const DEFAULT_PROVIDERS = ["opencode", "codex"]
 export const DEFAULT_MODEL = "gpt-5.2"
-export const DEFAULT_CODEX_MODEL = process.env.ARROBA_PROVIDER_THREAD_CODEX_MODEL ?? "gpt-5.5"
+export const DEFAULT_CODEX_MODEL = process.env.CHARIOX_PROVIDER_THREAD_CODEX_MODEL ?? "gpt-5.5"
 export const DEFAULT_TIMEOUT_MS = 420_000
 export const DEFAULT_POLL_MS = 1_000
-export const DEFAULT_SLICE_BUILD_IMAGE_POLICY = process.env.ARROBA_PROVIDER_THREAD_SLICE_BUILD_IMAGE ?? "always"
-export const RELAY_ISSUER = "arroba-provider-thread-transfer-drill"
-export const RELAY_SECRET = "arroba-provider-thread-transfer-drill-secret"
+export const DEFAULT_SLICE_BUILD_IMAGE_POLICY = process.env.CHARIOX_PROVIDER_THREAD_SLICE_BUILD_IMAGE ?? "always"
+export const RELAY_ISSUER = "chariox-provider-thread-transfer-drill"
+export const RELAY_SECRET = "chariox-provider-thread-transfer-drill-secret"
 export const RELAY_REALM = "provider-thread-transfer-drill"
 
 function resolveBinaryPath(crateName, binName) {
@@ -120,7 +120,7 @@ export function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/live-provider-thread-transfer-drill.mjs [options]",
     "",
-    "Runs executable drills from docs/ARROBA_SERVER_PROVIDER_THREAD_TRANSFER_DRILLS_PLAN.md.",
+    "Runs executable drills from docs/CHARIOX_SERVER_PROVIDER_THREAD_TRANSFER_DRILLS_PLAN.md.",
     "",
     "Implemented drill:",
     "  local-reload  Drill 1: baseline local reload preserves provider thread",
@@ -185,7 +185,7 @@ function base64url(input) {
 export function signRelayToken(claims) {
   const payload = base64url(JSON.stringify(claims))
   const signature = createHmac("sha256", RELAY_SECRET).update(payload).digest("base64url")
-  return `arroba-scoped-v1.${payload}.${signature}`
+  return `chariox-scoped-v1.${payload}.${signature}`
 }
 
 export function relayClaims({ subject, subjectKind, actions, userId = "local", targets = null }) {
@@ -523,7 +523,7 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
   let claudeSecretRoot = null
   let claudeCredentialsPath = null
   if (providersNeedClaudeCredentials(providers)) {
-    claudeSecretRoot = path.join(os.tmpdir(), `arroba-provider-transfer-slice-secrets-${process.pid}-${Date.now()}`)
+    claudeSecretRoot = path.join(os.tmpdir(), `chariox-provider-transfer-slice-secrets-${process.pid}-${Date.now()}`)
     try {
       claudeCredentialsPath = await exportClaudeCredentials(
         path.join(claudeSecretRoot, "claude-credentials.json"),
@@ -547,11 +547,11 @@ export async function prepareSliceModeProviderEnv(root, providers = DEFAULT_PROV
     XDG_DATA_HOME: xdgDataHome,
     XDG_STATE_HOME: xdgStateHome,
     XDG_CACHE_HOME: xdgCacheHome,
-    ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
-    ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
+    CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: codexAuthCopied ? "1" : "0",
+    CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: opencodeAuthCopied ? "1" : "0",
     ...(claudeCredentialsPath ? {
-      ARROBA_SLICE_CLAUDE_CREDENTIALS: claudeCredentialsPath,
-      ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
+      CHARIOX_SLICE_CLAUDE_CREDENTIALS: claudeCredentialsPath,
+      CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
     } : {}),
   }
 }
@@ -560,20 +560,20 @@ export async function cleanupSliceModeProviderCredentials(providerEnv) {
   if (!providerEnv) return
   const removals = []
   if (
-    providerEnv.ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED === "1"
+    providerEnv.CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED === "1"
     && providerEnv.CODEX_HOME
   ) {
     removals.push(rm(path.join(providerEnv.CODEX_HOME, "auth.json"), { force: true }))
   }
   if (
-    providerEnv.ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED === "1"
+    providerEnv.CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED === "1"
     && providerEnv.OPENCODE_DATA_HOME
   ) {
     removals.push(rm(path.join(providerEnv.OPENCODE_DATA_HOME, "auth.json"), { force: true }))
   }
-  if (providerEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT) {
+  if (providerEnv.CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT) {
     removals.push(
-      rm(providerEnv.ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT, {
+      rm(providerEnv.CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT, {
         recursive: true,
         force: true,
       }),
@@ -586,7 +586,7 @@ export async function prepareIsolatedWorkerProviderEnv(providers = DEFAULT_PROVI
   const real = realProviderEnv()
   const secretRoot = path.join(
     os.tmpdir(),
-    `arroba-provider-transfer-secrets-${role}-${process.pid}-${Date.now()}`,
+    `chariox-provider-transfer-secrets-${role}-${process.pid}-${Date.now()}`,
   )
   const isolatedHome = path.join(secretRoot, "home")
   const codexHome = path.join(secretRoot, "codex")
@@ -712,21 +712,21 @@ export function workerResumeDaemonEnv({
     ...providerEnv,
     XDG_CONFIG_HOME: path.join(root, `${daemonId}-xdg-config`),
     XDG_STATE_HOME: path.join(root, `${daemonId}-xdg-state`),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(openCodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? "1" : "0",
-    ARROBA_DAEMON_SOCKET: path.join(root, socketName),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, `${daemonId}-history`),
-    ARROBA_CAPABILITY_ISOLATION_ROOT: path.join(root, `${daemonId}-capabilities`),
-    ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(openCodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? "1" : "0",
+    CHARIOX_DAEMON_SOCKET: path.join(root, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, `${daemonId}-history`),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: path.join(root, `${daemonId}-capabilities`),
+    CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS: "250",
   }
 }
 
@@ -1074,11 +1074,11 @@ export async function createDeterministicMcp(root, name) {
     "  const { id, method, params } = message",
     "  if (method === 'notifications/initialized') return",
     "  if (method === 'initialize') {",
-    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-provider-thread-transfer', version: '1.0.0' } } })",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'chariox-provider-thread-transfer', version: '1.0.0' } } })",
     "    return",
     "  }",
     "  if (method === 'tools/list') {",
-    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'thread_transfer_probe', description: 'Returns a marker for Arroba provider-thread transfer drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'thread_transfer_probe', description: 'Returns a marker for Chariox provider-thread transfer drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
     "    return",
     "  }",
     "  if (method === 'tools/call' && params?.name === 'thread_transfer_probe') {",

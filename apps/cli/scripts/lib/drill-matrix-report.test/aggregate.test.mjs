@@ -33,7 +33,7 @@ test("aggregates multiple matrix reports for CI", () => {
       scenario("remote", "failed", {
         classification: "provider-auth",
         reason: "expired token",
-        artifactHints: ["/tmp/arroba-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
+        artifactHints: ["/tmp/chariox-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
@@ -60,7 +60,7 @@ test("aggregates multiple matrix reports for CI", () => {
     sources: ["/tmp/remote-matrix.json", "/tmp/workspace-matrix.json"],
   })
 
-  assert.equal(aggregate.schema, "arroba.drill.matrix.aggregate.v1")
+  assert.equal(aggregate.schema, "chariox.drill.matrix.aggregate.v1")
   assert.equal(aggregate.status, "failed")
   assert.deepEqual(aggregate.totals, {
     reports: 2,
@@ -182,7 +182,7 @@ test("aggregates multiple matrix reports for CI", () => {
     classification: "provider-auth",
     owner: "provider-account",
     reason: "expired token",
-    artifactHints: ["/tmp/arroba-drill-remote", "manifest:.artifacts/remote.json"],
+    artifactHints: ["/tmp/chariox-drill-remote", "manifest:.artifacts/remote.json"],
     nextAction: "refresh provider login for the profile used by this drill, then rerun the scenario",
   }])
   assert.deepEqual(aggregate.skippedScenarios, [{
@@ -215,7 +215,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /matrix aggregate:/)
   assert.match(text, /status=failed reports=2 scenarios=4 passed=1 failed=1 skipped=1 dry_run=1/)
   assert.match(text, /- remote\/remote classification=provider-auth owner=provider-account reason=expired token source=\/tmp\/remote-matrix.json/)
-  assert.match(text, /artifacts: \/tmp\/arroba-drill-remote, manifest:\.artifacts\/remote\.json/)
+  assert.match(text, /artifacts: \/tmp\/chariox-drill-remote, manifest:\.artifacts\/remote\.json/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /matrix_names: remote=1 workspace=1/)
   assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)

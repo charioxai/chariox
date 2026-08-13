@@ -8,10 +8,10 @@ import {
 } from "../cli-types.js"
 import {
   sessionActivePromptForAgent,
-} from "@arroba/kernel-client/session-prompt-identity"
+} from "@chariox/kernel-client/session-prompt-identity"
 import {
   promptSubmittedPromptIdFromResponse,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 import { LocalIpcClient } from "../ipc.js"
 import {
   appendNativeProviderOutputRequest,
@@ -174,7 +174,7 @@ export function startClaudeBridge(options: ClaudeBridgeOptions): { stop: () => v
           }
         }
       } catch (error) {
-        process.stderr.write(`[arroba claude native-tui] bridge warning: ${formatError(error)}\n`)
+        process.stderr.write(`[chariox claude native-tui] bridge warning: ${formatError(error)}\n`)
       }
       await sleep(500)
     }

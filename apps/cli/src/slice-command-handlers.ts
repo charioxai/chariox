@@ -18,7 +18,7 @@ import {
   formatSliceRelayLabel,
   formatSliceScope,
   sliceProviderAuthCoverage,
-} from "@arroba/kernel-client/slice-format"
+} from "@chariox/kernel-client/slice-format"
 import type {
   SliceCommandHandlerDeps,
   SliceCreateOptions,

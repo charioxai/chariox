@@ -40,9 +40,9 @@ test("native TUI runtime banner shows ownership, placement, worktree, and live s
     promptPolicy: "native prompts pass through",
   })
 
-  assert.match(banner, /^\[arroba codex native-tui\]/)
-  assert.match(banner, /arroba session: session-1 \(Review\)/)
-  assert.match(banner, /arroba agent:   A1 \(builder\) \[id=agent-1\]/)
+  assert.match(banner, /^\[chariox codex native-tui\]/)
+  assert.match(banner, /chariox session: session-1 \(Review\)/)
+  assert.match(banner, /chariox agent:   A1 \(builder\) \[id=agent-1\]/)
   assert.match(banner, /home kernel:    home-kernel@home-machine/)
   assert.match(banner, /session owner:  alice/)
   assert.match(banner, /worktree:       \/repo\/worktrees\/feature/)

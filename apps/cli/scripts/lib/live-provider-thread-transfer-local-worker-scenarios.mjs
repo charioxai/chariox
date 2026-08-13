@@ -304,7 +304,7 @@ export async function runWorkerResumeScenario({
       scope: options.workerState === "isolated"
         ? "same-host worker with isolated provider home/data/cache and temporary copied auth; not a standard slice"
         : "same-host worker with shared provider credential/state directories; not a standard slice",
-      same_arroba_agent_record: false,
+      same_chariox_agent_record: false,
     },
     checks: {},
     errors: [],

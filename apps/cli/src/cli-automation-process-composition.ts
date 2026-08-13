@@ -11,14 +11,14 @@ import { createCliAutomationSnapshotController } from "./cli-automation-snapshot
 import { createCliProcessLifecycleController } from "./cli-process-lifecycle-controller.js"
 import type { CliOptions } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 
 type AnyFn = (...args: any[]) => any
 
 export type CliAutomationProcessCompositionDeps = {
   client: LocalIpcClient
   options: CliOptions
-  appLogger: (ArrobaLogger & CliAutomationServerLogger) | null
+  appLogger: (CharioxLogger & CliAutomationServerLogger) | null
   formatError: AnyFn
   flashFooter: AnyFn
   handleSigint: AnyFn

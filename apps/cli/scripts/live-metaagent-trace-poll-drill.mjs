@@ -10,9 +10,9 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 600_000
 const DEFAULT_POLL_MS = 1_000
-const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_TRACE_POLL_PROVIDER ?? 'codex'
-const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_TRACE_POLL_MODEL ?? 'gpt-5.5'
-const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_TRACE_POLL_EFFORT ?? 'medium'
+const DEFAULT_PROVIDER = process.env.CHARIOX_METAAGENT_TRACE_POLL_PROVIDER ?? 'codex'
+const DEFAULT_MODEL = process.env.CHARIOX_METAAGENT_TRACE_POLL_MODEL ?? 'gpt-5.5'
+const DEFAULT_EFFORT = process.env.CHARIOX_METAAGENT_TRACE_POLL_EFFORT ?? 'medium'
 const TRACE_PHRASE = 'TRACE_POLL_DRILL_WORKER_VISIBLE'
 const ORPHAN_RECOVERY_PHRASE = 'ORPHAN_RECOVERY_DRILL_COMPLETE'
 let logPrefix = 'metaagent-trace-poll-drill'
@@ -24,8 +24,8 @@ function buildUserPrompt(options) {
       'In your first turn, do not call any tools, do not spawn agents, do not prompt workers, do not use workflows, and do not mark the task complete or blocked.',
       'For the first turn, send exactly this normal assistant reply and nothing else: ACK_ORPHAN_RECOVERY_READY',
       'That first reply should end the turn with the task still active.',
-      'Arroba should send you a continuation prompt because the active task has no delegated work running.',
-      'On that continuation, inspect the event/task state if needed, then call `arroba.meta.complete_task`.',
+      'Chariox should send you a continuation prompt because the active task has no delegated work running.',
+      'On that continuation, inspect the event/task state if needed, then call `chariox.meta.complete_task`.',
       `The completion summary must include the exact phrase ${ORPHAN_RECOVERY_PHRASE}.`,
     ].join('\n')
   }
@@ -54,16 +54,16 @@ function buildUserPrompt(options) {
       'Do not call subscribe_trace, wait_trace, or poll_trace for this task.',
       'After you have spawned and prompted the worker, immediately stop this turn without marking the task complete.',
       'Do not wait, poll, explain, summarize, or call any more tools in that turn.',
-      'Arroba will send you a continuation prompt when the worker turn completes.',
+      'Chariox will send you a continuation prompt when the worker turn completes.',
       'On that continuation, review the worker output using the event and turn/history tools available to you, then complete this metaagent task with a concise summary of the worker result and the evidence you reviewed.',
     ].join('\n')
   }
 
   return [
     ...launchInstruction,
-    'Before prompting the worker, subscribe to that worker live trace with `arroba.meta.subscribe_trace`.',
+    'Before prompting the worker, subscribe to that worker live trace with `chariox.meta.subscribe_trace`.',
     `Ask the worker to inspect this repo and include the exact phrase ${TRACE_PHRASE} in its response.`,
-    'Call `arroba.meta.wait_trace` until you can see worker-generated output, not just a prompt echo.',
+    'Call `chariox.meta.wait_trace` until you can see worker-generated output, not just a prompt echo.',
     'Then complete this metaagent task with a concise summary of the worker result and the trace evidence you observed.',
   ].join('\n')
 }
@@ -73,11 +73,11 @@ function parseArgs(argv) {
     provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
     effort: DEFAULT_EFFORT,
-    workerProvider: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PROVIDER ?? '',
-    workerModel: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_MODEL ?? '',
-    workerEffort: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_EFFORT ?? '',
-    workerPlacement: process.env.ARROBA_METAAGENT_TRACE_POLL_WORKER_PLACEMENT ?? 'current-worktree',
-    supervisionMode: process.env.ARROBA_METAAGENT_TRACE_POLL_SUPERVISION_MODE ?? 'trace',
+    workerProvider: process.env.CHARIOX_METAAGENT_TRACE_POLL_WORKER_PROVIDER ?? '',
+    workerModel: process.env.CHARIOX_METAAGENT_TRACE_POLL_WORKER_MODEL ?? '',
+    workerEffort: process.env.CHARIOX_METAAGENT_TRACE_POLL_WORKER_EFFORT ?? '',
+    workerPlacement: process.env.CHARIOX_METAAGENT_TRACE_POLL_WORKER_PLACEMENT ?? 'current-worktree',
+    supervisionMode: process.env.CHARIOX_METAAGENT_TRACE_POLL_SUPERVISION_MODE ?? 'trace',
     accountProfile: 'default',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     pollMs: DEFAULT_POLL_MS,
@@ -227,19 +227,19 @@ async function writeFixture(workspace) {
     `The worker should report ${TRACE_PHRASE}.`,
     '',
   ].join('\n'), 'utf8')
-  await writeFile(path.join(workspace, '.gitignore'), '.arroba-wait.arroba\n.arrobaignore\n', 'utf8')
+  await writeFile(path.join(workspace, '.gitignore'), '.chariox-wait.chariox\n.charioxignore\n', 'utf8')
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (!exists) throw new Error(`kernel build did not produce ${binary}`)
   return binary
 }
 
 async function waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env) {
-  const scriptPath = path.join(scriptsDir, 'wait.arroba')
+  const scriptPath = path.join(scriptsDir, 'wait.chariox')
   await writeFile(scriptPath, 'session list\n', 'utf8')
   const deadline = Date.now() + 20_000
   let last = null
@@ -728,17 +728,17 @@ async function main() {
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `metaagent-trace-poll-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_LOG_DIR: path.join(rootDir, 'logs'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `metaagent-trace-poll-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
-  delete env.ARROBA_RELAY_URL
-  delete env.ARROBA_RELAY_TOKEN
+  delete env.CHARIOX_RELAY_URL
+  delete env.CHARIOX_RELAY_TOKEN
   let daemon = null
   let client = null
   let sessionId = null
@@ -766,7 +766,7 @@ async function main() {
     await waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env)
     log('daemon-ready', { kernelUrl, provider: options.provider, model: options.model, effort: options.effort })
 
-    const setupScript = path.join(scriptsDir, 'setup.arroba')
+    const setupScript = path.join(scriptsDir, 'setup.chariox')
     await writeFile(setupScript, [
       `set provider ${options.provider}`,
       `set model ${options.model}`,
@@ -836,7 +836,7 @@ async function main() {
       requests,
       sessionId,
       metaagentId: metaagent.id,
-      historyDir: env.ARROBA_SESSION_HISTORY_DIR,
+      historyDir: env.CHARIOX_SESSION_HISTORY_DIR,
       beforeAgentIds,
       timeoutMs: options.timeoutMs,
       pollMs: options.pollMs,

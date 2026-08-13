@@ -5,9 +5,9 @@ import type {
 } from "./cli-types.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
-import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
-import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
-import { reindexTranscriptEntries } from "@arroba/kernel-client/transcript-entry-state"
+import type { TerminalCommandCatalog } from "@chariox/kernel-client/kernel-types"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
 
 export type DeferredBootstrapControllerDeps = {
   getDeferred: () => BootstrapDeferredState | undefined

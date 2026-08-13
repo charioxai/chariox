@@ -1,11 +1,11 @@
-import type { ShellContext } from "@arroba/kernel-client/shell-core"
-import { executeShellLine } from "@arroba/kernel-client/shell-script"
+import type { ShellContext } from "@chariox/kernel-client/shell-core"
+import { executeShellLine } from "@chariox/kernel-client/shell-script"
 
 import type {
   RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import { sessionFocusedAgentId } from "@arroba/kernel-client/session-runtime-transition"
+import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-transition"
 import {
   appendWorkspaceShellEntry,
   workspaceShellCommandText,
@@ -71,8 +71,8 @@ export async function submitWorkspaceShellCommand(
 ): Promise<WorkspaceShellSubmitResult> {
   const command = workspaceShellCommandText(rawPrompt)
   if (!command) {
-    deps.flashFooter("usage: @ <arroba-shell command>", "error")
-    return { ok: false, output: "usage: @ <arroba-shell command>", context: deps.workspaceShellContext() }
+    deps.flashFooter("usage: @ <chariox-shell command>", "error")
+    return { ok: false, output: "usage: @ <chariox-shell command>", context: deps.workspaceShellContext() }
   }
   const context = deps.workspaceShellContext()
   const output: string[] = []

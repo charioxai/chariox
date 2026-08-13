@@ -35,7 +35,7 @@ export async function writeIsolatedKernelConfig({
   storageRoot,
   extraToml = [],
 }) {
-  const configDir = path.join(xdgConfigHome, "arroba")
+  const configDir = path.join(xdgConfigHome, "chariox")
   await mkdir(configDir, { recursive: true })
   await writeFile(
     path.join(configDir, "config.toml"),

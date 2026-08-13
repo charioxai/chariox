@@ -15,10 +15,10 @@ import { runLivePublicationManifestMode } from './live-workflow-publication-dril
 import { runPublicationPackageValidation } from './live-workflow-publication-drill-package-validation.mjs'
 
 export async function runLiveWorkflowPublicationDrill() {
-  const drillTmpRoot = process.env.ARROBA_PUBLICATION_DRILL_TMPDIR
+  const drillTmpRoot = process.env.CHARIOX_PUBLICATION_DRILL_TMPDIR
     ?? path.join(repoRoot, '.artifacts', 'live-workflow-publication-drill')
   await mkdir(drillTmpRoot, { recursive: true })
-  const root = path.join(drillTmpRoot, `arroba-publication-drill-${nowStamp()}`)
+  const root = path.join(drillTmpRoot, `chariox-publication-drill-${nowStamp()}`)
   await prepareDrillArtifacts(root)
   const workspace = path.join(root, 'workspace')
   const apiSseWorkspace = path.join(root, 'api-sse-workspace')
@@ -54,20 +54,20 @@ export async function runLiveWorkflowPublicationDrill() {
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_DAEMON_ID: daemonAlias,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, 'history'),
-    ARROBA_RELAY_URL: relayUrl,
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_DAEMON_ID: daemonAlias,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'history'),
+    CHARIOX_RELAY_URL: relayUrl,
+    CHARIOX_RELAY_TOKEN: relayToken,
   })
   if (realDashboard?.useHostProviderHome && hostHome) {
     if (!env.CODEX_HOME) env.CODEX_HOME = path.join(hostHome, '.codex')
-    if (!env.ARROBA_CLAUDE_CONFIG) env.ARROBA_CLAUDE_CONFIG = path.join(hostHome, '.claude.json')
+    if (!env.CHARIOX_CLAUDE_CONFIG) env.CHARIOX_CLAUDE_CONFIG = path.join(hostHome, '.claude.json')
   }
 
   let relay = null
@@ -91,18 +91,18 @@ export async function runLiveWorkflowPublicationDrill() {
     await mkdir(browserRealHtmlWorkspace, { recursive: true })
     await mkdir(mcpWorkspace, { recursive: true })
     await mkdir(scheduleWorkspace, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     const tls = await createSelfSignedCertificate(root)
 
-    const kernelBinary = await buildRustBinary('arroba-kernel')
-    const cliBinary = await buildRustBinary('arroba-cli')
-    const relayBinary = await buildRustBinary('arroba-relay')
+    const kernelBinary = await buildRustBinary('chariox-kernel')
+    const cliBinary = await buildRustBinary('chariox-cli')
+    const relayBinary = await buildRustBinary('chariox-relay')
     relay = startProcess(relayBinary, [], {
       ...env,
-      ARROBA_RELAY_HOST: '127.0.0.1',
-      ARROBA_RELAY_PORT: String(relayPort),
-      ARROBA_RELAY_TOKEN: relayToken,
+      CHARIOX_RELAY_HOST: '127.0.0.1',
+      CHARIOX_RELAY_PORT: String(relayPort),
+      CHARIOX_RELAY_TOKEN: relayToken,
     }, 'relay')
     await waitForTcpPort('127.0.0.1', relayPort)
     kernel = startProcess(kernelBinary, [], env, 'kernel')
@@ -113,8 +113,8 @@ export async function runLiveWorkflowPublicationDrill() {
       kernelMaxMissedPongs: 10,
     })
 
-    if (realDashboard && envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_ONLY')) {
-      const maxAttempts = Number(process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_ATTEMPTS || '3')
+    if (realDashboard && envFlag('CHARIOX_PUBLICATION_REAL_DASHBOARD_ONLY')) {
+      const maxAttempts = Number(process.env.CHARIOX_PUBLICATION_REAL_DASHBOARD_ATTEMPTS || '3')
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         logStep('create_browser_real_html_final_session', { ...realDashboard, attempt, maxAttempts })
         const attemptWorkspace = path.join(browserRealHtmlWorkspace, `attempt-${attempt}`)
@@ -145,9 +145,9 @@ export async function runLiveWorkflowPublicationDrill() {
             ...env,
             HOST: '127.0.0.1',
             PORT: String(gatewayPort),
-            ARROBA_KERNEL_URL: kernelUrl,
-            ARROBA_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
-            ARROBA_PUBLICATION_ID: browserRealHtml.publication.id,
+            CHARIOX_KERNEL_URL: kernelUrl,
+            CHARIOX_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
+            CHARIOX_PUBLICATION_ID: browserRealHtml.publication.id,
           },
           'gateway-human-http-real-html-final',
         )
@@ -158,7 +158,7 @@ export async function runLiveWorkflowPublicationDrill() {
             root,
             timeoutMs: 360_000,
             expectedHtmlText: 'Real Provider Workflow Dashboard',
-            requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+            requiredHtmlSnippets: ['data-chariox-real-provider-dashboard="true"'],
             requiredTraceLevels: browserRealHtml.requiredTraceLevels,
             requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
             visualArtifactPrefix: 'local-human-http-real-dashboard',
@@ -248,9 +248,9 @@ export async function runLiveWorkflowPublicationDrill() {
       realDashboard,
     })
 
-    if (process.env.ARROBA_PUBLICATION_LIVE_MANIFEST) {
+    if (process.env.CHARIOX_PUBLICATION_LIVE_MANIFEST) {
       await runLivePublicationManifestMode({
-        manifestPath: process.env.ARROBA_PUBLICATION_LIVE_MANIFEST,
+        manifestPath: process.env.CHARIOX_PUBLICATION_LIVE_MANIFEST,
         client,
         env,
         kernelUrl,
@@ -271,7 +271,7 @@ export async function runLiveWorkflowPublicationDrill() {
           sessionId: browserRealHtml.session.id,
           publication: browserRealHtml.publication,
           expectedHtmlText: 'Real Provider Workflow Dashboard',
-          requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+          requiredHtmlSnippets: ['data-chariox-real-provider-dashboard="true"'],
           promptText: REAL_DASHBOARD_PROMPT,
           requiredTraceLevels: browserRealHtml.requiredTraceLevels,
           requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
@@ -309,9 +309,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: session.id,
-        ARROBA_PUBLICATION_ID: publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: session.id,
+        CHARIOX_PUBLICATION_ID: publication.id,
       },
       'gateway',
     )
@@ -362,7 +362,7 @@ export async function runLiveWorkflowPublicationDrill() {
     }
 
     logStep('invoke_browser_upload')
-    const uploadResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/human-http/invoke`, {
+    const uploadResponse = await fetch(`${gatewayUrl}/.well-known/chariox/publication/human-http/invoke`, {
       method: 'POST',
       headers: { accept: 'text/html', 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -408,9 +408,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: session.id,
-        ARROBA_PUBLICATION_ID: apiSsePublication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: session.id,
+        CHARIOX_PUBLICATION_ID: apiSsePublication.id,
       },
       'gateway-api-sse',
     )
@@ -427,7 +427,7 @@ export async function runLiveWorkflowPublicationDrill() {
         }, {
           name: 'input-url.txt',
           type: 'text/plain',
-          url: 'https://example.invalid/arroba-publication-input.txt',
+          url: 'https://example.invalid/chariox-publication-input.txt',
         }],
       }),
     })
@@ -447,9 +447,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: apiSseSession.id,
-        ARROBA_PUBLICATION_ID: apiSseFinalPublication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: apiSseSession.id,
+        CHARIOX_PUBLICATION_ID: apiSseFinalPublication.id,
       },
       'gateway-api-sse-final',
     )
@@ -526,9 +526,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: apiSseTunnel.session.id,
-        ARROBA_PUBLICATION_ID: apiSseTunnel.publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: apiSseTunnel.session.id,
+        CHARIOX_PUBLICATION_ID: apiSseTunnel.publication.id,
       },
       'gateway-api-sse-final-tunnel',
     )
@@ -574,15 +574,15 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: websocketSession.id,
-        ARROBA_PUBLICATION_ID: websocketFinalPublication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: websocketSession.id,
+        CHARIOX_PUBLICATION_ID: websocketFinalPublication.id,
       },
       'gateway-websocket-final',
     )
     await waitForGateway(gatewayUrl)
     const webSocketFinal = await invokePublicationWebSocket(
-      `ws://127.0.0.1:${gatewayPort}/.well-known/arroba/publication/ws`,
+      `ws://127.0.0.1:${gatewayPort}/.well-known/chariox/publication/ws`,
       { prompt: 'websocket-final-publication' },
       { waitForFinal: true },
     )
@@ -622,9 +622,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: websocketTunnel.session.id,
-        ARROBA_PUBLICATION_ID: websocketTunnel.publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: websocketTunnel.session.id,
+        CHARIOX_PUBLICATION_ID: websocketTunnel.publication.id,
       },
       'gateway-websocket-final-tunnel',
     )
@@ -637,7 +637,7 @@ export async function runLiveWorkflowPublicationDrill() {
       `http://127.0.0.1:${relayPort}/display/publication-`,
     )
     const webSocketTunnelUrl = websocketUrlFromHttp(
-      new URL('.well-known/arroba/publication/ws', registeredWebSocketPublication.open_url).toString(),
+      new URL('.well-known/chariox/publication/ws', registeredWebSocketPublication.open_url).toString(),
     )
     const webSocketTunnelFinal = await invokePublicationWebSocket(
       webSocketTunnelUrl,
@@ -670,9 +670,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: browserSession.id,
-        ARROBA_PUBLICATION_ID: humanHttpFinalPublication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: browserSession.id,
+        CHARIOX_PUBLICATION_ID: humanHttpFinalPublication.id,
       },
       'gateway-human-http-final',
     )
@@ -692,9 +692,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: browserRoot.session.id,
-        ARROBA_PUBLICATION_ID: browserRoot.publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: browserRoot.session.id,
+        CHARIOX_PUBLICATION_ID: browserRoot.publication.id,
       },
       'gateway-human-http-root-form',
     )
@@ -715,9 +715,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: browserHtml.session.id,
-        ARROBA_PUBLICATION_ID: browserHtml.publication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: browserHtml.session.id,
+        CHARIOX_PUBLICATION_ID: browserHtml.publication.id,
       },
       'gateway-human-http-html-final',
     )
@@ -739,9 +739,9 @@ export async function runLiveWorkflowPublicationDrill() {
           ...env,
           HOST: '127.0.0.1',
           PORT: String(gatewayPort),
-          ARROBA_KERNEL_URL: kernelUrl,
-          ARROBA_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
-          ARROBA_PUBLICATION_ID: browserRealHtml.publication.id,
+          CHARIOX_KERNEL_URL: kernelUrl,
+          CHARIOX_PUBLICATION_SESSION_ID: browserRealHtml.session.id,
+          CHARIOX_PUBLICATION_ID: browserRealHtml.publication.id,
         },
         'gateway-human-http-real-html-final',
       )
@@ -751,7 +751,7 @@ export async function runLiveWorkflowPublicationDrill() {
         root,
         timeoutMs: 240_000,
         expectedHtmlText: 'Real Provider Workflow Dashboard',
-        requiredHtmlSnippets: ['data-arroba-real-provider-dashboard="true"'],
+        requiredHtmlSnippets: ['data-chariox-real-provider-dashboard="true"'],
         requiredTraceLevels: browserRealHtml.requiredTraceLevels,
         requiredTraceAlias: browserRealHtml.dashboardAgent.alias ?? browserRealHtml.dashboardAgent.id,
         visualArtifactPrefix: 'local-human-http-real-dashboard',
@@ -769,9 +769,9 @@ export async function runLiveWorkflowPublicationDrill() {
         ...env,
         HOST: '127.0.0.1',
         PORT: String(gatewayPort),
-        ARROBA_KERNEL_URL: kernelUrl,
-        ARROBA_PUBLICATION_SESSION_ID: mcpSession.id,
-        ARROBA_PUBLICATION_ID: mcpPublication.id,
+        CHARIOX_KERNEL_URL: kernelUrl,
+        CHARIOX_PUBLICATION_SESSION_ID: mcpSession.id,
+        CHARIOX_PUBLICATION_ID: mcpPublication.id,
       },
       'gateway-mcp',
     )
@@ -848,7 +848,7 @@ export async function runLiveWorkflowPublicationDrill() {
       await waitForGateway(gatewayHttpsUrl)
       logStep('invoke_wss')
       const wssAccepted = await invokePublicationWebSocket(
-        `wss://127.0.0.1:${gatewayHttpsPort}/.well-known/arroba/publication/ws`,
+        `wss://127.0.0.1:${gatewayHttpsPort}/.well-known/chariox/publication/ws`,
         { task: 'wss-publication' },
         { rejectUnauthorized: false },
       )
@@ -944,7 +944,7 @@ export async function runLiveWorkflowPublicationDrill() {
         remainingDockerContainers: dockerContainers.length,
         remainingDockerImages: dockerImages.length,
         realDashboardEnabled: realDashboard != null,
-        containerDrillEnabled: envFlag('ARROBA_PUBLICATION_CONTAINER_DRILL'),
+        containerDrillEnabled: envFlag('CHARIOX_PUBLICATION_CONTAINER_DRILL'),
         processLogs: {
           relayStdout: tail(relay?.logs?.stdout),
           relayStderr: tail(relay?.logs?.stderr),

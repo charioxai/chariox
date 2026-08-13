@@ -76,12 +76,12 @@ function readPresence(path: string, nowMs: number): LocalKernelPresence[] {
 }
 
 function defaultActiveKernelRegistryDir(): string {
-  const explicit = process.env.ARROBA_ACTIVE_KERNEL_REGISTRY_DIR?.trim()
+  const explicit = process.env.CHARIOX_ACTIVE_KERNEL_REGISTRY_DIR?.trim()
   if (explicit) {
     return explicit
   }
   const xdgConfigHome = process.env.XDG_CONFIG_HOME?.trim()
   return xdgConfigHome
-    ? join(xdgConfigHome, "arroba", "kernels", "active")
-    : join(homedir(), ".arroba", "kernels", "active")
+    ? join(xdgConfigHome, "chariox", "kernels", "active")
+    : join(homedir(), ".chariox", "kernels", "active")
 }

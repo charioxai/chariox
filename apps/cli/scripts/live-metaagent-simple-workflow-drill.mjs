@@ -10,9 +10,9 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 const DEFAULT_TIMEOUT_MS = 900_000
 const DEFAULT_POLL_MS = 1_000
-const DEFAULT_PROVIDER = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_PROVIDER ?? 'codex'
-const DEFAULT_MODEL = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_MODEL ?? 'gpt-5.5'
-const DEFAULT_EFFORT = process.env.ARROBA_METAAGENT_SIMPLE_WORKFLOW_EFFORT ?? 'medium'
+const DEFAULT_PROVIDER = process.env.CHARIOX_METAAGENT_SIMPLE_WORKFLOW_PROVIDER ?? 'codex'
+const DEFAULT_MODEL = process.env.CHARIOX_METAAGENT_SIMPLE_WORKFLOW_MODEL ?? 'gpt-5.5'
+const DEFAULT_EFFORT = process.env.CHARIOX_METAAGENT_SIMPLE_WORKFLOW_EFFORT ?? 'medium'
 const MARKER = 'SIMPLE_WORKFLOW_DRILL_OK'
 const RESULT_FILE = 'workflow-result.txt'
 const logPrefix = 'metaagent-simple-workflow-drill'
@@ -158,8 +158,8 @@ async function writeFixture(workspace) {
   await mkdir(path.join(workspace, 'scripts'), { recursive: true })
   await mkdir(path.join(workspace, 'test'), { recursive: true })
   await writeFile(path.join(workspace, '.gitignore'), [
-    '.arroba-wait.arroba',
-    '.arrobaignore',
+    '.chariox-wait.chariox',
+    '.charioxignore',
     'node_modules/',
     '',
   ].join('\n'), 'utf8')
@@ -208,15 +208,15 @@ async function writeFixture(workspace) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  await runChecked('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
   if (!exists) throw new Error(`kernel build did not produce ${binary}`)
   return binary
 }
 
 async function waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env) {
-  const scriptPath = path.join(scriptsDir, 'wait.arroba')
+  const scriptPath = path.join(scriptsDir, 'wait.chariox')
   await writeFile(scriptPath, 'session list\n', 'utf8')
   const deadline = Date.now() + 20_000
   let last = null
@@ -270,9 +270,9 @@ function commandHits(commandText, pattern) {
 
 function metaagentToolIsAllowed(toolName) {
   if (typeof toolName !== 'string') return false
-  return toolName.startsWith('arroba.')
-    || toolName.startsWith('mcp__arroba__')
-    || toolName.startsWith('mcp__arroba.')
+  return toolName.startsWith('chariox.')
+    || toolName.startsWith('mcp__chariox__')
+    || toolName.startsWith('mcp__chariox.')
 }
 
 function metaagentToolIsDirectExecution(toolName) {
@@ -614,13 +614,13 @@ async function main() {
   const env = {
     ...process.env,
     HOME: process.env.HOME ?? home,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `metaagent-simple-workflow-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `metaagent-simple-workflow-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
 
   let daemon = null
@@ -653,7 +653,7 @@ async function main() {
     await waitForDaemon(shellBin, kernelUrl, workspace, scriptsDir, env)
     log('daemon-ready', { kernelUrl, provider: options.provider, model: options.model, effort: options.effort })
 
-    const setupScript = path.join(scriptsDir, 'setup.arroba')
+    const setupScript = path.join(scriptsDir, 'setup.chariox')
     await writeFile(setupScript, [
       `set provider ${options.provider}`,
       `set model ${options.model}`,
@@ -730,7 +730,7 @@ async function main() {
       sessionId,
       metaagentId: metaagent.id,
       workspace,
-      historyDir: env.ARROBA_SESSION_HISTORY_DIR,
+      historyDir: env.CHARIOX_SESSION_HISTORY_DIR,
       beforeAgentIds,
       baselineHash,
       options,

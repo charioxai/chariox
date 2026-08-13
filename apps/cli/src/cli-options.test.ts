@@ -16,7 +16,7 @@ test("parseArgs applies terminal pairing links", () => {
     terminal_id: "terminal-1",
   })).toString("base64url")
 
-  assert.deepEqual(parseArgs([`arroba-terminal-pair-v1.${payload}`]), {
+  assert.deepEqual(parseArgs([`chariox-terminal-pair-v1.${payload}`]), {
     clientId: "terminal-1",
     provider: "opencode",
     model: "default",
@@ -65,7 +65,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/workspace sync \.\.\.\s+manage live sync status, session mode, global default, links, and diagnostics/)
   assert.match(output, /\/provider processes \[n\]\s+list daemon-tracked provider processes/)
   assert.match(output, /\/provider processes teardown <n>\s+tear down safe daemon-tracked provider processes/)
-  assert.match(output, /\/extension import\s+import provider MCPs and skills into Arroba/)
+  assert.match(output, /\/extension import\s+import provider MCPs and skills into Chariox/)
   assert.match(output, /\/extension grant\s+grant mcp, skill, script, or connector capabilities to an agent/)
   assert.match(output, /\/extension revoke\s+revoke an extension from an agent/)
   assert.match(output, /\/extension grants\s+show worker-local, home-proxy, and skill snapshot grants/)
@@ -80,14 +80,14 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/slice auth import\s+copy this machine's provider credentials into the slice/)
   assert.match(output, /\/slice auth remove\s+remove slice-local provider credentials and account summary/)
   assert.match(output, /\/slice auth login\s+start provider login inside the slice for a different account/)
-  assert.match(output, /\/slice auth alias\s+set an Arroba display alias for the slice account/)
+  assert.match(output, /\/slice auth alias\s+set a Chariox display alias for the slice account/)
   assert.equal(output.match(/\/kernel health/g)?.length, 1)
   assert.equal(output.match(/\/kernel remote-runtime/g)?.length, 1)
 })
 
 test("resolveConfiguredCloudRelayApiUrl prefers env and trims trailing slashes", () => {
-  const previous = process.env.ARROBA_CLOUD_API_URL
-  process.env.ARROBA_CLOUD_API_URL = "https://cloud.example.test///"
+  const previous = process.env.CHARIOX_CLOUD_API_URL
+  process.env.CHARIOX_CLOUD_API_URL = "https://cloud.example.test///"
   try {
     assert.equal(
       resolveConfiguredCloudRelayApiUrl({
@@ -108,9 +108,9 @@ test("resolveConfiguredCloudRelayApiUrl prefers env and trims trailing slashes",
     )
   } finally {
     if (previous === undefined) {
-      delete process.env.ARROBA_CLOUD_API_URL
+      delete process.env.CHARIOX_CLOUD_API_URL
     } else {
-      process.env.ARROBA_CLOUD_API_URL = previous
+      process.env.CHARIOX_CLOUD_API_URL = previous
     }
   }
 })

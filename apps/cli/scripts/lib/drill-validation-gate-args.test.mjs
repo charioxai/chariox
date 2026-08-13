@@ -14,7 +14,7 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 0)
   index = parseValidationGateRequirementArg(["--require-artifact-coverage-area", "distributed-observability"], 0, options)
   assert.equal(index, 1)
-  index = parseValidationGateRequirementArg(["--require-artifact-schema", "arroba.drill.validation_suite_run.v1"], 0, options)
+  index = parseValidationGateRequirementArg(["--require-artifact-schema", "chariox.drill.validation_suite_run.v1"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-kind=validation-suite-run"], 0, options)
   assert.equal(index, 0)
@@ -30,7 +30,7 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-matrix-repo", "oss"], 0, options)
   assert.equal(index, 1)
-  index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-artifact-index", "/tmp/generated-suite/arroba-drill-artifacts.json"], 0, options)
+  index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-artifact-index", "/tmp/generated-suite/chariox-drill-artifacts.json"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-artifact-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
   assert.equal(index, 1)
@@ -74,7 +74,7 @@ test("parses validation gate requirement arguments", () => {
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-matrix-limitation", "dry-run-classification-coverage"], 0, options)
   assert.equal(index, 1)
-  index = parseValidationGateRequirementArg(["--require-generated-validation-suite-artifact-index", "/tmp/generated-suite/arroba-drill-artifacts.json"], 0, options)
+  index = parseValidationGateRequirementArg(["--require-generated-validation-suite-artifact-index", "/tmp/generated-suite/chariox-drill-artifacts.json"], 0, options)
   assert.equal(index, 1)
   index = parseValidationGateRequirementArg(["--require-generated-validation-suite-failure-root", "/tmp/generated-suite/failed-run"], 0, options)
   assert.equal(index, 1)
@@ -85,7 +85,7 @@ test("parses validation gate requirement arguments", () => {
     presets: ["workspace-live-sync"],
     requiredPlatformCoverageAreas: ["runtime-fixtures"],
     requiredArtifactCoverageAreas: ["distributed-observability"],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     requiredArtifactKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceKinds: ["validation-suite-run"],
     requiredArtifactGeneratedEvidenceRepos: ["oss"],
@@ -93,7 +93,7 @@ test("parses validation gate requirement arguments", () => {
     requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
     requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
     requiredArtifactGeneratedMatrixRepos: ["oss"],
-    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
     requiredArtifactEvidenceRepos: ["oss"],
     requiredArtifactProviderAccountAliases: ["codex=work"],
@@ -120,7 +120,7 @@ test("parses validation gate requirement arguments", () => {
     requiredGeneratedEvidenceKinds: ["matrix-report"],
     requiredGeneratedMatrixArtifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
     requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
-    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
     requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
   })
 })

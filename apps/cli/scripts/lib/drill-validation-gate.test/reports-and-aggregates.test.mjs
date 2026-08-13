@@ -32,7 +32,7 @@ import {
 } from '../drill-validation-gate.test-support.mjs'
 
 test("reads and discovers validation gate report artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const bundleDir = path.join(rootDir, "bundle")
     const reportPath = path.join(rootDir, "reports", "gate.json")
@@ -51,14 +51,14 @@ test("reads and discovers validation gate report artifacts", async () => {
 
 test("summarizes validation gate reports", async () => {
   const passed = await runDrillValidationGate({
-    failureRoots: ["/tmp/no-such-arroba-failure-root"],
+    failureRoots: ["/tmp/no-such-chariox-failure-root"],
   })
   const failed = await runDrillValidationGate()
   const aggregate = summarizeDrillValidationGateReports([passed, failed], {
     sources: ["passed.json", "failed.json"],
   })
 
-  assert.equal(aggregate.schema, "arroba.drill.validation_gate.aggregate.v1")
+  assert.equal(aggregate.schema, "chariox.drill.validation_gate.aggregate.v1")
   assert.equal(aggregate.status, "failed")
   assert.deepEqual(aggregate.totals, { reports: 2, passed: 1, failed: 1 })
   assert.deepEqual(aggregate.reports.map((report) => report.source), ["passed.json", "failed.json"])
@@ -70,7 +70,7 @@ test("summarizes validation gate reports", async () => {
 })
 
 test("summarizes validation gate matrix coverage across reports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -311,11 +311,11 @@ test("summarizes validation gate matrix coverage across reports", async () => {
 })
 
 test("reads and discovers validation gate aggregate artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-"))
   try {
     const aggregatePath = path.join(rootDir, "reports", "aggregate.json")
     const aggregate = summarizeDrillValidationGateReports([await runDrillValidationGate({
-      failureRoots: ["/tmp/no-such-arroba-failure-root"],
+      failureRoots: ["/tmp/no-such-chariox-failure-root"],
     })])
     await mkdir(path.dirname(aggregatePath), { recursive: true })
     await writeFile(aggregatePath, `${JSON.stringify(aggregate, null, 2)}\n`, "utf8")

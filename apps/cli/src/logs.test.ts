@@ -17,7 +17,7 @@ function writeRecords(logDir: string, fileName: string, records: LogRecord[]) {
 }
 
 test("logs bundle exports filtered session records with a manifest", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "arroba-cli-log-bundle-"))
+  const root = mkdtempSync(path.join(tmpdir(), "chariox-cli-log-bundle-"))
   const logDir = path.join(root, "logs")
   const bundleDir = path.join(root, "bundle")
   try {
@@ -53,7 +53,7 @@ test("logs bundle exports filtered session records with a manifest", () => {
     assert.doesNotMatch(readFileSync(path.join(bundleDir, "logs.ndjson"), "utf8"), /other session/)
 
     const manifest = JSON.parse(readFileSync(path.join(bundleDir, "manifest.json"), "utf8")) as Record<string, unknown>
-    assert.equal(manifest.schema, "arroba.log_bundle.v1")
+    assert.equal(manifest.schema, "chariox.log_bundle.v1")
     assert.equal(manifest.record_count, 1)
     assert.deepEqual(manifest.files, ["logs.ndjson"])
     assert.deepEqual((manifest.filters as Record<string, unknown>).session_id, "session-1")

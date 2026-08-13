@@ -18,7 +18,7 @@ export function isCodexKernelInitialize(message: CodexJsonRpcMessage): boolean {
   const clientInfo = message.params?.clientInfo
   if (!clientInfo || typeof clientInfo !== "object") return false
   const name = (clientInfo as Record<string, unknown>).name
-  return typeof name === "string" && name.includes("arroba")
+  return typeof name === "string" && name.includes("chariox")
 }
 
 export function extractCodexThreadId(message: CodexJsonRpcMessage): string | null {

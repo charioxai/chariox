@@ -43,13 +43,13 @@ async function commandPath(command) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   const result = await run('cargo', [
     'build',
     '--manifest-path',
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
     '--bin',
-    'arroba-kernel',
+    'chariox-kernel',
   ])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   await access(binary)
@@ -277,22 +277,22 @@ async function main() {
   const workspaceA = path.join(root, 'workspace-a')
   const workspaceB = path.join(root, 'workspace-b')
   const home = path.join(root, 'home')
-  const arrobaHome = path.join(root, 'arroba-home')
+  const charioxHome = path.join(root, 'chariox-home')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
   const kernelPort = 53000 + Math.floor(Math.random() * 1000)
   const env = {
     ...process.env,
     HOME: home,
-    ARROBA_HOME: arrobaHome,
+    CHARIOX_HOME: charioxHome,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(kernelPort + 1000),
-    ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-    ARROBA_CODEX_PORT: String(kernelPort + 2001),
-    ARROBA_DAEMON_ID: `runtime-register-extension-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1000),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+    CHARIOX_DAEMON_ID: `runtime-register-extension-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
   }
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const report = []
@@ -305,8 +305,8 @@ async function main() {
     await prepareDrillArtifacts(root)
     await mkdir(workspaceA, { recursive: true })
     await mkdir(workspaceB, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
 
     const skillDir = path.join(workspaceA, 'skills', 'm16-runtime-skill')
     await mkdir(skillDir, { recursive: true })
@@ -354,7 +354,7 @@ rl.on('line', (line) => {
 kind: connector_adapter
 name: m16_runtime_adapter
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${process.execPath}
 args:
   - ${adapterScript}
@@ -392,12 +392,12 @@ operations:
     client = new LocalIpcClient(kernelUrl)
 
     const skillRuntime = await launchRuntimeSession(client, workspaceA, 'm16-skill')
-    const skillRegister = await callRuntimeTool(skillRuntime.providerRun, 'arroba.register_skill_path', { path: path.relative(workspaceA, skillDir) })
+    const skillRegister = await callRuntimeTool(skillRuntime.providerRun, 'chariox.register_skill_path', { path: path.relative(workspaceA, skillDir) })
     assert(skillRegister.ok && skillRegister.content?.registered === true, 'skill registration failed', skillRegister)
-    const skillList = await callRuntimeTool(skillRuntime.providerRun, 'arroba.list_extensions', { kind: 'skill' })
+    const skillList = await callRuntimeTool(skillRuntime.providerRun, 'chariox.list_extensions', { kind: 'skill' })
     const listedSkill = extensionEntry(skillList.content, 'skills', 'm16_runtime_skill')
     assert(listedSkill && listedSkill.granted === false, 'registered skill should list as ungranted', listedSkill)
-    const skillGrant = await callRuntimeTool(skillRuntime.providerRun, 'arroba.request_extension', { kind: 'skill', name: 'm16_runtime_skill' })
+    const skillGrant = await callRuntimeTool(skillRuntime.providerRun, 'chariox.request_extension', { kind: 'skill', name: 'm16_runtime_skill' })
     assert(skillGrant.ok && skillGrant.content?.granted === true && String(skillGrant.content?.skill?.body ?? '').includes('M16_SKILL_OK'), 'skill grant did not return body', skillGrant)
     report.push({ scenario: 'skill', registered: true, listedUngranted: true, grantEffective: skillGrant.content.effective })
     await renderTerminalScreenshot('runtime-register-skill-terminal.png', 'M16 Skill Runtime Registration', [
@@ -408,20 +408,20 @@ operations:
     ])
 
     const scriptRuntime = await launchRuntimeSession(client, workspaceA, 'm16-script')
-    const envRegister = await callRuntimeTool(scriptRuntime.providerRun, 'arroba.register_environment', {
+    const envRegister = await callRuntimeTool(scriptRuntime.providerRun, 'chariox.register_environment', {
       config: { name: 'm16_python', runtime: { type: 'python', python } },
     })
     assert(envRegister.ok && envRegister.content?.registered === true, 'environment registration failed', envRegister)
-    const scriptRegister = await callRuntimeTool(scriptRuntime.providerRun, 'arroba.register_script_path', {
+    const scriptRegister = await callRuntimeTool(scriptRuntime.providerRun, 'chariox.register_script_path', {
       path: path.relative(workspaceA, scriptPath),
       environment: 'm16_python',
       name: 'm16_lookup',
     })
     assert(scriptRegister.ok && scriptRegister.content?.registered === true, 'script registration failed', scriptRegister)
-    const scriptList = await callRuntimeTool(scriptRuntime.providerRun, 'arroba.list_extensions', { kind: 'script' })
+    const scriptList = await callRuntimeTool(scriptRuntime.providerRun, 'chariox.list_extensions', { kind: 'script' })
     const listedScript = extensionEntry(scriptList.content, 'scripts', 'm16_lookup')
     assert(listedScript && listedScript.granted === false, 'registered script should list as ungranted', listedScript)
-    const scriptGrant = await callRuntimeTool(scriptRuntime.providerRun, 'arroba.request_extension', { kind: 'script', name: 'm16_lookup', environment: 'm16_python' })
+    const scriptGrant = await callRuntimeTool(scriptRuntime.providerRun, 'chariox.request_extension', { kind: 'script', name: 'm16_lookup', environment: 'm16_python' })
     assert(scriptGrant.ok && scriptGrant.content?.granted === true, 'script grant failed', scriptGrant)
     await waitForRuntimeTool(scriptRuntime.providerRun, 'm16_lookup', true)
     const scriptCall = await callRuntimeTool(scriptRuntime.providerRun, 'm16_lookup', { query: 'same-session' })
@@ -436,14 +436,14 @@ operations:
     ])
 
     const connectorRuntime = await launchRuntimeSession(client, workspaceA, 'm16-connector')
-    const adapterRegister = await callRuntimeTool(connectorRuntime.providerRun, 'arroba.register_connector_adapter_path', { path: path.relative(workspaceA, adapterYaml) })
+    const adapterRegister = await callRuntimeTool(connectorRuntime.providerRun, 'chariox.register_connector_adapter_path', { path: path.relative(workspaceA, adapterYaml) })
     assert(adapterRegister.ok && adapterRegister.content?.registered === true, 'connector adapter registration failed', adapterRegister)
-    const connectorRegister = await callRuntimeTool(connectorRuntime.providerRun, 'arroba.register_connector_path', { path: path.relative(workspaceA, connectorYaml) })
+    const connectorRegister = await callRuntimeTool(connectorRuntime.providerRun, 'chariox.register_connector_path', { path: path.relative(workspaceA, connectorYaml) })
     assert(connectorRegister.ok && connectorRegister.content?.registered === true, 'connector registration failed', connectorRegister)
-    const connectorList = await callRuntimeTool(connectorRuntime.providerRun, 'arroba.list_extensions', { kind: 'connector' })
+    const connectorList = await callRuntimeTool(connectorRuntime.providerRun, 'chariox.list_extensions', { kind: 'connector' })
     const listedConnector = extensionEntry(connectorList.content, 'connectors', 'm16_runtime_connector')
     assert(listedConnector && listedConnector.granted === false, 'registered connector should list as ungranted', listedConnector)
-    const connectorGrant = await callRuntimeTool(connectorRuntime.providerRun, 'arroba.request_extension', { kind: 'connector', name: 'm16_runtime_connector', allow: 'read' })
+    const connectorGrant = await callRuntimeTool(connectorRuntime.providerRun, 'chariox.request_extension', { kind: 'connector', name: 'm16_runtime_connector', allow: 'read' })
     assert(connectorGrant.ok && connectorGrant.content?.granted === true, 'connector grant failed', connectorGrant)
     await waitForRuntimeTool(connectorRuntime.providerRun, 'm16_runtime_connector_echo', true)
     const connectorCall = await callRuntimeTool(connectorRuntime.providerRun, 'm16_runtime_connector_echo', { q: 'same-session' })
@@ -458,17 +458,17 @@ operations:
     ])
 
     const mcpRuntime = await launchRuntimeSession(client, workspaceA, 'm16-mcp')
-    const mcpRegister = await callRuntimeTool(mcpRuntime.providerRun, 'arroba.register_mcp', {
+    const mcpRegister = await callRuntimeTool(mcpRuntime.providerRun, 'chariox.register_mcp', {
       config: {
         name: 'm16_echo_mcp',
         transport: { type: 'stdio', command: process.execPath, args: [mcpServer] },
       },
     })
     assert(mcpRegister.ok && mcpRegister.content?.registered === true, 'MCP registration failed', mcpRegister)
-    const mcpList = await callRuntimeTool(mcpRuntime.providerRun, 'arroba.list_extensions', { kind: 'mcp' })
+    const mcpList = await callRuntimeTool(mcpRuntime.providerRun, 'chariox.list_extensions', { kind: 'mcp' })
     const listedMcp = extensionEntry(mcpList.content, 'mcps', 'm16_echo_mcp')
     assert(listedMcp && listedMcp.granted === false, 'registered MCP should list as ungranted', listedMcp)
-    const mcpGrant = await callRuntimeTool(mcpRuntime.providerRun, 'arroba.request_extension', { kind: 'mcp', name: 'm16_echo_mcp' })
+    const mcpGrant = await callRuntimeTool(mcpRuntime.providerRun, 'chariox.request_extension', { kind: 'mcp', name: 'm16_echo_mcp' })
     assert(mcpGrant.ok && mcpGrant.content?.granted === true && mcpGrant.content?.requires_provider_restart === true, 'MCP grant did not schedule warm reload path', mcpGrant)
     report.push({ scenario: 'mcp', registered: true, listedUngranted: true, requiresProviderRestart: true })
     for (const provider of ['codex', 'opencode', 'claude']) {
@@ -482,18 +482,18 @@ operations:
     }
 
     const permissionYolo = await launchRuntimeSession(client, workspaceA, 'm16-permission-yolo')
-    const yoloRegister = await callRuntimeTool(permissionYolo.providerRun, 'arroba.register_mcp', {
+    const yoloRegister = await callRuntimeTool(permissionYolo.providerRun, 'chariox.register_mcp', {
       config: { name: 'm16_yolo_mcp', transport: { type: 'stdio', command: '/bin/echo', args: ['m16'] } },
     })
     assert(yoloRegister.ok && yoloRegister.content?.registered === true, 'yolo registration should not need approval', yoloRegister)
     const permissionRequiredDeny = await launchRuntimeSession(client, workspaceA, 'm16-permission-required-deny', 'required')
-    const deniedPromise = callRuntimeTool(permissionRequiredDeny.providerRun, 'arroba.register_skill_path', { path: 'missing-denied-skill' })
+    const deniedPromise = callRuntimeTool(permissionRequiredDeny.providerRun, 'chariox.register_skill_path', { path: 'missing-denied-skill' })
     const denyInteraction = await waitForInteraction(client, permissionRequiredDeny.session.id, permissionRequiredDeny.agent.id)
     await client.send(requests.respondToInteractionRequest(permissionRequiredDeny.session.id, denyInteraction.id, 'deny'))
     const denied = await deniedPromise
     assert(!denied.ok && denied.content?.reason?.kind === 'permission_denied', 'required denial should block registry mutation', denied)
     const permissionRequiredAllow = await launchRuntimeSession(client, workspaceA, 'm16-permission-required-allow', 'required')
-    const allowPromise = callRuntimeTool(permissionRequiredAllow.providerRun, 'arroba.register_skill_path', { path: path.relative(workspaceA, skillDir) })
+    const allowPromise = callRuntimeTool(permissionRequiredAllow.providerRun, 'chariox.register_skill_path', { path: path.relative(workspaceA, skillDir) })
     const allowInteraction = await waitForInteraction(client, permissionRequiredAllow.session.id, permissionRequiredAllow.agent.id)
     await client.send(requests.respondToInteractionRequest(permissionRequiredAllow.session.id, allowInteraction.id, 'allow'))
     const allowed = await allowPromise
@@ -506,10 +506,10 @@ operations:
     ])
 
     const workspaceBRuntime = await launchRuntimeSession(client, workspaceB, 'm16-workspace-b')
-    const workspaceBList = await callRuntimeTool(workspaceBRuntime.providerRun, 'arroba.list_extensions', { kind: 'skill' })
+    const workspaceBList = await callRuntimeTool(workspaceBRuntime.providerRun, 'chariox.list_extensions', { kind: 'skill' })
     const workspaceBSkill = extensionEntry(workspaceBList.content, 'skills', 'm16_runtime_skill')
     assert(workspaceBSkill && workspaceBSkill.granted === false, 'global skill should be visible and ungranted in workspace B', workspaceBSkill)
-    const workspaceBGrant = await callRuntimeTool(workspaceBRuntime.providerRun, 'arroba.request_extension', { kind: 'skill', name: 'm16_runtime_skill' })
+    const workspaceBGrant = await callRuntimeTool(workspaceBRuntime.providerRun, 'chariox.request_extension', { kind: 'skill', name: 'm16_runtime_skill' })
     assert(workspaceBGrant.ok && workspaceBGrant.content?.granted === true, 'workspace B should grant global skill', workspaceBGrant)
     report.push({ scenario: 'global-visibility', workspaceBVisible: true, workspaceBGrant: true })
     await renderTerminalScreenshot('runtime-global-visibility-workspace-b.png', 'M16 Global Extension Visibility', [

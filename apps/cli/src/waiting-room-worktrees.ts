@@ -282,7 +282,7 @@ async function createWaitingRoomWorktree(workspacePath: string): Promise<string>
   const description = await resolveWaitingRoomCreateDescription(repoRoot)
   const branch = await resolveAvailableBranchName(
     repoRoot,
-    `arroba/${slugifySegment(description)}-${timestampSlug()}`,
+    `chariox/${slugifySegment(description)}-${timestampSlug()}`,
   )
   const directory = await resolveAvailableWorktreeDirectory(
     dirname(repoRoot),
@@ -317,7 +317,7 @@ async function resolvePreferredBaseRef(repoRoot: string) {
 }
 
 async function resolveWaitingRoomCreateDescription(repoRoot: string) {
-  const configured = process.env.ARROBA_WAITING_ROOM_WORKTREE_DESCRIPTION?.trim()
+  const configured = process.env.CHARIOX_WAITING_ROOM_WORKTREE_DESCRIPTION?.trim()
   if (configured) {
     return configured
   }

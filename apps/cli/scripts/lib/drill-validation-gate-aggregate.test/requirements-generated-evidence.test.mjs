@@ -14,7 +14,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
     normalizedRequiredPresets: ["remote-home-extension"],
     normalizedAggregateRequirements: {
       requiredPlatformCoverageAreas: ["hosted-cloud-drills"],
-      requiredArtifactSchemas: ["arroba.drill.matrix.v1"],
+      requiredArtifactSchemas: ["chariox.drill.matrix.v1"],
       requiredArtifactKinds: ["matrix-report"],
       requiredArtifactEvidenceRepos: ["cloud"],
       requiredArtifactRuntimeAuthorityInvariants: ["worker-execution-authority"],
@@ -34,7 +34,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
   assert.equal(aggregate.status, "failed")
   assert.equal(drillValidationGateAggregateExitCode(aggregate), 1)
   assert.deepEqual(aggregate.missingPresets, ["remote-home-extension"])
-  assert.deepEqual(aggregate.missingArtifactSchemas, ["arroba.drill.matrix.v1"])
+  assert.deepEqual(aggregate.missingArtifactSchemas, ["chariox.drill.matrix.v1"])
   assert.deepEqual(aggregate.missingArtifactKinds, ["matrix-report"])
   assert.deepEqual(aggregate.missingArtifactEvidenceRepos, ["cloud"])
   assert.deepEqual(aggregate.missingArtifactRuntimeAuthorityInvariants, ["worker-execution-authority"])
@@ -60,7 +60,7 @@ test("fails aggregate requirements missing from otherwise passing reports", () =
       },
       {
         classification: "artifact-coverage",
-        nextAction: "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+        nextAction: "provide validation gate reports with artifact schemas: chariox.drill.matrix.v1",
       },
       {
         classification: "generated-evidence",
@@ -115,8 +115,8 @@ test("reports executable validation suite remediation for missing suite-run aggr
   const aggregate = summarizeValidationGateReportAggregate([reportFixture()], {
     normalizedAggregateRequirements: {
       requiredArtifactSchemas: [
-        "arroba.drill.validation_suite_run.v1",
-        "arroba.drill.matrix.v1",
+        "chariox.drill.validation_suite_run.v1",
+        "chariox.drill.matrix.v1",
       ],
     },
     validateReport: () => {},
@@ -124,14 +124,14 @@ test("reports executable validation suite remediation for missing suite-run aggr
 
   assert.equal(aggregate.status, "failed")
   assert.deepEqual(aggregate.missingArtifactSchemas, [
-    "arroba.drill.matrix.v1",
+    "chariox.drill.matrix.v1",
   ])
   assert.deepEqual(
     aggregate.nextActions
       .filter((action) => action.classification === "artifact-coverage")
       .map(({ nextAction }) => nextAction),
     [
-      "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+      "provide validation gate reports with artifact schemas: chariox.drill.matrix.v1",
     ],
   )
 
@@ -150,23 +150,23 @@ test("reports executable validation suite remediation for missing suite-run aggr
   })], {
     normalizedAggregateRequirements: {
       requiredArtifactSchemas: [
-        "arroba.drill.validation_suite_run.v1",
-        "arroba.drill.matrix.v1",
+        "chariox.drill.validation_suite_run.v1",
+        "chariox.drill.matrix.v1",
       ],
     },
     validateReport: () => {},
   })
 
   assert.deepEqual(missingSuiteRun.missingArtifactSchemas, [
-    "arroba.drill.validation_suite_run.v1",
-    "arroba.drill.matrix.v1",
+    "chariox.drill.validation_suite_run.v1",
+    "chariox.drill.matrix.v1",
   ])
   assert.deepEqual(
     missingSuiteRun.nextActions
       .filter((action) => action.classification === "artifact-coverage")
       .map(({ nextAction }) => nextAction),
     [
-      "provide validation gate reports with artifact schemas: arroba.drill.matrix.v1",
+      "provide validation gate reports with artifact schemas: chariox.drill.matrix.v1",
       "run an executable validation suite with --run-json --output PATH --output-artifact-index PATH, then rerun the validation gate aggregate",
     ],
   )
@@ -256,8 +256,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
       requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
       requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredGeneratedValidationSuiteArtifactIndexes: [
-        "/tmp/suites/cloud/arroba-drill-artifacts.json",
-        "/tmp/suites/oss/arroba-drill-artifacts.json",
+        "/tmp/suites/cloud/chariox-drill-artifacts.json",
+        "/tmp/suites/oss/chariox-drill-artifacts.json",
       ],
       requiredGeneratedValidationSuiteFailureRoots: ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"],
     },
@@ -272,8 +272,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
     "dry-run-classification-coverage": 1,
   })
   assert.deepEqual(aggregate.coverage.generatedValidationSuiteArtifactIndexes, {
-    "/tmp/suites/cloud/arroba-drill-artifacts.json": 1,
-    "/tmp/suites/oss/arroba-drill-artifacts.json": 1,
+    "/tmp/suites/cloud/chariox-drill-artifacts.json": 1,
+    "/tmp/suites/oss/chariox-drill-artifacts.json": 1,
   })
   assert.deepEqual(aggregate.coverage.generatedValidationSuiteFailureRoots, {
     "/tmp/suites/cloud/failed-run": 1,
@@ -284,8 +284,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
   assert.deepEqual(aggregate.requiredGeneratedMatrixLimitations, ["dry-run-classification-coverage"])
   assert.deepEqual(aggregate.missingGeneratedMatrixLimitations, [])
   assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexes, [
-    "/tmp/suites/cloud/arroba-drill-artifacts.json",
-    "/tmp/suites/oss/arroba-drill-artifacts.json",
+    "/tmp/suites/cloud/chariox-drill-artifacts.json",
+    "/tmp/suites/oss/chariox-drill-artifacts.json",
   ])
   assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexes, [])
   assert.deepEqual(aggregate.requiredGeneratedValidationSuiteFailureRoots, ["/tmp/suites/cloud/failed-run", "/tmp/suites/oss/failed-run"])
@@ -300,8 +300,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
   })
   assert.deepEqual(aggregate.coverage.missingGeneratedMatrixLimitations, {})
   assert.deepEqual(aggregate.coverage.requiredGeneratedValidationSuiteArtifactIndexes, {
-    "/tmp/suites/cloud/arroba-drill-artifacts.json": 1,
-    "/tmp/suites/oss/arroba-drill-artifacts.json": 1,
+    "/tmp/suites/cloud/chariox-drill-artifacts.json": 1,
+    "/tmp/suites/oss/chariox-drill-artifacts.json": 1,
   })
   assert.deepEqual(aggregate.coverage.missingGeneratedValidationSuiteArtifactIndexes, {})
   assert.deepEqual(aggregate.coverage.requiredGeneratedValidationSuiteFailureRoots, {
@@ -314,8 +314,8 @@ test("aggregates generated evidence provenance from gate reports", () => {
     validationSuites: {
       enabled: true,
       artifactIndexes: [
-        "/tmp/suites/cloud/arroba-drill-artifacts.json",
-        "/tmp/suites/oss/arroba-drill-artifacts.json",
+        "/tmp/suites/cloud/chariox-drill-artifacts.json",
+        "/tmp/suites/oss/chariox-drill-artifacts.json",
       ],
       failureRoots: [
         "/tmp/suites/cloud/failed-run",
@@ -323,22 +323,22 @@ test("aggregates generated evidence provenance from gate reports", () => {
       ],
       commands: [
         {
-          artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/oss/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
-          cwd: "/repo/arroba",
+          cwd: "/repo/chariox",
           failureRoot: "/tmp/suites/oss/failed-run",
-          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+          nodeArgs: ["/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
-          scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+          scriptPath: "/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs",
         },
         {
-          artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/cloud/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
-          cwd: "/repo/arroba-cloud",
+          cwd: "/repo/chariox-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
-          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+          nodeArgs: ["/repo/chariox-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
-          scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+          scriptPath: "/repo/chariox-cloud/scripts/cloud-validation-suite.mjs",
         },
       ],
       outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
@@ -358,21 +358,21 @@ test("aggregates generated evidence provenance from gate reports", () => {
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
         artifactIndexFlag: "--artifact-index",
-        cwd: "/repo/arroba",
+        cwd: "/repo/chariox",
         matrix: "native-provider-tui-matrix",
-        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
-        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+        scriptPath: "/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],
     },
   })
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_evidence_kinds: matrix-report=1 validation-suite-run=1/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_matrix_limitations: dry-run-classification-coverage=1/)
-  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_validation_suite_artifact_indexes: \/tmp\/suites\/cloud\/arroba-drill-artifacts\.json=1 \/tmp\/suites\/oss\/arroba-drill-artifacts\.json=1/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /- generated_validation_suite_artifact_indexes: \/tmp\/suites\/cloud\/chariox-drill-artifacts\.json=1 \/tmp\/suites\/oss\/chariox-drill-artifacts\.json=1/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_evidence_kinds=matrix-report,validation-suite-run missing=none/)
   assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_matrix_limitations=dry-run-classification-coverage missing=none/)
-  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_validation_suite_artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json missing=none/)
+  assert.match(formatDrillValidationGateAggregateSummary(aggregate), /required_generated_validation_suite_artifact_indexes=\/tmp\/suites\/cloud\/chariox-drill-artifacts\.json,\/tmp\/suites\/oss\/chariox-drill-artifacts\.json missing=none/)
 })
 
 test("rejects secret-looking generated evidence paths in validation gate aggregates", () => {
@@ -638,7 +638,7 @@ test("failed supplemental artifact coverage inputs fail the aggregate without in
         status: "failed",
         requiredArtifactMaxAgeMs: 100,
         staleArtifactIndexes: [{
-          source: "/tmp/arroba-drill-artifacts.json",
+          source: "/tmp/chariox-drill-artifacts.json",
           createdAt: "2026-01-01T00:00:00.000Z",
           ageMs: 1000,
           maxAgeMs: 100,

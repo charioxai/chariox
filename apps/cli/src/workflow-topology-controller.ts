@@ -5,7 +5,7 @@ import type {
   WorkflowEndpointDefinition,
   WorkflowNodeDefinition,
 } from "./cli-types.js"
-import type { WorkflowDesignNodePatch, WorkflowDesignOp } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignNodePatch, WorkflowDesignOp } from "@chariox/kernel-client/kernel-types"
 import { resolveWorkflowRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 

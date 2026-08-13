@@ -69,7 +69,7 @@ function printHelp() {
     '',
     'Runs a remote M7 skill drill with isolated relay/home/worker daemons:',
     '- creates a home session and worker leased agent',
-    '- installs an Arroba-owned skill with assets',
+    '- installs a Chariox-owned skill with assets',
     '- verifies local-only grants do not materialize on the worker',
     '- verifies local-to-remote move synchronizes existing skill grants',
     '- verifies remote-first grant-time materialization on the worker',
@@ -119,19 +119,19 @@ function daemonEnv({
 }) {
   return {
     ...process.env,
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
   }
 }
 
@@ -250,7 +250,7 @@ function spawnRemoteAgentRequest(sessionId, provider, alias, model, worktreeId, 
 }
 
 async function findMaterializedSkill(workspace, homeKernelId, skillName, timeoutMs, pollMs) {
-  const root = path.join(workspace, '.arroba', 'remote', 'skills', homeKernelId, skillName)
+  const root = path.join(workspace, '.chariox', 'remote', 'skills', homeKernelId, skillName)
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
     try {
@@ -271,7 +271,7 @@ async function findMaterializedSkill(workspace, homeKernelId, skillName, timeout
 }
 
 async function materializedSkillExists(workspace, homeKernelId, skillName) {
-  const root = path.join(workspace, '.arroba', 'remote', 'skills', homeKernelId, skillName)
+  const root = path.join(workspace, '.chariox', 'remote', 'skills', homeKernelId, skillName)
   try {
     const versions = await readdir(root)
     return versions.length > 0
@@ -281,7 +281,7 @@ async function materializedSkillExists(workspace, homeKernelId, skillName) {
 }
 
 async function clearMaterializedSkill(workspace, homeKernelId, skillName) {
-  await rm(path.join(workspace, '.arroba', 'remote', 'skills', homeKernelId, skillName), {
+  await rm(path.join(workspace, '.chariox', 'remote', 'skills', homeKernelId, skillName), {
     recursive: true,
     force: true,
   })
@@ -336,16 +336,16 @@ async function main() {
   }
   const ports = makePorts()
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-skill-${runId}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-skill-${runId}`)
   const workspace = path.join(rootDir, 'workspace')
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-skill-drill-${runId}`)
 
   const relayToken = `remote-skill-token-${process.pid}`
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
@@ -380,14 +380,14 @@ async function main() {
       submitPromptRequest,
     } = requests
     const relayBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+      path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
       path.join(repoRoot, 'apps/relay/Cargo.toml'),
-      'arroba-relay',
+      'chariox-relay',
     )
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
     await waitForTcpPort(ports.relayPort)
@@ -450,8 +450,8 @@ async function main() {
       'description: Remote skill drill; read the asset and report its token.',
       'short-description: Remote skill drill',
       '---',
-      'When asked to use this skill, read `assets/checklist.txt` under the provided `materialized_root` using Arroba workspace live sync if filesystem reads are not directly available.',
-      'Write `outputs/remote-skill-provider.txt` through Arroba workspace live sync with the exact asset token and the exact phrase REMOTE_SKILL_DRILL_OK.',
+      'When asked to use this skill, read `assets/checklist.txt` under the provided `materialized_root` using Chariox workspace live sync if filesystem reads are not directly available.',
+      'Write `outputs/remote-skill-provider.txt` through Chariox workspace live sync with the exact asset token and the exact phrase REMOTE_SKILL_DRILL_OK.',
       '',
     ].join('\n'), 'utf8')
     await writeFile(path.join(sourceSkill, 'assets', 'checklist.txt'), 'REMOTE_SKILL_ASSET_TOKEN=asset-remote-skill-ok\n', 'utf8')
@@ -563,7 +563,7 @@ async function main() {
     } else {
       const repairedOutput = await runLivePrompt(
         agent.id,
-        'Use the already granted remote-drill skill again. If the skill package needs to be synchronized again, wait for Arroba to expose it, then read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
+        'Use the already granted remote-drill skill again. If the skill package needs to be synchronized again, wait for Chariox to expose it, then read the synchronized asset and write outputs/remote-skill-provider.txt with the asset token and REMOTE_SKILL_DRILL_OK.',
         outputFile,
       )
       const repairedMaterialized = await findMaterializedSkill(workspace, homeDaemonId, 'remote-drill', options.timeoutMs, options.pollMs)

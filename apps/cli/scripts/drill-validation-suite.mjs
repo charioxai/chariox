@@ -32,7 +32,7 @@ function printHelp() {
     "  --output-artifact-index PATH",
     "             Write an artifact index for --output",
     "  --preserve-failure-root PATH",
-    "             Write an arroba.drill.failure.v1 manifest here when --run-json fails",
+    "             Write an chariox.drill.failure.v1 manifest here when --run-json fails",
     "  --list     Print test files included in the suite",
     "  --command  Print the node --test command without running it",
   ].join("\n"))
@@ -151,7 +151,7 @@ async function runDrillValidationSuiteReport({ testPaths = SHARED_DRILL_TEST_PAT
   }
   const manifest = manifestForTestPaths(testPaths)
   return {
-    schema: "arroba.drill.validation_suite_run.v1",
+    schema: "chariox.drill.validation_suite_run.v1",
     status: ok ? "passed" : "failed",
     ok,
     startedAt: startedAt.toISOString(),

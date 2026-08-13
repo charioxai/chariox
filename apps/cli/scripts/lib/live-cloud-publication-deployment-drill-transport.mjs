@@ -21,8 +21,8 @@ import { publicationStatusWatchdogCount, publicationStatusWatchdogs } from './li
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..')
 
 const SHOPPING_LIST_PROMPT_B = '2 red apples, 1 bag of coffee beans, and 3 packs of pasta'
-const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
-const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-arroba-agent-app-checkout', 'apples', 'coffee', 'pasta']
+const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
+const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'apples', 'coffee', 'pasta']
 
 export async function validateTransport(input) {
   const base = input.publicBaseUrl.replace(/\/+$/, '')
@@ -64,7 +64,7 @@ export async function validateTransport(input) {
     if (!eventTranscript.includes('event: trace')) throw new Error(`human HTTP event transcript missing trace:\n${eventTranscript}`)
     assertSuccessfulSseTranscript(eventTranscript, 'human HTTP')
     if (input.expectHtmlDashboard) {
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
         if (!eventTranscript.includes(snippet)) {
           throw new Error(`human HTTP final transcript missing dashboard snippet ${snippet}:\n${eventTranscript}`)
         }
@@ -85,14 +85,14 @@ export async function validateTransport(input) {
     }
     assertSuccessfulSseTranscript(body, 'API SSE')
     if (input.expectHtmlDashboard) {
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
         if (!body.includes(snippet)) throw new Error(`API SSE final transcript missing dashboard snippet ${snippet}:\n${body}`)
       }
     }
     return { transcriptPath }
   }
   if (input.transport === 'websocket_json') {
-    const events = await invokeWebSocket(`${base}/.well-known/arroba/publication/ws`, { prompt: input.prompt })
+    const events = await invokeWebSocket(`${base}/.well-known/chariox/publication/ws`, { prompt: input.prompt })
     const transcriptPath = path.join(input.artifactsDir, `${input.slug}-websocket.json`)
     await writeFile(transcriptPath, `${JSON.stringify(events, null, 2)}\n`)
     for (const type of ['ready', 'accepted', 'trace', 'final']) {
@@ -104,7 +104,7 @@ export async function validateTransport(input) {
     }
     if (input.expectHtmlDashboard) {
       const body = JSON.stringify(events)
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
         if (!body.includes(snippet)) throw new Error(`WebSocket final transcript missing dashboard snippet ${snippet}: ${body}`)
       }
     }
@@ -138,7 +138,7 @@ export async function validateTransport(input) {
     if (!callResponse.ok || !callBody.includes('content')) throw new Error(`MCP tools/call failed: ${callResponse.status} ${callBody}`)
     assertSuccessfulMcpToolCall(callBody)
     if (input.expectHtmlDashboard) {
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
         if (!callBody.includes(snippet)) throw new Error(`MCP tools/call final missing dashboard snippet ${snippet}:\n${callBody}`)
       }
     }
@@ -156,7 +156,7 @@ export async function validateTransport(input) {
 }
 
 export async function waitForSchedulePublicationStatus(base, options = {}) {
-  const statusUrl = `${base}/.well-known/arroba/publication/status`
+  const statusUrl = `${base}/.well-known/chariox/publication/status`
   const deadline = Date.now() + 900_000
   let last = null
   while (Date.now() < deadline) {
@@ -174,7 +174,7 @@ export async function waitForSchedulePublicationStatus(base, options = {}) {
     if (latest && ['started', 'completed_budget'].includes(status)) {
       if (options.expectHtmlDashboard) {
         const serialized = JSON.stringify(last)
-        for (const snippet of ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']) {
+        for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
           if (!serialized.includes(snippet)) throw new Error(`schedule latest output missing dashboard snippet ${snippet}:\n${serialized}`)
         }
       }
@@ -251,7 +251,7 @@ export function assertWorkflowRunCompleted(workflowRun, label) {
 }
 
 export function parseHumanHttpViewerConfig(body) {
-  const match = body.match(/window\.__arrobaPublicationViewerConfig\s*=\s*(\{.*?\});/s)
+  const match = body.match(/window\.__charioxPublicationViewerConfig\s*=\s*(\{.*?\});/s)
   if (!match) return {}
   return JSON.parse(match[1])
 }
@@ -521,7 +521,7 @@ export async function waitForAgentAppShoppingFinal(cdp, timeoutMs, expectedSnipp
           renderedLength: renderedHtml.length,
           traceText,
           traceCount: document.querySelectorAll('#trace-feed .trace-item').length,
-          actionTraceOk: traceText.includes('agent_app_action') || traceText.includes('arroba.agent_app_action') || traceText.includes('cart.add'),
+          actionTraceOk: traceText.includes('agent_app_action') || traceText.includes('chariox.agent_app_action') || traceText.includes('cart.add'),
           ok: status === 'Completed' && missing.length === 0 && (traceText.includes('cart.add') || traceText.includes('agent_app_action')),
         };
       })()`,
@@ -544,14 +544,14 @@ export async function waitForAgentAppShoppingFinal(cdp, timeoutMs, expectedSnipp
 export async function agentAppCookieHeader(cdp) {
   const response = await cdp.send('Network.getAllCookies')
   const cookies = Array.isArray(response?.cookies) ? response.cookies : []
-  const sessionCookie = cookies.find((cookie) => cookie?.name === 'arroba_agent_app_session')
+  const sessionCookie = cookies.find((cookie) => cookie?.name === 'chariox_agent_app_session')
   if (!sessionCookie?.value) return null
   return `${sessionCookie.name}=${encodeURIComponent(sessionCookie.value)}`
 }
 
 export async function findChromeExecutable() {
   const candidates = [
-    process.env.ARROBA_CHROME_PATH,
+    process.env.CHARIOX_CHROME_PATH,
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'google-chrome',
     'chromium',
@@ -627,7 +627,7 @@ export async function connectChromeTarget(webSocketUrl) {
 
 export async function waitForBrowserDashboardFinal(cdp, timeoutMs) {
   const requiredTraceLevels = ['output_summary', 'assistant_messages', 'thinking', 'tool_use']
-  const requiredHtmlSnippets = ['Real Provider Workflow Dashboard', 'data-arroba-real-provider-dashboard']
+  const requiredHtmlSnippets = ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']
   const deadline = Date.now() + timeoutMs
   let lastState = null
   while (Date.now() < deadline) {
@@ -789,7 +789,7 @@ export async function waitForKernel(kernelUrl) {
 
 export async function waitForGateway(baseUrl) {
   const deadline = Date.now() + 60_000
-  const statusUrl = `${baseUrl.replace(/\/+$/, '')}/.well-known/arroba/publication/status`
+  const statusUrl = `${baseUrl.replace(/\/+$/, '')}/.well-known/chariox/publication/status`
   while (Date.now() < deadline) {
     try {
       const response = await fetch(statusUrl)
@@ -848,8 +848,8 @@ export function run(command, args, options = {}) {
 }
 
 export async function copyCloudProfile(configHome) {
-  const source = path.join(process.env.HOME, '.arroba', 'config.json')
-  const target = path.join(configHome, 'arroba', 'config.json')
+  const source = path.join(process.env.HOME, '.chariox', 'config.json')
+  const target = path.join(configHome, 'chariox', 'config.json')
   await cp(source, target)
 }
 

@@ -2,10 +2,10 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { buildCliAutomationSnapshot } from "./cli-automation-snapshot.js"
-import type { ShellContext } from "@arroba/kernel-client/shell-core"
+import type { ShellContext } from "@chariox/kernel-client/shell-core"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 import type { AgentInstance, RuntimeSession } from "./cli-types.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -295,7 +295,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
       promptId: "prompt-external",
       sourceAttachmentId: "attachment-1",
       attachments: [{
-        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+        url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
         mime: "image/png",
         filename: "Screenshot.png",
         preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -331,13 +331,13 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         queuedPrompt: {
           promptId: "prompt-1",
           agentId: "agent-1",
-          promptOrigin: "arroba",
+          promptOrigin: "chariox",
           status: "queued",
           attachmentCount: 0,
           steerDisabled: true,
           canSteer: false,
           canCancel: true,
-          steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+          steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
           cancelDisabledReason: null,
         },
       }],
@@ -348,13 +348,13 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
         agentId: "agent-1",
         sourceAttachmentId: null,
         prompt: "queued behind external turn",
-        promptOrigin: "arroba",
+        promptOrigin: "chariox",
         status: "queued",
         attachmentCount: 0,
         steerDisabled: true,
         canSteer: false,
         canCancel: true,
-        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+        steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
         cancelDisabledReason: null,
       }]
       : [],
@@ -372,7 +372,7 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
     promptId: "prompt-external",
     sourceAttachmentId: "attachment-1",
     attachments: [{
-      url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+      url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
       mime: "image/png",
       filename: "Screenshot.png",
       preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -404,13 +404,13 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
   assert.deepEqual((snapshot.agentPanes?.["agent-1"] as Array<Record<string, unknown>>)[0]?.queuedPrompt, {
     promptId: "prompt-1",
     agentId: "agent-1",
-    promptOrigin: "arroba",
+    promptOrigin: "chariox",
     status: "queued",
     attachmentCount: 0,
     steerDisabled: true,
     canSteer: false,
     canCancel: true,
-    steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+    steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
     cancelDisabledReason: null,
   })
   assert.deepEqual(snapshot.queuedPromptStrips?.["agent-1"], {
@@ -420,13 +420,13 @@ test("buildCliAutomationSnapshot exposes external transcript and queued prompt m
       agentId: "agent-1",
       sourceAttachmentId: null,
       prompt: "queued behind external turn",
-      promptOrigin: "arroba",
+      promptOrigin: "chariox",
       status: "queued",
       attachmentCount: 0,
       steerDisabled: true,
       canSteer: false,
       canCancel: true,
-      steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Arroba.",
+      steerDisabledReason: "Steering is unavailable while the active provider turn was started outside Chariox.",
       cancelDisabledReason: null,
     }],
   })

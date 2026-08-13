@@ -19,8 +19,8 @@ export async function preparePromptAttachmentsForSubmit(
 }
 
 export function promptAttachmentTransferIsForced(): boolean {
-  return process.env.ARROBA_PROMPT_ATTACHMENT_TRANSFER === "1"
-    || process.env.ARROBA_NATIVE_TUI_FORCE_ATTACHMENT_TRANSFER === "1"
+  return process.env.CHARIOX_PROMPT_ATTACHMENT_TRANSFER === "1"
+    || process.env.CHARIOX_NATIVE_TUI_FORCE_ATTACHMENT_TRANSFER === "1"
 }
 
 async function inlineAttachmentContents(attachment: PromptAttachmentPart): Promise<PromptAttachmentPart> {

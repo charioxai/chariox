@@ -36,7 +36,7 @@ import {
 } from "./prompt-surface-state.js"
 import {
   derivePromptInputMaxHeight,
-} from "@arroba/kernel-client/prompt-surface-state"
+} from "@chariox/kernel-client/prompt-surface-state"
 import {
   createPromptSubmissionUiController,
 } from "./prompt-submission-ui-controller.js"

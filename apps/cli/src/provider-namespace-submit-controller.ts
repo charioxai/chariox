@@ -10,17 +10,17 @@ import {
 import type { BackendProviderId } from "./provider-catalog.js"
 import {
   validateProviderNamespaceSubmit,
-} from "@arroba/kernel-client/provider-namespace-submit-policy"
+} from "@chariox/kernel-client/provider-namespace-submit-policy"
 import {
   promptSubmissionFailureTransition,
   promptSubmissionSuccessTransition,
   resolvePromptSubmissionTargetAgentId,
-} from "@arroba/kernel-client/prompt-submission"
+} from "@chariox/kernel-client/prompt-submission"
 import {
   promptSubmissionTranscriptMetadata,
   type PromptSubmissionResult,
 } from "./prompt-runtime-api.js"
-import type { TranscriptPromptMetadata } from "@arroba/kernel-client/transcript-entry-state"
+import type { TranscriptPromptMetadata } from "@chariox/kernel-client/transcript-entry-state"
 import type { SubmittedPromptUiSnapshot } from "./prompt-submission-ui-controller.js"
 
 export type ProviderNamespaceSubmitControllerDeps = {

@@ -1,6 +1,6 @@
 import {
   transcriptHistoryFragmentsAreAdjacent,
-} from "@arroba/kernel-client/session-history-fragments"
+} from "@chariox/kernel-client/session-history-fragments"
 
 export type HistoryFragmentEntry = {
   id: number

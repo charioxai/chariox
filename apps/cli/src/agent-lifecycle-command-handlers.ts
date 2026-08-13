@@ -8,9 +8,9 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import {
   responsePaneBindingsMatch,
   selectResponsePaneAgents,
-} from "@arroba/kernel-client/response-pane-selection"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
-import { resolveAttachTimeProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
+} from "@chariox/kernel-client/response-pane-selection"
+import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
+import { resolveAttachTimeProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import {
   formatAgentInspectSummary as formatSharedAgentInspectSummary,
   formatAgentListSummary as formatSharedAgentListSummary,
@@ -18,7 +18,7 @@ import {
   type ShellAgentProviderRunContext as AgentProviderRunContext,
   type ShellAgentSessionContext as AgentSessionContext,
   type SliceRecord as SharedSliceRecord,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 type FooterTone = "info" | "error"
 

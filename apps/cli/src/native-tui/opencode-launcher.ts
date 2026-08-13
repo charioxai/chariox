@@ -6,7 +6,7 @@ export type OpenCodeServerProcess = ChildProcess
 
 export async function startOpenCodeServer(baseUrl: string, workingDirectory: string): Promise<OpenCodeServerProcess> {
   assertLocalStructuredEndpoint(baseUrl)
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const url = new URL(baseUrl)
   const child = spawn(executable, [
     "serve",
@@ -38,7 +38,7 @@ export async function runOpenCodeAttach(options: {
   providerSessionId: string
   workingDirectory: string
 }): Promise<void> {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   const args = [
     "attach",
     options.proxyUrl,

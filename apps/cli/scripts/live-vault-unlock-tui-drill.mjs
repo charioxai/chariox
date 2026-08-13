@@ -78,21 +78,21 @@ async function run(command, args, options = {}) {
 
 async function ensureBuilt() {
   const cliDist = path.join(repoRoot, "apps/cli/dist/index.js")
-  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const relayBinary = path.join(repoRoot, "apps/relay/target/debug/arroba-relay")
+  const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
+  const relayBinary = path.join(repoRoot, "apps/relay/target/debug/chariox-relay")
   const cliReady = await stat(cliDist).then((info) => info.isFile()).catch(() => false)
   const kernelReady = await stat(kernelBinary).then((info) => info.isFile()).catch(() => false)
   const relayReady = await stat(relayBinary).then((info) => info.isFile()).catch(() => false)
   if (!cliReady) {
-    const result = await run("pnpm", ["--filter", "@arroba/cli", "run", "build"])
+    const result = await run("pnpm", ["--filter", "@chariox/cli", "run", "build"])
     if (result.code !== 0) throw new Error(`cli build failed\n${result.stdout}\n${result.stderr}`)
   }
   if (!kernelReady) {
-    const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "arroba-kernel"])
+    const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/kernel/Cargo.toml"), "--bin", "chariox-kernel"])
     if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
   if (!relayReady) {
-    const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "arroba-relay"])
+    const result = await run("cargo", ["build", "--manifest-path", path.join(repoRoot, "apps/relay/Cargo.toml"), "--bin", "chariox-relay"])
     if (result.code !== 0) throw new Error(`relay build failed\n${result.stdout}\n${result.stderr}`)
   }
   return { cliDist, kernelBinary, relayBinary }
@@ -280,7 +280,7 @@ async function main() {
   const workspace = path.join(rootDir, "workspace")
   const home = path.join(rootDir, "home")
   const configHome = path.join(rootDir, "config")
-  const automationSocket = path.join(os.tmpdir(), `arroba-vault-tui-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-vault-tui-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}/kernel`
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
@@ -291,18 +291,18 @@ async function main() {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: configHome,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: `vault-tui-drill-${process.pid}-${Date.now()}`,
-    ARROBA_DAEMON_ALIAS: targetDaemonAlias,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
-    ARROBA_TEST_TUI: "1",
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `vault-tui-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_ALIAS: targetDaemonAlias,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, "history"),
+    CHARIOX_TEST_TUI: "1",
     ...(options.remote ? {
-      ARROBA_RELAY_URL: relayUrl,
-      ARROBA_RELAY_TOKEN: relayToken,
+      CHARIOX_RELAY_URL: relayUrl,
+      CHARIOX_RELAY_TOKEN: relayToken,
     } : {}),
   }
 
@@ -319,11 +319,11 @@ async function main() {
   try {
     await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configHome, "arroba"), { recursive: true })
-    await writeFile(path.join(configHome, "arroba", "config.toml"), [
+    await mkdir(path.join(configHome, "chariox"), { recursive: true })
+    await writeFile(path.join(configHome, "chariox", "config.toml"), [
       "[credential_vault]",
-      'backend = "arroba_encrypted"',
-      `service = "arroba-vault-tui-${process.pid}"`,
+      'backend = "chariox_encrypted"',
+      `service = "chariox-vault-tui-${process.pid}"`,
       `path = "${path.join(rootDir, "vault", "vault.db").replaceAll("\\", "\\\\")}"`,
       `unlock_policy = "${options.unlockPolicy}"`,
       "default_ttl_minutes = 30",
@@ -338,9 +338,9 @@ async function main() {
         cwd: repoRoot,
         env: {
           ...process.env,
-          ARROBA_RELAY_HOST: "127.0.0.1",
-          ARROBA_RELAY_PORT: String(ports.relayPort),
-          ARROBA_RELAY_TOKEN: relayToken,
+          CHARIOX_RELAY_HOST: "127.0.0.1",
+          CHARIOX_RELAY_PORT: String(ports.relayPort),
+          CHARIOX_RELAY_TOKEN: relayToken,
         },
         stdio: ["ignore", "ignore", "inherit"],
       })
@@ -392,7 +392,7 @@ async function main() {
     log("cli-ready", { sessionId, agentId })
 
     const firstSet = requestResult(client.send(requests.setCredentialSecretRequest("m26-tui-secret", "m26-tui-secret-value", { sessionId, agentId })))
-    const firstUnlock = await waitForInteraction(automation, agentId, "Unlock Arroba Vault", options.timeoutMs, options.pollMs)
+    const firstUnlock = await waitForInteraction(automation, agentId, "Unlock Chariox Vault", options.timeoutMs, options.pollMs)
     if (firstUnlock.interaction.customChoice?.input_kind !== "secret") {
       throw new Error(`unlock interaction was not secret input: ${JSON.stringify(firstUnlock.interaction)}`)
     }
@@ -417,7 +417,7 @@ async function main() {
     let locked = unwrap(await client.send(requests.getCredentialVaultStatusRequest()), "CredentialVaultStatus").status
     if (options.unlockPolicy !== "always") {
       const manage = requestResult(client.send(requests.manageCredentialVaultRequest(sessionId, agentId)))
-      manageInteraction = await waitForInteraction(automation, agentId, "Arroba Vault Unlocked", options.timeoutMs, options.pollMs)
+      manageInteraction = await waitForInteraction(automation, agentId, "Chariox Vault Unlocked", options.timeoutMs, options.pollMs)
       await automation.send("interaction_move", { delta: 1 })
       await automation.send("interaction_submit")
       await unwrapRequest(manage, "vault manage")
@@ -431,7 +431,7 @@ async function main() {
     }
 
     const secondSet = requestResult(client.send(requests.setCredentialSecretRequest("m26-tui-secret-2", "m26-tui-secret-value-2", { sessionId, agentId })))
-    const secondUnlock = await waitForInteraction(automation, agentId, "Unlock Arroba Vault", options.timeoutMs, options.pollMs)
+    const secondUnlock = await waitForInteraction(automation, agentId, "Unlock Chariox Vault", options.timeoutMs, options.pollMs)
     await automation.send("interaction_custom_reply", { interactionId: secondUnlock.interaction.id, reply: passphrase })
     await automation.send("interaction_submit")
     await unwrapRequest(secondSet, "second vault secret set")

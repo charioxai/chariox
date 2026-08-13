@@ -5,8 +5,8 @@ import { gzipSync } from "node:zlib"
 
 import { pack } from "tar-stream"
 
-import type { WorkflowPublicationDeploymentContract } from "@arroba/kernel-client/workflow-publication-deployment-contract"
-import { workflowPublicationPackageDigest } from "@arroba/kernel-client/workflow-publication-package-digest"
+import type { WorkflowPublicationDeploymentContract } from "@chariox/kernel-client/workflow-publication-deployment-contract"
+import { workflowPublicationPackageDigest } from "@chariox/kernel-client/workflow-publication-package-digest"
 import { readPublicationPackageMetadata } from "./publication-deployment-api.js"
 
 const maxArchiveBytes = 64 * 1024 * 1024

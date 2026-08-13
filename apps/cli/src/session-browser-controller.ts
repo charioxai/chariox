@@ -7,7 +7,7 @@ import {
   resolveSessionBrowserKeyAction,
   sessionBrowserVisibleSessions,
   type SessionBrowserKeyEvent,
-} from "@arroba/kernel-client/session-browser-policy"
+} from "@chariox/kernel-client/session-browser-policy"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import {
   deriveWaitingRoomActivationDecision,

@@ -16,12 +16,12 @@ import {
 } from '../drill-artifact-index-summary.test-support.mjs'
 
 test("drill artifact index summary aggregates discovered indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   const outputPath = path.join(rootDir, "aggregate.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
-    const firstIndexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
-    const secondIndexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    const firstIndexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
+    const secondIndexPath = await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -38,7 +38,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileAggregate, stdoutAggregate)
-    assert.equal(stdoutAggregate.schema, "arroba.drill.artifact_index.aggregate.v1")
+    assert.equal(stdoutAggregate.schema, "chariox.drill.artifact_index.aggregate.v1")
     assert.equal(stdoutAggregate.totals.indexes, 2)
     assert.equal(stdoutAggregate.totals.artifacts, 2)
     assert(stdoutAggregate.totals.sizeBytes > 0)
@@ -108,7 +108,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       oss: 1,
     })
     assert.deepEqual(stdoutAggregate.generatedValidationSuiteArtifactIndexes, {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     })
     assert.deepEqual(stdoutAggregate.generatedValidationSuiteFailureRoots, {
       "/tmp/generated-suite/failed-run": 1,
@@ -133,7 +133,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       "dry-run-classification-coverage": 1,
     })
     assert.deepEqual(stdoutAggregate.requiredGeneratedValidationSuiteArtifactIndexes, {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     })
     assert.deepEqual(stdoutAggregate.missingGeneratedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/missing-artifacts.json": 1,
@@ -165,7 +165,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.generatedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.generatedMatrixNames, "workspace-live-sync-matrix")
     assert.equal(artifactIndex.metadata.generatedMatrixRepos, "oss")
-    assert.equal(artifactIndex.metadata.generatedValidationSuiteArtifactIndexes, "/tmp/generated-suite/arroba-drill-artifacts.json")
+    assert.equal(artifactIndex.metadata.generatedValidationSuiteArtifactIndexes, "/tmp/generated-suite/chariox-drill-artifacts.json")
     assert.equal(artifactIndex.metadata.generatedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
     assert.equal(artifactIndex.metadata.requiredGeneratedEvidenceKinds, "matrix-report,validation-suite-run")
     assert.equal(artifactIndex.metadata.missingGeneratedEvidenceKinds, "matrix-report")
@@ -173,7 +173,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixArtifactIndexes, "/tmp/generated-matrix/missing-matrix-artifacts.json")
     assert.equal(artifactIndex.metadata.requiredGeneratedMatrixLimitations, "dry-run-classification-coverage")
     assert.equal(artifactIndex.metadata.missingGeneratedMatrixLimitations, "dry-run-classification-coverage")
-    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/arroba-drill-artifacts.json")
+    assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/chariox-drill-artifacts.json")
     assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteArtifactIndexes, "/tmp/generated-suite/missing-artifacts.json")
     assert.equal(artifactIndex.metadata.requiredGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/failed-run")
     assert.equal(artifactIndex.metadata.missingGeneratedValidationSuiteFailureRoots, "/tmp/generated-suite/missing-run")
@@ -186,7 +186,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
       schema: artifact.schema,
     })), [{
       path: "aggregate.json",
-      schema: "arroba.drill.artifact_index.aggregate.v1",
+      schema: "chariox.drill.artifact_index.aggregate.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -195,7 +195,7 @@ test("drill artifact index summary aggregates discovered indexes", async () => {
 
 test("drill artifact index summary rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -205,10 +205,10 @@ test("drill artifact index summary rejects output artifact index without output"
 })
 
 test("drill artifact index summary prints artifact coverage input count", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   try {
-    await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
-    await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
+    await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -224,9 +224,9 @@ test("drill artifact index summary prints artifact coverage input count", async 
 })
 
 test("drill artifact index summary gates stale indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
     await rewriteDrillArtifactIndexCreatedAt(indexPath, new Date(Date.now() - 500).toISOString())
 
     const fresh = JSON.parse((await execFile(process.execPath, [
@@ -251,7 +251,7 @@ test("drill artifact index summary gates stale indexes", async () => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /artifact_required_max_age_ms=100 stale_indexes=1/)
         assert.match(error.stdout, /next: regenerate stale drill artifact indexes/)
-        assert.match(error.stdout, /sources: artifact-index report=.*arroba-drill-artifacts\.json/)
+        assert.match(error.stdout, /sources: artifact-index report=.*chariox-drill-artifacts\.json/)
         return true
       },
     )
@@ -288,9 +288,9 @@ test("drill artifact index summary gates stale indexes", async () => {
 })
 
 test("drill artifact index summary gates stale matrix reports", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   try {
-    const indexPath = await writeIndexedReport(rootDir, "two", "arroba.drill.matrix.v1")
+    const indexPath = await writeIndexedReport(rootDir, "two", "chariox.drill.matrix.v1")
     await rewriteDrillMatrixReportCompletedAt(indexPath, new Date(Date.now() - 500).toISOString())
 
     const fresh = JSON.parse((await execFile(process.execPath, [

@@ -23,7 +23,7 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { resolvePendingWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
-import type { SessionProjectSelection } from "@arroba/kernel-client"
+import type { SessionProjectSelection } from "@chariox/kernel-client"
 
 export async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
   const response = await client.send<Record<string, unknown>>(listSessionsRequest())

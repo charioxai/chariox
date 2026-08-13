@@ -1,7 +1,7 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
-} from "@arroba/kernel-client/session-runtime-status"
+} from "@chariox/kernel-client/session-runtime-status"
 import { createEffect } from "solid-js"
 
 import { createAgentInteractionStripController } from "./agent-interaction-strip-controller.js"

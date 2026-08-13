@@ -72,10 +72,10 @@ export async function runPublicationPackageValidation({
         ...env,
         HOST: '127.0.0.1',
       },
-      'arroba-serve-exported',
+      'chariox-serve-exported',
     )
     await waitForPackageGateway(gatewayUrl, gateway)
-    const exportedStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const exportedStatusResponse = await fetch(`${gatewayUrl}/.well-known/chariox/publication/status`)
     const exportedStatusBody = await exportedStatusResponse.json()
     const exportedRuntimeSessionId = exportedStatusBody.runtime_session_id
     if (exportedStatusResponse.status !== 200 || typeof exportedRuntimeSessionId !== 'string') {
@@ -133,7 +133,7 @@ export async function runPublicationPackageValidation({
       effort: 'low',
     })
     await waitForPackageGateway(gatewayUrl, gateway)
-    const overrideStatusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const overrideStatusResponse = await fetch(`${gatewayUrl}/.well-known/chariox/publication/status`)
     const overrideStatusBody = await overrideStatusResponse.json()
     const overrideRuntimeSessionId = overrideStatusBody.runtime_session_id
     if (overrideStatusResponse.status !== 200 || typeof overrideRuntimeSessionId !== 'string') {
@@ -198,10 +198,10 @@ export async function runPublicationPackageValidation({
         ...env,
         HOST: '127.0.0.1',
       },
-      'arroba-serve-schedule',
+      'chariox-serve-schedule',
     )
     await waitForPackageGateway(gatewayUrl, gateway)
-    const statusResponse = await fetch(`${gatewayUrl}/.well-known/arroba/publication/status`)
+    const statusResponse = await fetch(`${gatewayUrl}/.well-known/chariox/publication/status`)
     const statusBody = await statusResponse.json()
     const runtimeSessionId = statusBody.runtime_session_id
     if (statusResponse.status !== 200 || typeof runtimeSessionId !== 'string') {
@@ -246,7 +246,7 @@ export async function runPublicationPackageValidation({
     gateway = null
 
     await runContainerPublicationValidation({
-      enabled: process.env.ARROBA_PUBLICATION_CONTAINER_DRILL === '1',
+      enabled: process.env.CHARIOX_PUBLICATION_CONTAINER_DRILL === '1',
       root,
       client,
       kernelUrl,
@@ -288,7 +288,7 @@ export async function runPublicationPackageValidation({
         ...env,
         HOST: '127.0.0.1',
       },
-      'arroba-serve-missing-requirements',
+      'chariox-serve-missing-requirements',
     )
     const failedServe = await waitForProcessExit(gateway)
     await assertGatewayDoesNotListen(gatewayUrl)

@@ -6,7 +6,7 @@ import type {
   WorkspaceLinkDefinition,
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
-import type { RecallEvent } from "@arroba/kernel-client"
+import type { RecallEvent } from "@chariox/kernel-client"
 import { parseSlashCommand } from "./commands.js"
 import {
   handleWorkspaceSlashCommand,
@@ -48,9 +48,9 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
       next_action: "reconcile target",
     }],
     ignore: {
-      ignore_file: ".arrobaignore",
+      ignore_file: ".charioxignore",
       rules: ["ignored/**", "*.secret"],
-      force_excludes: [".git/**", ".arroba/**"],
+      force_excludes: [".git/**", ".chariox/**"],
     },
   }
   const notices: string[] = []
@@ -134,7 +134,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[0] ?? "", /Sync groups: 1/)
   assert.match(notices[0] ?? "", /Next: inspect \/workspace sync conflicts, ask an agent to reconcile, then rerun \/workspace sync status/)
   assert.match(notices[0] ?? "", /Rules: ignored\/\*\*, \*\.secret/)
-  assert.match(notices[0] ?? "", /Force excludes: \.git\/\*\*, \.arroba\/\*\*/)
+  assert.match(notices[0] ?? "", /Force excludes: \.git\/\*\*, \.chariox\/\*\*/)
   assert.match(notices[1] ?? "", /Workspace live sync doctor: conflict/)
   assert.match(notices[1] ?? "", /Scope: selected workspace\/worktree only; other repositories are unrestricted/)
   assert.match(notices[1] ?? "", /Problems:/)
@@ -145,7 +145,7 @@ test("workspace sync slash commands render status surfaces and mutate mode", asy
   assert.match(notices[2] ?? "", /Group shared \(link-1\) targets=1 ready=0 degraded=0 conflicts=1/)
   assert.match(notices[2] ?? "", /Next: inspect \/workspace sync conflicts/)
   assert.match(notices[3] ?? "", /src\/app\.ts source=agent-1 target=user-2:\/repo\/peer next=reconcile target/)
-  assert.match(notices[4] ?? "", /Ignore file: \.arrobaignore/)
+  assert.match(notices[4] ?? "", /Ignore file: \.charioxignore/)
   assert.match(notices[4] ?? "", /rule ignored\/\*\*/)
   assert.match(notices[4] ?? "", /rule \*\.secret/)
   assert.match(notices[4] ?? "", /force-exclude \.git\/\*\*/)

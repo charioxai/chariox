@@ -1,5 +1,5 @@
 import type { TranscriptEntry } from "./cli-types.js"
-import { transcriptRetentionSlice } from "@arroba/kernel-client/transcript-entry-state"
+import { transcriptRetentionSlice } from "@chariox/kernel-client/transcript-entry-state"
 
 export type TranscriptRenderableHandle = {
   wrapper: {

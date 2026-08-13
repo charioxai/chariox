@@ -13,9 +13,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-remote-home-extension-matrix-drill.mjs", import.meta.url))
 
 test("remote home extension matrix dry-run covers local and Hetzner authority scenarios", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-remote-home-extension-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-remote-home-extension-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -29,7 +29,7 @@ test("remote home extension matrix dry-run covers local and Hetzner authority sc
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "remote-home-extension-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [

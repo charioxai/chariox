@@ -2,7 +2,7 @@ import type { TranscriptEntry } from "./cli-types.js"
 import {
   cloneCompactTranscriptDisplayEntries,
   projectSettledTranscriptTurnDisplayState,
-} from "@arroba/kernel-client/transcript-display-state"
+} from "@chariox/kernel-client/transcript-display-state"
 
 export type AssistantMessageCompletionControllerDeps = {
   entries: () => TranscriptEntry[]

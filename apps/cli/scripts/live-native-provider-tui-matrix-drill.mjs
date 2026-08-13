@@ -53,7 +53,7 @@ const MATRIX = [
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
       "provider-native permission requests create kernel-owned runtime interactions",
-      "Arroba observers can resolve the interaction without a provider-specific client path",
+      "Chariox observers can resolve the interaction without a provider-specific client path",
     ],
   }),
   scenario({
@@ -100,7 +100,7 @@ const MATRIX = [
   }),
   scenario({
     id: "transcript-parity",
-    description: "native provider and Arroba observers share transcript projection",
+    description: "native provider and Chariox observers share transcript projection",
     script: remoteNativeDrill,
     args: ["--standard-home-worker", "--providers", ALL_PROVIDERS, "--include-attachments"],
     classification: "ui-client-projection",
@@ -108,7 +108,7 @@ const MATRIX = [
     deployment: "same-host-remote",
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
-      "native-origin and Arroba-origin turns render in one session transcript",
+      "native-origin and Chariox-origin turns render in one session transcript",
       "attachment and output projection are observed through normal terminal events",
     ],
   }),

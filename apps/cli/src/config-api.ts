@@ -1,7 +1,7 @@
 import type {
-  ArrobaUserConfig,
-  ArrobaUserConfigPayload,
-  ArrobaUserConfigSchemaPayload,
+  CharioxUserConfig,
+  CharioxUserConfigPayload,
+  CharioxUserConfigSchemaPayload,
   RuntimeSession,
   UserConfigMutationEffect,
 } from "./cli-types.js"
@@ -20,23 +20,23 @@ import {
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
-export async function getUserConfig(client: LocalIpcClient): Promise<ArrobaUserConfigPayload> {
+export async function getUserConfig(client: LocalIpcClient): Promise<CharioxUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(getUserConfigRequest())
-  return expectVariant<{ path: string, config: ArrobaUserConfig }>(response, "UserConfig")
+  return expectVariant<{ path: string, config: CharioxUserConfig }>(response, "UserConfig")
 }
 
-export async function getUserConfigSchema(client: LocalIpcClient): Promise<ArrobaUserConfigSchemaPayload> {
+export async function getUserConfigSchema(client: LocalIpcClient): Promise<CharioxUserConfigSchemaPayload> {
   const response = await client.send<Record<string, unknown>>(getUserConfigSchemaRequest())
-  return expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+  return expectVariant<CharioxUserConfigSchemaPayload>(response, "UserConfigSchema")
 }
 
 export async function setUserConfigValue(
   client: LocalIpcClient,
   path: string,
   value: string,
-): Promise<ArrobaUserConfigPayload> {
+): Promise<CharioxUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(setUserConfigValueRequest(path, value))
-  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+  return expectVariant<CharioxUserConfigPayload>(response, "UserConfigUpdated")
 }
 
 export async function setWorkspaceLiveSyncMode(
@@ -51,9 +51,9 @@ export async function setWorkspaceLiveSyncMode(
 export async function unsetUserConfigValue(
   client: LocalIpcClient,
   path: string,
-): Promise<ArrobaUserConfigPayload> {
+): Promise<CharioxUserConfigPayload> {
   const response = await client.send<Record<string, unknown>>(unsetUserConfigValueRequest(path))
-  return expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+  return expectVariant<CharioxUserConfigPayload>(response, "UserConfigUpdated")
 }
 
 export async function setCredentialSecret(

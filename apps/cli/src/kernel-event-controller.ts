@@ -5,9 +5,9 @@ import {
   transcriptEntryWithTerminalMetadata,
   type TerminalRecordTranscriptMetadata,
   type TerminalRecordTranscriptProjection,
-} from "@arroba/kernel-client/terminal-record-transcript"
-import { createTranscriptSteeredPromptEntry } from "@arroba/kernel-client/transcript-entry-state"
-import { isProviderIdleStatus } from "@arroba/kernel-client/provider-status"
+} from "@chariox/kernel-client/terminal-record-transcript"
+import { createTranscriptSteeredPromptEntry } from "@chariox/kernel-client/transcript-entry-state"
+import { isProviderIdleStatus } from "@chariox/kernel-client/provider-status"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
 type KernelEventControllerDeps = {
@@ -278,7 +278,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
 
   const applyTransportClosed = (message: string) => {
     deps.setDaemonDisconnected(true)
-    deps.setStatusLine("Lost connection to the Arroba kernel.")
+    deps.setStatusLine("Lost connection to the Chariox kernel.")
     deps.updateSessionChrome()
     const now = Date.now()
     if (message !== lastTransportNoticeMessage || now - lastTransportNoticeAtMs > 10_000) {
@@ -294,7 +294,7 @@ export function createKernelEventController(deps: KernelEventControllerDeps) {
     deps.setStatusLine(deps.connectedStatusLine)
     deps.updateSessionChrome()
     if (lastTransportNoticeMessage !== null) {
-      deps.appendNotice("Reconnected to the Arroba kernel.")
+      deps.appendNotice("Reconnected to the Chariox kernel.")
     }
     lastTransportNoticeMessage = null
     lastTransportNoticeAtMs = 0

@@ -78,17 +78,17 @@ test("fails when required artifact schemas have no evidence", async () => {
   }, {
     maxDepth: 8,
     requiredArtifactCoverageAreas: [],
-    requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+    requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
   })
 
   assert.equal(check.status, "failed")
-  assert.deepEqual(check.requiredArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
-  assert.deepEqual(check.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+  assert.deepEqual(check.requiredArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
+  assert.deepEqual(check.missingArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
   assert.match(check.error, /missing required artifact schemas/)
 })
 
 test("gates required artifact coverage areas from artifact index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     await writeReportArtifact(rootDir, "reports/gate.json")
     await writeDrillArtifactIndex({
@@ -98,7 +98,7 @@ test("gates required artifact coverage areas from artifact index metadata", asyn
     })
 
     const pass = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
@@ -113,7 +113,7 @@ test("gates required artifact coverage areas from artifact index metadata", asyn
     })
 
     const fail = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
@@ -128,7 +128,7 @@ test("gates required artifact coverage areas from artifact index metadata", asyn
 })
 
 test("gates required artifact kinds and evidence repos from artifact index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     await writeReportArtifact(rootDir, "reports/gate.json")
     await writeDrillArtifactIndex({
@@ -142,14 +142,14 @@ test("gates required artifact kinds and evidence repos from artifact index metad
         generatedMatrixLimitations: "dry-run-classification-coverage",
         generatedMatrixNames: "workspace-live-sync-matrix",
         generatedMatrixRepos: "oss",
-        generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+        generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         evidenceRepos: "oss",
       },
     })
 
     const pass = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
@@ -160,7 +160,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
       requiredArtifactGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
       requiredArtifactGeneratedMatrixNames: ["workspace-live-sync-matrix"],
       requiredArtifactGeneratedMatrixRepos: ["oss"],
-      requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/arroba-drill-artifacts.json"],
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
       requiredArtifactGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
       requiredArtifactEvidenceRepos: ["oss"],
     })
@@ -179,7 +179,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     assert.deepEqual(pass.missingArtifactGeneratedMatrixNames, [])
     assert.deepEqual(pass.requiredArtifactGeneratedMatrixRepos, ["oss"])
     assert.deepEqual(pass.missingArtifactGeneratedMatrixRepos, [])
-    assert.deepEqual(pass.requiredArtifactGeneratedValidationSuiteArtifactIndexes, ["/tmp/generated-suite/arroba-drill-artifacts.json"])
+    assert.deepEqual(pass.requiredArtifactGeneratedValidationSuiteArtifactIndexes, ["/tmp/generated-suite/chariox-drill-artifacts.json"])
     assert.deepEqual(pass.missingArtifactGeneratedValidationSuiteArtifactIndexes, [])
     assert.deepEqual(pass.requiredArtifactGeneratedValidationSuiteFailureRoots, ["/tmp/generated-suite/failed-run"])
     assert.deepEqual(pass.missingArtifactGeneratedValidationSuiteFailureRoots, [])
@@ -193,7 +193,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
     assert.deepEqual(pass.aggregate.generatedEvidenceRepos, { oss: 1 })
 
     const fail = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
@@ -234,7 +234,7 @@ test("gates required artifact kinds and evidence repos from artifact index metad
 })
 
 test("gates required artifact diagnostic dimensions from artifact index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     await writeReportArtifact(rootDir, "reports/gate.json")
     await writeDrillArtifactIndex({
@@ -252,7 +252,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
         plannedClassifications: "matrix-coverage",
       },
     })
-    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const indexPath = path.join(rootDir, "chariox-drill-artifacts.json")
 
     const pass = await artifactValidationGateCheck({
       artifactIndexes: [indexPath],
@@ -320,7 +320,7 @@ test("gates required artifact diagnostic dimensions from artifact index metadata
 })
 
 test("gates required artifact exit criterion statuses from artifact index metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     await writeReportArtifact(rootDir, "reports/gate.json")
     await writeDrillArtifactIndex({
@@ -331,7 +331,7 @@ test("gates required artifact exit criterion statuses from artifact index metada
         incompleteExitCriterionStatuses: "dry-run,skipped",
       },
     })
-    const indexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+    const indexPath = path.join(rootDir, "chariox-drill-artifacts.json")
 
     const pass = await artifactValidationGateCheck({
       artifactIndexes: [indexPath],
@@ -364,7 +364,7 @@ test("gates required artifact exit criterion statuses from artifact index metada
 })
 
 test("fails when artifact roots contain no indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     const check = await artifactValidationGateCheck({
       artifactIndexes: [],
@@ -381,12 +381,12 @@ test("fails when artifact roots contain no indexes", async () => {
 })
 
 test("passes with explicit and discovered artifact indexes", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     const explicitRoot = path.join(rootDir, "explicit")
     const discoveredRoot = path.join(rootDir, "discovered")
     const explicitIndex = path.join(explicitRoot, "custom-index.json")
-    const discoveredIndex = path.join(discoveredRoot, "arroba-drill-artifacts.json")
+    const discoveredIndex = path.join(discoveredRoot, "chariox-drill-artifacts.json")
     await writeReportArtifact(explicitRoot, "reports/gate.json")
     await writeReportArtifact(discoveredRoot, "reports/matrix.json")
     await writeDrillArtifactIndex({
@@ -417,7 +417,7 @@ test("passes with explicit and discovered artifact indexes", async () => {
 })
 
 test("gates required artifact schemas", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     await writeReportArtifact(rootDir, "reports/gate.json")
     await writeDrillArtifactIndex({
@@ -427,25 +427,25 @@ test("gates required artifact schemas", async () => {
     })
 
     const pass = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
-      requiredArtifactSchemas: ["arroba.drill.validation_gate.v1"],
+      requiredArtifactSchemas: ["chariox.drill.validation_gate.v1"],
     })
     assert.equal(pass.status, "passed")
-    assert.deepEqual(pass.requiredArtifactSchemas, ["arroba.drill.validation_gate.v1"])
+    assert.deepEqual(pass.requiredArtifactSchemas, ["chariox.drill.validation_gate.v1"])
     assert.deepEqual(pass.missingArtifactSchemas, [])
 
     const fail = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, {
       maxDepth: 8,
-      requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+      requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
     })
     assert.equal(fail.status, "failed")
-    assert.deepEqual(fail.missingArtifactSchemas, ["arroba.drill.validation_suite_run.v1"])
+    assert.deepEqual(fail.missingArtifactSchemas, ["chariox.drill.validation_suite_run.v1"])
     assert.match(fail.error, /missing required artifact schemas/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -453,7 +453,7 @@ test("gates required artifact schemas", async () => {
 })
 
 test("fails when an indexed artifact is tampered", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-artifacts-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-artifacts-"))
   try {
     const artifactPath = path.join(rootDir, "reports", "gate.json")
     await writeReportArtifact(rootDir, "reports/gate.json")
@@ -464,7 +464,7 @@ test("fails when an indexed artifact is tampered", async () => {
     await writeFile(artifactPath, "{\"schema\":\"tampered\"}\n", "utf8")
 
     const check = await artifactValidationGateCheck({
-      artifactIndexes: [path.join(rootDir, "arroba-drill-artifacts.json")],
+      artifactIndexes: [path.join(rootDir, "chariox-drill-artifacts.json")],
       artifactRoots: [],
     }, { maxDepth: 8 })
 
@@ -479,7 +479,7 @@ async function writeReportArtifact(rootDir, relativePath) {
   const file = path.join(rootDir, relativePath)
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.validation_gate.v1",
+    schema: "chariox.drill.validation_gate.v1",
     status: "passed",
   })}\n`, "utf8")
 }

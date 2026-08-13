@@ -14,7 +14,7 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-platform-bundle.mjs", import.meta.url))
 
 test("drill platform bundle writes shared contract artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-"))
   const outputDir = path.join(rootDir, "bundle")
   try {
     const { stdout } = await execFile(process.execPath, [scriptPath, "--output-dir", outputDir])
@@ -25,34 +25,34 @@ test("drill platform bundle writes shared contract artifacts", async () => {
     const drillTaxonomy = JSON.parse(await readFile(path.join(outputDir, "failure-taxonomy-drill.json"), "utf8"))
     const generatedMatrixLimitations = JSON.parse(await readFile(path.join(outputDir, "generated-matrix-limitations.json"), "utf8"))
     const generatedMatrixNames = JSON.parse(await readFile(path.join(outputDir, "generated-matrix-names.json"), "utf8"))
-    const artifactIndex = await verifyDrillArtifactIndex(path.join(outputDir, "arroba-drill-artifacts.json"))
+    const artifactIndex = await verifyDrillArtifactIndex(path.join(outputDir, "chariox-drill-artifacts.json"))
 
     assert.deepEqual(indexBundle, stdoutBundle)
-    assert.equal(indexBundle.schema, "arroba.drill.platform_bundle.v1")
+    assert.equal(indexBundle.schema, "chariox.drill.platform_bundle.v1")
     assert.deepEqual(indexBundle.artifacts.map(({ path, schema }) => ({ path, schema })), [
       {
         path: "validation-suite.json",
-        schema: "arroba.drill.validation_suite.v1",
+        schema: "chariox.drill.validation_suite.v1",
       },
       {
         path: "failure-taxonomy-scenario.json",
-        schema: "arroba.drill.failure_taxonomy.v1",
+        schema: "chariox.drill.failure_taxonomy.v1",
       },
       {
         path: "failure-taxonomy-drill.json",
-        schema: "arroba.drill.failure_taxonomy.v1",
+        schema: "chariox.drill.failure_taxonomy.v1",
       },
       {
         path: "generated-matrix-limitations.json",
-        schema: "arroba.drill.generated_matrix_limitations.v1",
+        schema: "chariox.drill.generated_matrix_limitations.v1",
       },
       {
         path: "generated-matrix-names.json",
-        schema: "arroba.drill.generated_matrix_names.v1",
+        schema: "chariox.drill.generated_matrix_names.v1",
       },
       {
         path: "runtime-signals.json",
-        schema: "arroba.drill.runtime_signals.v1",
+        schema: "chariox.drill.runtime_signals.v1",
       },
     ])
     for (const artifact of indexBundle.artifacts) {
@@ -62,11 +62,11 @@ test("drill platform bundle writes shared contract artifacts", async () => {
       assert.equal(artifact.sha256, createHash("sha256").update(serialized).digest("hex"))
       assert.equal(artifact.sizeBytes, Buffer.byteLength(serialized))
     }
-    assert.equal(validationSuite.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(validationSuite.schema, "chariox.drill.validation_suite.v1")
     assert.equal(scenarioTaxonomy.target, "scenario")
     assert.equal(drillTaxonomy.target, "drill")
-    assert.equal(generatedMatrixLimitations.schema, "arroba.drill.generated_matrix_limitations.v1")
-    assert.equal(generatedMatrixNames.schema, "arroba.drill.generated_matrix_names.v1")
+    assert.equal(generatedMatrixLimitations.schema, "chariox.drill.generated_matrix_limitations.v1")
+    assert.equal(generatedMatrixNames.schema, "chariox.drill.generated_matrix_names.v1")
     assert.equal(artifactIndex.metadata.drill, "platform-bundle")
     assert.deepEqual(artifactIndex.artifacts.map((artifact) => artifact.path), [
       "failure-taxonomy-drill.json",
@@ -83,14 +83,14 @@ test("drill platform bundle writes shared contract artifacts", async () => {
 })
 
 test("drill platform bundle verifies written artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-"))
   const outputDir = path.join(rootDir, "bundle")
   try {
     await execFile(process.execPath, [scriptPath, "--output-dir", outputDir])
     const { stdout } = await execFile(process.execPath, [scriptPath, "--verify-dir", outputDir])
     const verified = JSON.parse(stdout)
 
-    assert.equal(verified.schema, "arroba.drill.platform_bundle.v1")
+    assert.equal(verified.schema, "chariox.drill.platform_bundle.v1")
     assert.equal(verified.artifacts.length, 6)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -98,7 +98,7 @@ test("drill platform bundle verifies written artifacts", async () => {
 })
 
 test("drill platform bundle rejects artifact integrity drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-platform-bundle-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-platform-bundle-"))
   const outputDir = path.join(rootDir, "bundle")
   try {
     await execFile(process.execPath, [scriptPath, "--output-dir", outputDir])

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 
 import type {
   WorkflowDefinition,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 import {
   createDeploymentSetup,

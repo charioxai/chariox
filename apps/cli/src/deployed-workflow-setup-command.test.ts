@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import type { RuntimeSession, WorkflowPublicationDefinition } from "@arroba/kernel-client"
+import type { RuntimeSession, WorkflowPublicationDefinition } from "@chariox/kernel-client"
 
 import { executeDeploymentSetupCommand } from "./deployed-workflow-setup-command.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
@@ -152,7 +152,7 @@ test("TUI local setup pauses for a missing relay and resumes idempotently", asyn
 })
 
 test("TUI deployment setup rejects package paths that escape its temporary root", async () => {
-  const escapeName = `arroba-setup-escape-${randomUUID()}`
+  const escapeName = `chariox-setup-escape-${randomUUID()}`
   const fixture = await setupFixture({ mode: "hosted_container", unsafePackagePath: `../${escapeName}` })
   const escapedPath = join(tmpdir(), escapeName)
   try {
@@ -526,7 +526,7 @@ function environment(mode: "local_runtime" | "hosted_container") {
     desiredRevision: 1,
     observedRevision: 0,
     operationalDeploymentId: "deployment-1",
-    publicUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/deployments/demo",
+    publicUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/deployments/demo",
     createdAt: timestamp,
     updatedAt: timestamp,
   }
@@ -590,7 +590,7 @@ function jsonResponse(value: unknown, status = 200, headers?: HeadersInit): Resp
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
   email: "user@example.test",
   relayUrl: "wss://relay.scalingo.test",
   accountId: "account-1",

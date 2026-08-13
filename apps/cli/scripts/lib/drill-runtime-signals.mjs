@@ -1,4 +1,4 @@
-export const DRILL_RUNTIME_SIGNALS_SCHEMA = "arroba.drill.runtime_signals.v1"
+export const DRILL_RUNTIME_SIGNALS_SCHEMA = "chariox.drill.runtime_signals.v1"
 
 const RUNTIME_SIGNALS = Object.freeze({
   "agent-lifecycle": {

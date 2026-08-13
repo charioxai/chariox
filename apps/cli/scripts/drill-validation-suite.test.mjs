@@ -65,7 +65,7 @@ test("drill validation suite prints coverage manifest", async () => {
   const manifest = JSON.parse(stdout)
   const covered = manifest.coverage.flatMap((area) => area.testPaths)
 
-  assert.equal(manifest.schema, "arroba.drill.validation_suite.v1")
+  assert.equal(manifest.schema, "chariox.drill.validation_suite.v1")
   assert.equal(manifest.testCount, SHARED_DRILL_TEST_PATHS.length)
   assert.deepEqual(manifest.testPaths, SHARED_DRILL_TEST_PATHS)
   assert.deepEqual(covered.sort(), [...SHARED_DRILL_TEST_PATHS])
@@ -93,7 +93,7 @@ test("drill validation suite prints coverage manifest", async () => {
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactSchemas,
-    ["arroba.drill.validation_suite_run.v1"],
+    ["chariox.drill.validation_suite_run.v1"],
   )
   assert.deepEqual(
     manifest.validationPresets.find((preset) => preset.name === "distributed-runtime").requiredArtifactKinds,
@@ -150,9 +150,9 @@ test("drill validation suite prints coverage manifest", async () => {
 })
 
 test("drill validation suite writes coverage manifest", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-suite-"))
   const outputPath = path.join(rootDir, "suite.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -167,7 +167,7 @@ test("drill validation suite writes coverage manifest", async () => {
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileManifest, stdoutManifest)
-    assert.equal(fileManifest.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(fileManifest.schema, "chariox.drill.validation_suite.v1")
     assert.deepEqual(fileManifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileManifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.deepEqual(fileManifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
@@ -191,7 +191,7 @@ test("drill validation suite writes coverage manifest", async () => {
       schema: artifact.schema,
     })), [{
       path: "suite.json",
-      schema: "arroba.drill.validation_suite.v1",
+      schema: "chariox.drill.validation_suite.v1",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })
@@ -199,10 +199,10 @@ test("drill validation suite writes coverage manifest", async () => {
 })
 
 test("drill validation suite writes passing run report artifact output", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-suite-"))
   const testPath = path.join(rootDir, "passing.test.mjs")
   const outputPath = path.join(rootDir, "suite-run.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     await writeFile(testPath, [
       'import test from "node:test"',
@@ -226,12 +226,12 @@ test("drill validation suite writes passing run report artifact output", async (
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
     assert.deepEqual(fileReport, stdoutReport)
-    assert.equal(fileReport.schema, "arroba.drill.validation_suite_run.v1")
+    assert.equal(fileReport.schema, "chariox.drill.validation_suite_run.v1")
     assert.equal(fileReport.status, "passed")
     assert.equal(fileReport.ok, true)
     assert.equal(fileReport.testCount, 1)
     assert.deepEqual(fileReport.testPaths, [testPath])
-    assert.equal(fileReport.manifest.schema, "arroba.drill.validation_suite.v1")
+    assert.equal(fileReport.manifest.schema, "chariox.drill.validation_suite.v1")
     assert.deepEqual(fileReport.manifest.failureTaxonomyManifest, drillFailureTaxonomyManifest())
     assert.deepEqual(fileReport.manifest.runtimeSignalsManifest, drillRuntimeSignalsManifest())
     assert.deepEqual(fileReport.manifest.runtimeAuthorityManifest, drillRuntimeAuthorityManifest())
@@ -250,12 +250,12 @@ test("drill validation suite writes passing run report artifact output", async (
 })
 
 test("drill validation suite writes failing run report before exiting nonzero", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-suite-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-suite-"))
   const testPath = path.join(rootDir, "failing.test.mjs")
   const outputPath = path.join(rootDir, "suite-run.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   const failureRoot = path.join(rootDir, "failed-run")
-  const failureManifestPath = path.join(failureRoot, "arroba-drill-failure.json")
+  const failureManifestPath = path.join(failureRoot, "chariox-drill-failure.json")
   try {
     await writeFile(testPath, [
       'import test from "node:test"',
@@ -289,13 +289,13 @@ test("drill validation suite writes failing run report before exiting nonzero", 
     const failureManifest = JSON.parse(await readFile(failureManifestPath, "utf8"))
 
     assert.deepEqual(fileReport, stdoutReport)
-    assert.equal(fileReport.schema, "arroba.drill.validation_suite_run.v1")
+    assert.equal(fileReport.schema, "chariox.drill.validation_suite_run.v1")
     assert.equal(fileReport.status, "failed")
     assert.equal(fileReport.ok, false)
     assert.equal(fileReport.exitCode, 1)
     assert.equal(artifactIndex.metadata.status, "failed")
     assert.equal(artifactIndex.metadata.exitCriterionStatuses, "failed")
-    assert.equal(failureManifest.schema, "arroba.drill.failure.v1")
+    assert.equal(failureManifest.schema, "chariox.drill.failure.v1")
     assert.equal(failureManifest.rootDir, failureRoot)
     assert.equal(failureManifest.metadata.drill, "validation-suite")
     assert.equal(failureManifest.metadata.status, "failed")
@@ -309,7 +309,7 @@ test("drill validation suite writes failing run report before exiting nonzero", 
 
 test("drill validation suite rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--json", "--output-artifact-index", "/tmp/arroba-drill-artifacts.json"]),
+    execFile(process.execPath, [scriptPath, "--json", "--output-artifact-index", "/tmp/chariox-drill-artifacts.json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -324,7 +324,7 @@ test("drill validation suite rejects failure preservation outside run-json", asy
       scriptPath,
       "--json",
       "--preserve-failure-root",
-      "/tmp/arroba-validation-suite-failed",
+      "/tmp/chariox-validation-suite-failed",
     ]),
     (error) => {
       assert.equal(error.code, 1)

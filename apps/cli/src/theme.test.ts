@@ -20,7 +20,7 @@ test("theme registry normalizes and labels waiting room options", () => {
   assert.equal(themeOptions().some((option) => option.id === "matrix"), true)
 })
 
-test("theme registry parses native Arroba theme json", () => {
+test("theme registry parses native Chariox theme json", () => {
   const theme = parseThemeDefinition({
     id: "custom-gray",
     name: "Custom Gray",
@@ -106,7 +106,7 @@ test("theme registry parses OpenCode TUI theme json", () => {
 })
 
 test("loadThemeRegistry loads global and workspace custom themes", async () => {
-  const temp = await mkdtemp(path.join(os.tmpdir(), "arroba-themes-"))
+  const temp = await mkdtemp(path.join(os.tmpdir(), "chariox-themes-"))
   const globalThemes = path.join(temp, "global")
   const workspaceThemes = path.join(temp, "workspace")
   await mkdir(globalThemes, { recursive: true })

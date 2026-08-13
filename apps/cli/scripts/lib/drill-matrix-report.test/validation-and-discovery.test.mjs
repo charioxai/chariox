@@ -315,19 +315,19 @@ test("accepts Cloud contextual matrix diagnostics without weakening OSS reports"
 })
 
 test("reads and validates report files", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-report-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-report-"))
   const file = path.join(dir, "matrix.json")
   await writeFile(file, `${JSON.stringify(matrixReport())}\n`, "utf8")
 
   const report = await readDrillMatrixReport(file)
 
-  assert.equal(report.schema, "arroba.drill.matrix.v1")
+  assert.equal(report.schema, "chariox.drill.matrix.v1")
   assert.throws(() => validateDrillMatrixReport({ schema: "other", scenarios: [] }), /unsupported schema/)
   await rm(dir, { recursive: true, force: true })
 })
 
 test("discovers matrix reports below artifact roots", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-report-find-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-report-find-"))
   const first = path.join(dir, ".artifacts", "drill-matrices", "one", "matrix.json")
   const second = path.join(dir, ".artifacts", "drill-matrices", "two", "matrix.json")
   const unrelated = path.join(dir, ".artifacts", "drill-matrices", "two", "other.json")
@@ -556,7 +556,7 @@ test("rejects malformed matrix reports", () => {
 
   assert.throws(() => validateDrillMatrixReport({
     ...matrixReport(),
-    scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/arroba-drill-sk-this-should-not-persist"] }],
+    scenarios: [{ ...scenario("broken", "passed"), artifactHints: ["/tmp/chariox-drill-sk-this-should-not-persist"] }],
   }), /scenarios\[0\] includes secret-looking artifactHints/)
 
   assert.throws(() => validateDrillMatrixReport({

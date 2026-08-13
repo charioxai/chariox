@@ -17,7 +17,7 @@ test("kernel health formatter renders provider-run invariants", () => {
   assert.match(rendered, /command lanes: session=1\/1 agent=1\/2 workflow=0\/0 provider=0\/0 saturated=0/)
   assert.match(rendered, /process: pid=1234 rss=128.0MiB peak_rss=256.0MiB/)
   assert.match(rendered, /provider catalog: cached=no expired=no age=unknown ttl=5.00s/)
-  assert.match(rendered, /provider runs: projected=1 active=1 arroba=1 native_tui=0/)
+  assert.match(rendered, /provider runs: projected=1 active=1 chariox=1 native_tui=0/)
   assert.match(rendered, /provider run actor: enqueued=3 rejected=0/)
   assert.match(rendered, /capabilities: running=0\/64 submitted=0 failed=0 rejected=0 join_errors=0/)
   assert.match(rendered, /transport: connections=1 subscriptions=1 incoming=0 emitted=0 replay_gaps=0 overloads=0 duplicate_commands=0 outgoing_overflows=0 slow_consumers=0 relay_reconnects=0/)
@@ -85,10 +85,10 @@ test("kernel health formatter reports provider-run identity issues", () => {
     provider_runs: {
       projected_runs: 4,
       active_runs: 3,
-      arroba_active_runs: 2,
+      chariox_active_runs: 2,
       native_tui_active_runs: 1,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [{
+      duplicate_chariox_agent_bindings: [{
         session_id: "session-1",
         agent_id: "agent-1",
         provider_run_ids: ["run-1", "run-2"],
@@ -97,7 +97,7 @@ test("kernel health formatter reports provider-run identity issues", () => {
       multi_interface_agent_bindings: [{
         session_id: "session-2",
         agent_id: "agent-2",
-        provider_run_ids: ["run-3:arroba", "run-4:native_tui"],
+        provider_run_ids: ["run-3:chariox", "run-4:native_tui"],
       }],
       orphaned_active_runs: [{
         provider_run_id: "run-orphan",
@@ -115,19 +115,19 @@ test("kernel health formatter reports provider-run identity issues", () => {
   const rendered = formatKernelHealth(unhealthy)
 
   assert.equal(kernelHealthIssueCount(unhealthy), 4)
-  assert.match(rendered, /provider runs: projected=4 active=3 arroba=2 native_tui=1/)
-  assert.match(rendered, /duplicate Arroba provider run bindings:/)
+  assert.match(rendered, /provider runs: projected=4 active=3 chariox=2 native_tui=1/)
+  assert.match(rendered, /duplicate Chariox provider run bindings:/)
   assert.match(rendered, /session=session-1 agent=agent-1 runs=run-1,run-2/)
   assert.match(rendered, /multi-interface provider run bindings:/)
-  assert.match(rendered, /session=session-2 agent=agent-2 runs=run-3:arroba,run-4:native_tui/)
+  assert.match(rendered, /session=session-2 agent=agent-2 runs=run-3:chariox,run-4:native_tui/)
   assert.match(rendered, /orphaned active provider runs:/)
   assert.match(rendered, /run=run-orphan session=missing-session agent=-: provider run points at a missing session/)
   assert.match(rendered, /session active provider run pointer issues:/)
   assert.match(rendered, /session=session-3 active=run-missing: active provider run is not projected/)
   assert.doesNotMatch(rendered, /provider run invariants: ok/)
-  assert.match(rendered, /invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates/)
+  assert.match(rendered, /invariant: normal Chariox launches should replace idle same-agent runs instead of creating duplicates/)
   assert.match(rendered, /next: run \/agent inspect agent-1; run \/provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent/)
-  assert.match(rendered, /next: run \/agent inspect agent-2; run \/provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent/)
+  assert.match(rendered, /next: run \/agent inspect agent-2; run \/provider processes; close the extra native TUI or Chariox provider run before sending prompts to that agent/)
   assert.match(rendered, /next: refresh the session; stop or relaunch provider run run-orphan if it stays active/)
   assert.match(rendered, /next: inspect session session-3 and relaunch the affected agent/)
 })
@@ -137,7 +137,7 @@ test("kernel health formatter reports provider-run terminal diagnostics", () => 
     provider_runs: {
       projected_runs: 1,
       active_runs: 1,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 0,
       terminal_diagnostics: [{
         provider_run_id: "run-timeout",
@@ -147,7 +147,7 @@ test("kernel health formatter reports provider-run terminal diagnostics", () => 
         state: "Running",
         diagnostic: "provider produced no terminal output within 10m",
       }],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
@@ -174,7 +174,7 @@ test("kernel health formatter avoids placeholder agent recovery for unbound prov
     provider_runs: {
       projected_runs: 1,
       active_runs: 1,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 0,
       terminal_diagnostics: [{
         provider_run_id: "run-timeout",
@@ -184,7 +184,7 @@ test("kernel health formatter avoids placeholder agent recovery for unbound prov
         state: "Running",
         diagnostic: "provider produced no terminal output within 10m",
       }],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],

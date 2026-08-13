@@ -27,8 +27,8 @@ import {
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 import { parseDrillIsoTimestamp } from "./drill-time.mjs"
 
-const FAILURE_MANIFEST_FILE = "arroba-drill-failure.json"
-const FAILURE_MANIFEST_SCHEMA = "arroba.drill.failure.v1"
+const FAILURE_MANIFEST_FILE = "chariox-drill-failure.json"
+const FAILURE_MANIFEST_SCHEMA = "chariox.drill.failure.v1"
 
 export async function readDrillFailureManifest(inputPath) {
   const manifestPath = await resolveFailureManifestPath(inputPath)
@@ -160,7 +160,7 @@ export function summarizeDrillFailureManifests(manifests, {
     })
   }
   const aggregate = {
-    schema: "arroba.drill.failure.aggregate.v1",
+    schema: "chariox.drill.failure.aggregate.v1",
     total: summaries.length,
     owners: Object.fromEntries([...owners.entries()].sort(([left], [right]) => left.localeCompare(right))),
     classifications: Object.fromEntries([...classifications.entries()].sort(([left], [right]) => left.localeCompare(right))),
@@ -269,7 +269,7 @@ export function validateDrillFailureManifestAggregate(aggregate) {
   if (!aggregate || typeof aggregate !== "object") {
     throw new Error("aggregate is not an object")
   }
-  if (aggregate.schema !== "arroba.drill.failure.aggregate.v1") {
+  if (aggregate.schema !== "chariox.drill.failure.aggregate.v1") {
     throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
   if (!Number.isSafeInteger(aggregate.total) || aggregate.total < 0) {

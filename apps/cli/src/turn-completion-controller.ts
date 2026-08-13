@@ -1,6 +1,6 @@
 import {
   turnCompletionProviderActivityTransition,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 
 type TurnCompletionControllerOptions<TimerHandle> = {
   now: () => number

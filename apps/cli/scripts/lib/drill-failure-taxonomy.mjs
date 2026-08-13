@@ -160,7 +160,7 @@ export function drillFailureClassificationForKind(kind, options = {}) {
 
 export function drillFailureTaxonomyManifest({ target = "scenario" } = {}) {
   return {
-    schema: "arroba.drill.failure_taxonomy.v1",
+    schema: "chariox.drill.failure_taxonomy.v1",
     target,
     classifications: Object.keys(FAILURE_CLASSIFICATIONS).sort().map((kind) => ({
       kind,
@@ -178,7 +178,7 @@ export function validateDrillFailureTaxonomyManifest(
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${source} is not an object`)
   }
-  if (manifest.schema !== "arroba.drill.failure_taxonomy.v1") {
+  if (manifest.schema !== "chariox.drill.failure_taxonomy.v1") {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
   if (manifest.target !== target) {

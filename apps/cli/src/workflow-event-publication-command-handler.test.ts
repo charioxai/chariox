@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { RuntimeSession } from "@arroba/kernel-client"
+import type { RuntimeSession } from "@chariox/kernel-client"
 import {
   handleWorkflowEventPublicationCommand,
   handleWorkflowPublicationCommand,
@@ -73,15 +73,15 @@ test("TUI event publication handler renders paged catalog results", async () => 
           page: {
             services: [{
               schema_version: 1,
-              generator_id: "dev.arroba.dummy",
+              generator_id: "dev.chariox.dummy",
               version: "1.0.0",
-              protocol_version: 1,
+              protocol_version: 2,
               name: "Dummy Events",
               summary: "Deterministic events.",
-              provider: "Arroba test harness",
-              publisher: { id: "dev.arroba", name: "Arroba" },
-              operator: { id: "hosted.arroba", name: "Arroba hosted service" },
-              verification: "arroba",
+              provider: "Chariox test harness",
+              publisher: { id: "dev.chariox", name: "Chariox" },
+              operator: { id: "hosted.chariox", name: "Chariox hosted service" },
+              verification: "chariox",
               categories: ["testing"],
               installed_count: 0,
               recommended: false,
@@ -99,7 +99,7 @@ test("TUI event publication handler renders paged catalog results", async () => 
   }, ["catalog", "--limit", "1"])
 
   assert.deepEqual(requests, [{ GetEventGeneratorCatalogLanding: { limit: 1 } }])
-  assert.match(notices[0] ?? "", /dev\.arroba\.dummy@1\.0\.0/)
+  assert.match(notices[0] ?? "", /dev\.chariox\.dummy@1\.0\.0/)
   assert.match(notices[0] ?? "", /next cursor: next-page/)
 })
 

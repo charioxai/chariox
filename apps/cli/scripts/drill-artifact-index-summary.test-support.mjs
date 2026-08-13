@@ -36,7 +36,7 @@ export async function writeIndexedReport(rootDir, name, schema) {
   const drillRoot = path.join(rootDir, name)
   await mkdir(path.join(drillRoot, "reports"), { recursive: true })
   await writeFile(path.join(drillRoot, "reports", "report.json"), `${JSON.stringify(
-    schema === "arroba.drill.matrix.v1" ? matrixReportArtifact() : { schema },
+    schema === "chariox.drill.matrix.v1" ? matrixReportArtifact() : { schema },
   )}\n`, "utf8")
   const runtimeSignals = name === "one"
     ? ["session-authority", "lease-health"]
@@ -93,7 +93,7 @@ export async function writeIndexedReport(rootDir, name, schema) {
         ? ""
         : "oss",
       generatedValidationSuiteArtifactIndexes: name === "one"
-        ? "/tmp/generated-suite/arroba-drill-artifacts.json"
+        ? "/tmp/generated-suite/chariox-drill-artifacts.json"
         : "",
       generatedValidationSuiteFailureRoots: name === "one"
         ? "/tmp/generated-suite/failed-run"
@@ -117,7 +117,7 @@ export async function writeIndexedReport(rootDir, name, schema) {
         ? "dry-run-classification-coverage"
         : "",
       requiredGeneratedValidationSuiteArtifactIndexes: name === "one"
-        ? "/tmp/generated-suite/arroba-drill-artifacts.json"
+        ? "/tmp/generated-suite/chariox-drill-artifacts.json"
         : "",
       missingGeneratedValidationSuiteArtifactIndexes: name === "one"
         ? "/tmp/generated-suite/missing-artifacts.json"
@@ -139,7 +139,7 @@ export async function writeIndexedReport(rootDir, name, schema) {
         : "artifact metadata inputs",
     },
   })
-  return path.join(drillRoot, "arroba-drill-artifacts.json")
+  return path.join(drillRoot, "chariox-drill-artifacts.json")
 }
 
 export async function rewriteDrillArtifactIndexCreatedAt(indexPath, createdAt) {
@@ -150,7 +150,7 @@ export async function rewriteDrillArtifactIndexCreatedAt(indexPath, createdAt) {
 
 export async function rewriteDrillMatrixReportCompletedAt(indexPath, completedAt) {
   const index = JSON.parse(await readFile(indexPath, "utf8"))
-  const artifact = index.artifacts.find((entry) => entry.schema === "arroba.drill.matrix.v1")
+  const artifact = index.artifacts.find((entry) => entry.schema === "chariox.drill.matrix.v1")
   const artifactPath = path.join(index.rootDir, artifact.path)
   const report = JSON.parse(await readFile(artifactPath, "utf8"))
   report.completedAt = completedAt
@@ -167,7 +167,7 @@ export async function rewriteDrillMatrixReportCompletedAt(indexPath, completedAt
 
 export function matrixReportArtifact() {
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "artifact-index-summary-matrix",
     status: "dry-run",
     dryRun: true,

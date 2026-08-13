@@ -20,7 +20,7 @@ import {
   saveUiPreferences,
   sessionPromptDraftEntry,
   sessionPromptHistoryEntries,
-  type ArrobaPreferences,
+  type CharioxPreferences,
   type MultiAgentResponseLayout,
 } from "./preferences.js"
 import type {
@@ -35,20 +35,20 @@ import type {
   TerminalView,
 } from "./relay-api.js"
 import { createMutableLocalIpcClient } from "./mutable-local-ipc-client.js"
-import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
-import type { TerminalCommandCatalog } from "@arroba/kernel-client/kernel-types"
+import { createDefaultShellContext, type ShellContext } from "@chariox/kernel-client/shell-core"
+import type { TerminalCommandCatalog } from "@chariox/kernel-client/kernel-types"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import { buildDetachedSessionState } from "./session-state.js"
 import {
   sessionHasTurnWork,
   sessionProjectedStreamingAgentId,
-} from "@arroba/kernel-client/session-prompt-work"
+} from "@chariox/kernel-client/session-prompt-work"
 import {
   sessionResponseLayout,
-} from "@arroba/kernel-client/session-config-projection"
+} from "@chariox/kernel-client/session-config-projection"
 import {
   sessionFocusedAgentId,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import type { SessionListEntry } from "./sessions.js"
 import { applyTheme, setThemeRegistry } from "./theme.js"
 import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
@@ -101,7 +101,7 @@ export function createCliAppState(options: {
     ? sessionPromptDraftEntry(initialPreferences, initialBinding.session.id)
     : ""
 
-  const [preferencesState, setPreferencesState] = createSignal<ArrobaPreferences>(initialPreferences)
+  const [preferencesState, setPreferencesState] = createSignal<CharioxPreferences>(initialPreferences)
   const [themeRevision, setThemeRevision] = createSignal(0)
   const maxAgentsPerScreen = () => resolveMaxAgentsPerScreen(preferencesState().ui?.maxAgentsPerScreen)
   const [sessionState, setSessionState] = createSignal(initialSession)

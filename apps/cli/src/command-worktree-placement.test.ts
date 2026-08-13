@@ -5,22 +5,22 @@ import { defaultWorktreeDirectoryBase, suggestNamedWorktreePath } from "./comman
 
 test("default worktree directory base uses branch leaf without duplicate repo prefix", () => {
   assert.equal(
-    defaultWorktreeDirectoryBase("arroba-cloud", "arroba/arroba-cloud-session-1783622367"),
-    "arroba-cloud-session-1783622367",
+    defaultWorktreeDirectoryBase("chariox-cloud", "chariox/chariox-cloud-session-1783622367"),
+    "chariox-cloud-session-1783622367",
   )
   assert.equal(
-    defaultWorktreeDirectoryBase("arroba", "arroba/arroba-session-1779647319"),
-    "arroba-session-1779647319",
+    defaultWorktreeDirectoryBase("chariox", "chariox/chariox-session-1779647319"),
+    "chariox-session-1779647319",
   )
   assert.equal(
-    defaultWorktreeDirectoryBase("arroba-cloud", "feature/worktree-name"),
-    "arroba-cloud-worktree-name",
+    defaultWorktreeDirectoryBase("chariox-cloud", "feature/worktree-name"),
+    "chariox-cloud-worktree-name",
   )
 })
 
 test("suggested worktree path uses de-duplicated default directory base", () => {
   assert.equal(
-    suggestNamedWorktreePath("/Users/miguel/arroba-cloud", "arroba/arroba-cloud-session-1783622367"),
-    "/Users/miguel/arroba-cloud-session-1783622367",
+    suggestNamedWorktreePath("/Users/miguel/chariox-cloud", "chariox/chariox-cloud-session-1783622367"),
+    "/Users/miguel/chariox-cloud-session-1783622367",
   )
 })

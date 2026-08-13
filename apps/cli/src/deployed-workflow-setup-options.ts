@@ -1,4 +1,4 @@
-import type { WorkflowPublicationDefinition } from "@arroba/kernel-client"
+import type { WorkflowPublicationDefinition } from "@chariox/kernel-client"
 
 import type {
   DeploymentSetupConfiguration,

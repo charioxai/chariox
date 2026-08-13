@@ -1,6 +1,6 @@
 import {
   mergeSessionPromptState,
-  type ArrobaPreferences,
+  type CharioxPreferences,
 } from "./preferences.js"
 
 export type PromptSessionStateUpdate = {
@@ -9,7 +9,7 @@ export type PromptSessionStateUpdate = {
 }
 
 export type PromptSessionStatePersistenceControllerDeps = {
-  updatePreferences: (updater: (current: ArrobaPreferences) => ArrobaPreferences) => void
+  updatePreferences: (updater: (current: CharioxPreferences) => CharioxPreferences) => void
   savePromptState: (sessionId: string, next: PromptSessionStateUpdate) => Promise<void>
 }
 

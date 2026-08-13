@@ -7,7 +7,7 @@ import test from "node:test"
 import { findDrillJsonArtifactPaths } from "./drill-json-discovery.mjs"
 
 test("discovers JSON artifacts by schema and prunes broad roots", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-json-discovery-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-json-discovery-"))
   try {
     const first = path.join(root, "reports", "one.json")
     const second = path.join(root, ".artifacts", "two.json")
@@ -31,17 +31,17 @@ test("discovers JSON artifacts by schema and prunes broad roots", async () => {
 })
 
 test("discovers named artifacts without requiring valid JSON", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-json-discovery-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-json-discovery-"))
   try {
-    const valid = path.join(root, "run-one", "arroba-drill-failure.json")
-    const malformed = path.join(root, "run-two", "arroba-drill-failure.json")
+    const valid = path.join(root, "run-one", "chariox-drill-failure.json")
+    const malformed = path.join(root, "run-two", "chariox-drill-failure.json")
     const wrongName = path.join(root, "run-three", "other.json")
-    await writeJson(valid, { schema: "arroba.drill.failure.v1" })
+    await writeJson(valid, { schema: "chariox.drill.failure.v1" })
     await writeFileWithDir(malformed, "{not json}\n")
-    await writeJson(wrongName, { schema: "arroba.drill.failure.v1" })
+    await writeJson(wrongName, { schema: "chariox.drill.failure.v1" })
 
     assert.deepEqual(await findDrillJsonArtifactPaths(root, {
-      fileName: "arroba-drill-failure.json",
+      fileName: "chariox-drill-failure.json",
     }), [valid, malformed].sort())
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -49,7 +49,7 @@ test("discovers named artifacts without requiring valid JSON", async () => {
 })
 
 test("respects max depth while still reading files at the maximum depth", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-json-discovery-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-json-discovery-"))
   try {
     const shallow = path.join(root, "one", "report.json")
     const deep = path.join(root, "one", "two", "report.json")

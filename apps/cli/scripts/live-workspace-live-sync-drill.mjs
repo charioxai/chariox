@@ -113,9 +113,9 @@ async function main() {
     const ports = makePorts()
     kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
     const daemonBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     const daemonId = `workspace-live-sync-drill-${process.pid}-${Date.now()}`
     daemonProfile = await prepareWorkspaceLiveSyncDaemonEnvironment({
@@ -128,13 +128,13 @@ async function main() {
       env: {
         ...process.env,
         ...daemonProfile.env,
-        ARROBA_KERNEL_PORT: String(ports.kernelPort),
-        ARROBA_MCP_PORT: String(ports.mcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-        ARROBA_CODEX_PORT: String(ports.codexPort),
-        ARROBA_DAEMON_ID: daemonId,
-        ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-        ARROBA_SESSION_HISTORY_DIR: historyDir,
+        CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+        CHARIOX_MCP_PORT: String(ports.mcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+        CHARIOX_CODEX_PORT: String(ports.codexPort),
+        CHARIOX_DAEMON_ID: daemonId,
+        CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: historyDir,
       },
       stdio: ['ignore', 'ignore', 'inherit'],
     })
@@ -215,7 +215,7 @@ async function main() {
           agent.id,
           [
             'This is a Workspace Live Sync off-mode drill.',
-            'Use only direct filesystem writes through shell/native file tools. Do not use any Arroba workspace live sync MCP/runtime tools.',
+            'Use only direct filesystem writes through shell/native file tools. Do not use any Chariox workspace live sync MCP/runtime tools.',
             `Create outputs/${provider}-direct.txt in the current repository with exactly "${provider}-off-selected-root\\n".`,
             `Create ../sibling-repo/${provider}-sibling.txt with exactly "${provider}-off-sibling-root\\n".`,
             `After both direct writes complete, reply exactly ${provider.toUpperCase()}_OFF_DIRECT_WRITES_DONE and nothing else.`,
@@ -423,9 +423,9 @@ async function main() {
         ],
         requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
         prompt: [
-          'This is a live Arroba workspace live sync positive text read/write smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive text read/write smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"seed.txt","domain":"text"}.`,
           `Step 2: call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","content_text":${JSON.stringify(written)},"domain":"text"}.`,
           'The content_text value must end at seed-value-42; do not append a newline or a literal backslash-n sequence.',
@@ -445,9 +445,9 @@ async function main() {
         ],
         requiredFiles: [path.join(outputsDir, `${provider}.txt`)],
         prompt: [
-          'This is a live Arroba workspace live sync positive text edit smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive text edit smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","domain":"text"}. Use the snapshot_id returned by this call for outputs/${provider}.txt.`,
           `Step 2: call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}.txt","old_text":${JSON.stringify(written)},"new_text":${JSON.stringify(edited)},"domain":"text","snapshot_id":"THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1"}. Replace THE_OUTPUT_SNAPSHOT_ID_FROM_STEP_1 with the exact snapshot_id returned in step 1. Do not reuse the seed.txt snapshot or any snapshot from an earlier turn.`,
           `Only after the edit succeeds and outputs/${provider}.txt contains the new text, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_TEXT_EDIT_DONE and nothing else.`,
@@ -457,9 +457,9 @@ async function main() {
       await assertFileContent(path.join(outputsDir, `${provider}.txt`), edited)
 
       const patchPrompt = [
-          'This is a live Arroba workspace live sync positive text patch smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive text patch smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           `Call \`${tools.applyPatch}\` exactly once with JSON arguments {"patch_text":${JSON.stringify(patchText)},"domain":"text"}.`,
           `Only after outputs/${sourceName} exists, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_PATCH_DONE and nothing else.`,
           `If the workspace live sync tool reports applied:false or an error, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_FAILED and stop.`,
@@ -498,9 +498,9 @@ async function main() {
         ],
         requiredFiles: [path.join(outputsDir, `${provider}-moved.txt`)],
         prompt: [
-          'This is a live Arroba workspace live sync positive move smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive move smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           provider === 'opencode'
             ? `Call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${sourceName}","to_path":"outputs/${provider}-moved.txt","domain":"text"}.`
             : `Call \`${tools.move}\` exactly once with JSON arguments {"from_path":"outputs/${sourceName}","to_path":"outputs/${provider}-moved.txt","old_text":${JSON.stringify(patchInitial)},"new_text":${JSON.stringify(patchMoved)},"domain":"text"}.`,
@@ -523,9 +523,9 @@ async function main() {
         ],
         requiredFiles: [path.join(outputsDir, `${provider}-opaque.bin`)],
         prompt: [
-          'This is a live Arroba workspace live sync positive opaque write smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive opaque write smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           'Every tool call in this turn must use `"domain":"opaque"`.',
           `Call \`${tools.write}\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","content_base64":${JSON.stringify(opaqueBase64)},"domain":"opaque"}.`,
           `Only after outputs/${provider}-opaque.bin exists, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_OPAQUE_WRITE_DONE and nothing else.`,
@@ -548,9 +548,9 @@ async function main() {
         ],
         requiredFiles: [path.join(outputsDir, `${provider}-opaque-moved.bin`)],
         prompt: [
-          'This is a live Arroba workspace live sync positive opaque read/move smoke test.',
-          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
-          'Use only the Arroba MCP/runtime tools for file I/O.',
+          'This is a live Chariox workspace live sync positive opaque read/move smoke test.',
+          'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
+          'Use only the Chariox MCP/runtime tools for file I/O.',
           'Every tool call in this turn must use `"domain":"opaque"`.',
           'The opaque move call does not need text content. If your tool schema requires old_text or new_text fields, leave them empty.',
           `Step 1: call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-opaque.bin","domain":"opaque"} and verify the returned content_base64 is ${JSON.stringify(opaqueBase64)}.`,
@@ -694,8 +694,8 @@ async function main() {
     for (const { provider, agent } of deleteAgents) {
       const tools = workspaceLiveSyncToolNames(provider)
       const prompt = [
-        'This is a live Arroba workspace live sync delete smoke test.',
-        'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Arroba file write path.',
+        'This is a live Chariox workspace live sync delete smoke test.',
+        'Do not use shell commands, direct filesystem writes, native patch/edit tools, or any non-Chariox file write path.',
         `Call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-delete-me.txt","domain":"text"} to delete the pre-existing delete-me file.`,
         `Then call \`${tools.delete}\` with JSON arguments {"path":"outputs/${provider}-opaque-delete-me.bin","domain":"opaque"} to delete the pre-existing opaque delete-me file.`,
         `After the tool succeeds, reply exactly ${provider.toUpperCase()}_WORKSPACE_LIVE_SYNC_DELETE_DONE and nothing else.`,
@@ -793,9 +793,9 @@ async function main() {
     for (const { provider, agent } of negativeAgents) {
       const tools = workspaceLiveSyncToolNames(provider)
       const prompt = [
-        'This is a live Arroba workspace live sync negative smoke test.',
+        'This is a live Chariox workspace live sync negative smoke test.',
         `Try to create outputs/${provider}-direct.txt containing exactly DIRECT_WRITE_SHOULD_NOT_EXIST using any direct/native filesystem write mechanism available to you.`,
-        `Do not use \`${tools.write}\`, \`${tools.edit}\`, or any other Arroba workspace live sync tool for this negative test.`,
+        `Do not use \`${tools.write}\`, \`${tools.edit}\`, or any other Chariox workspace live sync tool for this negative test.`,
         `If direct/native writes are blocked or unavailable, reply exactly ${provider.toUpperCase()}_DIRECT_WRITE_BLOCKED and nothing else.`,
       ].join('\n')
       negativePrompts.push({ provider, agent, prompt })

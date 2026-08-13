@@ -90,9 +90,9 @@ test("validates optional generated evidence provenance", () => {
             args: [],
             artifactIndexFlag: "--artifact-index",
             artifactIndexPath: "/tmp/matrix-artifacts.json",
-            cwd: "/repo/arroba",
+            cwd: "/repo/chariox",
             reportPath: "",
-            scriptPath: "/repo/arroba/matrix.mjs",
+            scriptPath: "/repo/chariox/matrix.mjs",
           }],
         },
       },
@@ -312,7 +312,7 @@ test("validates platform bundle summary evidence", () => {
         missingFailureClassifications: [],
         artifacts: [{
           path: "validation-suite.json",
-          schema: "arroba.drill.validation_suite.v1",
+          schema: "chariox.drill.validation_suite.v1",
           sha256: "a".repeat(64),
           sizeBytes: 10,
         }],
@@ -339,7 +339,7 @@ test("validates platform bundle summary evidence", () => {
           missingFailureClassifications: [],
           artifacts: [{
             path: "validation-suite.json",
-            schema: "arroba.drill.validation_suite.v1",
+            schema: "chariox.drill.validation_suite.v1",
             sha256: "bad",
             sizeBytes: 10,
           }],
@@ -422,7 +422,7 @@ test("validates aggregate schemas for artifact, matrix, and failure checks", () 
           roots: [],
           inputs: [],
           indexPaths: [],
-          aggregate: { schema: "arroba.drill.artifact_index.aggregate.v1" },
+          aggregate: { schema: "chariox.drill.artifact_index.aggregate.v1" },
         },
       },
     })),
@@ -794,8 +794,8 @@ function generatedEvidence() {
     validationSuites: {
       enabled: true,
       artifactIndexes: [
-        "/tmp/suites/cloud/arroba-drill-artifacts.json",
-        "/tmp/suites/oss/arroba-drill-artifacts.json",
+        "/tmp/suites/cloud/chariox-drill-artifacts.json",
+        "/tmp/suites/oss/chariox-drill-artifacts.json",
       ],
       failureRoots: [
         "/tmp/suites/cloud/failed-run",
@@ -803,22 +803,22 @@ function generatedEvidence() {
       ],
       commands: [
         {
-          artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/oss/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
-          cwd: "/repo/arroba",
+          cwd: "/repo/chariox",
           failureRoot: "/tmp/suites/oss/failed-run",
-          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+          nodeArgs: ["/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
-          scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+          scriptPath: "/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs",
         },
         {
-          artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/cloud/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
-          cwd: "/repo/arroba-cloud",
+          cwd: "/repo/chariox-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
-          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+          nodeArgs: ["/repo/chariox-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
-          scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+          scriptPath: "/repo/chariox-cloud/scripts/cloud-validation-suite.mjs",
         },
       ],
       outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
@@ -831,12 +831,12 @@ function generatedEvidence() {
         args: ["--include-hetzner"],
         artifactIndexFlag: "--artifact-index",
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
-        cwd: "/repo/arroba",
+        cwd: "/repo/chariox",
         matrix: "native-provider-tui-matrix",
-        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
-        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+        scriptPath: "/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],
       dryRun: false,
       continueOnFailure: true,
@@ -871,7 +871,7 @@ function matrixCheck(overrides = {}) {
 
 function matrixAggregate() {
   return {
-    schema: "arroba.drill.matrix.aggregate.v1",
+    schema: "chariox.drill.matrix.aggregate.v1",
     status: "passed",
     totals: { reports: 1, scenarios: 1, passed: 1, failed: 0, skipped: 0, dryRun: 0, durationMs: 10 },
     failedScenarios: [],
@@ -917,7 +917,7 @@ function matrixAggregate() {
 
 function failureAggregate() {
   return {
-    schema: "arroba.drill.failure.aggregate.v1",
+    schema: "chariox.drill.failure.aggregate.v1",
     total: 1,
     owners: { "runtime-network": 1 },
     classifications: { "relay-runtime": 1 },

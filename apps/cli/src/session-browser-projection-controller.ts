@@ -3,7 +3,7 @@ import type { SessionListEntry } from "./sessions.js"
 import {
   clampSessionBrowserIndex,
   sessionBrowserVisibleSessions,
-} from "@arroba/kernel-client/session-browser-policy"
+} from "@chariox/kernel-client/session-browser-policy"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 export type SessionBrowserProjectionControllerDeps = {

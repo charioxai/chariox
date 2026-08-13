@@ -35,15 +35,15 @@ import {
 } from '../drill-artifacts.test-support.mjs'
 
 test("writes JSON artifact output with optional index", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-output-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-output-"))
   try {
     const outputPath = path.join(root, "reports", "gate.json")
-    const artifactIndexPath = path.join(root, "reports", "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(root, "reports", "chariox-drill-artifacts.json")
     const artifactIndex = await writeDrillJsonArtifactOutput({
       outputPath,
       artifactIndexPath,
       value: {
-        schema: "arroba.drill.validation_gate.v1",
+        schema: "chariox.drill.validation_gate.v1",
         status: "passed",
       },
       metadata: {
@@ -63,7 +63,7 @@ test("writes JSON artifact output with optional index", async () => {
       schema: artifact.schema,
     })), [{
       path: "gate.json",
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
     }])
   } finally {
     await finalizeDrillArtifacts({ rootDir: root, passed: true })
@@ -71,14 +71,14 @@ test("writes JSON artifact output with optional index", async () => {
 })
 
 test("discovers drill artifact indexes", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "one", "reports"), { recursive: true })
     await mkdir(path.join(root, "two", "reports"), { recursive: true })
     await writeFile(path.join(root, "one", "reports", "gate.json"), "{\"schema\":\"one\"}\n", "utf8")
     await writeFile(path.join(root, "two", "reports", "gate.json"), "{\"schema\":\"two\"}\n", "utf8")
-    const firstIndexPath = path.join(root, "one", "arroba-drill-artifacts.json")
-    const secondIndexPath = path.join(root, "two", "arroba-drill-artifacts.json")
+    const firstIndexPath = path.join(root, "one", "chariox-drill-artifacts.json")
+    const secondIndexPath = path.join(root, "two", "chariox-drill-artifacts.json")
     await writeDrillArtifactIndex({
       rootDir: path.join(root, "one"),
       artifacts: ["reports/gate.json"],
@@ -87,7 +87,7 @@ test("discovers drill artifact indexes", async () => {
       rootDir: path.join(root, "two"),
       artifacts: ["reports/gate.json"],
     })
-    await writeFile(path.join(root, "arroba-drill-artifacts.json"), "{\"schema\":\"other\"}\n", "utf8")
+    await writeFile(path.join(root, "chariox-drill-artifacts.json"), "{\"schema\":\"other\"}\n", "utf8")
 
     assert.deepEqual(await findDrillArtifactIndexPaths([root]), [
       firstIndexPath,
@@ -99,16 +99,16 @@ test("discovers drill artifact indexes", async () => {
 })
 
 test("summarizes drill artifact indexes", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-artifacts-index-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-artifacts-index-"))
   try {
     await mkdir(path.join(root, "one", "reports"), { recursive: true })
     await mkdir(path.join(root, "two", "reports"), { recursive: true })
     await writeFile(path.join(root, "one", "reports", "gate.json"), `${JSON.stringify({
-      schema: "arroba.drill.validation_gate.v1",
+      schema: "chariox.drill.validation_gate.v1",
     })}\n`, "utf8")
     await writeFile(path.join(root, "one", "reports", "notes.log"), "plain log\n", "utf8")
     await writeFile(path.join(root, "two", "reports", "matrix.json"), `${JSON.stringify({
-      schema: "arroba.drill.matrix.v1",
+      schema: "chariox.drill.matrix.v1",
     })}\n`, "utf8")
     const first = await writeDrillArtifactIndex({
       rootDir: path.join(root, "one"),
@@ -128,12 +128,12 @@ test("summarizes drill artifact indexes", async () => {
         missingFailureClassifications: "provider-auth",
         artifactKinds: "validation-gate,validation-suite-run",
         generatedEvidenceKinds: "validation-suite-run",
-        generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+        generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
         generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         generatedEvidenceRepos: "oss",
         requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
         missingGeneratedEvidenceKinds: "matrix-report",
-        requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+        requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
         missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
         requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
         missingGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/missing-run",
@@ -180,15 +180,15 @@ test("summarizes drill artifact indexes", async () => {
     })
 
     const aggregate = summarizeDrillArtifactIndexes([first, second], {
-      sources: ["one/arroba-drill-artifacts.json", "two/arroba-drill-artifacts.json"],
+      sources: ["one/chariox-drill-artifacts.json", "two/chariox-drill-artifacts.json"],
     })
 
     assert.equal(aggregate.schema, DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA)
     assert.equal(aggregate.totals.indexes, 2)
     assert.equal(aggregate.totals.artifacts, 3)
     assert.deepEqual(aggregate.schemas, {
-      "arroba.drill.matrix.v1": 1,
-      "arroba.drill.validation_gate.v1": 1,
+      "chariox.drill.matrix.v1": 1,
+      "chariox.drill.validation_gate.v1": 1,
       none: 1,
     })
     assert.deepEqual(aggregate.runtimeSignals, {
@@ -280,7 +280,7 @@ test("summarizes drill artifact indexes", async () => {
       oss: 2,
     })
     assert.deepEqual(aggregate.generatedValidationSuiteArtifactIndexes, {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     })
     assert.deepEqual(aggregate.generatedValidationSuiteFailureRoots, {
       "/tmp/generated-suite/failed-run": 1,
@@ -317,7 +317,7 @@ test("summarizes drill artifact indexes", async () => {
       cloud: 1,
     })
     assert.deepEqual(aggregate.requiredGeneratedValidationSuiteArtifactIndexes, {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     })
     assert.deepEqual(aggregate.missingGeneratedValidationSuiteArtifactIndexes, {
       "/tmp/generated-suite/missing-artifacts.json": 1,
@@ -341,8 +341,8 @@ test("summarizes drill artifact indexes", async () => {
       "artifact metadata inputs": 1,
     })
     assert.deepEqual(aggregate.indexes.map((index) => index.source), [
-      "one/arroba-drill-artifacts.json",
-      "two/arroba-drill-artifacts.json",
+      "one/chariox-drill-artifacts.json",
+      "two/chariox-drill-artifacts.json",
     ])
     assert.deepEqual(aggregate.indexes.map((index) => index.runtimeSignals), [
       {
@@ -388,7 +388,7 @@ test("summarizes drill artifact indexes", async () => {
       generatedMatrixNames: "workspace-live-sync-matrix",
       generatedMatrixRepos: "oss",
       generatedEvidenceRepos: "cloud,oss",
-      generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+      generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
       generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       missingGeneratedEvidenceKinds: "matrix-report",
       missingGeneratedMatrixArtifactIndexes: "/tmp/generated-matrix/missing-matrix-artifacts.json",
@@ -408,7 +408,7 @@ test("summarizes drill artifact indexes", async () => {
       requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
       requiredGeneratedMatrixNames: "workspace-live-sync-matrix",
       requiredGeneratedMatrixRepos: "oss",
-      requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/arroba-drill-artifacts.json",
+      requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
       requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
       requiredRuntimeSignalOwners: "kernel-authority,provider-runtime",
       requiredRuntimeSignals: "lease-health,provider-run-lifecycle,session-authority",

@@ -31,7 +31,7 @@ export function makeNonEphemeralDrillPorts(base = 20000 + Math.floor(Math.random
 export function withDevStubProviderInventory(env) {
   return {
     ...env,
-    ARROBA_PROVIDER_DEV_STUB: "1",
+    CHARIOX_PROVIDER_DEV_STUB: "1",
   }
 }
 

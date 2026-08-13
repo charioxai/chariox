@@ -6,15 +6,15 @@ import type {
   TerminalOutputRecord,
   WorkspaceLiveSyncStatus,
 } from "./cli-types.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 import { runPollingLoop as defaultRunPollingLoop } from "./polling-effects.js"
 import {
   sessionSnapshotRefreshTransition,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import {
   sessionCanIgnoreMissingActiveProviderRun,
   sessionShouldRecoverMissingActiveProviderRun,
-} from "@arroba/kernel-client/provider-run-recovery"
+} from "@chariox/kernel-client/provider-run-recovery"
 import { runtimeNoticeShouldRenderInAgentPane } from "./runtime-notice-filter.js"
 
 type PollLoop = typeof defaultRunPollingLoop
@@ -22,7 +22,7 @@ type PollLoop = typeof defaultRunPollingLoop
 type CliPollingControllerDeps = {
   runPollingLoop?: PollLoop
   isClosing: () => boolean
-  logger?: ArrobaLogger | null
+  logger?: CharioxLogger | null
   formatError: (error: unknown) => string
   isSessionUnavailableError: (error: unknown) => boolean
   getPollRecoveryDecision: Parameters<PollLoop>[0]["getPollRecoveryDecision"]

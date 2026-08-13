@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { DaemonHealthProjection } from "@arroba/kernel-client"
+import type { DaemonHealthProjection } from "@chariox/kernel-client"
 import {
   formatKernelHealth,
   formatKernelRemoteRuntimeHealth,
@@ -54,10 +54,10 @@ export function health(overrides: Partial<DaemonHealthProjection> = {}): DaemonH
     provider_runs: {
       projected_runs: 1,
       active_runs: 1,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],

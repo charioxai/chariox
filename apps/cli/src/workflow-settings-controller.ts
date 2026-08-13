@@ -1,5 +1,5 @@
 import type { RuntimeSession, WorkflowDefinition } from "./cli-types.js"
-import type { WorkflowDesignOp } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignOp } from "@chariox/kernel-client/kernel-types"
 import { resolveWorkflowRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 

@@ -588,9 +588,9 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       metadata: "status/running_state",
       observed: Boolean(monitorResults.kernel?.statuses?.length || monitorResults.web?.statuses?.length || monitorResults.tui?.statuses?.length),
       surfaces: ["kernel", monitorResults.web ? "web" : null, monitorResults.tui ? "tui" : null].filter(Boolean),
-      observedNote: "Arroba observed external turn lifecycle from WORKING to final IDLE/DONE.",
+      observedNote: "Chariox observed external turn lifecycle from WORKING to final IDLE/DONE.",
       missingNote: "No lifecycle statuses were sampled during the drill.",
-      missingClassification: "arroba_bug",
+      missingClassification: "chariox_bug",
     }),
     metadataAvailability({
       provider,
@@ -605,9 +605,9 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       ].filter(Boolean),
       observedNote: "All assistant progress markers were visible in imported external history.",
       missingNote: providerAssistantOutputMissing
-        ? "The provider transcript did not contain all required assistant text markers, so Arroba had no provider output to import."
+        ? "The provider transcript did not contain all required assistant text markers, so Chariox had no provider output to import."
         : "Assistant text did not fully appear in imported external history.",
-      missingClassification: providerAssistantOutputMissing ? "provider_output_limitation" : "arroba_bug",
+      missingClassification: providerAssistantOutputMissing ? "provider_output_limitation" : "chariox_bug",
     }),
     metadataAvailability({
       provider,
@@ -622,9 +622,9 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       ].filter(Boolean),
       observedNote: "All marked provider tool calls were visible in imported external history.",
       missingNote: providerToolOutputMissing
-        ? "The provider transcript did not contain all required tool markers, so Arroba had no provider tool events to import."
+        ? "The provider transcript did not contain all required tool markers, so Chariox had no provider tool events to import."
         : "Tool-call markers did not fully appear in imported external history.",
-      missingClassification: providerToolOutputMissing ? "provider_output_limitation" : "arroba_bug",
+      missingClassification: providerToolOutputMissing ? "provider_output_limitation" : "chariox_bug",
     }),
     metadataAvailability({
       provider,
@@ -653,7 +653,7 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       observed: Boolean(monitorResults.kernel?.samples?.some((sample) => sample.at) || monitorResults.providerTranscript?.found),
       surfaces: ["provider_transcript", "kernel"].filter((surface) => surface !== "provider_transcript" || monitorResults.providerTranscript?.found),
       observedNote: "Observation timestamps and/or provider transcript timestamps were captured.",
-      missingNote: "No timestamps were captured for provider or Arroba observations.",
+      missingNote: "No timestamps were captured for provider or Chariox observations.",
       missingClassification: "drill_observation_limitation",
     }),
     metadataAvailability({
@@ -684,7 +684,7 @@ export function providerLimitations(provider, monitorResults, context = {}) {
       surfaces: ["provider_process", "kernel"].filter((surface) => surface !== "kernel" || monitorResults.kernel?.finalSeen),
       observedNote: `Provider exit and final marker were captured${context.providerExit ? ` with exit ${JSON.stringify(context.providerExit)}` : ""}.`,
       missingNote: "Final completion/error state was not captured.",
-      missingClassification: "arroba_bug",
+      missingClassification: "chariox_bug",
     }),
   ]
   if (!monitorResults.web) metadataReport.push({ provider, surface: "web", status: "skipped", classification: "drill_observation_limitation" })
@@ -703,11 +703,11 @@ export function metadataAvailability({ provider, context, metadata, observed, su
     provider,
     providerSessionId: context.providerSessionId ?? null,
     externalSessionId: context.externalSessionId ?? null,
-    arrobaSessionId: context.arrobaSessionId ?? null,
+    charioxSessionId: context.charioxSessionId ?? null,
     agentId: context.agentId ?? null,
     metadata,
     status: observed ? "observed" : "not_observed",
-    classification: observed ? "available_to_arroba" : missingClassification,
+    classification: observed ? "available_to_chariox" : missingClassification,
     surfaces: dedupe((surfaces ?? []).filter(Boolean)),
     note: observed ? observedNote : missingNote,
   }
@@ -744,7 +744,7 @@ export async function writeFinalReport(root, summary) {
     "",
     "## Provider Matrix",
     "",
-    "| Provider | Model | Provider session | Arroba session | Agent | Result | Failed assertions |",
+    "| Provider | Model | Provider session | Chariox session | Agent | Result | Failed assertions |",
     "| --- | --- | --- | --- | --- | --- | --- |",
     ...summary.results.map((result) => {
       const failed = (result.assertions ?? []).filter((assertion) => !assertion.passed)
@@ -752,7 +752,7 @@ export async function writeFinalReport(root, summary) {
         result.provider,
         result.model,
         result.providerSessionId ?? result.externalSessionId ?? "",
-        result.arrobaSessionId ?? "",
+        result.charioxSessionId ?? "",
         result.agentId ?? "",
         result.ok ? "PASS" : "FAIL",
         failed.map((assertion) => assertion.name).join("; "),
@@ -780,7 +780,7 @@ export async function writeFinalReport(root, summary) {
     "",
     "## Provider Limitations And Clarifications",
     "",
-    "This section is intentionally last. It distinguishes Arroba bugs from provider-native metadata limits and drill-observation limits.",
+    "This section is intentionally last. It distinguishes Chariox bugs from provider-native metadata limits and drill-observation limits.",
     "",
     "| Provider | Metadata | Status | Classification | Surfaces | Clarification | IDs |",
     "| --- | --- | --- | --- | --- | --- | --- |",
@@ -794,7 +794,7 @@ export async function writeFinalReport(root, summary) {
       [
         entry.providerSessionId ? `provider=${entry.providerSessionId}` : null,
         entry.externalSessionId ? `external=${entry.externalSessionId}` : null,
-        entry.arrobaSessionId ? `arroba=${entry.arrobaSessionId}` : null,
+        entry.charioxSessionId ? `chariox=${entry.charioxSessionId}` : null,
         entry.agentId ? `agent=${entry.agentId}` : null,
       ].filter(Boolean).join("; "),
     ].map(markdownCell).join(" | ").replace(/^/, "| ").replace(/$/, " |")),

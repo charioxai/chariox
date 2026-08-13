@@ -20,7 +20,7 @@ import {
 } from "./drill-failure-manifest.mjs"
 
 test("reads and summarizes a preserved drill failure directory", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-failure-summary-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-failure-summary-"))
   await prepareDrillArtifacts(root)
 
   await finalizeDrillArtifacts({
@@ -41,7 +41,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
   const text = formatDrillFailureManifestSummary(manifest, { source: root })
 
   assert.equal(manifest.metadata.token, "<redacted>")
-  assert.equal(summary.schema, "arroba.drill.failure.v1")
+  assert.equal(summary.schema, "chariox.drill.failure.v1")
   assert.equal(summary.metadata.drill, "hosted-cloud-relay")
   assert.equal(summary.metadata.provider, "opencode-zen")
   assert.equal(summary.metadata.runtimeSignals, "relay-target-freshness,lease-health")
@@ -61,7 +61,7 @@ test("reads and summarizes a preserved drill failure directory", async () => {
 })
 
 test("reads a manifest file directly", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-failure-file-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-failure-file-"))
   const file = path.join(root, "failure.json")
   await writeFile(file, `${JSON.stringify(validManifest({ rootDir: root }))}\n`, "utf8")
 
@@ -84,7 +84,7 @@ test("redacts token-shaped values from summarized manifest errors", () => {
 })
 
 test("discovers preserved failure manifests below artifact roots", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-drill-failure-find-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-failure-find-"))
   const first = path.join(root, "target", "run-one")
   const second = path.join(root, ".artifacts", "run-two")
   const ignored = path.join(root, "node_modules", "run-three")
@@ -98,14 +98,14 @@ test("discovers preserved failure manifests below artifact roots", async () => {
   await finalizeDrillArtifacts({ rootDir: first, passed: false, failure: new Error("first"), metadata: { drill: "first" } })
   await finalizeDrillArtifacts({ rootDir: second, passed: false, failure: new Error("second"), metadata: { drill: "second" } })
   await finalizeDrillArtifacts({ rootDir: ignored, passed: false, failure: new Error("ignored"), metadata: { drill: "ignored" } })
-  await writeFile(path.join(wrongSchema, "arroba-drill-failure.json"), "{\"schema\":\"other.failure.v1\"}\n", "utf8")
-  await writeFile(path.join(malformed, "arroba-drill-failure.json"), "{not-json\n", "utf8")
+  await writeFile(path.join(wrongSchema, "chariox-drill-failure.json"), "{\"schema\":\"other.failure.v1\"}\n", "utf8")
+  await writeFile(path.join(malformed, "chariox-drill-failure.json"), "{not-json\n", "utf8")
 
   const manifests = await findDrillFailureManifestPaths(root)
 
   assert.deepEqual(manifests, [
-    path.join(root, ".artifacts", "run-two", "arroba-drill-failure.json"),
-    path.join(root, "target", "run-one", "arroba-drill-failure.json"),
+    path.join(root, ".artifacts", "run-two", "chariox-drill-failure.json"),
+    path.join(root, "target", "run-one", "chariox-drill-failure.json"),
   ])
   await rm(root, { recursive: true, force: true })
 })
@@ -253,10 +253,10 @@ test("aggregates preserved drill failure summaries", () => {
   })
 
   const aggregate = summarizeDrillFailureManifests([relay, provider], {
-    sources: ["/tmp/relay/arroba-drill-failure.json", "/tmp/provider/arroba-drill-failure.json"],
+    sources: ["/tmp/relay/chariox-drill-failure.json", "/tmp/provider/chariox-drill-failure.json"],
   })
 
-  assert.equal(aggregate.schema, "arroba.drill.failure.aggregate.v1")
+  assert.equal(aggregate.schema, "chariox.drill.failure.aggregate.v1")
   assert.equal(aggregate.total, 2)
   assert.deepEqual(aggregate.owners, { "provider-account": 1, "runtime-network": 1 })
   assert.deepEqual(aggregate.classifications, { "provider-auth": 1, "relay-runtime": 1 })
@@ -282,7 +282,7 @@ test("aggregates preserved drill failure summaries", () => {
       count: 1,
       sourceDetails: [{
         source: "provider-drill",
-        reportPath: "/tmp/provider/arroba-drill-failure.json",
+        reportPath: "/tmp/provider/chariox-drill-failure.json",
       }],
     },
     {
@@ -291,7 +291,7 @@ test("aggregates preserved drill failure summaries", () => {
       count: 1,
       sourceDetails: [{
         source: "relay-drill",
-        reportPath: "/tmp/relay/arroba-drill-failure.json",
+        reportPath: "/tmp/relay/chariox-drill-failure.json",
       }],
     },
   ])
@@ -304,14 +304,14 @@ test("aggregates preserved drill failure summaries", () => {
   })), [
     {
       drill: "relay-drill",
-      source: "/tmp/relay/arroba-drill-failure.json",
+      source: "/tmp/relay/chariox-drill-failure.json",
       owner: "runtime-network",
       classification: "relay-runtime",
       runtimeSignals: ["lease-health", "relay-target-freshness"],
     },
     {
       drill: "provider-drill",
-      source: "/tmp/provider/arroba-drill-failure.json",
+      source: "/tmp/provider/chariox-drill-failure.json",
       owner: "provider-account",
       classification: "provider-auth",
       runtimeSignals: ["lease-health", "provider-run-lifecycle"],
@@ -326,9 +326,9 @@ test("aggregates preserved drill failure summaries", () => {
   assert.match(text, /runtime_signal_owners: kernel-authority=2 provider-runtime=1 runtime-network=1/)
   assert.match(text, /next actions:/)
   assert.match(text, /owner=provider-account classification=provider-auth count=1: refresh provider login/)
-  assert.match(text, /sources: provider-drill report=\/tmp\/provider\/arroba-drill-failure\.json/)
-  assert.match(text, /sources: relay-drill report=\/tmp\/relay\/arroba-drill-failure\.json/)
-  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime runtime_signals=lease-health,relay-target-freshness root=\/tmp\/relay source=\/tmp\/relay\/arroba-drill-failure.json/)
+  assert.match(text, /sources: provider-drill report=\/tmp\/provider\/chariox-drill-failure\.json/)
+  assert.match(text, /sources: relay-drill report=\/tmp\/relay\/chariox-drill-failure\.json/)
+  assert.match(text, /- relay-drill owner=runtime-network classification=relay-runtime runtime_signals=lease-health,relay-target-freshness root=\/tmp\/relay source=\/tmp\/relay\/chariox-drill-failure.json/)
   assert.match(text, /next: inspect relay and kernel logs/)
 })
 
@@ -341,7 +341,7 @@ test("summarizes stale preserved failure manifests", () => {
     error: { name: "Error", message: "projection stale", stack: null },
   })
   const aggregate = summarizeDrillFailureManifests([manifest], {
-    sources: ["/tmp/stale-failure/arroba-drill-failure.json"],
+    sources: ["/tmp/stale-failure/chariox-drill-failure.json"],
     nowMs: Date.parse(failedAt) + 1_000,
     requiredFailureMaxAgeMs: 100,
   })
@@ -349,7 +349,7 @@ test("summarizes stale preserved failure manifests", () => {
 
   assert.equal(aggregate.requiredFailureMaxAgeMs, 100)
   assert.deepEqual(aggregate.staleFailureManifests, [{
-    source: "/tmp/stale-failure/arroba-drill-failure.json",
+    source: "/tmp/stale-failure/chariox-drill-failure.json",
     rootDir: "/tmp/stale-failure",
     drill: "stale-drill",
     failedAt,
@@ -357,7 +357,7 @@ test("summarizes stale preserved failure manifests", () => {
     maxAgeMs: 100,
   }])
   assert.match(text, /failure_required_max_age_ms=100 stale_manifests=1/)
-  assert.match(text, /stale_failure_manifest=\/tmp\/stale-failure\/arroba-drill-failure\.json drill=stale-drill/)
+  assert.match(text, /stale_failure_manifest=\/tmp\/stale-failure\/chariox-drill-failure\.json drill=stale-drill/)
   assert.deepEqual(
     aggregate.nextActions
       .filter(({ classification }) => classification === "failure-artifacts")
@@ -369,11 +369,11 @@ test("summarizes stale preserved failure manifests", () => {
       count: 1,
       sourceDetails: [{
         source: "stale-drill",
-        reportPath: "/tmp/stale-failure/arroba-drill-failure.json",
+        reportPath: "/tmp/stale-failure/chariox-drill-failure.json",
       }],
     }],
   )
-  assert.match(text, /sources: stale-drill report=\/tmp\/stale-failure\/arroba-drill-failure\.json/)
+  assert.match(text, /sources: stale-drill report=\/tmp\/stale-failure\/chariox-drill-failure\.json/)
 
   const fresh = summarizeDrillFailureManifests([manifest], {
     nowMs: Date.parse(failedAt) + 100,
@@ -437,7 +437,7 @@ test("rejects inconsistent failure aggregates", () => {
   assert.throws(() => formatDrillFailureManifestAggregateSummary({
     ...aggregate,
     staleFailureManifests: [{
-      source: "/tmp/provider/arroba-drill-failure.json",
+      source: "/tmp/provider/chariox-drill-failure.json",
       rootDir: "relative-provider-root",
       drill: "provider-drill",
       failedAt: "2026-06-13T00:00:00.000Z",
@@ -487,8 +487,8 @@ test("rejects inconsistent failure aggregates", () => {
 
 function validManifest(overrides = {}) {
   return {
-    schema: "arroba.drill.failure.v1",
-    rootDir: "/tmp/arroba-drill",
+    schema: "chariox.drill.failure.v1",
+    rootDir: "/tmp/chariox-drill",
     failedAt: "2026-06-13T00:00:00.000Z",
     metadata: { drill: "test-drill" },
     error: {

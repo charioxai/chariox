@@ -19,11 +19,11 @@ const tempRoot = path.join(os.tmpdir(), runId)
 const kernelPort = Number.parseInt(process.env.M20_KERNEL_PORT ?? "", 10) || 55000 + Math.floor(Math.random() * 2000)
 const kernelUrl = `ws://127.0.0.1:${kernelPort}/kernel`
 const sliceName = `m20-${process.pid}`
-const containerName = `arroba-slice-${sliceName}`
+const containerName = `chariox-slice-${sliceName}`
 const homeVolume = `${containerName}-home`
-const email = "agent@arroba.test"
+const email = "agent@chariox.test"
 const password = `m20-password-${process.pid}`
-const recipient = "recipient@arroba.test"
+const recipient = "recipient@chariox.test"
 const markers = {
   stateCookie: `cookie-${process.pid}-${Date.now()}`,
   stateLocalStorage: `local-${process.pid}-${Date.now()}`,
@@ -92,15 +92,15 @@ async function run() {
     env: {
       ...process.env,
       XDG_CONFIG_HOME: path.join(tempRoot, "config"),
-      ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",
-      ARROBA_KERNEL_PORT: String(kernelPort),
-      ARROBA_MCP_PORT: String(kernelPort + 1),
-      ARROBA_CODEX_PORT: String(kernelPort + 2),
-      ARROBA_OPENCODE_PORT: String(kernelPort + 3),
-      ARROBA_DAEMON_SOCKET: path.join(tempRoot, "daemon.sock"),
-      ARROBA_DAEMON_ID: `m20-daemon-${process.pid}`,
-      ARROBA_DAEMON_ALIAS: `m20-${process.pid}`,
-      ARROBA_SESSION_HISTORY_DIR: path.join(tempRoot, "session-history"),
+      CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",
+      CHARIOX_KERNEL_PORT: String(kernelPort),
+      CHARIOX_MCP_PORT: String(kernelPort + 1),
+      CHARIOX_CODEX_PORT: String(kernelPort + 2),
+      CHARIOX_OPENCODE_PORT: String(kernelPort + 3),
+      CHARIOX_DAEMON_SOCKET: path.join(tempRoot, "daemon.sock"),
+      CHARIOX_DAEMON_ID: `m20-daemon-${process.pid}`,
+      CHARIOX_DAEMON_ALIAS: `m20-${process.pid}`,
+      CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "session-history"),
     },
   })
 
@@ -172,14 +172,14 @@ async function run() {
 }
 
 async function seedConfig() {
-  const configDir = path.join(tempRoot, "config", "arroba")
+  const configDir = path.join(tempRoot, "config", "chariox")
   await mkdir(configDir, { recursive: true })
   await writeFile(path.join(configDir, "config.toml"), [
     "version = 1",
     "",
     "[credential_vault]",
     "backend = \"process_memory\"",
-    `service = "arroba-${runId}"`,
+    `service = "chariox-${runId}"`,
     "agent_management = \"allow\"",
     "",
     "[state]",
@@ -422,7 +422,7 @@ async function inspectState(label) {
     cat /etc/machine-id || true
     cat /var/lib/dbus/machine-id || true
     echo '--- chrome-profile'
-    find /home/slice/.config/arroba-slice-chromium -maxdepth 2 -type f 2>/dev/null | sed 's#^#/##' | head -80 || true
+    find /home/slice/.config/chariox-slice-chromium -maxdepth 2 -type f 2>/dev/null | sed 's#^#/##' | head -80 || true
     echo '--- mounts'
     mount | grep -E '/home/slice|/workspace' || true
   `
@@ -465,10 +465,10 @@ async function removeContainerAndHomeVolume() {
 
 async function buildKernel() {
   const manifest = path.join(repoRoot, "apps/kernel/Cargo.toml")
-  const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
-  const result = await runCommand("cargo", ["build", "--manifest-path", manifest, "--bin", "arroba-kernel"], { timeoutMs: 180_000 })
+  const binary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
+  const result = await runCommand("cargo", ["build", "--manifest-path", manifest, "--bin", "chariox-kernel"], { timeoutMs: 180_000 })
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return await resolveBuiltBinary(binary, manifest, "arroba-kernel")
+  return await resolveBuiltBinary(binary, manifest, "chariox-kernel")
 }
 
 async function buildKernelClient() {
@@ -494,11 +494,11 @@ function start(label, command, args, options = {}) {
 }
 
 async function sliceScreen(args) {
-  return await dockerText(["exec", "-u", "slice", containerName, "/opt/arroba-slice/slice-screen.sh", ...args])
+  return await dockerText(["exec", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args])
 }
 
 async function sliceScreenWithStdin(args, stdin) {
-  return await dockerText(["exec", "-i", "-u", "slice", containerName, "/opt/arroba-slice/slice-screen.sh", ...args], { stdin })
+  return await dockerText(["exec", "-i", "-u", "slice", containerName, "/opt/chariox-slice/slice-screen.sh", ...args], { stdin })
 }
 
 async function docker(args) {

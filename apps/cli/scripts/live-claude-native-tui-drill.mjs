@@ -25,7 +25,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const marker = `CLN_${process.pid.toString(36)}_${Date.now().toString(36)}`
 const MAX_LOG_CHARS = 128_000
 
@@ -93,8 +93,8 @@ async function screenQuit(name) {
 }
 
 function nativeTempRootForScreen(screenName) {
-  const suffix = screenName.replace(/^arroba-claude-/, "")
-  return path.join(os.tmpdir(), `arroba-claude-native-${suffix}`)
+  const suffix = screenName.replace(/^chariox-claude-/, "")
+  return path.join(os.tmpdir(), `chariox-claude-native-${suffix}`)
 }
 
 async function waitForNativeEvents(eventsFile, expectedPrompts, timeoutMs = 120_000) {
@@ -250,20 +250,20 @@ async function main() {
   const kernelUrl = `ws://127.0.0.1:${kernelPort}`
   const workspace = repoRoot
   const worktree = repoRoot
-  const screenA = `arroba-claude-a-${process.pid}`
-  const screenB = `arroba-claude-b-${process.pid}`
-  const screenCli = `arroba-claude-cli-${process.pid}`
+  const screenA = `chariox-claude-a-${process.pid}`
+  const screenB = `chariox-claude-b-${process.pid}`
+  const screenCli = `chariox-claude-cli-${process.pid}`
   const logs = {
     aDir: path.join(root, "claude-a-screen"),
     bDir: path.join(root, "claude-b-screen"),
-    cliDir: path.join(root, "arroba-cli-screen"),
+    cliDir: path.join(root, "chariox-cli-screen"),
     a: path.join(root, "claude-a-screen", "screenlog.0"),
     b: path.join(root, "claude-b-screen", "screenlog.0"),
-    cli: path.join(root, "arroba-cli-screen", "screenlog.0"),
+    cli: path.join(root, "chariox-cli-screen", "screenlog.0"),
   }
   const markers = {
-    arrobaA: `${marker}_ARROBA_TO_A`,
-    arrobaB: `${marker}_ARROBA_TO_B`,
+    charioxA: `${marker}_CHARIOX_TO_A`,
+    charioxB: `${marker}_CHARIOX_TO_B`,
     tuiA: `${marker}_TUI_A`,
     tuiB: `${marker}_TUI_B`,
   }
@@ -288,13 +288,13 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `claude-native-tui-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `claude-native-tui-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "pipe", "pipe"],
     })
@@ -323,7 +323,7 @@ async function main() {
       "--initial-prompt",
       `Reply with exactly ${markers.tuiA} and nothing else.`,
     ], process.env)
-    sessionId = (await waitForFileMatch(logs.a, /arroba session:\s+([^\s(]+)/)).match[1]
+    sessionId = (await waitForFileMatch(logs.a, /chariox session:\s+([^\s(]+)/)).match[1]
     innerA = (await waitForFileMatch(logs.a, /screen:\s+([^\s]+)/)).match[1]
     logs.aEvents = path.join(nativeTempRootForScreen(innerA), "events.jsonl")
 
@@ -394,36 +394,36 @@ async function main() {
     }
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt claude-a Reply with exactly ${markers.arrobaA} and nothing else.`,
+      command: `prompt claude-a Reply with exactly ${markers.charioxA} and nothing else.`,
     })
     badgeTransitions["claude-a"].during = await waitForAgentBadgeTone(automationSocket, "claude-a", "working")
     await fireAutomationRequest(automationSocket, {
       action: "workspace_shell_exec",
-      command: `prompt claude-b Reply with exactly ${markers.arrobaB} and nothing else.`,
+      command: `prompt claude-b Reply with exactly ${markers.charioxB} and nothing else.`,
     })
     badgeTransitions["claude-b"].during = await waitForAgentBadgeTone(automationSocket, "claude-b", "working")
 
     const histories = await waitForHistoryMarkers(client, sessionId, attachment.id, agents, {
-      "claude-a": { prompts: [markers.arrobaA, markers.tuiA], outputs: [markers.arrobaA, markers.tuiA] },
-      "claude-b": { prompts: [markers.arrobaB, markers.tuiB], outputs: [markers.arrobaB, markers.tuiB] },
+      "claude-a": { prompts: [markers.charioxA, markers.tuiA], outputs: [markers.charioxA, markers.tuiA] },
+      "claude-b": { prompts: [markers.charioxB, markers.tuiB], outputs: [markers.charioxB, markers.tuiB] },
     })
     badgeTransitions["claude-a"].after = await waitForAgentBadgeTone(automationSocket, "claude-a", "idle")
     badgeTransitions["claude-b"].after = await waitForAgentBadgeTone(automationSocket, "claude-b", "idle")
 
-    if (histories["claude-a"].all.includes(markers.arrobaB) || histories["claude-a"].all.includes(markers.tuiB)) {
+    if (histories["claude-a"].all.includes(markers.charioxB) || histories["claude-a"].all.includes(markers.tuiB)) {
       throw new Error("agent claude-a history was contaminated with claude-b markers")
     }
-    if (histories["claude-b"].all.includes(markers.arrobaA) || histories["claude-b"].all.includes(markers.tuiA)) {
+    if (histories["claude-b"].all.includes(markers.charioxA) || histories["claude-b"].all.includes(markers.tuiA)) {
       throw new Error("agent claude-b history was contaminated with claude-a markers")
     }
 
-    await waitForNativeEvents(logs.aEvents, [markers.tuiA, markers.arrobaA])
-    await waitForNativeEvents(logs.bEvents, [markers.tuiB, markers.arrobaB])
+    await waitForNativeEvents(logs.aEvents, [markers.tuiA, markers.charioxA])
+    await waitForNativeEvents(logs.bEvents, [markers.tuiB, markers.charioxB])
     const stateResponse = await client.send(getSessionStateRequest(sessionId))
     const state = (stateResponse.SessionState ?? stateResponse.SessionStateLoaded).session
     console.log(JSON.stringify({
       status: "ok",
-      architecture: "claude-code native TUI + hooks + Arroba PTY injection",
+      architecture: "claude-code native TUI + hooks + Chariox PTY injection",
       kernelUrl,
       sessionId,
       marker,
@@ -453,7 +453,7 @@ async function main() {
       "claude-a": innerA ? nativeTempRootForScreen(innerA) : null,
       "claude-b": innerB ? nativeTempRootForScreen(innerB) : null,
     }
-    if (passed && process.env.ARROBA_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
+    if (passed && process.env.CHARIOX_KEEP_NATIVE_PROXY_DRILL_ARTIFACTS === "1") {
       console.log(JSON.stringify({ status: "kept-artifacts", root, automationSocket, innerRoots }))
     } else {
       await finalizeDrillArtifacts({

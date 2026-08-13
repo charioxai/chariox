@@ -7,14 +7,14 @@ import type {
   PromptMetaPart,
   PromptUsageMeta,
   PromptMetaStateOptions,
-} from "@arroba/kernel-client/prompt-meta"
+} from "@chariox/kernel-client/prompt-meta"
 import {
   derivePromptMetaState,
   derivePromptUsageState,
-} from "@arroba/kernel-client/prompt-meta"
+} from "@chariox/kernel-client/prompt-meta"
 import {
   derivePromptProviderSelection,
-} from "@arroba/kernel-client/prompt-provider-selection"
+} from "@chariox/kernel-client/prompt-provider-selection"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 
 export type ProviderPromptProjectionDefaults = {

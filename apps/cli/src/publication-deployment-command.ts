@@ -22,7 +22,7 @@ export async function runPublicationDeploymentCommand(argv: readonly string[]): 
   const command = argv[1]
   if (command === "deploy") {
     const packagePath = argv[2]
-    if (!packagePath) throw new Error("usage: arroba publication deploy <package-dir|publication.json> --mode local-runtime|hosted-container")
+    if (!packagePath) throw new Error("usage: chariox publication deploy <package-dir|publication.json> --mode local-runtime|hosted-container")
     const options = parseDeployOptions(argv.slice(3))
     const deployment = await createPublicationDeploymentFromPackage({
       profile,
@@ -42,7 +42,7 @@ export async function runPublicationDeploymentCommand(argv: readonly string[]): 
     await runDeploymentsCommand(profile, argv.slice(2))
     return true
   }
-  throw new Error("usage: arroba publication deploy|deployments")
+  throw new Error("usage: chariox publication deploy|deployments")
 }
 
 async function runDeploymentsCommand(
@@ -58,7 +58,7 @@ async function runDeploymentsCommand(
     return
   }
   const deploymentId = argv[1]
-  if (!deploymentId) throw new Error("usage: arroba publication deployments show|logs|stop|restart <deployment-id>; reupload <deployment-id> <package-dir|publication.json>")
+  if (!deploymentId) throw new Error("usage: chariox publication deployments show|logs|stop|restart <deployment-id>; reupload <deployment-id> <package-dir|publication.json>")
   if (command === "show") {
     process.stdout.write(JSON.stringify(await getPublicationDeployment(profile, deploymentId), null, 2) + "\n")
     return
@@ -77,7 +77,7 @@ async function runDeploymentsCommand(
   }
   if (command === "reupload") {
     const packagePath = argv[2]
-    if (!packagePath) throw new Error("usage: arroba publication deployments reupload <deployment-id> <package-dir|publication.json>")
+    if (!packagePath) throw new Error("usage: chariox publication deployments reupload <deployment-id> <package-dir|publication.json>")
     const deployment = await reuploadPublicationDeploymentPackage({ profile, deploymentId, packagePath })
     process.stdout.write([
       `package reuploaded for ${deployment.id}`,
@@ -85,7 +85,7 @@ async function runDeploymentsCommand(
     ].join("\n") + "\n")
     return
   }
-  throw new Error("usage: arroba publication deployments list|show|logs|stop|restart|reupload")
+  throw new Error("usage: chariox publication deployments list|show|logs|stop|restart|reupload")
 }
 
 export function formatPublicationDeploymentListRow(deployment: PublicationDeploymentSummary): string {
@@ -125,7 +125,7 @@ export function formatPublicationDeploymentDeployOutput(
   return [
     ...formatPublicationDeploymentSummary(deployment),
     publicDeploymentWarning(),
-    options.includeServeInstruction ? `serve arroba serve ${options.packagePath} <port> --cloud-deployment ${deployment.id}` : null,
+    options.includeServeInstruction ? `serve chariox serve ${options.packagePath} <port> --cloud-deployment ${deployment.id}` : null,
   ].filter(Boolean).join("\n")
 }
 
@@ -176,7 +176,7 @@ function parseDeployOptions(argv: readonly string[]): {
       throw new Error(`unknown publication deploy option ${arg}`)
     }
   }
-  if (!mode) throw new Error("arroba publication deploy requires --mode local-runtime|hosted-container")
+  if (!mode) throw new Error("chariox publication deploy requires --mode local-runtime|hosted-container")
   return {
     mode,
     ...(slug !== undefined ? { slug } : {}),

@@ -70,7 +70,7 @@ export async function writeFailureManifest(file, {
 } = {}) {
   await mkdir(path.dirname(file), { recursive: true })
   await writeFile(file, `${JSON.stringify({
-    schema: "arroba.drill.failure.v1",
+    schema: "chariox.drill.failure.v1",
     rootDir: path.dirname(file),
     failedAt,
     metadata: { drill },
@@ -89,7 +89,7 @@ export function matrixReport(overrides = {}) {
   const status = overrides.status ?? (scenarios.some((entry) => entry.status === "failed") ? "failed" : "passed")
   const dryRun = overrides.dryRun ?? false
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "test-matrix",
     status,
     dryRun,

@@ -9,7 +9,7 @@ import {
   type SessionConfigState,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 import {
   getProviderAuthStatusRequest,
   getProviderCatalogRequest,
@@ -34,7 +34,7 @@ import {
 } from "./provider-command-catalog.js"
 import { describeCliError } from "./runtime.js"
 
-export async function getProviderCatalog(client: LocalIpcClient, logger?: ArrobaLogger | null): Promise<ProviderCatalog> {
+export async function getProviderCatalog(client: LocalIpcClient, logger?: CharioxLogger | null): Promise<ProviderCatalog> {
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest())
     const payload = expectVariant<{ catalog: ProviderCatalog }>(response, "ProviderCatalog")
@@ -55,7 +55,7 @@ export async function getProviderCatalog(client: LocalIpcClient, logger?: Arroba
 
 export async function getProviderCommandCatalogs(
   client: LocalIpcClient,
-  logger?: ArrobaLogger | null,
+  logger?: CharioxLogger | null,
 ): Promise<ProviderCommandCatalogs> {
   try {
     const response = await client.send<Record<string, unknown>>(getProviderCommandCatalogsRequest())
@@ -112,7 +112,7 @@ export async function getProviderRun(client: LocalIpcClient, providerRunId: stri
 export async function tryGetProviderRun(
   client: LocalIpcClient,
   providerRunId: string,
-  logger?: ArrobaLogger | null,
+  logger?: CharioxLogger | null,
 ): Promise<RuntimeProviderRun | null> {
   try {
     return await getProviderRun(client, providerRunId)
@@ -213,7 +213,7 @@ export async function logoutProvider(
   return expectVariant<ProviderLogoutResult>(response, "ProviderLoggedOut")
 }
 
-export { sameProviderRun } from "@arroba/kernel-client/session-runtime-lookup"
+export { sameProviderRun } from "@chariox/kernel-client/session-runtime-lookup"
 
 export function providerRunUsesNativeTui(run: RuntimeProviderRun | null | undefined): boolean {
   return run?.client_interface === "native_tui"

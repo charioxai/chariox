@@ -11,23 +11,23 @@ test("hosted kernels keep state isolated while preserving explicit provider home
   const source = {
     HOME: "/real-home",
     CODEX_HOME: "/real-codex",
-    ARROBA_CLOUD_DEV_AUTH_SECRET: "test-secret",
+    CHARIOX_CLOUD_DEV_AUTH_SECRET: "test-secret",
   }
   const isolated = withHostedKernelIsolation(source, {
     homeDir: "/tmp/drill/home",
-    arrobaHome: "/tmp/drill/home/.arroba",
+    charioxHome: "/tmp/drill/home/.chariox",
     xdgConfigHome: "/tmp/drill/home/.config",
     xdgStateHome: "/tmp/drill/home/.local/state",
     xdgRuntimeDir: "/tmp/drill/home/run",
   })
 
   assert.equal(isolated.HOME, "/tmp/drill/home")
-  assert.equal(isolated.ARROBA_HOME, "/tmp/drill/home/.arroba")
+  assert.equal(isolated.CHARIOX_HOME, "/tmp/drill/home/.chariox")
   assert.equal(isolated.XDG_CONFIG_HOME, "/tmp/drill/home/.config")
   assert.equal(isolated.XDG_STATE_HOME, "/tmp/drill/home/.local/state")
   assert.equal(isolated.XDG_RUNTIME_DIR, "/tmp/drill/home/run")
   assert.equal(isolated.CODEX_HOME, "/real-codex")
-  assert.equal(isolated.ARROBA_CLOUD_DEV_AUTH_SECRET, "test-secret")
+  assert.equal(isolated.CHARIOX_CLOUD_DEV_AUTH_SECRET, "test-secret")
   assert.equal(source.HOME, "/real-home")
 })
 
@@ -35,7 +35,7 @@ test("hosted home-proxy runs use an idle managed provider model", () => {
   assert.equal(HOSTED_HOME_PROXY_MODEL, "native-tui-idle")
 })
 
-test("hosted home-proxy runtime starts through the Arroba prompt path", async () => {
+test("hosted home-proxy runtime starts through the Chariox prompt path", async () => {
   const sent = []
   const requests = {
     submitPromptRequest(sessionId, attachmentId, agentId, prompt, attachments) {

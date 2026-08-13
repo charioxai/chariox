@@ -1,28 +1,28 @@
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 import type {
   ExternalProviderSessionCapabilities,
   ExternalProviderSessionRecord,
-} from "@arroba/kernel-client/external-provider-sessions"
-import type { QueuedPromptTranscriptMetadata as KernelQueuedPromptTranscriptMetadata } from "@arroba/kernel-client/queued-prompt-strip-state"
-import type { SessionHistoryCursorSelection as KernelSessionHistoryCursorSelection } from "@arroba/kernel-client/session-history-outline"
-import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@arroba/kernel-client/session-history-transcript"
+} from "@chariox/kernel-client/external-provider-sessions"
+import type { QueuedPromptTranscriptMetadata as KernelQueuedPromptTranscriptMetadata } from "@chariox/kernel-client/queued-prompt-strip-state"
+import type { SessionHistoryCursorSelection as KernelSessionHistoryCursorSelection } from "@chariox/kernel-client/session-history-outline"
+import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@chariox/kernel-client/session-history-transcript"
 import type {
   AgentInstance as KernelAgentInstance,
   AgentSubstituteProfile as KernelAgentSubstituteProfile,
   AgentSubstitutionRecord as KernelAgentSubstitutionRecord,
-  ArrobaConnectorAdapterDefinition as KernelArrobaConnectorAdapterDefinition,
-  ArrobaConnectorDefinition as KernelArrobaConnectorDefinition,
-  ArrobaCredentialConfig as KernelArrobaCredentialConfig,
-  ArrobaEnvironmentConfig as KernelArrobaEnvironmentConfig,
-  ArrobaMcpServerConfig as KernelArrobaMcpServerConfig,
-  ArrobaScriptMetadata as KernelArrobaScriptMetadata,
-  ArrobaSkillMetadata as KernelArrobaSkillMetadata,
-  ArrobaUserConfig as KernelArrobaUserConfig,
-  ArrobaUserConfigPayload as KernelArrobaUserConfigPayload,
-  ArrobaUserConfigSchemaPayload as KernelArrobaUserConfigSchemaPayload,
+  CharioxConnectorAdapterDefinition as KernelCharioxConnectorAdapterDefinition,
+  CharioxConnectorDefinition as KernelCharioxConnectorDefinition,
+  CharioxCredentialConfig as KernelCharioxCredentialConfig,
+  CharioxEnvironmentConfig as KernelCharioxEnvironmentConfig,
+  CharioxMcpServerConfig as KernelCharioxMcpServerConfig,
+  CharioxScriptMetadata as KernelCharioxScriptMetadata,
+  CharioxSkillMetadata as KernelCharioxSkillMetadata,
+  CharioxUserConfig as KernelCharioxUserConfig,
+  CharioxUserConfigPayload as KernelCharioxUserConfigPayload,
+  CharioxUserConfigSchemaPayload as KernelCharioxUserConfigSchemaPayload,
   CollaborationLevel as KernelCollaborationLevel,
   AgentPromptState as KernelAgentPromptState,
   AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
@@ -126,13 +126,13 @@ import type {
   WorkspaceLiveSyncPathApplyResult as KernelWorkspaceLiveSyncPathApplyResult,
   WorkspaceLiveSyncStatus as KernelWorkspaceLiveSyncStatus,
   WorkspaceLiveSyncTargetStatus as KernelWorkspaceLiveSyncTargetStatus,
-} from "@arroba/kernel-client/kernel-types"
+} from "@chariox/kernel-client/kernel-types"
 import {
   normalizeAgentPromptState as normalizeKernelAgentPromptState,
   normalizeRuntimeSession as normalizeKernelRuntimeSession,
   normalizeRuntimeSessions as normalizeKernelRuntimeSessions,
   normalizeRuntimeSessionWithAgentActivity as normalizeKernelRuntimeSessionWithAgentActivity,
-} from "@arroba/kernel-client/runtime-session-normalization"
+} from "@chariox/kernel-client/runtime-session-normalization"
 import type { ThemeRegistry } from "./theme-registry.js"
 import type { DirectoryTreeEntry } from "./tree-view.js"
 
@@ -141,23 +141,23 @@ export type {
   ExternalProviderSessionRecord,
 }
 
-export type ArrobaMcpServerConfig = KernelArrobaMcpServerConfig
+export type CharioxMcpServerConfig = KernelCharioxMcpServerConfig
 
 export type McpImportSkip = KernelMcpImportSkip
 
 export type McpImportOutcome = KernelMcpImportOutcome
 
-export type ArrobaSkillMetadata = KernelArrobaSkillMetadata
+export type CharioxSkillMetadata = KernelCharioxSkillMetadata
 
-export type ArrobaEnvironmentConfig = KernelArrobaEnvironmentConfig
+export type CharioxEnvironmentConfig = KernelCharioxEnvironmentConfig
 
-export type ArrobaScriptMetadata = KernelArrobaScriptMetadata
+export type CharioxScriptMetadata = KernelCharioxScriptMetadata
 
-export type ArrobaConnectorDefinition = KernelArrobaConnectorDefinition
+export type CharioxConnectorDefinition = KernelCharioxConnectorDefinition
 
-export type ArrobaConnectorAdapterDefinition = KernelArrobaConnectorAdapterDefinition
+export type CharioxConnectorAdapterDefinition = KernelCharioxConnectorAdapterDefinition
 
-export type ArrobaCredentialConfig = KernelArrobaCredentialConfig
+export type CharioxCredentialConfig = KernelCharioxCredentialConfig
 
 export type ExtensionKind = KernelExtensionKind
 
@@ -254,11 +254,11 @@ export type RuntimeInteractionCustomChoice = KernelRuntimeInteractionCustomChoic
 
 export type SessionConfigState = KernelSessionConfigState
 
-export type ArrobaUserConfig = KernelArrobaUserConfig
+export type CharioxUserConfig = KernelCharioxUserConfig
 
-export type ArrobaUserConfigPayload = KernelArrobaUserConfigPayload
+export type CharioxUserConfigPayload = KernelCharioxUserConfigPayload
 
-export type ArrobaUserConfigSchemaPayload = KernelArrobaUserConfigSchemaPayload
+export type CharioxUserConfigSchemaPayload = KernelCharioxUserConfigSchemaPayload
 
 export type UserConfigSchemaEntry = KernelUserConfigSchemaEntry
 
@@ -441,7 +441,7 @@ export type BootstrapState = {
   providerCommandCatalogs: ProviderCommandCatalogs
   terminalCommandCatalog: TerminalCommandCatalog | null
   options: CliOptions
-  preferences: ArrobaPreferences
+  preferences: CharioxPreferences
   themeRegistry?: ThemeRegistry
   deferred?: BootstrapDeferredState
 }

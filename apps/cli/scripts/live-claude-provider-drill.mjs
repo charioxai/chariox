@@ -136,12 +136,12 @@ async function loadCliModules(runtimeDir) {
 }
 
 async function resolveKernelBinary() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
   try {
     await access(binary)
     return binary
   } catch {
-    throw new Error(`missing built kernel binary ${binary}; run cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel first`)
+    throw new Error(`missing built kernel binary ${binary}; run cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel first`)
   }
 }
 
@@ -346,7 +346,7 @@ async function main() {
   await rm(runtimeDir, { recursive: true, force: true }).catch(() => {})
   await mkdir(worktree, { recursive: true })
 
-  const marker = `ARROBA_CLAUDE_DRILL_${process.pid}_${Date.now()}`
+  const marker = `CHARIOX_CLAUDE_DRILL_${process.pid}_${Date.now()}`
   const fixture = promptFixture(options.scenario, marker)
 
   let LocalIpcClient = null
@@ -376,13 +376,13 @@ async function main() {
         env: {
           ...process.env,
           HOME: process.env.HOME,
-          ARROBA_KERNEL_PORT: String(kernelPort),
-          ARROBA_MCP_PORT: String(kernelPort + 1000),
-          ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-          ARROBA_CODEX_PORT: String(kernelPort + 2001),
-          ARROBA_DAEMON_ID: `claude-provider-drill-${process.pid}-${Date.now()}`,
-          ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-          ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+          CHARIOX_KERNEL_PORT: String(kernelPort),
+          CHARIOX_MCP_PORT: String(kernelPort + 1000),
+          CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+          CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+          CHARIOX_DAEMON_ID: `claude-provider-drill-${process.pid}-${Date.now()}`,
+          CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+          CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       })

@@ -146,12 +146,12 @@ export async function resetTrackedWorkspace(workspace) {
 export async function runAfterFixtureCommand(command, context) {
   const env = {
     ...process.env,
-    ARROBA_WORKSPACE_LIVE_SYNC_ROOT: context.rootDir,
-    ARROBA_WORKSPACE_LIVE_SYNC_WORKSPACE: context.workspace,
-    ARROBA_WORKSPACE_LIVE_SYNC_SIBLING_WORKSPACE: context.siblingWorkspace,
-    ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACE: context.targetWorkspace,
-    ARROBA_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACES: JSON.stringify(context.targetWorkspaces),
-    ARROBA_WORKSPACE_LIVE_SYNC_MODE: context.mode,
+    CHARIOX_WORKSPACE_LIVE_SYNC_ROOT: context.rootDir,
+    CHARIOX_WORKSPACE_LIVE_SYNC_WORKSPACE: context.workspace,
+    CHARIOX_WORKSPACE_LIVE_SYNC_SIBLING_WORKSPACE: context.siblingWorkspace,
+    CHARIOX_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACE: context.targetWorkspace,
+    CHARIOX_WORKSPACE_LIVE_SYNC_TARGET_WORKSPACES: JSON.stringify(context.targetWorkspaces),
+    CHARIOX_WORKSPACE_LIVE_SYNC_MODE: context.mode,
   }
   await new Promise((resolve, reject) => {
     const child = spawn('bash', ['-lc', command], { env, stdio: ['ignore', 'inherit', 'pipe'] })
@@ -203,21 +203,21 @@ export function modelForProvider(provider, options) {
 export function workspaceLiveSyncToolNames(provider) {
   if (provider === 'opencode') {
     return {
-      read: 'arroba_read_artifact',
-      write: 'arroba_write_artifact',
-      edit: 'arroba_edit_artifact',
-      applyPatch: 'arroba_patch_artifact',
-      delete: 'arroba_delete_artifact',
-      move: 'arroba_move_artifact',
+      read: 'chariox_read_artifact',
+      write: 'chariox_write_artifact',
+      edit: 'chariox_edit_artifact',
+      applyPatch: 'chariox_patch_artifact',
+      delete: 'chariox_delete_artifact',
+      move: 'chariox_move_artifact',
     }
   }
   return {
-    read: 'arroba.read_artifact',
-    write: 'arroba.write_artifact',
-    edit: 'arroba.edit_artifact',
-    applyPatch: 'mcp__arroba__patch_artifact',
-    delete: 'arroba.delete_artifact',
-    move: 'arroba.move_artifact',
+    read: 'chariox.read_artifact',
+    write: 'chariox.write_artifact',
+    edit: 'chariox.edit_artifact',
+    applyPatch: 'mcp__chariox__patch_artifact',
+    delete: 'chariox.delete_artifact',
+    move: 'chariox.move_artifact',
   }
 }
 

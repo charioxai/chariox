@@ -1,4 +1,4 @@
-export * from "@arroba/kernel-client/ipc-requests";
+export * from "@chariox/kernel-client/ipc-requests";
 export function listExternalProviderSessionsRequest(options = {}) {
   return {
     ListExternalProviderSessions: {

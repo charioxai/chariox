@@ -4,8 +4,8 @@ import {
   compactTranscriptDisplayEntries,
   projectCompactTranscriptDisplayState,
   type TranscriptDisplayProjection,
-} from "@arroba/kernel-client/transcript-display-state"
-import { stitchPrependedHistoryTranscript } from "@arroba/kernel-client/session-history-transcript"
+} from "@chariox/kernel-client/transcript-display-state"
+import { stitchPrependedHistoryTranscript } from "@chariox/kernel-client/session-history-transcript"
 
 export type PrimaryTranscriptEntryScrollbox = {
   scrollTop: number

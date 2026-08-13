@@ -1,4 +1,4 @@
-import type { KernelEvent } from "@arroba/kernel-client/kernel-events"
+import type { KernelEvent } from "@chariox/kernel-client/kernel-events"
 
 import type { LocalIpcClient } from "./ipc.js"
 

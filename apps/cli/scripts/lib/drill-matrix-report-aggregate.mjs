@@ -160,7 +160,7 @@ export function validateDrillMatrixAggregate(aggregate) {
   if (!aggregate || typeof aggregate !== "object") {
     throw new Error("aggregate is not an object")
   }
-  if (aggregate.schema !== "arroba.drill.matrix.aggregate.v1") {
+  if (aggregate.schema !== "chariox.drill.matrix.aggregate.v1") {
     throw new Error(`aggregate has unsupported schema ${JSON.stringify(aggregate.schema)}`)
   }
   validateDrillMatrixReportStatus(aggregate.status, "aggregate")

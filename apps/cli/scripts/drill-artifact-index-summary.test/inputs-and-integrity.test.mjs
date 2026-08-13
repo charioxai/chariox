@@ -15,9 +15,9 @@ import {
 } from '../drill-artifact-index-summary.test-support.mjs'
 
 test("drill artifact index summary accepts explicit index paths", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
 
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -46,9 +46,9 @@ test("drill artifact index summary rejects empty inputs", async () => {
 })
 
 test("drill artifact index summary rejects tampered artifacts", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-artifact-index-summary-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-artifact-index-summary-"))
   try {
-    const indexPath = await writeIndexedReport(rootDir, "one", "arroba.drill.validation_gate.v1")
+    const indexPath = await writeIndexedReport(rootDir, "one", "chariox.drill.validation_gate.v1")
     await writeFile(path.join(rootDir, "one", "reports", "report.json"), "{\"schema\":\"tampered\"}\n", "utf8")
 
     await assert.rejects(

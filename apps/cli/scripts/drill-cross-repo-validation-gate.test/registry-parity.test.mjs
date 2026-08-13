@@ -28,9 +28,9 @@ import {
 } from '../drill-cross-repo-validation-gate.test-support.mjs'
 
 test("cross repo validation gate checks chaos contract registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeCloudChaosContractRegistry(cloudRoot)
@@ -52,9 +52,9 @@ test("cross repo validation gate checks chaos contract registry parity", async (
 })
 
 test("cross repo validation gate rejects chaos contract registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillChaosContractManifest()
     await writeCloudChaosContractRegistry(cloudRoot, {
       ...manifest,
@@ -83,9 +83,9 @@ test("cross repo validation gate rejects chaos contract registry drift", async (
 })
 
 test("cross repo validation gate checks generated matrix registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeCloudGeneratedMatrixRegistry(cloudRoot)
@@ -108,9 +108,9 @@ test("cross repo validation gate checks generated matrix registry parity", async
 })
 
 test("cross repo validation gate rejects generated matrix registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     await writeCloudGeneratedMatrixRegistry(cloudRoot, {
       matrices: [
         { name: "cloud-slice-runtime-matrix", repo: "cloud" },
@@ -140,9 +140,9 @@ test("cross repo validation gate rejects generated matrix registry drift", async
 })
 
 test("cross repo validation gate checks runtime signal registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeCloudRuntimeSignalsRegistry(cloudRoot)
@@ -165,9 +165,9 @@ test("cross repo validation gate checks runtime signal registry parity", async (
 })
 
 test("cross repo validation gate checks runtime authority registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeCloudRuntimeAuthorityRegistry(cloudRoot)
@@ -190,9 +190,9 @@ test("cross repo validation gate checks runtime authority registry parity", asyn
 })
 
 test("cross repo validation gate checks failure taxonomy registry parity", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeCloudFailureTaxonomyRegistry(cloudRoot)
@@ -215,9 +215,9 @@ test("cross repo validation gate checks failure taxonomy registry parity", async
 })
 
 test("cross repo validation gate rejects failure taxonomy registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillFailureTaxonomyManifest()
     await writeCloudFailureTaxonomyRegistry(cloudRoot, {
       classifications: [
@@ -252,9 +252,9 @@ test("cross repo validation gate rejects failure taxonomy registry drift", async
 })
 
 test("cross repo validation gate rejects runtime signal registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillRuntimeSignalsManifest()
     await writeCloudRuntimeSignalsRegistry(cloudRoot, {
       signals: manifest.signals.map((signal) => signal.id === "workspace-live-sync-state"
@@ -284,9 +284,9 @@ test("cross repo validation gate rejects runtime signal registry drift", async (
 })
 
 test("cross repo validation gate rejects runtime authority registry drift", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const manifest = drillRuntimeAuthorityManifest()
     await writeCloudRuntimeAuthorityRegistry(cloudRoot, {
       invariants: manifest.invariants.map((invariant) => invariant.id === "home-session-authority"

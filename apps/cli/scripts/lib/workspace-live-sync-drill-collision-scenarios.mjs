@@ -49,8 +49,8 @@ export async function runLiveCollisionAndExternalChecks({
     const overlapSameAreaReadStartedAt = Date.now()
     for (const [editAgent, label] of [[agent, 'A'], [collider, 'B']]) {
       await client.send(submitPromptRequest(session.id, attachment.id, editAgent.id, [
-        'This is a live Arroba workspace live sync overlapping-writer drill.',
-        'Use only Arroba workspace live sync. Do not use shell commands or native filesystem writes.',
+        'This is a live Chariox workspace live sync overlapping-writer drill.',
+        'Use only Chariox workspace live sync. Do not use shell commands or native filesystem writes.',
         `First call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","domain":"text"}.`,
         `Then reply exactly ${provider.toUpperCase()}_OVERLAP_${label}_READ_DONE.`,
       ].join('\n'), []))
@@ -77,8 +77,8 @@ export async function runLiveCollisionAndExternalChecks({
     for (const [editAgent, label, newText] of [[agent, 'A', firstNewText], [collider, 'B', secondNewText]]) {
       const snapshotId = snapshotByAgentId.get(editAgent.id) ?? overlapReadSnapshots[0]?.snapshot_id
       const prompt = [
-        'Continue the live Arroba workspace live sync overlapping-writer drill.',
-        'Use only Arroba workspace live sync. Do not use shell commands or native filesystem writes.',
+        'Continue the live Chariox workspace live sync overlapping-writer drill.',
+        'Use only Chariox workspace live sync. Do not use shell commands or native filesystem writes.',
         'Do not read, reread, or retry.',
         'Do not include a range field.',
         `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-overlap.txt","old_text":"TARGET","new_text":${JSON.stringify(newText)},"domain":"text","snapshot_id":${JSON.stringify(snapshotId)}}.`,
@@ -158,8 +158,8 @@ export async function runLiveCollisionAndExternalChecks({
     await writeFile(nonOverlapPath, nonOverlapBase, 'utf8')
     const nonOverlapReadStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-      'This is a live Arroba workspace live sync external non-overlap drill.',
-      'Use only Arroba workspace live sync.',
+      'This is a live Chariox workspace live sync external non-overlap drill.',
+      'Use only Chariox workspace live sync.',
       `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","domain":"text"}.`,
       `Remember the returned snapshot_id for the next turn. Then reply exactly ${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_READ_DONE.`,
     ].join('\n'), []))
@@ -202,7 +202,7 @@ export async function runLiveCollisionAndExternalChecks({
     const nonOverlapEditStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'Continue the external non-overlap drill.',
-      'Use only Arroba workspace live sync. Do not reread the artifact.',
+      'Use only Chariox workspace live sync. Do not reread the artifact.',
       `Use this exact snapshot_id: ${nonOverlapRead.snapshot_id}`,
       `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-nonoverlap.txt","old_text":"TARGET","new_text":"REPLACED","domain":"text","snapshot_id":${JSON.stringify(nonOverlapRead.snapshot_id)}}.`,
       `Then reply exactly ${provider.toUpperCase()}_EXTERNAL_NONOVERLAP_EDIT_DONE.`,
@@ -246,8 +246,8 @@ export async function runLiveCollisionAndExternalChecks({
     await writeFile(overlapExternalPath, externalOverlapBase, 'utf8')
     const overlapReadStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
-      'This is a live Arroba workspace live sync external overlap drill.',
-      'Use only Arroba workspace live sync.',
+      'This is a live Chariox workspace live sync external overlap drill.',
+      'Use only Chariox workspace live sync.',
       `Call \`${tools.read}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","domain":"text"}.`,
       `Remember the returned snapshot_id for the next turn. Then reply exactly ${provider.toUpperCase()}_EXTERNAL_OVERLAP_READ_DONE.`,
     ].join('\n'), []))
@@ -290,7 +290,7 @@ export async function runLiveCollisionAndExternalChecks({
     const overlapEditStartedAt = Date.now()
     await client.send(submitPromptRequest(session.id, attachment.id, agent.id, [
       'Continue the external overlap drill.',
-      'Use only Arroba workspace live sync. Do not reread the artifact and do not retry if rejected.',
+      'Use only Chariox workspace live sync. Do not reread the artifact and do not retry if rejected.',
       `Use this exact snapshot_id: ${overlapRead.snapshot_id}`,
       `Call \`${tools.edit}\` exactly once with JSON arguments {"path":"outputs/${provider}-external-overlap.txt","old_text":"TARGET","new_text":"AGENT","domain":"text","snapshot_id":${JSON.stringify(overlapRead.snapshot_id)}}.`,
       `Then reply exactly ${provider.toUpperCase()}_EXTERNAL_OVERLAP_BLOCKED if rejected, or ${provider.toUpperCase()}_EXTERNAL_OVERLAP_UNEXPECTED_APPLIED if applied.`,

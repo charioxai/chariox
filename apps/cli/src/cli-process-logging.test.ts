@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert"
 import test from "node:test"
 
-import type { ArrobaLogger } from "./logging.js"
+import type { CharioxLogger } from "./logging.js"
 import {
   createCliProcessLoggerRegistry,
   formatCliError,
@@ -14,7 +14,7 @@ test("CLI process logger registry returns child loggers after initialization", (
       children.push({ component, fields })
       return rootLogger
     },
-  } as unknown as ArrobaLogger
+  } as unknown as CharioxLogger
   const registry = createCliProcessLoggerRegistry({
     createLogger: () => rootLogger,
   })

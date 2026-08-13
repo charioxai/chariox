@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
 import { createStatusIndicatorController } from "./status-indicator-controller.js"
 
 test("status indicator controller logs and renders attached badges", () => {

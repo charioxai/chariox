@@ -5,7 +5,7 @@ import {
   externalProviderSessionPageSessions,
   externalProviderSessionSelectionIndex,
   externalProviderSessionTitle,
-} from "@arroba/kernel-client/external-provider-sessions"
+} from "@chariox/kernel-client/external-provider-sessions"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState } from "./waiting-room-types.js"
 
 const TITLE_MIN_WIDTH = 24

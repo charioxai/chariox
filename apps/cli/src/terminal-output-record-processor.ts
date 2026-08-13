@@ -1,5 +1,5 @@
 import type { TerminalOutputRecord } from "./cli-types.js"
-import { terminalRecordPromptHistoryText } from "@arroba/kernel-client/terminal-record-transcript"
+import { terminalRecordPromptHistoryText } from "@chariox/kernel-client/terminal-record-transcript"
 
 export type TerminalOutputRecordProcessorDeps = {
   appendPromptEchoToSharedHistory: (text: string) => void

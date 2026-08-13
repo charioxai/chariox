@@ -4,7 +4,7 @@ import {
   TextRenderable,
 } from "@opentui/core"
 
-import type { SessionFocusedStatusBadge } from "@arroba/kernel-client/session-runtime-status"
+import type { SessionFocusedStatusBadge } from "@chariox/kernel-client/session-runtime-status"
 import { renderStatusBadgeParts } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 

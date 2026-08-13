@@ -1,5 +1,5 @@
 export const DRILL_GENERATED_MATRIX_LIMITATIONS = Object.freeze(["dry-run-classification-coverage"])
-export const DRILL_GENERATED_MATRIX_LIMITATIONS_SCHEMA = "arroba.drill.generated_matrix_limitations.v1"
+export const DRILL_GENERATED_MATRIX_LIMITATIONS_SCHEMA = "chariox.drill.generated_matrix_limitations.v1"
 
 export function drillGeneratedMatrixLimitationsManifest() {
   return {

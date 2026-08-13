@@ -3,7 +3,7 @@ import type {
   TerminalCommandCatalogExecutionTarget,
   TerminalCommandCatalogNode,
   TerminalCommandCatalogSurface,
-} from "@arroba/kernel-client/kernel-types"
+} from "@chariox/kernel-client/kernel-types"
 import type { CommandNode } from "./command-center-tree-projection.js"
 
 export type TerminalCommandCatalogProjectionOptions = {

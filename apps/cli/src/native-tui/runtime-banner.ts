@@ -8,18 +8,18 @@ import {
   formatExtensionAuthorityBoundaryDetail,
   formatExtensionGrantPlacement,
   formatExtensionGrantRuntimeDetail,
-} from "@arroba/kernel-client/extension-grant-placement"
-import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@arroba/kernel-client/shell-capability-format"
+} from "@chariox/kernel-client/extension-grant-placement"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@chariox/kernel-client/shell-capability-format"
 import {
   formatSliceProviderAccounts,
   formatSliceProviderAuthReadiness,
   formatSliceProviderList,
   formatSliceScope,
   sliceProviderAuthCoverage,
-} from "@arroba/kernel-client/slice-format"
-import { formatWorkspaceLiveSyncModeLabel } from "@arroba/kernel-client/workspace-live-sync-mode"
-import { providerRunRecoveryActions } from "@arroba/kernel-client/provider-run-recovery"
-import { formatSessionHomeKernelLabel } from "@arroba/kernel-client/session-runtime-labels"
+} from "@chariox/kernel-client/slice-format"
+import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
+import { providerRunRecoveryActions } from "@chariox/kernel-client/provider-run-recovery"
+import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
 
 export type NativeTuiRuntimeBannerInput = {
   readonly surface: string
@@ -40,9 +40,9 @@ export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput)
   const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])
   const remoteNativeRun = isRemoteNativeRun(input.agent, input.run ?? null)
   return [
-    `[arroba ${input.surface}]`,
-    `  arroba session: ${formatSession(input.session)}`,
-    `  arroba agent:   ${formatAgent(input.agent)}`,
+    `[chariox ${input.surface}]`,
+    `  chariox session: ${formatSession(input.session)}`,
+    `  chariox agent:   ${formatAgent(input.agent)}`,
     `  home kernel:    ${formatHomeKernel(input.session)}`,
     ...formatSessionOwnerLines(input.session),
     `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,

@@ -5,7 +5,7 @@ import { freePort, logStep, run, startProcess, stopProcess, withTimeout } from '
 
 export async function findChromeExecutable() {
   const candidates = [
-    process.env.ARROBA_CHROME_PATH,
+    process.env.CHARIOX_CHROME_PATH,
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'google-chrome',
     'chromium',
@@ -225,7 +225,7 @@ export async function captureBrowserScreenshot(cdp, label) {
 }
 
 export async function preserveVisualArtifact(sourcePath, fileName) {
-  const targetRoot = process.env.ARROBA_PUBLICATION_VISUAL_ARTIFACTS_DIR
+  const targetRoot = process.env.CHARIOX_PUBLICATION_VISUAL_ARTIFACTS_DIR
   if (!targetRoot) return
   await mkdir(targetRoot, { recursive: true })
   await cp(sourcePath, path.join(targetRoot, fileName), { force: true })
@@ -686,8 +686,8 @@ export async function waitForBrowserFinalOutput(cdp, timeoutMs = 30_000) {
       expression: `(() => {
         const status = document.querySelector('#status')?.textContent?.trim() || '';
         const output = document.querySelector('#output')?.textContent?.trim() || '';
-        const statuses = Array.isArray(window.__arrobaPublicationDrillStatuses) ? window.__arrobaPublicationDrillStatuses : [];
-        const outputs = Array.isArray(window.__arrobaPublicationDrillOutputs) ? window.__arrobaPublicationDrillOutputs : [];
+        const statuses = Array.isArray(window.__charioxPublicationDrillStatuses) ? window.__charioxPublicationDrillStatuses : [];
+        const outputs = Array.isArray(window.__charioxPublicationDrillOutputs) ? window.__charioxPublicationDrillOutputs : [];
         return { status, output, statuses, outputs, title: document.title, ok: status === 'Completed' && output.includes('"value":1842') };
       })()`,
     })
@@ -719,11 +719,11 @@ export function browserStatusRecorderScript() {
       let lastOutput = null;
       const NativeEventSource = window.EventSource;
       const NativeWebSocket = window.WebSocket;
-      Object.defineProperty(window, '__arrobaPublicationDrillStatuses', {
+      Object.defineProperty(window, '__charioxPublicationDrillStatuses', {
         value: statuses,
         configurable: true,
       });
-      Object.defineProperty(window, '__arrobaPublicationDrillOutputs', {
+      Object.defineProperty(window, '__charioxPublicationDrillOutputs', {
         value: outputs,
         configurable: true,
       });

@@ -9,7 +9,7 @@ import { runNodeDrillChild } from './lib/drill-child-process.mjs'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { portIsAvailable, resolveBuiltBinary } from './lib/drill-runtime-helpers.mjs'
 import {
-  assertHetznerArrobaBinaries,
+  assertHetznerCharioxBinaries,
   assertHetznerTcpPortAvailable,
   remoteEnvCommand,
   runHetznerCommand,
@@ -64,9 +64,9 @@ function parseArgs(argv) {
     keepArtifactsOnFailure: false,
     mode: 'managed',
     hetznerWorker: false,
-    hetznerHost: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_HOST ?? process.env.ARROBA_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_KEY ?? process.env.ARROBA_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/arroba_hetzner_staging'),
-    hetznerRepo: process.env.ARROBA_WORKSPACE_LIVE_SYNC_HETZNER_REPO ?? process.env.ARROBA_NATIVE_TUI_HETZNER_REPO ?? '/tmp/arroba-native-remote-validate',
+    hetznerHost: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
+    hetznerKey: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
+    hetznerRepo: process.env.CHARIOX_WORKSPACE_LIVE_SYNC_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
@@ -161,19 +161,19 @@ function daemonEnv({
     XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? path.join(realHomeDir, '.local', 'share'),
     XDG_STATE_HOME: process.env.XDG_STATE_HOME ?? path.join(realHomeDir, '.local', 'state'),
     XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonAlias,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineAlias,
-    ARROBA_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, socketName),
-    ARROBA_SESSION_HISTORY_DIR: historyDir,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
   }
 }
 
@@ -229,7 +229,7 @@ async function resolveBinary(binaryPath, manifestPath, binName) {
 }
 
 async function assertHetznerBinaries(options) {
-  await assertHetznerArrobaBinaries(options)
+  await assertHetznerCharioxBinaries(options)
 }
 
 function localCodexAuthPath() {
@@ -271,15 +271,15 @@ async function assertHetznerWorkerPortsAvailable(options, ports) {
 
 async function stopOwnedHetznerRelay(options, port, runId) {
   await stopHetznerProcessByEnv(options, {
-    ARROBA_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-    ARROBA_RELAY_PORT: String(port),
+    CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
+    CHARIOX_RELAY_PORT: String(port),
   })
 }
 
 async function stopOwnedHetznerWorker(options, daemonId, port) {
   await stopHetznerProcessByEnv(options, {
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_KERNEL_PORT: String(port),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_KERNEL_PORT: String(port),
   })
 }
 
@@ -428,7 +428,7 @@ async function main() {
 
   const ports = await makePorts()
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `arroba-remote-workspace-live-sync-permission-${runId}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-workspace-live-sync-permission-${runId}`)
   const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-workspace-live-sync-permission-drill-${runId}`)
   await prepareDrillArtifacts(rootDir)
   await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
@@ -447,20 +447,20 @@ async function main() {
   const relayBinary = options.hetznerWorker
     ? null
     : await resolveBinary(
-        path.join(repoRoot, 'apps/relay/target/debug/arroba-relay'),
+        path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
         path.join(repoRoot, 'apps/relay/Cargo.toml'),
-        'arroba-relay',
+        'chariox-relay',
       )
   const daemonBinary = await resolveBinary(
-    path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+    path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-    'arroba-kernel',
+    'chariox-kernel',
   )
   const relayEnv = {
     ...process.env,
-    ARROBA_RELAY_HOST: '127.0.0.1',
-    ARROBA_RELAY_PORT: String(ports.relayPort),
-    ARROBA_RELAY_TOKEN: relayToken,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
   }
   const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
   const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
@@ -493,12 +493,12 @@ async function main() {
       await assertHetznerRelayPortAvailable(options, ports.relayPort)
       await assertHetznerWorkerPortsAvailable(options, ports)
       relayChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
-        ARROBA_REMOTE_REPO: options.hetznerRepo,
-        ARROBA_RELAY_HOST: '127.0.0.1',
-        ARROBA_RELAY_PORT: String(ports.relayPort),
-        ARROBA_RELAY_TOKEN: relayToken,
-        ARROBA_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
-      }, './apps/relay/target/debug/arroba-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
+        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_RELAY_HOST: '127.0.0.1',
+        CHARIOX_RELAY_PORT: String(ports.relayPort),
+        CHARIOX_RELAY_TOKEN: relayToken,
+        CHARIOX_WORKSPACE_LIVE_SYNC_DRILL_RUN_ID: runId,
+      }, './apps/relay/target/debug/chariox-relay')), { stdio: ['ignore', 'ignore', 'inherit'] })
       relayTunnel = spawn('ssh', [
         '-i',
         options.hetznerKey,
@@ -540,9 +540,9 @@ async function main() {
     })
 
     if (options.hetznerWorker) {
-      const remoteRoot = `/tmp/arroba-remote-workspace-live-sync-permission-${runId}`
+      const remoteRoot = `/tmp/chariox-remote-workspace-live-sync-permission-${runId}`
       workerChild = spawn('ssh', sshArgs(options, remoteEnvCommand({
-        ARROBA_REMOTE_REPO: options.hetznerRepo,
+        CHARIOX_REMOTE_REPO: options.hetznerRepo,
         PATH: '/root/.bun/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         HOME: '/root',
         XDG_CONFIG_HOME: '/root/.config',
@@ -551,21 +551,21 @@ async function main() {
         XDG_CACHE_HOME: '/root/.cache',
         CODEX_HOME: '/root/.codex',
         OPENCODE_CONFIG_DIR: '/root/.config/opencode',
-        ARROBA_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
-        ARROBA_KERNEL_PORT: String(ports.workerKernelPort),
-        ARROBA_MCP_PORT: String(ports.workerMcpPort),
-        ARROBA_OPENCODE_PORT: String(ports.workerOpenCodePort),
-        ARROBA_CODEX_PORT: String(ports.workerCodexPort),
-        ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
-        ARROBA_RELAY_TOKEN: relayToken,
-        ARROBA_DAEMON_ID: workerDaemonId,
-        ARROBA_DAEMON_ALIAS: 'worker',
-        ARROBA_MACHINE_ID: workerMachineId,
-        ARROBA_MACHINE_ALIAS: `workspace-live-sync-permission-worker-${process.pid}`,
-        ARROBA_ACCEPT_REMOTE_LEASES: '1',
-        ARROBA_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
-        ARROBA_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
-      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/arroba-kernel`)), {
+        CHARIOX_LOG_DIR: path.posix.join(remoteRoot, 'worker-logs'),
+        CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
+        CHARIOX_MCP_PORT: String(ports.workerMcpPort),
+        CHARIOX_OPENCODE_PORT: String(ports.workerOpenCodePort),
+        CHARIOX_CODEX_PORT: String(ports.workerCodexPort),
+        CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+        CHARIOX_RELAY_TOKEN: relayToken,
+        CHARIOX_DAEMON_ID: workerDaemonId,
+        CHARIOX_DAEMON_ALIAS: 'worker',
+        CHARIOX_MACHINE_ID: workerMachineId,
+        CHARIOX_MACHINE_ALIAS: `workspace-live-sync-permission-worker-${process.pid}`,
+        CHARIOX_ACCEPT_REMOTE_LEASES: '1',
+        CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRoot, 'worker.sock'),
+        CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, 'worker-history'),
+      }, `mkdir -p ${shellQuote(remoteRoot)} && ./apps/kernel/target/debug/chariox-kernel`)), {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
     } else {
@@ -683,7 +683,7 @@ async function main() {
     if (options.hetznerWorker) {
       await stopOwnedHetznerWorker(options, workerDaemonId, ports.workerKernelPort)
       await stopOwnedHetznerRelay(options, ports.relayPort, runId)
-      await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/arroba-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
+      await runHetznerCommand(options, `rm -rf ${shellQuote(`/tmp/chariox-remote-workspace-live-sync-permission-${runId}`)}`).catch(() => {})
     }
     if (options.hetznerWorker && childRootDir && (succeeded || !options.keepArtifactsOnFailure)) {
       await runHetznerCommand(options, `rm -rf ${shellQuote(childRootDir)}`).catch(() => {})

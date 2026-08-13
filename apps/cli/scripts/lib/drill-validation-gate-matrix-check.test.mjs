@@ -37,7 +37,7 @@ test("skips matrix validation when no matrix evidence or requirements are config
 })
 
 test("fails when matrix coverage is required but no reports are found", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const check = await matrixValidationGateCheck({
       matrixReports: [],
@@ -57,7 +57,7 @@ test("fails when matrix coverage is required but no reports are found", async ()
 })
 
 test("passes with matrix, classification, deployment, provider, and scenario coverage", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const reportPath = path.join(rootDir, "matrices", "workspace.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -113,7 +113,7 @@ test("passes with matrix, classification, deployment, provider, and scenario cov
 })
 
 test("gates matrix reports by required freshness", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const reportPath = path.join(rootDir, "matrix.json")
     const completedAt = new Date(Date.now() - 500).toISOString()
@@ -150,7 +150,7 @@ test("gates matrix reports by required freshness", async () => {
 })
 
 test("fails incomplete dry-run reports only when complete execution is required", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const reportPath = path.join(rootDir, "dry-run.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -179,7 +179,7 @@ test("fails incomplete dry-run reports only when complete execution is required"
 })
 
 test("fails unresolved exit criteria only when complete execution is required", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const reportPath = path.join(rootDir, "criteria.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -221,7 +221,7 @@ test("fails unresolved exit criteria only when complete execution is required", 
 })
 
 test("reports missing matrix coverage dimensions from otherwise valid evidence", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-validation-gate-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
   try {
     const reportPath = path.join(rootDir, "workspace.json")
     await writeMatrixReport(reportPath, matrixReport({
@@ -285,7 +285,7 @@ function matrixReport(overrides = {}) {
   const durationMs = overrides.durationMs ?? 1000
   const completedAt = overrides.completedAt ?? new Date(Date.parse(startedAt) + durationMs).toISOString()
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "test-matrix",
     status,
     dryRun,

@@ -14,8 +14,8 @@ import { createDeterministicRuntimeChaosReplay } from "./drill-deterministic-run
 test("chaos contract exposes every required deterministic fault and invariant", () => {
   assert.deepEqual(drillChaosContractManifest(), {
     schema: DRILL_CHAOS_CONTRACT_SCHEMA,
-    replaySchema: "arroba.drill.chaos_replay.v1",
-    invariantsSchema: "arroba.drill.chaos_invariants.v1",
+    replaySchema: "chariox.drill.chaos_replay.v1",
+    invariantsSchema: "chariox.drill.chaos_invariants.v1",
     faultKinds: [...DRILL_CHAOS_FAULT_KINDS],
     invariantIds: [...DRILL_CHAOS_INVARIANT_IDS],
   })
@@ -49,7 +49,7 @@ test("chaos contract validates complete replay evidence and rejects drift", asyn
   assert.equal(validateDrillChaosReplayBundle(replay), replay)
 
   assert.throws(
-    () => validateDrillChaosReplayBundle({ ...replay, schema: "arroba.drill.chaos_replay.v2" }),
+    () => validateDrillChaosReplayBundle({ ...replay, schema: "chariox.drill.chaos_replay.v2" }),
     /unsupported schema/,
   )
   assert.throws(

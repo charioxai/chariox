@@ -46,10 +46,10 @@ const ports = {
     codex: basePort + 70 + index,
   })),
 }
-const root = path.join(os.tmpdir(), `arroba-distributed-scale-${process.pid}-${Date.now()}`)
+const root = path.join(os.tmpdir(), `chariox-distributed-scale-${process.pid}-${Date.now()}`)
 const relayToken = `distributed-scale-${process.pid}-${Date.now()}`
-const relayBinary = path.join(repoRoot, "target", "release", "arroba-relay")
-const kernelBinary = path.join(repoRoot, "target", "release", "arroba-kernel")
+const relayBinary = path.join(repoRoot, "target", "release", "chariox-relay")
+const kernelBinary = path.join(repoRoot, "target", "release", "chariox-kernel")
 const children = []
 let client
 let report
@@ -190,7 +190,7 @@ try {
     leasedRemoteAgents: totalAgents,
     runningProviderAgents: totalAgents,
     syntheticProviderProcesses: workerCount,
-    providerCapacityScope: "Arroba orchestration gate; provider child-process quotas and memory are measured separately",
+    providerCapacityScope: "Chariox orchestration gate; provider child-process quotas and memory are measured separately",
     homeRelayRouteProbed: true,
     metrics,
     workerRelayStatuses,
@@ -249,7 +249,7 @@ async function portsAvailable(candidates) {
 }
 
 function relayEnv() {
-  return { ...process.env, ARROBA_RELAY_HOST: "127.0.0.1", ARROBA_RELAY_PORT: String(ports.relay), ARROBA_RELAY_TOKEN: relayToken }
+  return { ...process.env, CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(ports.relay), CHARIOX_RELAY_TOKEN: relayToken }
 }
 
 function kernelEnv(daemonId, machineId, kernelPort, mcpPort, opencodePort, codexPort, leases, runtimeInitDelayMs = 0) {
@@ -260,20 +260,20 @@ function kernelEnv(daemonId, machineId, kernelPort, mcpPort, opencodePort, codex
     XDG_CONFIG_HOME: path.join(state, "config"),
     XDG_STATE_HOME: path.join(state, "state"),
     XDG_CACHE_HOME: path.join(state, "cache"),
-    ARROBA_KERNEL_PORT: String(kernelPort),
-    ARROBA_MCP_PORT: String(mcpPort),
-    ARROBA_OPENCODE_PORT: String(opencodePort),
-    ARROBA_CODEX_PORT: String(codexPort),
-    ARROBA_RELAY_URL: `ws://127.0.0.1:${ports.relay}`,
-    ARROBA_RELAY_TOKEN: relayToken,
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_ALIAS: daemonId,
-    ARROBA_MACHINE_ID: machineId,
-    ARROBA_MACHINE_ALIAS: machineId,
-    ARROBA_ACCEPT_REMOTE_LEASES: leases ? "1" : "0",
-    ARROBA_PROVIDER_RUNTIME_INIT_DELAY_MS: String(runtimeInitDelayMs),
-    ARROBA_DAEMON_SOCKET: path.join(state, "daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(state, "history"),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relay}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonId,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineId,
+    CHARIOX_ACCEPT_REMOTE_LEASES: leases ? "1" : "0",
+    CHARIOX_PROVIDER_RUNTIME_INIT_DELAY_MS: String(runtimeInitDelayMs),
+    CHARIOX_DAEMON_SOCKET: path.join(state, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(state, "history"),
   }
 }
 

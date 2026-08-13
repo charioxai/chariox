@@ -16,11 +16,11 @@ import {
   syncQueuedPromptTranscriptEntriesForAgent as syncQueuedPromptEntriesForAgent,
   type QueuedPromptStripItem,
   type QueuedPromptStripStatusOverride,
-} from "@arroba/kernel-client/queued-prompt-strip-state"
+} from "@chariox/kernel-client/queued-prompt-strip-state"
 import {
   nextQueuedPromptSelectionId,
   selectedQueuedPromptIndex,
-} from "@arroba/kernel-client/queued-prompt-selection"
+} from "@chariox/kernel-client/queued-prompt-selection"
 
 type AnyFn = (...args: any[]) => any
 

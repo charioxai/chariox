@@ -7,7 +7,7 @@ import test from "node:test"
 import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 
 test("local kernel presence exposes only fresh lease endpoints", (context) => {
-  const directory = mkdtempSync(join(tmpdir(), "arroba-kernel-presence-"))
+  const directory = mkdtempSync(join(tmpdir(), "chariox-kernel-presence-"))
   context.after(() => rmSync(directory, { force: true, recursive: true }))
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, "kernel-a.json"), JSON.stringify({

@@ -99,9 +99,9 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const appBinary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const workspaceBinary = path.join(repoRoot, 'target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const appBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const workspaceBinary = path.join(repoRoot, 'target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
@@ -111,7 +111,7 @@ async function buildKernel() {
       return binary
     } catch {}
   }
-  throw new Error(`kernel build completed but no arroba-kernel binary was found at ${appBinary} or ${workspaceBinary}`)
+  throw new Error(`kernel build completed but no chariox-kernel binary was found at ${appBinary} or ${workspaceBinary}`)
 }
 
 function startDaemon(binary, env) {
@@ -227,13 +227,13 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
   }
 
   let daemon = null
@@ -245,10 +245,10 @@ async function main() {
     await prepareDrillArtifacts(rootDir)
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
     await mkdir(skillDir, { recursive: true })
     await writeFile(
-      path.join(configHome, 'arroba', 'config.toml'),
+      path.join(configHome, 'chariox', 'config.toml'),
       'version = 1\n\n[state]\nsnapshot_interval_events = 1\n',
       'utf8',
     )

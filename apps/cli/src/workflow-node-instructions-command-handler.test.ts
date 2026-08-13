@@ -30,7 +30,7 @@ test("workflow node instructions show opens the existing instructions draft", as
 })
 
 test("workflow node instructions set opens the editor or updates from a file", async () => {
-  const workspace = await mkdtemp(join(tmpdir(), "arroba-node-instructions-"))
+  const workspace = await mkdtemp(join(tmpdir(), "chariox-node-instructions-"))
   try {
     await writeFile(join(workspace, "instructions.md"), "file instructions", "utf8")
     const harness = createHarness({ workspace })

@@ -7,7 +7,7 @@ import {
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
   type WorkflowPublicationDeploymentContract,
-} from "@arroba/kernel-client/workflow-publication-deployment-contract"
+} from "@chariox/kernel-client/workflow-publication-deployment-contract"
 import type { RelayCloudProfile } from "./preferences.js"
 
 export type PublicationDeploymentMode = "local_runtime" | "hosted_container"
@@ -248,7 +248,7 @@ async function publicationPackageDigest(packageRoot: string): Promise<string> {
 }
 
 async function publicationPackageArchiveBase64(packageRoot: string): Promise<string> {
-  const tempRoot = await mkdtemp(join(tmpdir(), "arroba-publication-upload-"))
+  const tempRoot = await mkdtemp(join(tmpdir(), "chariox-publication-upload-"))
   const archivePath = join(tempRoot, "publication-package.tgz")
   try {
     await execFilePromise("tar", ["-czf", archivePath, "-C", packageRoot, "."])

@@ -125,12 +125,12 @@ async function createDeterministicSkill(rootDir) {
   await writeFile(path.join(skillDir, 'SKILL.md'), [
     '---',
     'name: m7-drill-marker',
-    'description: Use when asked to prove Arroba same-turn skill loading or M7 skill request behavior. Writes deterministic marker files through Arroba workspace live sync.',
+    'description: Use when asked to prove Chariox same-turn skill loading or M7 skill request behavior. Writes deterministic marker files through Chariox workspace live sync.',
     '---',
     '',
     '# M7 Drill Marker',
     '',
-    'When this skill is active, use Arroba workspace live sync tools only.',
+    'When this skill is active, use Chariox workspace live sync tools only.',
     '',
     'If asked for the same-turn marker, write `outputs/same-turn-skill.txt` with exactly:',
     '',
@@ -160,11 +160,11 @@ async function createDeterministicEchoMcp(rootDir) {
     "  const { id, method, params } = message",
     "  if (method === 'notifications/initialized') return",
     "  if (method === 'initialize') {",
-    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'arroba-drill-echo', version: '1.0.0' } } })",
+    "    write({ jsonrpc: '2.0', id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'chariox-drill-echo', version: '1.0.0' } } })",
     "    return",
     "  }",
     "  if (method === 'tools/list') {",
-    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Arroba multi-MCP live drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
+    "    write({ jsonrpc: '2.0', id, result: { tools: [{ name: 'echo_marker', description: 'Echoes a marker for Chariox multi-MCP live drills.', inputSchema: { type: 'object', properties: { marker: { type: 'string' } }, required: ['marker'] } }] } })",
     "    return",
     "  }",
     "  if (method === 'tools/call' && params?.name === 'echo_marker') {",
@@ -494,21 +494,21 @@ async function main() {
       const ports = makePorts()
       kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
       const daemonBinary = await resolveBinary(
-        path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+        path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
         path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-        'arroba-kernel',
+        'chariox-kernel',
       )
       daemonChild = spawn(daemonBinary, [], {
         cwd: repoRoot,
         env: {
           ...process.env,
-          ARROBA_KERNEL_PORT: String(ports.kernelPort),
-          ARROBA_MCP_PORT: String(ports.mcpPort),
-          ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-          ARROBA_CODEX_PORT: String(ports.codexPort),
-          ARROBA_DAEMON_ID: `mcp-skill-drill-${process.pid}-${Date.now()}`,
-          ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-          ARROBA_SESSION_HISTORY_DIR: historyDir,
+          CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+          CHARIOX_MCP_PORT: String(ports.mcpPort),
+          CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+          CHARIOX_CODEX_PORT: String(ports.codexPort),
+          CHARIOX_DAEMON_ID: `mcp-skill-drill-${process.pid}-${Date.now()}`,
+          CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+          CHARIOX_SESSION_HISTORY_DIR: historyDir,
         },
         stdio: ['ignore', 'ignore', 'inherit'],
       })
@@ -621,7 +621,7 @@ async function main() {
         await client.send(submitPromptRequest(session.id, attachment.id, grantedAgent.agent.id, [
           `Use the ${markerSkillName} skill.`,
           'Follow the pre-granted marker instruction from that skill.',
-          'Use only Arroba workspace live sync to write the required marker file.',
+          'Use only Chariox workspace live sync to write the required marker file.',
           'When done, reply exactly M7_PREGRANTED_SKILL_DONE.',
         ].join('\n'), []))
         await waitForCompletionCount({
@@ -649,11 +649,11 @@ async function main() {
         }
         const sameTurnBefore = events.filter((event) => event.event === 'assistant_message_completed').length
         await client.send(submitPromptRequest(session.id, attachment.id, requestAgent.agent.id, [
-          'This is an Arroba runtime capability request drill.',
+          'This is a Chariox runtime capability request drill.',
           `First call \`list_extensions\` with {"kind":"skill"} and find ${JSON.stringify(markerSkillName)}.`,
           `Then call \`request_extension\` with {"kind":"skill","name":${JSON.stringify(markerSkillName)}}.`,
           'Read the returned skill.body and follow its same-turn marker instruction immediately.',
-          'Use only Arroba workspace live sync to write the required marker file.',
+          'Use only Chariox workspace live sync to write the required marker file.',
           'When done, reply exactly M7_SAME_TURN_SKILL_DONE.',
         ].join('\n'), []))
         await waitForCompletionCount({
@@ -726,11 +726,11 @@ async function main() {
           await client.send(submitPromptRequest(session.id, attachment.id, userMcpAgent.id, [
             'This is a live user-triggered MCP grant activation drill.',
             'Use the provider-native echo MCP tool once with marker M7_ECHO_MCP_USER_OK.',
-            'Then use the provider-native Playwright MCP tool that is available to this agent, not Arroba list_extensions/request_extension.',
+            'Then use the provider-native Playwright MCP tool that is available to this agent, not Chariox list_extensions/request_extension.',
             'The echo tool is usually named `echo_echo_marker`, `mcp__echo__echo_marker`, or similar.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
             'Prefer a non-mutating Playwright browser snapshot/title/text tool first; navigating to https://example.com is optional and may require approval.',
-            'After both an echo MCP call and a Playwright/browser MCP tool call complete successfully, use Arroba workspace live sync to write `outputs/playwright-mcp-user.txt` with exactly `M7_PLAYWRIGHT_MCP_USER_OK`.',
+            'After both an echo MCP call and a Playwright/browser MCP tool call complete successfully, use Chariox workspace live sync to write `outputs/playwright-mcp-user.txt` with exactly `M7_PLAYWRIGHT_MCP_USER_OK`.',
             'Then reply exactly M7_PLAYWRIGHT_MCP_USER_DONE.',
             'If either MCP is unavailable, reply exactly M7_MULTI_MCP_UNAVAILABLE and do not write the marker file.',
           ].join('\n'), []))
@@ -743,7 +743,7 @@ async function main() {
             predicate: (update) => {
               const tool = String(update.tool ?? '').toLowerCase()
               return update.status === 'completed' &&
-                !tool.includes('arroba') &&
+                !tool.includes('chariox') &&
                 tool.includes('echo')
             },
           })
@@ -756,7 +756,7 @@ async function main() {
             predicate: (update) => {
               const tool = String(update.tool ?? '').toLowerCase()
               return update.status === 'completed' &&
-                !tool.includes('arroba') &&
+                !tool.includes('chariox') &&
                 (tool.includes('playwright') || tool.includes('browser'))
             },
           })
@@ -816,9 +816,9 @@ async function main() {
             'This is a live agent-triggered MCP request drill.',
             'First call `list_extensions` with {"kind":"mcp"} and find `playwright`.',
             'Then call `request_extension` with {"kind":"mcp","name":"playwright"}.',
-            'After Arroba reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Arroba request_extension.',
+            'After Chariox reloads the provider conversation and sends a continuation prompt, use the provider-native Playwright/browser MCP tool, not Chariox request_extension.',
             'The Playwright tool is usually named `playwright_browser_snapshot`, `mcp__playwright__browser_snapshot`, `browser_snapshot`, `playwright_browser_navigate`, or similar.',
-            'After any Playwright/browser MCP tool call completes successfully, you must call Arroba workspace live sync (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
+            'After any Playwright/browser MCP tool call completes successfully, you must call Chariox workspace live sync (`apply_patch`, `write_artifact`, or equivalent) to write `outputs/playwright-mcp-agent.txt` with exactly `M7_PLAYWRIGHT_MCP_AGENT_OK`.',
             'Do not reply done until that file write tool call has completed.',
             'Then reply exactly M7_PLAYWRIGHT_MCP_AGENT_DONE.',
             'If Playwright MCP remains unavailable after the continuation, reply exactly M7_PLAYWRIGHT_MCP_AGENT_UNAVAILABLE and do not write the marker file.',
@@ -843,7 +843,7 @@ async function main() {
             predicate: (update) => {
               const tool = String(update.tool ?? '').toLowerCase()
               return update.status === 'completed' &&
-                !tool.includes('arroba') &&
+                !tool.includes('chariox') &&
                 (tool.includes('playwright') || tool.includes('browser'))
             },
           })

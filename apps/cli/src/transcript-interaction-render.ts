@@ -8,7 +8,7 @@ import {
 } from "@opentui/core"
 
 import type { TranscriptEntry } from "./cli-types.js"
-import { collapsedTranscriptBlobPresentation } from "@arroba/kernel-client/transcript-collapsed-blob"
+import { collapsedTranscriptBlobPresentation } from "@chariox/kernel-client/transcript-collapsed-blob"
 import { theme } from "./theme.js"
 import { transcriptTextColor } from "./transcript-render-theme.js"
 import { applyTranscriptTextContent } from "./transcript-text-render.js"

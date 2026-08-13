@@ -115,13 +115,13 @@ async function buildKernelBinaries() {
     '--manifest-path',
     path.join(repoRoot, 'apps/kernel/Cargo.toml'),
     '--bin',
-    'arroba-kernel',
+    'chariox-kernel',
     '--bin',
-    'arroba-history-archive-flush',
+    'chariox-history-archive-flush',
   ])
   return {
-    kernel: path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
-    archiveFlush: path.join(repoRoot, 'apps/kernel/target/debug/arroba-history-archive-flush'),
+    kernel: path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
+    archiveFlush: path.join(repoRoot, 'apps/kernel/target/debug/chariox-history-archive-flush'),
   }
 }
 
@@ -202,7 +202,7 @@ async function waitForHistoryMatch(client, query, filters, label, timeoutMs = 10
 }
 
 async function createDockerNetwork() {
-  const name = `arroba-archive-net-${process.pid}-${Date.now()}`
+  const name = `chariox-archive-net-${process.pid}-${Date.now()}`
   const created = await run('docker', ['network', 'create', name])
   if (created.code !== 0) {
     throw new Error(`failed to create Docker network. Start Docker/Colima first, then rerun the drill.\nstdout:\n${created.stdout}\nstderr:\n${created.stderr}`)
@@ -215,7 +215,7 @@ async function removeDockerNetwork(name) {
 }
 
 async function startPostgres(network) {
-  const name = `arroba-archive-pg-${process.pid}-${Date.now()}`
+  const name = `chariox-archive-pg-${process.pid}-${Date.now()}`
   const started = await run('docker', [
     'run',
     '--name',
@@ -223,9 +223,9 @@ async function startPostgres(network) {
     '--network',
     network,
     '-e',
-    'POSTGRES_PASSWORD=arroba',
+    'POSTGRES_PASSWORD=chariox',
     '-e',
-    'POSTGRES_DB=arroba_history',
+    'POSTGRES_DB=chariox_history',
     '-d',
     'postgres:16-alpine',
   ])
@@ -233,7 +233,7 @@ async function startPostgres(network) {
     throw new Error(`failed to start postgres:16-alpine with Docker. Start Docker/Colima first, then rerun the drill.\nstdout:\n${started.stdout}\nstderr:\n${started.stderr}`)
   }
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const ready = await run('docker', ['exec', name, 'pg_isready', '-U', 'postgres', '-d', 'arroba_history'])
+    const ready = await run('docker', ['exec', name, 'pg_isready', '-U', 'postgres', '-d', 'chariox_history'])
     if (ready.code === 0) return name
     await sleep(500)
   }
@@ -242,8 +242,8 @@ async function startPostgres(network) {
 
 async function startMinio(network) {
   const suffix = `${process.pid}-${Date.now()}`
-  const minio = `arroba-archive-minio-${suffix}`
-  const mc = `arroba-archive-mc-${suffix}`
+  const minio = `chariox-archive-minio-${suffix}`
+  const mc = `chariox-archive-mc-${suffix}`
   const minioStarted = await run('docker', [
     'run',
     '--name',
@@ -251,9 +251,9 @@ async function startMinio(network) {
     '--network',
     network,
     '-e',
-    'MINIO_ROOT_USER=arroba',
+    'MINIO_ROOT_USER=chariox',
     '-e',
-    'MINIO_ROOT_PASSWORD=arroba-secret',
+    'MINIO_ROOT_PASSWORD=chariox-secret',
     '-d',
     'minio/minio:latest',
     'server',
@@ -263,9 +263,9 @@ async function startMinio(network) {
   const mcStarted = await run('docker', ['run', '--name', mc, '--network', network, '--entrypoint', 'sleep', '-d', 'minio/mc:latest', 'infinity'])
   if (mcStarted.code !== 0) throw new Error(`failed to start MinIO client\nstdout:\n${mcStarted.stdout}\nstderr:\n${mcStarted.stderr}`)
   for (let attempt = 0; attempt < 80; attempt += 1) {
-    const alias = await run('docker', ['exec', mc, 'mc', 'alias', 'set', 'local', `http://${minio}:9000`, 'arroba', 'arroba-secret'])
+    const alias = await run('docker', ['exec', mc, 'mc', 'alias', 'set', 'local', `http://${minio}:9000`, 'chariox', 'chariox-secret'])
     if (alias.code === 0) {
-      await mustRun('docker', ['exec', mc, 'mc', 'mb', '--ignore-existing', 'local/arroba-artifacts'])
+      await mustRun('docker', ['exec', mc, 'mc', 'mb', '--ignore-existing', 'local/chariox-artifacts'])
       return { minio, mc }
     }
     await sleep(500)
@@ -283,7 +283,7 @@ async function stopPostgres(name) {
 }
 
 async function psql(container, sql, options = {}) {
-  const args = ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'arroba_history', '-v', 'ON_ERROR_STOP=1']
+  const args = ['exec', '-i', container, 'psql', '-U', 'postgres', '-d', 'chariox_history', '-v', 'ON_ERROR_STOP=1']
   if (options.tuplesOnly) args.push('-At')
   return await mustRun('docker', args, { input: sql })
 }
@@ -353,7 +353,7 @@ function startAdapter({ container, minioClientContainer, port, token }) {
         response.end(JSON.stringify({ error: 'missing or invalid bearer token' }))
         return
       }
-      if (request.method === 'GET' && request.url === '/arroba/history/capabilities') {
+      if (request.method === 'GET' && request.url === '/chariox/history/capabilities') {
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify({
           append: true,
@@ -366,7 +366,7 @@ function startAdapter({ container, minioClientContainer, port, token }) {
         }))
         return
       }
-      if (request.method === 'PUT' && request.url?.startsWith('/arroba/artifacts/blobs/')) {
+      if (request.method === 'PUT' && request.url?.startsWith('/chariox/artifacts/blobs/')) {
         state.artifactBlobUploads += 1
         const artifactId = decodeURIComponent(request.url.split('/').pop() ?? '')
         if (!/^[A-Za-z0-9_.:-]+$/.test(artifactId)) {
@@ -383,13 +383,13 @@ function startAdapter({ container, minioClientContainer, port, token }) {
           minioClientContainer,
           'sh',
           '-c',
-          `cat > /tmp/blob && mc cp /tmp/blob local/arroba-artifacts/${artifactId}`,
+          `cat > /tmp/blob && mc cp /tmp/blob local/chariox-artifacts/${artifactId}`,
         ], { input: body })
         response.writeHead(200, { 'content-type': 'application/json' })
         response.end(JSON.stringify({ artifact_id: artifactId }))
         return
       }
-      if (request.method === 'POST' && request.url === '/arroba/artifacts/manifest') {
+      if (request.method === 'POST' && request.url === '/chariox/artifacts/manifest') {
         state.artifactManifestRequests += 1
         let body = ''
         for await (const chunk of request) body += chunk.toString()
@@ -410,7 +410,7 @@ INSERT INTO archive_artifacts (
   ${sqlString(artifact.source_kind)},
   ${sqlString(artifact.session_id)},
   ${sqlString(artifact.attachment_id)},
-  ${sqlString(`s3://arroba-artifacts/${artifactId}`)},
+  ${sqlString(`s3://chariox-artifacts/${artifactId}`)},
   ${jsonSql(artifact)}
 )
 ON CONFLICT (artifact_id) DO NOTHING;
@@ -421,7 +421,7 @@ ON CONFLICT (artifact_id) DO NOTHING;
         response.end(JSON.stringify({ accepted_artifact_ids: accepted, rejected_artifacts: [] }))
         return
       }
-      if (request.method === 'POST' && request.url === '/arroba/history/search') {
+      if (request.method === 'POST' && request.url === '/chariox/history/search') {
         state.searchRequests += 1
         if (!state.searchEnabled) {
           response.writeHead(404, { 'content-type': 'application/json' })
@@ -466,7 +466,7 @@ LIMIT ${limit};
         }))
         return
       }
-      if (request.method === 'POST' && request.url === '/arroba/history/semantic-search') {
+      if (request.method === 'POST' && request.url === '/chariox/history/semantic-search') {
         state.searchRequests += 1
         if (!state.searchEnabled) {
           response.writeHead(404, { 'content-type': 'application/json' })
@@ -514,7 +514,7 @@ LIMIT 500;
         response.end(JSON.stringify({ results: scored, next_cursor: null }))
         return
       }
-      if (request.method !== 'POST' || request.url !== '/arroba/history/events') {
+      if (request.method !== 'POST' || request.url !== '/chariox/history/events') {
         response.writeHead(404, { 'content-type': 'application/json' })
         response.end(JSON.stringify({ error: 'not found' }))
         return
@@ -602,7 +602,7 @@ async function sqliteExec(dbPath, sql) {
 
 async function writeConfig({ configHome, historyPath, artifactRoot, artifactIndexPath, statePath, adapterUrl, requireDurableAcceptance }) {
   await writeFile(
-    path.join(configHome, 'arroba', 'config.toml'),
+    path.join(configHome, 'chariox', 'config.toml'),
     `version = 1
 
 [history.operational]
@@ -611,7 +611,7 @@ path = "${tomlString(historyPath)}"
 [history.archive]
 mode = "external"
 url = "${tomlString(adapterUrl)}"
-token_env = "ARROBA_ARCHIVE_DRILL_TOKEN"
+token_env = "CHARIOX_ARCHIVE_DRILL_TOKEN"
 archive_deleted_agents = true
 archive_before_delete = true
 delete_operational_after_verified_archive = true
@@ -624,7 +624,7 @@ index_path = "${tomlString(artifactIndexPath)}"
 [artifacts.archive]
 mode = "external"
 url = "${tomlString(adapterUrl)}"
-token_env = "ARROBA_ARCHIVE_DRILL_TOKEN"
+token_env = "CHARIOX_ARCHIVE_DRILL_TOKEN"
 require_durable_acceptance = true
 
 [state]
@@ -699,7 +699,7 @@ async function main() {
     await rm(root, { recursive: true, force: true }).catch(() => {})
     await mkdir(workspace, { recursive: true })
     await mkdir(home, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
 
     network = await createDockerNetwork()
     container = await startPostgres(network)
@@ -722,7 +722,7 @@ async function main() {
       requireDurableAcceptance: true,
     })
 
-    const capsResponse = await fetch(`${adapterUrl}/arroba/history/capabilities`, {
+    const capsResponse = await fetch(`${adapterUrl}/chariox/history/capabilities`, {
       headers: { authorization: `Bearer ${token}` },
     })
     const caps = await capsResponse.json()
@@ -736,16 +736,16 @@ async function main() {
       XDG_STATE_HOME: stateHome,
       XDG_DATA_HOME: path.join(home, '.local/share'),
       XDG_CACHE_HOME: path.join(home, '.cache'),
-      ARROBA_ARCHIVE_DRILL_TOKEN: token,
-      ARROBA_DAEMON_ID: `postgres-archive-${process.pid}`,
-      ARROBA_MACHINE_ID: `machine-postgres-archive-${process.pid}`,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: path.join(root, 'session-history'),
-      ARROBA_PROVIDER_DEV_STUB: '1',
+      CHARIOX_ARCHIVE_DRILL_TOKEN: token,
+      CHARIOX_DAEMON_ID: `postgres-archive-${process.pid}`,
+      CHARIOX_MACHINE_ID: `machine-postgres-archive-${process.pid}`,
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      CHARIOX_SESSION_HISTORY_DIR: path.join(root, 'session-history'),
+      CHARIOX_PROVIDER_DEV_STUB: '1',
     }
 
     daemon = startDaemon(binaries.kernel, env)
@@ -808,7 +808,7 @@ async function main() {
 
     const duplicateEvent = JSON.parse(initialEventJson[0])
     for (let index = 0; index < 2; index += 1) {
-      const response = await fetch(`${adapterUrl}/arroba/history/events`, {
+      const response = await fetch(`${adapterUrl}/chariox/history/events`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${token}`,
@@ -886,7 +886,7 @@ async function main() {
       limit: 10,
     })), 'RecallEvents').events
     if (archiveSearch.length === 0 || !archiveSearch.some((event) => String(event.content ?? '').includes(markerA))) {
-      throw new Error(`expected Arroba search to return deleted local event from Postgres archive, got ${JSON.stringify(archiveSearch)}`)
+      throw new Error(`expected Chariox search to return deleted local event from Postgres archive, got ${JSON.stringify(archiveSearch)}`)
     }
 
     const sourceArtifact = path.join(workspace, 'archive-artifact.txt')
@@ -908,10 +908,10 @@ async function main() {
     if (artifactOutcome.artifacts.accepted_artifact_ids.length !== 1) throw new Error(`expected one accepted artifact, got ${artifactFlush.stdout}`)
     if (artifactOutcome.history.accepted_event_ids.length < 1) throw new Error(`expected artifact history event to archive, got ${artifactFlush.stdout}`)
     const archivedArtifactRows = await postgresArtifactRows(container)
-    if (archivedArtifactRows.length !== 1 || !archivedArtifactRows[0].includes('s3://arroba-artifacts/')) {
+    if (archivedArtifactRows.length !== 1 || !archivedArtifactRows[0].includes('s3://chariox-artifacts/')) {
       throw new Error(`expected artifact metadata in Postgres with S3 object key, got ${JSON.stringify(archivedArtifactRows)}`)
     }
-    const minioStat = await run('docker', ['exec', minio.mc, 'mc', 'stat', `local/arroba-artifacts/${artifactOutcome.artifacts.accepted_artifact_ids[0]}`])
+    const minioStat = await run('docker', ['exec', minio.mc, 'mc', 'stat', `local/chariox-artifacts/${artifactOutcome.artifacts.accepted_artifact_ids[0]}`])
     if (minioStat.code !== 0) throw new Error(`expected artifact blob in MinIO\nstdout=${minioStat.stdout}\nstderr=${minioStat.stderr}`)
     log('artifact-archive-ok', {
       acceptedArtifactId: artifactOutcome.artifacts.accepted_artifact_ids[0],

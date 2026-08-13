@@ -69,15 +69,15 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
 
 async function buildHttpAdapter() {
-  const binary = path.join(repoRoot, 'adapters/rust/target/debug/arroba-adapter-http')
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'adapters/rust/Cargo.toml'), '--bin', 'arroba-adapter-http'])
+  const binary = path.join(repoRoot, 'adapters/rust/target/debug/chariox-adapter-http')
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'adapters/rust/Cargo.toml'), '--bin', 'chariox-adapter-http'])
   if (result.code !== 0) throw new Error(`HTTP adapter build failed\n${result.stdout}\n${result.stderr}`)
   return binary
 }
@@ -167,7 +167,7 @@ async function registerConnector(client, root, port, vaultKey, adapterBinary) {
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${adapterBinary}
 description: HTTP adapter agent drill build.
 `, 'utf8')
@@ -273,11 +273,11 @@ async function runProviderScenario({ client, session, attachment, workspace, out
   const outputRel = `outputs/${provider}-connector-extension-result.json`
   const outputPath = path.join(outputsDir, `${provider}-connector-extension-result.json`)
   const prompt = [
-    'This is an Arroba connector extension end-to-end drill.',
+    'This is a Chariox connector extension end-to-end drill.',
     'You have exactly two relevant connector tools: `agent_local_api_public_echo` and `agent_local_api_secret_status`.',
     'Call `agent_local_api_public_echo` with {"q":"connector-alpha"}.',
     'Call `agent_local_api_secret_status` with {}.',
-    `Then write ${outputRel} using Arroba workspace live sync as one JSON object with these keys:`,
+    `Then write ${outputRel} using Chariox workspace live sync as one JSON object with these keys:`,
     'public_route, public_echo, secret_route, secret_authorized, secret_code.',
     'Use only values returned by the connector tools. Do not use placeholders. Reply exactly CONNECTOR_EXTENSION_AGENT_DRILL_DONE.',
   ].join('\n')
@@ -293,12 +293,12 @@ async function runProviderScenario({ client, session, attachment, workspace, out
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) return printHelp()
-  const root = path.join(tmpdir(), 'arroba-live-connector-extension-agent-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(tmpdir(), 'chariox-live-connector-extension-agent-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const configHome = path.join(root, 'config')
   const stateHome = path.join(root, 'state')
-  const arrobaHome = path.join(root, 'arroba-home')
+  const charioxHome = path.join(root, 'chariox-home')
   const vaultKey = `connector-agent-drill-${process.pid}-${Date.now()}`
   const secretValue = `connector-agent-secret-${process.pid}-${Date.now()}`
   const ports = makePorts()
@@ -314,8 +314,8 @@ async function main() {
   try {
     await prepareDrillArtifacts(root)
     await mkdir(outputsDir, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), [
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[credential_vault]',
@@ -338,14 +338,14 @@ async function main() {
       XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
       XDG_CONFIG_HOME: configHome,
       XDG_STATE_HOME: stateHome,
-      ARROBA_HOME: arrobaHome,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `connector-agent-drill-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-      ARROBA_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
+      CHARIOX_HOME: charioxHome,
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_ID: `connector-agent-drill-${process.pid}-${Date.now()}`,
+      CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: '1',
     })
     await waitForDaemon(kernelUrl)
     client = new LocalIpcClient(kernelUrl)

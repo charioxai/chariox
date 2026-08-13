@@ -13,9 +13,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./drill-failure-summary.mjs", import.meta.url))
 
 test("failure summary max-depth limits manifest discovery", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-summary-"))
-  const rootManifest = path.join(dir, "arroba-drill-failure.json")
-  const nestedManifest = path.join(dir, ".artifacts", "run", "arroba-drill-failure.json")
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-summary-"))
+  const rootManifest = path.join(dir, "chariox-drill-failure.json")
+  const nestedManifest = path.join(dir, ".artifacts", "run", "chariox-drill-failure.json")
   await writeManifest(rootManifest, failureManifest({ rootDir: dir, drill: "root" }))
   await writeManifest(nestedManifest, failureManifest({ rootDir: path.dirname(nestedManifest), drill: "nested" }))
 
@@ -38,11 +38,11 @@ test("failure summary rejects invalid max-depth", async () => {
 })
 
 test("failure summary writes artifact index for output", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-summary-"))
   try {
-    const manifestPath = path.join(dir, "arroba-drill-failure.json")
+    const manifestPath = path.join(dir, "chariox-drill-failure.json")
     const outputPath = path.join(dir, "aggregate.json")
-    const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+    const artifactIndexPath = path.join(dir, "chariox-drill-artifacts.json")
     await writeManifest(manifestPath, failureManifest({
       rootDir: dir,
       drill: "root",
@@ -76,7 +76,7 @@ test("failure summary writes artifact index for output", async () => {
       schema: artifact.schema,
     })), [{
       path: "aggregate.json",
-      schema: "arroba.drill.failure.aggregate.v1",
+      schema: "chariox.drill.failure.aggregate.v1",
     }])
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -84,9 +84,9 @@ test("failure summary writes artifact index for output", async () => {
 })
 
 test("failure summary gates stale failure manifests", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-failure-summary-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-failure-summary-"))
   try {
-    const manifestPath = path.join(dir, "arroba-drill-failure.json")
+    const manifestPath = path.join(dir, "chariox-drill-failure.json")
     const failedAt = new Date(Date.now() - 500).toISOString()
     await writeManifest(manifestPath, failureManifest({
       rootDir: dir,
@@ -143,8 +143,8 @@ test("failure summary gates stale failure manifests", async () => {
       (error) => {
         assert.equal(error.code, 1)
         assert.match(error.stdout, /failure_required_max_age_ms=100 stale_manifests=1/)
-        assert.match(error.stdout, /stale_failure_manifest=.*arroba-drill-failure\.json drill=stale-root/)
-        assert.match(error.stdout, /sources: stale-root report=.*arroba-drill-failure\.json/)
+        assert.match(error.stdout, /stale_failure_manifest=.*chariox-drill-failure\.json drill=stale-root/)
+        assert.match(error.stdout, /sources: stale-root report=.*chariox-drill-failure\.json/)
         return true
       },
     )
@@ -162,7 +162,7 @@ test("failure summary rejects invalid failure freshness age", async () => {
 
 test("failure summary rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)
@@ -183,7 +183,7 @@ async function writeManifest(file, manifest) {
 
 function failureManifest({ rootDir, drill, failedAt = "2026-06-13T00:00:00.000Z", runtimeSignals = null }) {
   return {
-    schema: "arroba.drill.failure.v1",
+    schema: "chariox.drill.failure.v1",
     rootDir,
     failedAt,
     metadata: {

@@ -16,10 +16,10 @@ test("detects sensitive drill metadata keys", () => {
 
 test("detects token-shaped drill metadata values", () => {
   assert.equal(looksLikeDrillSecretValue("Bearer abcdefghijklmnopqrstuvwxyz"), true)
-  assert.equal(looksLikeDrillSecretValue("arroba-scoped-v1.claims.signature"), true)
+  assert.equal(looksLikeDrillSecretValue("chariox-scoped-v1.claims.signature"), true)
   assert.equal(looksLikeDrillSecretValue("sk-this-should-not-persist"), true)
   assert.equal(looksLikeDrillSecretValue("ghp_abcdefghijklmnopqrstuvwxyz"), true)
-  assert.equal(looksLikeDrillSecretValue("/tmp/arroba-drill"), false)
+  assert.equal(looksLikeDrillSecretValue("/tmp/chariox-drill"), false)
 })
 
 test("redacts token-shaped text without dropping surrounding diagnostics", () => {
@@ -28,7 +28,7 @@ test("redacts token-shaped text without dropping surrounding diagnostics", () =>
     "request failed with <redacted> in header",
   )
   assert.equal(
-    redactDrillSecretText("relay rejected arroba-scoped-v1.claims.signature during reconnect"),
+    redactDrillSecretText("relay rejected chariox-scoped-v1.claims.signature during reconnect"),
     "relay rejected <redacted> during reconnect",
   )
   assert.equal(redactDrillSecretText("no secret here"), "no secret here")

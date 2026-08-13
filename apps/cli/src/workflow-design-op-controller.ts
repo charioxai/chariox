@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 
-import type { WorkflowDesignOp } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowDesignOp } from "@chariox/kernel-client/kernel-types"
 
 import type { RuntimeSession } from "./cli-types.js"
 import { applyWorkflowDesignOpRequest } from "./ipc-requests.js"

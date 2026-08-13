@@ -26,7 +26,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const cliPath = path.join(cliRoot, "dist/index.js")
-const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+const kernelBinary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
 const marker = `NTATT_${process.pid.toString(36)}_${Date.now().toString(36)}`
 const validationPng = Buffer.from("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", "base64")
 
@@ -119,7 +119,7 @@ async function finalizeProviderArtifacts({ root, provider, passed, failure, opti
   await finalizeDrillArtifacts({
     rootDir: root,
     passed,
-    preserveOnFailure: options.keepArtifactsOnFailure || process.env.ARROBA_KEEP_NATIVE_TUI_ATTACHMENT_ARTIFACTS === "1",
+    preserveOnFailure: options.keepArtifactsOnFailure || process.env.CHARIOX_KEEP_NATIVE_TUI_ATTACHMENT_ARTIFACTS === "1",
     failure,
     metadata: {
       drill: "native-tui-attachment",
@@ -203,7 +203,7 @@ async function codexRpc(proxyUrl, messages, timeoutMs = 30_000) {
 }
 
 async function runNativeOpenCodePromptWithFile(proxyUrl, providerSessionId, worktree, filePath, prompt) {
-  const executable = process.env.ARROBA_OPENCODE_BIN?.trim() || "opencode"
+  const executable = process.env.CHARIOX_OPENCODE_BIN?.trim() || "opencode"
   await new Promise((resolve, reject) => {
     const child = spawn(executable, [
       "run",
@@ -247,14 +247,14 @@ async function runProvider(provider, options) {
   const workspace = repoRoot
   const worktree = repoRoot
   const alias = `${provider === "codex" ? "cdx" : provider === "opencode" ? "oc" : "cc"}-attachment`
-  const screenNative = `arroba-${provider}-attachment-${process.pid}`
+  const screenNative = `chariox-${provider}-attachment-${process.pid}`
   const logs = {
     nativeDir: path.join(root, "native-screen"),
     native: path.join(root, "native-screen", "screenlog.0"),
     proxy: path.join(root, "native.proxy.log"),
   }
   const nativeMarker = `${marker}_${provider}_NATIVE_ATTACHMENT`
-  const arrobaMarker = `${marker}_${provider}_ARROBA_ATTACHMENT`
+  const charioxMarker = `${marker}_${provider}_CHARIOX_ATTACHMENT`
   const imagePath = path.join(root, `${provider}-image.png`)
   const textPath = path.join(root, `${provider}-note.txt`)
   let daemon = null
@@ -270,13 +270,13 @@ async function runProvider(provider, options) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        ARROBA_KERNEL_PORT: String(kernelPort),
-        ARROBA_MCP_PORT: String(kernelPort + 1000),
-        ARROBA_OPENCODE_PORT: String(kernelPort + 2000),
-        ARROBA_CODEX_PORT: String(kernelPort + 2001),
-        ARROBA_DAEMON_ID: `native-tui-attachment-${provider}-${process.pid}`,
-        ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-        ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+        CHARIOX_KERNEL_PORT: String(kernelPort),
+        CHARIOX_MCP_PORT: String(kernelPort + 1000),
+        CHARIOX_OPENCODE_PORT: String(kernelPort + 2000),
+        CHARIOX_CODEX_PORT: String(kernelPort + 2001),
+        CHARIOX_DAEMON_ID: `native-tui-attachment-${provider}-${process.pid}`,
+        CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+        CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
       },
       stdio: ["ignore", "ignore", "inherit"],
     })
@@ -301,14 +301,14 @@ async function runProvider(provider, options) {
       ...(provider === "claude" ? ["--detached-screen"] : []),
     ], {
       ...process.env,
-      ARROBA_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
-      ARROBA_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
-      ARROBA_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
-      ARROBA_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
-      ARROBA_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG: provider === "codex" ? "1" : undefined,
+      CHARIOX_CODEX_NATIVE_DEBUG_FILE: provider === "codex" ? logs.proxy : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG: provider === "opencode" ? "1" : undefined,
+      CHARIOX_OPENCODE_NATIVE_DEBUG_FILE: provider === "opencode" ? logs.proxy : undefined,
+      CHARIOX_CLAUDE_NATIVE_DEBUG: provider === "claude" ? "1" : undefined,
+      CHARIOX_CLAUDE_NATIVE_DEBUG_FILE: provider === "claude" ? logs.proxy : undefined,
     })
-    const sessionId = (await waitForFileMatch(logs.native, /arroba session:\s+([^\s(]+)/)).match[1]
+    const sessionId = (await waitForFileMatch(logs.native, /chariox session:\s+([^\s(]+)/)).match[1]
     const proxyUrl = provider === "codex"
       ? (await waitForFileMatch(logs.native, /proxy:\s+(ws:\/\/127\.0\.0\.1:\d+)/)).match[1]
       : provider === "opencode"
@@ -321,7 +321,7 @@ async function runProvider(provider, options) {
       ? (await waitForFileMatch(logs.proxy, /thread_observed:\s+\{"threadId":"([^"]+)"/)).match[1]
       : null
     const claudeScreen = provider === "claude"
-      ? (await waitForFileMatch(logs.native, /screen:\s+(arroba-claude-[^\s]+)/)).match[1]
+      ? (await waitForFileMatch(logs.native, /screen:\s+(chariox-claude-[^\s]+)/)).match[1]
       : null
 
     client = new LocalIpcClient(kernelUrl)
@@ -367,21 +367,21 @@ async function runProvider(provider, options) {
       await waitForLogOccurrences(logs.proxy, "attachments_forwarded", 1)
     }
 
-    const arrobaAttachmentPath = path.join(root, `${provider}-arroba-note.txt`)
-    await writeFile(arrobaAttachmentPath, `${arrobaMarker}\n`)
-    const arrobaPrompt = provider === "claude"
-      ? `Reply with exactly ${arrobaMarker} and nothing else.`
-      : `Reply with exactly ${arrobaMarker} and nothing else.`
-    await client.send(submitPromptRequest(sessionId, attachment.id, agent.id, arrobaPrompt, [
+    const charioxAttachmentPath = path.join(root, `${provider}-chariox-note.txt`)
+    await writeFile(charioxAttachmentPath, `${charioxMarker}\n`)
+    const charioxPrompt = provider === "claude"
+      ? `Reply with exactly ${charioxMarker} and nothing else.`
+      : `Reply with exactly ${charioxMarker} and nothing else.`
+    await client.send(submitPromptRequest(sessionId, attachment.id, agent.id, charioxPrompt, [
       provider === "codex" || provider === "claude"
         ? { url: imagePath, mime: "image/png", filename: path.basename(imagePath) }
-        : { url: `file://${arrobaAttachmentPath}`, mime: "text/plain", filename: path.basename(arrobaAttachmentPath) },
+        : { url: `file://${charioxAttachmentPath}`, mime: "text/plain", filename: path.basename(charioxAttachmentPath) },
     ]))
     await waitForLogOccurrences(logs.proxy, "attachments_forwarded", provider === "claude" ? 1 : 2)
-    await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, arrobaMarker)
+    await waitForHistoryOutput(client, sessionId, attachment.id, agent.id, charioxMarker)
 
     succeeded = true
-    return { provider, status: "ok", sessionId, alias, nativeMarker, arrobaMarker, logs }
+    return { provider, status: "ok", sessionId, alias, nativeMarker, charioxMarker, logs }
   } catch (error) {
     failure = error
     throw error

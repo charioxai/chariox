@@ -5,9 +5,9 @@ import test from "node:test"
 import { validationGateEvidenceSourceMetadata } from "./drill-validation-gate-source-metadata.mjs"
 
 test("builds validation gate evidence source metadata by repo root", () => {
-  const root = path.join(path.sep, "tmp", "arroba-validation-sources")
-  const ossRoot = path.join(root, "arroba")
-  const cloudRoot = path.join(root, "arroba-cloud")
+  const root = path.join(path.sep, "tmp", "chariox-validation-sources")
+  const ossRoot = path.join(root, "chariox")
+  const cloudRoot = path.join(root, "chariox-cloud")
 
   const metadata = validationGateEvidenceSourceMetadata({
     checks: {
@@ -24,11 +24,11 @@ test("builds validation gate evidence source metadata by repo root", () => {
         aggregate: {
           indexes: [
             {
-              source: path.join(ossRoot, ".artifacts", "suite", "arroba-drill-artifacts.json"),
+              source: path.join(ossRoot, ".artifacts", "suite", "chariox-drill-artifacts.json"),
               rootDir: path.join(ossRoot, ".artifacts", "suite"),
             },
             {
-              source: path.join(cloudRoot, ".artifacts", "suite", "arroba-drill-artifacts.json"),
+              source: path.join(cloudRoot, ".artifacts", "suite", "chariox-drill-artifacts.json"),
               rootDir: path.join(cloudRoot, ".artifacts", "suite"),
             },
           ],
@@ -38,7 +38,7 @@ test("builds validation gate evidence source metadata by repo root", () => {
         aggregate: {
           failures: [
             {
-              source: path.join(ossRoot, ".artifacts", "failed", "arroba-drill-failure.json"),
+              source: path.join(ossRoot, ".artifacts", "failed", "chariox-drill-failure.json"),
               rootDir: path.join(ossRoot, ".artifacts", "failed"),
             },
           ],
@@ -56,8 +56,8 @@ test("builds validation gate evidence source metadata by repo root", () => {
 })
 
 test("does not classify sibling paths as repo evidence", () => {
-  const root = path.join(path.sep, "tmp", "arroba-validation-sources")
-  const ossRoot = path.join(root, "arroba")
+  const root = path.join(path.sep, "tmp", "chariox-validation-sources")
+  const ossRoot = path.join(root, "chariox")
 
   const metadata = validationGateEvidenceSourceMetadata({
     checks: {
@@ -78,30 +78,30 @@ test("does not classify sibling paths as repo evidence", () => {
 })
 
 test("classifies generated evidence paths by repo root", () => {
-  const root = path.join(path.sep, "tmp", "arroba-validation-sources")
-  const ossRoot = path.join(root, "arroba")
-  const cloudRoot = path.join(root, "arroba-cloud")
+  const root = path.join(path.sep, "tmp", "chariox-validation-sources")
+  const ossRoot = path.join(root, "chariox")
+  const cloudRoot = path.join(root, "chariox-cloud")
 
   const metadata = validationGateEvidenceSourceMetadata({
     checks: {},
     generatedEvidence: {
       validationSuites: {
         outputRoots: [path.join(ossRoot, ".artifacts", "suite")],
-        artifactIndexes: [path.join(ossRoot, ".artifacts", "suite", "arroba-drill-artifacts.json")],
+        artifactIndexes: [path.join(ossRoot, ".artifacts", "suite", "chariox-drill-artifacts.json")],
         failureRoots: [path.join(root, "external", "suite-failures")],
         commands: [{
           reportPath: path.join(ossRoot, ".artifacts", "suite", "drill-validation-suite-run.json"),
-          artifactIndexPath: path.join(ossRoot, ".artifacts", "suite", "arroba-drill-artifacts.json"),
+          artifactIndexPath: path.join(ossRoot, ".artifacts", "suite", "chariox-drill-artifacts.json"),
           failureRoot: path.join(root, "external", "suite-failures"),
           scriptPath: path.join(ossRoot, "apps", "cli", "scripts", "drill-validation-suite.mjs"),
         }],
       },
       matrixReports: {
         reportPaths: [path.join(cloudRoot, ".artifacts", "matrices", "cloud-slice.json")],
-        artifactIndexes: [path.join(cloudRoot, ".artifacts", "matrices", "arroba-drill-artifacts.json")],
+        artifactIndexes: [path.join(cloudRoot, ".artifacts", "matrices", "chariox-drill-artifacts.json")],
         commands: [{
           reportPath: path.join(cloudRoot, ".artifacts", "matrices", "cloud-slice.json"),
-          artifactIndexPath: path.join(cloudRoot, ".artifacts", "matrices", "arroba-drill-artifacts.json"),
+          artifactIndexPath: path.join(cloudRoot, ".artifacts", "matrices", "chariox-drill-artifacts.json"),
           scriptPath: path.join(cloudRoot, "scripts", "cloud-slice-runtime-matrix.mjs"),
         }],
       },

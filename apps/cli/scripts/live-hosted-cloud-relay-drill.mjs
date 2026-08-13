@@ -52,32 +52,32 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.ARROBA_CLOUD_HOSTED_API_URL ?? "https://arroba-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
-const pollTimeoutMs = Number(process.env.ARROBA_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
-const runMultiUser = process.env.ARROBA_CLOUD_HOSTED_MULTI_USER === "1"
-const runSecondKernel = process.env.ARROBA_CLOUD_HOSTED_SECOND_KERNEL === "1"
-const runRemoteCli = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI === "1"
-const runRemoteCliPairing = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
-const runTokenRotation = process.env.ARROBA_CLOUD_HOSTED_TOKEN_ROTATION === "1"
-const runWorkspaceLiveSync = process.env.ARROBA_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC === "1"
-const runTrackedWorkspaceLiveSync = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC === "1"
-const trackedWorkspaceLiveSyncProvider = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_PROVIDER ?? "codex"
-const trackedWorkspaceLiveSyncModel = process.env.ARROBA_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_MODEL ?? "gpt-5.2"
-const remoteCliPairingProvider = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
-const remoteCliPairingModel = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
-const remoteCliPairingEffort = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
-const remoteCliHost = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
-const remoteCliKey = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/arroba_hetzner_staging")
-const remoteCliRepo = process.env.ARROBA_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/arroba-cli-drill"
-const devAuthSecret = process.env.ARROBA_CLOUD_DEV_AUTH_SECRET ?? ""
+const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://chariox-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
+const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
+const runMultiUser = process.env.CHARIOX_CLOUD_HOSTED_MULTI_USER === "1"
+const runSecondKernel = process.env.CHARIOX_CLOUD_HOSTED_SECOND_KERNEL === "1"
+const runRemoteCli = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI === "1"
+const runRemoteCliPairing = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PAIRING === "1"
+const runTokenRotation = process.env.CHARIOX_CLOUD_HOSTED_TOKEN_ROTATION === "1"
+const runWorkspaceLiveSync = process.env.CHARIOX_CLOUD_HOSTED_WORKSPACE_LIVE_SYNC === "1"
+const runTrackedWorkspaceLiveSync = process.env.CHARIOX_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC === "1"
+const trackedWorkspaceLiveSyncProvider = process.env.CHARIOX_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_PROVIDER ?? "codex"
+const trackedWorkspaceLiveSyncModel = process.env.CHARIOX_CLOUD_HOSTED_TRACKED_WORKSPACE_LIVE_SYNC_MODEL ?? "gpt-5.2"
+const remoteCliPairingProvider = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_PROVIDER ?? "codex"
+const remoteCliPairingModel = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_MODEL ?? "gpt-5.2-codex"
+const remoteCliPairingEffort = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_EFFORT ?? "low"
+const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
+const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")
+const remoteCliRepo = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_REPO ?? "/opt/chariox-cli-drill"
+const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
 
 if ((runWorkspaceLiveSync || runTrackedWorkspaceLiveSync) && !runSecondKernel) {
-  throw new Error("hosted Workspace Live Sync drills require ARROBA_CLOUD_HOSTED_SECOND_KERNEL=1")
+  throw new Error("hosted Workspace Live Sync drills require CHARIOX_CLOUD_HOSTED_SECOND_KERNEL=1")
 }
 
 async function main() {
   if (process.argv.includes("--help") || process.argv.includes("-h")) {
-    console.log("Usage: node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs\n\nHosted scenario selection is controlled by ARROBA_CLOUD_HOSTED_* environment variables.")
+    console.log("Usage: node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs\n\nHosted scenario selection is controlled by CHARIOX_CLOUD_HOSTED_* environment variables.")
     return
   }
   const ports = await makePorts()
@@ -85,7 +85,7 @@ async function main() {
   const rootDir = path.join(os.tmpdir(), runId)
   const workspace = path.join(rootDir, "workspace")
   const homeDir = path.join(rootDir, "home")
-  const arrobaHome = path.join(homeDir, ".arroba")
+  const charioxHome = path.join(homeDir, ".chariox")
   const homeCapabilityRoot = path.join(rootDir, "home-capabilities")
   const homeHistoryDir = path.join(rootDir, "session-history")
   const xdgConfigHome = path.join(homeDir, ".config")
@@ -98,7 +98,7 @@ async function main() {
 
   await prepareDrillArtifacts(rootDir)
   await mkdir(workspace, { recursive: true })
-  await mkdir(arrobaHome, { recursive: true })
+  await mkdir(charioxHome, { recursive: true })
   await mkdir(xdgConfigHome, { recursive: true })
   await mkdir(xdgStateHome, { recursive: true })
   await mkdir(xdgRuntimeDir, { recursive: true })
@@ -116,7 +116,7 @@ async function main() {
     log("build-cli")
     const cliBuild = await run("pnpm", ["run", "build"], { cwd: cliRoot, env: process.env })
     if (cliBuild.code !== 0) {
-      throw new Error(`arroba cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
+      throw new Error(`chariox cli build failed\n${cliBuild.stdout}\n${cliBuild.stderr}`)
     }
 
     log("build-kernel")
@@ -132,20 +132,20 @@ async function main() {
 
     const daemonEnv = withDevStubProviderInventory(withHostedKernelIsolation({
       ...process.env,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: daemonId,
-      ARROBA_DAEMON_ALIAS: daemonAlias,
-      ARROBA_MACHINE_ID: daemonId,
-      ARROBA_MACHINE_ALIAS: daemonAlias,
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: homeHistoryDir,
-      ARROBA_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_ID: daemonId,
+      CHARIOX_DAEMON_ALIAS: daemonAlias,
+      CHARIOX_MACHINE_ID: daemonId,
+      CHARIOX_MACHINE_ALIAS: daemonAlias,
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, "daemon.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: homeHistoryDir,
+      CHARIOX_CAPABILITY_ISOLATION_ROOT: homeCapabilityRoot,
     }, {
       homeDir,
-      arrobaHome,
+      charioxHome,
       xdgConfigHome,
       xdgStateHome,
       xdgRuntimeDir,
@@ -379,8 +379,8 @@ async function main() {
     } else {
       log("multi-user-skipped", {
         reason: devAuthSecret
-          ? "set ARROBA_CLOUD_HOSTED_MULTI_USER=1"
-          : "set ARROBA_CLOUD_HOSTED_MULTI_USER=1 and approve owner, peer, and third browser logins, or set ARROBA_CLOUD_DEV_AUTH_SECRET",
+          ? "set CHARIOX_CLOUD_HOSTED_MULTI_USER=1"
+          : "set CHARIOX_CLOUD_HOSTED_MULTI_USER=1 and approve owner, peer, and third browser logins, or set CHARIOX_CLOUD_DEV_AUTH_SECRET",
       })
     }
 

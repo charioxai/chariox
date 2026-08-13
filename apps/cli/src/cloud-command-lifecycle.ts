@@ -65,7 +65,7 @@ type HostedCloudRelayEnsureResult = {
   status: RelayStatus | null
 }
 
-const DEFAULT_HOSTED_CLOUD_API_URL = "https://arroba-cloud-staging.osc-fr1.scalingo.io"
+const DEFAULT_HOSTED_CLOUD_API_URL = "https://chariox-cloud-staging.osc-fr1.scalingo.io"
 const HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS = 8_000
 const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
 
@@ -161,13 +161,13 @@ export async function openHostedCloud(deps: CloudCommandLifecycleDeps): Promise<
   appendCloudNotice(
     deps,
     [
-      "Opening Arroba Cloud.",
+      "Opening Chariox Cloud.",
       `url=${terminalUrl}`,
       opened ? "browser=opened" : "browser=manual",
       ...(relayLine ? [relayLine] : []),
     ].join("\n"),
   )
-  deps.flashFooter(opened ? "opened Arroba Cloud" : "Arroba Cloud URL ready", "info")
+  deps.flashFooter(opened ? "opened Chariox Cloud" : "Chariox Cloud URL ready", "info")
 }
 
 export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Promise<void> {
@@ -177,7 +177,7 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
   }
   const relayStatus = await deps.getRelayStatus()
   const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_HOSTED_CLOUD_API_URL, {
-    clientId: deps.clientId ?? "arroba-cli",
+    clientId: deps.clientId ?? "chariox-cli",
     machineId: relayStatus.machine_id,
     ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
   })
@@ -185,7 +185,7 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
   appendCloudNotice(
     deps,
     [
-      "Link this machine to Arroba Cloud.",
+      "Link this machine to Chariox Cloud.",
       `url=${started.verificationUrl}`,
       `code=${started.userCode}`,
       opened ? "browser=opened" : "browser=manual",

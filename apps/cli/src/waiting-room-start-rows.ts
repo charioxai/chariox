@@ -6,7 +6,7 @@ import {
 import {
   formatProviderAccountForBackend,
   formatSliceBackendProviderAccount,
-} from "@arroba/kernel-client/slice-format"
+} from "@chariox/kernel-client/slice-format"
 import type { SliceRecord } from "./cli-types.js"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
@@ -16,7 +16,7 @@ import {
   waitingRoomLaunchMachineOptions,
   waitingRoomSelectedLaunchKernelRef,
   waitingRoomSelectedLaunchMachineRef,
-} from "@arroba/kernel-client/waiting-room-runtime-placement"
+} from "@chariox/kernel-client/waiting-room-runtime-placement"
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"

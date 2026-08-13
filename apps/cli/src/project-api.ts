@@ -1,4 +1,4 @@
-import type { RuntimeProject } from "@arroba/kernel-client"
+import type { RuntimeProject } from "@chariox/kernel-client"
 
 import type { LocalIpcClient } from "./ipc.js"
 import {

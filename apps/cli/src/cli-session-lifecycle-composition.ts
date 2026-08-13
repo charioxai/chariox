@@ -26,7 +26,7 @@ import {
 } from "./runtime.js"
 import {
   applyProviderRunProfileToSession,
-} from "@arroba/kernel-client/prompt-provider-selection"
+} from "@chariox/kernel-client/prompt-provider-selection"
 import {
   deriveAttachedCliTransitionState,
   deriveDetachedCliTransitionState,
@@ -170,7 +170,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         error: deps.formatError(error),
       })
       deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
       deps.appendNotice(`Waiting room inventory subscription failed: ${deps.formatError(error)}`, "warning")
       deps.updateSessionChrome()
     },
@@ -181,7 +181,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
         error: deps.formatError(error),
       })
       deps.setDaemonDisconnected(true)
-      deps.setStatusLine("Waiting to reconnect to the Arroba kernel.")
+      deps.setStatusLine("Waiting to reconnect to the Chariox kernel.")
       deps.appendNotice(`Kernel event subscription failed: ${deps.formatError(error)}`, "warning")
       deps.updateSessionChrome()
     },
@@ -209,7 +209,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
       deps.setDaemonDisconnected(false)
       deps.setStatusLine(DEFAULT_CONNECTED_STATUS)
       deps.updateSessionChrome()
-      deps.appendNotice("Reconnected to the Arroba kernel.")
+      deps.appendNotice("Reconnected to the Chariox kernel.")
     },
     onAttemptFailed: (sessionId, error) => {
       deps.appLogger?.debug("kernel restart recovery attempt failed", {

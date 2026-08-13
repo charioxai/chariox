@@ -530,7 +530,7 @@ async function matrixFreshnessDiagnosticsFor(indexes, options) {
   const staleMatrixReports = []
   for (const index of indexes) {
     for (const artifact of index.artifacts) {
-      if (artifact.schema !== "arroba.drill.matrix.v1") continue
+      if (artifact.schema !== "chariox.drill.matrix.v1") continue
       const source = path.join(index.rootDir, artifact.path)
       const report = JSON.parse(await readFile(source, "utf8"))
       const completedMs = Date.parse(report.completedAt)

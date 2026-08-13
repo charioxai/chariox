@@ -40,13 +40,13 @@ const tuiWebParityDrill = path.join(scriptDir, "tui-web-terminal-parity-drill.mj
 const providerThreadTransferDrill = path.join(scriptDir, "live-provider-thread-transfer-drill.mjs")
 const deterministicRuntimeChaosDrill = path.join(scriptDir, "deterministic-runtime-chaos-drill.mjs")
 
-const DEFAULT_CODEX_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL
-  ?? process.env.ARROBA_CODEX_MODEL
+const DEFAULT_CODEX_MODEL = process.env.CHARIOX_RUNTIME_RESILIENCE_CODEX_MODEL
+  ?? process.env.CHARIOX_CODEX_MODEL
   ?? "gpt-5.4-mini"
-const DEFAULT_OPENCODE_MODEL = process.env.ARROBA_RUNTIME_RESILIENCE_OPENCODE_MODEL
-  ?? process.env.ARROBA_OPENCODE_MODEL
+const DEFAULT_OPENCODE_MODEL = process.env.CHARIOX_RUNTIME_RESILIENCE_OPENCODE_MODEL
+  ?? process.env.CHARIOX_OPENCODE_MODEL
   ?? "opencode/gpt-5.2"
-const DEFAULT_CHAOS_SEED = process.env.ARROBA_RUNTIME_RESILIENCE_CHAOS_SEED
+const DEFAULT_CHAOS_SEED = process.env.CHARIOX_RUNTIME_RESILIENCE_CHAOS_SEED
   ?? DEFAULT_DETERMINISTIC_RUNTIME_CHAOS_SEED
 
 const MATRIX = [
@@ -215,8 +215,8 @@ const MATRIX = [
     script: hostedCloudRelayDrill,
     args: [],
     env: {
-      ARROBA_CLOUD_HOSTED_SECOND_KERNEL: "1",
-      ARROBA_CLOUD_HOSTED_MULTI_USER: "0",
+      CHARIOX_CLOUD_HOSTED_SECOND_KERNEL: "1",
+      CHARIOX_CLOUD_HOSTED_MULTI_USER: "0",
     },
     requires: ["hosted-cloud"],
     classification: "relay-runtime",
@@ -291,9 +291,9 @@ function printHelp() {
     "  --hetzner-repo PATH       Forwarded to Hetzner drill scenarios",
     "",
     "Environment defaults:",
-    `  ARROBA_RUNTIME_RESILIENCE_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
-    `  ARROBA_RUNTIME_RESILIENCE_OPENCODE_MODEL=${DEFAULT_OPENCODE_MODEL}`,
-    `  ARROBA_RUNTIME_RESILIENCE_CHAOS_SEED=${DEFAULT_CHAOS_SEED}`,
+    `  CHARIOX_RUNTIME_RESILIENCE_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
+    `  CHARIOX_RUNTIME_RESILIENCE_OPENCODE_MODEL=${DEFAULT_OPENCODE_MODEL}`,
+    `  CHARIOX_RUNTIME_RESILIENCE_CHAOS_SEED=${DEFAULT_CHAOS_SEED}`,
     "",
     "Scenario ids:",
     ...MATRIX.map((scenarioItem) => `  ${scenarioItem.id.padEnd(42)} ${scenarioItem.description}`),

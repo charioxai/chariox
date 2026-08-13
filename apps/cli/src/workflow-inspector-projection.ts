@@ -10,8 +10,8 @@ import type {
 import { workflowAgentDisplayLabel } from "./workflow-collaboration-labels.js"
 import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
 import type { WorkflowNodeInstructionsEditor } from "./workflow-node-instructions-editor-controller.js"
-import { resolveActiveWorkflowRun } from "@arroba/kernel-client/workflow-prompt-state"
-import { sessionWorkflowSchedules } from "@arroba/kernel-client/session-workflow-state"
+import { resolveActiveWorkflowRun } from "@chariox/kernel-client/workflow-prompt-state"
+import { sessionWorkflowSchedules } from "@chariox/kernel-client/session-workflow-state"
 
 export type WorkflowInspectorMode = "logs" | "trace" | "edit"
 

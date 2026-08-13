@@ -4,7 +4,7 @@ import test from "node:test"
 import { createCodexKernelOutputProjection } from "./native-tui/codex-kernel-output-projection.js"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 
 test("codex kernel output projection ignores unscoped and wrong-agent records", () => {
   const broadcasts: unknown[] = []

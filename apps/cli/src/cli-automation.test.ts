@@ -36,7 +36,7 @@ test("automationSnapshotMatches applies wait-for filters", () => {
 })
 
 test("startCliAutomationServer frames json-line requests", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "arroba-cli-automation-"))
+  const dir = await mkdtemp(join(tmpdir(), "chariox-cli-automation-"))
   const socketPath = join(dir, "automation.sock")
   const server = await startCliAutomationServer({
     socketPath,

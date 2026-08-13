@@ -6,7 +6,7 @@ import {
   applyTranscriptProviderChunk,
   applyTranscriptToolUpdate,
   type TranscriptStreamMetadata,
-} from "@arroba/kernel-client/transcript-stream-state"
+} from "@chariox/kernel-client/transcript-stream-state"
 
 export type AgentPaneTranscriptStreamControllerDeps = {
   currentAgentPaneEntries: (agentId: string) => TranscriptEntry[]

@@ -54,7 +54,7 @@ test("relay cloud login without args uses device flow", async () => {
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
-      assert.equal(apiUrl, "https://arroba-cloud-staging.osc-fr1.scalingo.io")
+      assert.equal(apiUrl, "https://chariox-cloud-staging.osc-fr1.scalingo.io")
       assert.equal(input.clientId, "client-1")
       assert.equal(input.machineId, "machine-1")
       assert.equal(input.machineAlias, "laptop")
@@ -62,7 +62,7 @@ test("relay cloud login without args uses device flow", async () => {
         apiUrl,
         deviceCode: "dev-code",
         userCode: "ABCD-EFGH",
-        verificationUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
+        verificationUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
         expiresAtMs: Date.now() + 60_000,
         intervalSeconds: 1,
       }
@@ -73,7 +73,7 @@ test("relay cloud login without args uses device flow", async () => {
       return {
         status: "approved",
         profile: {
-          apiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io",
+          apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
           email: "user@example.com",
           accountId: "account-1",
           userId: "user-1",
@@ -165,9 +165,9 @@ test("/cloud opens hosted browser terminal when a cloud profile already exists",
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
 
   assert.deepEqual(openedUrls, ["https://cloud.example/terminal?view=waiting"])
-  assert.match(notices[0] ?? "", /Opening Arroba Cloud/)
+  assert.match(notices[0] ?? "", /Opening Chariox Cloud/)
   assert.doesNotMatch(notices.join("\n"), /code=|Link this machine/)
-  assert.equal(flashed.at(-1), "opened Arroba Cloud")
+  assert.equal(flashed.at(-1), "opened Chariox Cloud")
 })
 
 test("/cloud links instead of opening when the local kernel is not linked", async () => {
@@ -225,8 +225,8 @@ test("/cloud links instead of opening when the local kernel is not linked", asyn
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
 
   assert.equal(startedDeviceLogin, true)
-  assert.match(notices[0] ?? "", /Link this machine to Arroba Cloud/)
-  assert.doesNotMatch(notices[0] ?? "", /Opening Arroba Cloud/)
+  assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
+  assert.doesNotMatch(notices[0] ?? "", /Opening Chariox Cloud/)
 })
 
 test("/cloud links instead of opening when the cloud machine identity was revoked", async () => {
@@ -291,8 +291,8 @@ test("/cloud links instead of opening when the cloud machine identity was revoke
   assert.equal(startedDeviceLogin, true)
   assert.deepEqual(openedUrls, ["https://cloud.example/activate?user_code=ABCD-EFGH"])
   assert.match(notices[0] ?? "", /Cloud link needs refresh/)
-  assert.match(notices[1] ?? "", /Link this machine to Arroba Cloud/)
-  assert.doesNotMatch(notices.join("\n"), /Opening Arroba Cloud/)
+  assert.match(notices[1] ?? "", /Link this machine to Chariox Cloud/)
+  assert.doesNotMatch(notices.join("\n"), /Opening Chariox Cloud/)
 })
 
 test("/cloud link triggers hosted device login flow", async () => {
@@ -353,14 +353,14 @@ test("/cloud link triggers hosted device login flow", async () => {
   await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud link", args: ["link"] })
 
   assert.deepEqual(flashed, [])
-  assert.match(notices[0] ?? "", /Link this machine to Arroba Cloud/)
+  assert.match(notices[0] ?? "", /Link this machine to Chariox Cloud/)
   assert.equal(notices.at(-1), "cloud linked: user")
 })
 
 test("relay cloud login without args prefers configured hosted api url", async () => {
   const handlers = createCommandActionHandlers(makeCommandDeps({
     clientId: "client-1",
-    cloudRelayApiUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/",
+    cloudRelayApiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/",
     getRelayStatus: async () => ({
       configured: false,
       connected: false,
@@ -371,12 +371,12 @@ test("relay cloud login without args prefers configured hosted api url", async (
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string) => {
-      assert.equal(apiUrl, "https://arroba-cloud-staging.osc-fr1.scalingo.io/")
+      assert.equal(apiUrl, "https://chariox-cloud-staging.osc-fr1.scalingo.io/")
       return {
         apiUrl,
         deviceCode: "dev-code",
         userCode: "ABCD-EFGH",
-        verificationUrl: "https://arroba-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
+        verificationUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
         expiresAtMs: Date.now() + 60_000,
         intervalSeconds: 1,
       }

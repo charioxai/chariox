@@ -7,7 +7,7 @@ import {
   nextInteractionChoiceIndex,
   resolveInteractionChoiceKeyAction,
   resolveInteractionChoiceSubmission,
-} from "@arroba/kernel-client/interaction-choice"
+} from "@chariox/kernel-client/interaction-choice"
 
 export type FocusedInteractionChoiceKeyEvent = {
   name: string

@@ -1,9 +1,9 @@
 import type {
   DeploymentCredentialEnrollmentArmedResponse,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 import {
   parseAbsoluteInstantMsOrNull,
-} from "@arroba/kernel-client/time"
+} from "@chariox/kernel-client/time"
 
 import { armDeploymentCredentialEnrollmentRequest } from "./ipc-requests.js"
 import type {

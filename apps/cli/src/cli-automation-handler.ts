@@ -1,8 +1,8 @@
 import {
   externalProviderSessionSelectionIndex,
   externalProviderSessionsSorted,
-} from "@arroba/kernel-client/external-provider-sessions"
-import { queuedPromptActionState } from "@arroba/kernel-client/queued-prompt-controls"
+} from "@chariox/kernel-client/external-provider-sessions"
+import { queuedPromptActionState } from "@chariox/kernel-client/queued-prompt-controls"
 import type {
   CliOptions,
   ExternalProviderSessionRecord,
@@ -11,8 +11,8 @@ import type {
   RuntimeSession,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { ArrobaLogger } from "./logging.js"
-import type { QueuedPromptStripItem } from "@arroba/kernel-client/queued-prompt-strip-state"
+import type { CharioxLogger } from "./logging.js"
+import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import type { WorkspaceScreenMode } from "./workspace-screen.js"
 import {
   automationSnapshotMatches,
@@ -26,7 +26,7 @@ import {
 import { submitPromptWithRecovery } from "./prompt-runtime-api.js"
 import { launchProviderRun } from "./provider-api.js"
 import { resizeSessionTerminal } from "./session-runtime-api.js"
-import { resolveAttachTimeProviderLaunch } from "@arroba/kernel-client/session-lifecycle-state"
+import { resolveAttachTimeProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
@@ -34,7 +34,7 @@ import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js
 export type CliAutomationActionDeps = {
   client: LocalIpcClient
   options: CliOptions
-  appLogger: ArrobaLogger | null
+  appLogger: CharioxLogger | null
   snapshot: () => CliAutomationSnapshot
   isAttached: () => boolean
   kernelConnected: () => boolean
@@ -97,7 +97,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
       case "workspace_shell_exec": {
         const command = typeof request.command === "string" ? request.command : ""
         if (!command.trim()) {
-          throw new Error("usage: workspace_shell_exec command=<arroba-shell command>")
+          throw new Error("usage: workspace_shell_exec command=<chariox-shell command>")
         }
         if (!deps.workflowScreenActive()) {
           deps.showWorkflowScreen()

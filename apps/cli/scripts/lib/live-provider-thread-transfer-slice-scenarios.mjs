@@ -63,8 +63,8 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
     status: "failed",
     started_at_ms: Date.now(),
     evidence: {
-      scope: "home-managed local Docker slice save/restart with the same Arroba agent record",
-      same_arroba_agent_record: true,
+      scope: "home-managed local Docker slice save/restart with the same Chariox agent record",
+      same_chariox_agent_record: true,
     },
     checks: {},
     errors: [],
@@ -268,7 +268,7 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       alias: afterAgent?.alias ?? null,
       remote_execution: afterAgent?.remote_execution ?? null,
     }
-    result.checks.same_arroba_agent_record = afterAgent?.id === agent.id
+    result.checks.same_chariox_agent_record = afterAgent?.id === agent.id
     result.checks.slice_working_directory_before = beforeRun.working_directory ?? null
     result.checks.slice_working_directory_after = afterRun.working_directory ?? null
     result.checks.slice_working_directory_preserved = (
@@ -283,8 +283,8 @@ export async function runSliceRestartScenario({ provider, root, kernelUrl, optio
       && result.evidence.slice_state_saved.slice.worker_kernel_id
       && result.evidence.slice_before_restart.worker_kernel_id !== result.evidence.slice_state_saved.slice.worker_kernel_id
     )
-    if (!result.checks.same_arroba_agent_record) {
-      throw new Error(`slice restart did not preserve same Arroba agent record ${agent.id}`)
+    if (!result.checks.same_chariox_agent_record) {
+      throw new Error(`slice restart did not preserve same Chariox agent record ${agent.id}`)
     }
     if (!result.checks.slice_working_directory_preserved) {
       throw new Error(
@@ -381,9 +381,9 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
     started_at_ms: Date.now(),
     evidence: {
       scope: roundTrip
-        ? "provider thread starts on the main machine, the same Arroba agent record is moved to a local Docker slice and then back to local execution, and both provider runs resume the captured provider thread"
-        : "provider thread starts on the main machine, the same Arroba agent record is moved to a local Docker slice, and the slice provider run resumes the captured provider thread",
-      same_arroba_agent_record_required: true,
+        ? "provider thread starts on the main machine, the same Chariox agent record is moved to a local Docker slice and then back to local execution, and both provider runs resume the captured provider thread"
+        : "provider thread starts on the main machine, the same Chariox agent record is moved to a local Docker slice, and the slice provider run resumes the captured provider thread",
+      same_chariox_agent_record_required: true,
       same_provider_thread_required: true,
     },
     checks: {},
@@ -570,9 +570,9 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       effort: movedAgent.effort,
       remote_execution: movedAgent.remote_execution ?? null,
     }
-    result.checks.same_arroba_agent_record_after_move = movedAgent.id === agent.id
-    if (!result.checks.same_arroba_agent_record_after_move) {
-      throw new Error(`move returned a different Arroba agent record: before=${agent.id} after=${movedAgent.id}`)
+    result.checks.same_chariox_agent_record_after_move = movedAgent.id === agent.id
+    if (!result.checks.same_chariox_agent_record_after_move) {
+      throw new Error(`move returned a different Chariox agent record: before=${agent.id} after=${movedAgent.id}`)
     }
     if (!movedAgent.remote_execution) {
       throw new Error(`agent ${agent.id} was not remote-backed after move to slice`)
@@ -718,10 +718,10 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
         effort: returnedAgent.effort,
         remote_execution: returnedAgent.remote_execution ?? null,
       }
-      result.checks.same_arroba_agent_record_after_return = returnedAgent.id === agent.id
+      result.checks.same_chariox_agent_record_after_return = returnedAgent.id === agent.id
       result.checks.agent_local_after_return = returnedAgent.remote_execution == null
-      if (!result.checks.same_arroba_agent_record_after_return) {
-        throw new Error(`return move returned a different Arroba agent record: before=${agent.id} after=${returnedAgent.id}`)
+      if (!result.checks.same_chariox_agent_record_after_return) {
+        throw new Error(`return move returned a different Chariox agent record: before=${agent.id} after=${returnedAgent.id}`)
       }
       if (!result.checks.agent_local_after_return) {
         throw new Error(`agent ${agent.id} was still remote-backed after move back to local`)
@@ -819,7 +819,7 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       provider_resume_state: finalAgent?.provider_resume_state ?? null,
     }
     result.evidence.local_run_final = providerRunSnapshot(localRunFinal)
-    result.checks.same_arroba_agent_record_final = finalAgent?.id === agent.id
+    result.checks.same_chariox_agent_record_final = finalAgent?.id === agent.id
     result.checks.local_run_still_ended_after_slice_launch = String(localRunFinal.state ?? "").toLowerCase() === "ended"
     result.checks.agent_execution_location_final = finalAgent?.remote_execution == null ? "local" : "remote"
     const expectedModel = provider === "codex" && agent.model && !agent.model.startsWith("codex/")
@@ -830,8 +830,8 @@ export async function runLiveMigrateToSliceScenario({ provider, root, kernelUrl,
       && finalAgent?.effort === agent.effort
     result.checks.slice_recall_marker_observed = true
     result.evidence.recall_marker = recallMarker
-    if (!result.checks.same_arroba_agent_record_final) {
-      throw new Error(`same Arroba agent record was not present after migration: ${agent.id}`)
+    if (!result.checks.same_chariox_agent_record_final) {
+      throw new Error(`same Chariox agent record was not present after migration: ${agent.id}`)
     }
     if (!result.checks.local_run_still_ended_after_slice_launch) {
       throw new Error(`old local provider run was not still ended after slice launch: ${JSON.stringify(result.evidence.local_run_final)}`)

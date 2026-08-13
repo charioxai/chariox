@@ -23,10 +23,10 @@ import {
 } from '../drill-cross-repo-validation-gate.test-support.mjs'
 
 test("cross repo validation gate keeps default artifact roots opt-in", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
     await writeValidationSuiteArtifact(path.join(cloudRoot, ".artifacts", "validation-suite"))
@@ -55,17 +55,17 @@ test("cross repo validation gate keeps default artifact roots opt-in", async () 
       "--json",
     ])).stdout)
     assert.equal(discovered.checks.artifacts.status, "passed")
-    assert.equal(discovered.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.equal(discovered.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite_run.v1"], 1)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
 
 test("cross repo validation gate accepts explicit artifact evidence inputs", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     const artifactRoot = path.join(rootDir, "artifact-root")
     await writeDrillPlatformBundle(bundleDir)
@@ -88,20 +88,20 @@ test("cross repo validation gate accepts explicit artifact evidence inputs", asy
     assert.equal(report.checks.artifacts.status, "passed")
     assert.deepEqual(report.checks.artifacts.inputs, [artifactIndex])
     assert.deepEqual(report.checks.artifacts.roots, [])
-    assert.equal(report.checks.artifacts.aggregate.schemas["arroba.drill.validation_suite_run.v1"], 1)
+    assert.equal(report.checks.artifacts.aggregate.schemas["chariox.drill.validation_suite_run.v1"], 1)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
 })
 
 test("cross repo validation gate keeps default failure roots opt-in", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
-    await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "arroba-drill-failure.json"), {
+    await writeFailureManifest(path.join(cloudRoot, ".artifacts", "failed-run", "chariox-drill-failure.json"), {
       drill: "cloud-slice-runtime-matrix",
       message: "relay target stale",
     })
@@ -150,13 +150,13 @@ test("cross repo validation gate keeps default failure roots opt-in", async () =
 })
 
 test("cross repo validation gate accepts explicit failure manifests", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
-    const ossRoot = path.join(rootDir, "arroba")
-    const cloudRoot = path.join(rootDir, "arroba-cloud")
+    const ossRoot = path.join(rootDir, "chariox")
+    const cloudRoot = path.join(rootDir, "chariox-cloud")
     const bundleDir = path.join(rootDir, "bundle")
     await writeDrillPlatformBundle(bundleDir)
-    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "arroba-drill-failure.json"), {
+    const failureManifest = await writeFailureManifest(path.join(rootDir, "preserved", "chariox-drill-failure.json"), {
       drill: "slice-runtime-matrix",
       message: "slice launch timed out",
     })
@@ -193,7 +193,7 @@ test("cross repo validation gate accepts explicit failure manifests", async () =
 })
 
 test("cross repo validation gate can disable default roots for focused evidence checks", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-cross-repo-gate-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-cross-repo-gate-"))
   try {
     const ossMatrixRoot = path.join(rootDir, "oss-matrices")
     const cloudMatrixRoot = path.join(rootDir, "cloud-matrices")
@@ -272,7 +272,7 @@ test("cross repo validation gate can disable default roots for focused evidence 
 
 test("cross repo validation gate rejects output artifact index without output", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/arroba-drill-artifacts.json", "--json"]),
+    execFile(process.execPath, [scriptPath, "--output-artifact-index", "/tmp/chariox-drill-artifacts.json", "--json"]),
     (error) => {
       assert.equal(error.code, 1)
       assert.match(error.stderr, /requires --output/)

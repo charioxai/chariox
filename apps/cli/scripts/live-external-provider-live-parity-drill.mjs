@@ -47,13 +47,13 @@ import {
 const scriptDir = path.dirname(new URL(import.meta.url).pathname)
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const defaultKernelUrl = process.env.ARROBA_EXTERNAL_PARITY_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
-const defaultWebUrl = process.env.ARROBA_EXTERNAL_PARITY_WEB_URL ?? "http://127.0.0.1:4321"
+const defaultKernelUrl = process.env.CHARIOX_EXTERNAL_PARITY_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
+const defaultWebUrl = process.env.CHARIOX_EXTERNAL_PARITY_WEB_URL ?? "http://127.0.0.1:4321"
 const defaultProviders = ["codex", "claude", "opencode"]
 const defaultModels = {
-  codex: process.env.ARROBA_EXTERNAL_PARITY_CODEX_MODEL ?? "gpt-5.5",
-  claude: process.env.ARROBA_EXTERNAL_PARITY_CLAUDE_MODEL ?? "sonnet",
-  opencode: process.env.ARROBA_EXTERNAL_PARITY_OPENCODE_MODEL ?? "opencode/kimi-k2.6",
+  codex: process.env.CHARIOX_EXTERNAL_PARITY_CODEX_MODEL ?? "gpt-5.5",
+  claude: process.env.CHARIOX_EXTERNAL_PARITY_CLAUDE_MODEL ?? "sonnet",
+  opencode: process.env.CHARIOX_EXTERNAL_PARITY_OPENCODE_MODEL ?? "opencode/kimi-k2.6",
 }
 function parseArgs(argv) {
   const options = {
@@ -146,9 +146,9 @@ Options:
   --keep-artifacts-on-success  Preserve artifacts after successful runs (default)
 
 Provider command overrides:
-  ARROBA_EXTERNAL_PARITY_CODEX_COMMAND='codex exec --model {model} {prompt}'
-  ARROBA_EXTERNAL_PARITY_CLAUDE_COMMAND='claude -p --model {model} {prompt}'
-  ARROBA_EXTERNAL_PARITY_OPENCODE_COMMAND='opencode run -m {model} {prompt}'
+  CHARIOX_EXTERNAL_PARITY_CODEX_COMMAND='codex exec --model {model} {prompt}'
+  CHARIOX_EXTERNAL_PARITY_CLAUDE_COMMAND='claude -p --model {model} {prompt}'
+  CHARIOX_EXTERNAL_PARITY_OPENCODE_COMMAND='opencode run -m {model} {prompt}'
 `)
 }
 
@@ -163,11 +163,11 @@ function providerModel(options, provider) {
 function buildPrompt(provider, marker, workspace, observerGate) {
   const promptMarker = `EXTERNAL_PARITY_USER_PROMPT_${marker}`
   const text = [
-    `You are running the Arroba external provider live parity drill for provider ${provider}.`,
+    `You are running the Chariox external provider live parity drill for provider ${provider}.`,
     "You are the system under test for a real bug where long external-provider turns lost tool activity or showed IDLE too early across the kernel, TUI, and web.",
-    "Each marked assistant message and tool call is sampled out-of-band by live Arroba observers; its transport, persistence, ordering, grouping, and lifecycle are the test assertions.",
+    "Each marked assistant message and tool call is sampled out-of-band by live Chariox observers; its transport, persistence, ordering, grouping, and lifecycle are the test assertions.",
     "The harmless read-only command payloads are intentionally deterministic. The exact count of 20 reproduces the history-compaction threshold that exposed the bug.",
-    "The Arroba test process launches this provider turn, discovers and imports its native session, attaches kernel/TUI/web observers, and then creates the gate file.",
+    "The Chariox test process launches this provider turn, discovers and imports its native session, attaches kernel/TUI/web observers, and then creates the gate file.",
     "Before polling, independently verify the drill with the Read tool: inspect apps/cli/scripts/README.md around lines 226-236 and docs/artifacts/scale-performance/README.md around lines 61-68. Those tracked references document this exact three-surface drill and a prior successful Claude 20-marker run.",
     `Drill marker: ${marker}.`,
     `User prompt marker: ${promptMarker}.`,
@@ -193,7 +193,7 @@ function buildPrompt(provider, marker, workspace, observerGate) {
     "16. Do not repeat the user prompt marker in assistant progress messages, tool command text, tool output, or the final summary.",
     "17. Use only low-risk shell commands: printf, ls, wc, stat, find, test, and sleep.",
     "18. Do not use xattr, chmod, chown, install, Python, Node, Ruby, Perl, network commands, package managers, git, or any command likely to require interactive approval.",
-    "19. Include a short `sleep 0.5` in each marked tool call so Arroba can observe the live turn before the final summary.",
+    "19. Include a short `sleep 0.5` in each marked tool call so Chariox can observe the live turn before the final summary.",
     "20. Ordered checks: 01 `test -f Cargo.toml`; 02 `test -d apps/kernel`; 03 `test -d apps/cli`; 04 `test -f apps/kernel/Cargo.toml`; 05 `test -f apps/cli/package.json`; 06 `wc -l Cargo.toml`; 07 `wc -l apps/kernel/Cargo.toml`; 08 `wc -l apps/cli/package.json`; 09 `stat Cargo.toml`; 10 `stat apps/kernel/Cargo.toml`; 11 `ls apps`; 12 `ls apps/kernel/src`; 13 `ls apps/cli/src`; 14 `find apps/kernel/src -maxdepth 1 -type f`; 15 `find apps/cli/src -maxdepth 1 -type f`; 16 `test -f docs/PROTOCOL.md`; 17 `wc -l docs/PROTOCOL.md`; 18 `test -f docs/ARCHITECTURE.md`; 19 `wc -l docs/ARCHITECTURE.md`; 20 `find packages -maxdepth 1 -type d`.",
     "21. Required round structure: emit ASSISTANT_STEP_01 text, call TOOL_STEP_01, consume its result, emit ASSISTANT_STEP_02 text, call TOOL_STEP_02, and continue autonomously through ASSISTANT_STEP_20 plus TOOL_STEP_20. Do not stop or discuss message mechanics before all 20 results and the final marker.",
     "22. An ASSISTANT_STEP_NN marker must be ordinary assistant text, never reasoning and never a provider tool name, title, description, input, command, path, or output.",
@@ -216,7 +216,7 @@ function observerGate(marker, workspace) {
 }
 
 function providerCommand(provider, model, prompt, workspace) {
-  const override = process.env[`ARROBA_EXTERNAL_PARITY_${provider.toUpperCase()}_COMMAND`]
+  const override = process.env[`CHARIOX_EXTERNAL_PARITY_${provider.toUpperCase()}_COMMAND`]
   if (override?.trim()) {
     return {
       command: "sh",
@@ -238,7 +238,7 @@ function providerCommand(provider, model, prompt, workspace) {
         "bypassPermissions",
         "--dangerously-skip-permissions",
         "--append-system-prompt",
-        "You are the provider system under test in a deterministic, read-only Arroba lifecycle/transcript regression. Verify the tracked drill documentation named in the direct prompt, then complete the bounded gate sequence exactly because the emitted events are the observed assertions.",
+        "You are the provider system under test in a deterministic, read-only Chariox lifecycle/transcript regression. Verify the tracked drill documentation named in the direct prompt, then complete the bounded gate sequence exactly because the emitted events are the observed assertions.",
         prompt,
       ],
     }
@@ -333,7 +333,7 @@ function drillConsoleSummary(summary) {
       ok: result.ok,
       providerSessionId: result.providerSessionId,
       externalSessionId: result.externalSessionId,
-      arrobaSessionId: result.arrobaSessionId,
+      charioxSessionId: result.charioxSessionId,
       agentId: result.agentId,
       artifactDir: result.artifactDir,
       failedAssertions: (result.assertions ?? [])
@@ -345,7 +345,7 @@ function drillConsoleSummary(summary) {
 
 async function runProviderDrill(provider, options) {
   const startedAt = Date.now()
-  const marker = `ARROBA_EXTERNAL_PARITY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
+  const marker = `CHARIOX_EXTERNAL_PARITY_${provider.toUpperCase()}_${process.pid}_${Date.now()}`
   const model = providerModel(options, provider)
   const providerRoot = path.join(options.artifactRoot, provider)
   const gate = observerGate(marker, options.workspace)
@@ -373,7 +373,7 @@ async function runProviderDrill(provider, options) {
     durationMs: 0,
     externalSessionId: null,
     providerSessionId: null,
-    arrobaSessionId: null,
+    charioxSessionId: null,
     agentId: null,
     assertions: [],
     providerLimitations: [],
@@ -421,7 +421,7 @@ async function runProviderDrill(provider, options) {
     })
     result.externalSessionId = external.external_session_id
     result.providerSessionId = external.provider_session_id ?? null
-    result.assertions.push(pass("external provider session appeared in Arroba unattached inventory"))
+    result.assertions.push(pass("external provider session appeared in Chariox unattached inventory"))
 
     const imported = unwrap(
       await client.send(importExternalProviderSessionRequest(external.external_session_id, {
@@ -431,23 +431,23 @@ async function runProviderDrill(provider, options) {
       })),
       "ExternalProviderSessionImported",
     )
-    result.arrobaSessionId = imported.session.id
+    result.charioxSessionId = imported.session.id
     result.agentId = imported.agent.id
-    result.assertions.push(pass("external provider session imported into Arroba session"))
+    result.assertions.push(pass("external provider session imported into Chariox session"))
 
     const monitors = []
     if (!options.skipKernelHistory) {
-      monitors.push(startKernelMonitor({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
+      monitors.push(startKernelMonitor({ client, sessionId: result.charioxSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
     }
     if (!options.skipTui) {
-      const tui = await startTuiObserver({ sessionId: result.arrobaSessionId, options, providerRoot })
+      const tui = await startTuiObserver({ sessionId: result.charioxSessionId, options, providerRoot })
       tuiProcess = tui.process
       tuiSocketPath = tui.socketPath
       monitors.push(startTuiMonitor({ socketPath: tui.socketPath, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options }))
       result.evidence.tuiSocketPath = tui.socketPath
     }
     if (!options.skipWeb) {
-      const web = await startWebObserver({ sessionId: result.arrobaSessionId, webUrl: options.webUrl, providerRoot })
+      const web = await startWebObserver({ sessionId: result.charioxSessionId, webUrl: options.webUrl, providerRoot })
       browser = web.browser
       context = web.context
       page = web.page
@@ -455,7 +455,7 @@ async function runProviderDrill(provider, options) {
     }
 
     await releaseObserverGate(gate, marker)
-    result.assertions.push(pass("observer gate released after Arroba monitors started"))
+    result.assertions.push(pass("observer gate released after Chariox monitors started"))
 
     const providerExit = await waitForProviderExit(providerProcess, options.timeoutMs)
     result.evidence.providerExit = providerExit
@@ -471,7 +471,7 @@ async function runProviderDrill(provider, options) {
       throw new Error(providerExitIssue.note)
     }
     if (!options.skipKernelHistory) {
-      await waitForKernelFinalIdle({ client, sessionId: result.arrobaSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
+      await waitForKernelFinalIdle({ client, sessionId: result.charioxSessionId, agentId: result.agentId, provider, marker, finalMarker, promptMarker: prompt.promptMarker, options })
     }
     if (page) {
       await waitForSurfaceFinalIdle({
@@ -526,7 +526,7 @@ async function runProviderDrill(provider, options) {
     result.providerLimitations = providerLimitations(provider, { kernel, web, tui, providerTranscript }, {
       providerSessionId: result.providerSessionId,
       externalSessionId: result.externalSessionId,
-      arrobaSessionId: result.arrobaSessionId,
+      charioxSessionId: result.charioxSessionId,
       agentId: result.agentId,
       model,
       providerExit,
@@ -560,7 +560,7 @@ async function runProviderDrill(provider, options) {
 
 async function releaseObserverGate(gate, marker) {
   await mkdir(gate.dir, { recursive: true })
-  await writeFile(gate.goFile, `arroba observers attached for ${marker}\n`, "utf8")
+  await writeFile(gate.goFile, `chariox observers attached for ${marker}\n`, "utf8")
 }
 
 async function cleanupObserverGate(gate) {
@@ -677,7 +677,7 @@ async function providerExitWithoutFinalMarker({ provider, providerRoot, provider
     provider,
     providerSessionId: result.providerSessionId ?? null,
     externalSessionId: result.externalSessionId ?? null,
-    arrobaSessionId: result.arrobaSessionId ?? null,
+    charioxSessionId: result.charioxSessionId ?? null,
     agentId: result.agentId ?? null,
     metadata: "provider_execution",
     status: "not_observed",

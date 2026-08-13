@@ -23,13 +23,13 @@ test("deployed workflow TUI command drives the complete audience lifecycle", asy
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : null
     calls.push({ method: init?.method ?? "GET", pathname: url.pathname, search: url.search, body })
     if (url.pathname.endsWith("/grants") && body?.status === "invited") {
-      return jsonResponse({ audience, grantToken: "arroba_audience_invite_one_time_secret" }, 201)
+      return jsonResponse({ audience, grantToken: "chariox_audience_invite_one_time_secret" }, 201)
     }
     if (url.pathname.endsWith("/api-keys")) {
-      return jsonResponse({ audience, apiKey: "arroba_app_one_time_secret" }, 201)
+      return jsonResponse({ audience, apiKey: "chariox_app_one_time_secret" }, 201)
     }
     if (url.pathname.endsWith("/webhook-keys")) {
-      return jsonResponse({ audience, webhookSecret: "arroba_webhook_one_time_secret" }, 201)
+      return jsonResponse({ audience, webhookSecret: "chariox_webhook_one_time_secret" }, 201)
     }
     return jsonResponse({ audience })
   }
@@ -74,7 +74,7 @@ test("deployed workflow TUI command drives the complete audience lifecycle", asy
       "audience", "webhook", "revoke", "project/one", "environment/one", "webhook/one",
     ])
     const accepted = await executeDeployedWorkflowCommand(profile, [
-      "audience", "invite", "accept", "arroba_audience_invite_one_time_secret",
+      "audience", "invite", "accept", "chariox_audience_invite_one_time_secret",
     ])
     const restricted = await executeDeployedWorkflowCommand(profile, [
       "audience", "policy", "project/one", "environment/one", "restricted",
@@ -168,7 +168,7 @@ test("deployed workflow TUI command drives the complete audience lifecycle", asy
         method: "POST",
         pathname: "/deployment-audience-invitations/accept",
         search: "",
-        body: { grantToken: "arroba_audience_invite_one_time_secret" },
+        body: { grantToken: "chariox_audience_invite_one_time_secret" },
       },
       {
         method: "POST",
@@ -181,14 +181,14 @@ test("deployed workflow TUI command drives the complete audience lifecycle", asy
     assert.match(shown.notice, /grant grant-1 active/)
     assert.match(shown.notice, /api_key key-1 active/)
     assert.match(policy.footer, /audience public/)
-    assert.match(invitation.notice, /invitation_token arroba_audience_invite_one_time_secret/)
+    assert.match(invitation.notice, /invitation_token chariox_audience_invite_one_time_secret/)
     assert.equal(invitation.footer, "deployment audience invitation created; token shown once")
-    assert.match(key.notice, /api_key_secret arroba_app_one_time_secret/)
+    assert.match(key.notice, /api_key_secret chariox_app_one_time_secret/)
     assert.equal(key.footer, "deployment audience API key created; secret shown once")
     assert.equal(jwt.footer, "deployment audience JWT issuer created")
-    assert.match(webhook.notice, /webhook_secret arroba_webhook_one_time_secret/)
+    assert.match(webhook.notice, /webhook_secret chariox_webhook_one_time_secret/)
     assert.equal(webhook.footer, "deployment audience webhook key created; secret shown once")
-    assert.doesNotMatch(accepted.notice, /arroba_audience_invite_one_time_secret/)
+    assert.doesNotMatch(accepted.notice, /chariox_audience_invite_one_time_secret/)
     assert.equal(restricted.footer, "deployment audience restricted")
   } finally {
     globalThis.fetch = originalFetch
@@ -240,7 +240,7 @@ test("deployed workflow audience command rejects unsafe or ambiguous credentials
 
 test("deployment audience formatting exposes prefixes and policy state but no credential material", () => {
   const formatted = formatDeploymentAudience(audience)
-  assert.match(formatted, /prefix arroba_app_prefix/)
+  assert.match(formatted, /prefix chariox_app_prefix/)
   assert.match(formatted, /default_roles invoke/)
   assert.match(formatted, /jwt_issuer jwt-1 active/)
   assert.match(formatted, /webhook_key webhook-1 active/)
@@ -282,7 +282,7 @@ const audience: DeploymentAudiencePolicySummary = {
     id: "key-1",
     policyId: "audience-environment-1",
     name: "Production MCP",
-    keyPrefix: "arroba_app_prefix",
+    keyPrefix: "chariox_app_prefix",
     roles: ["invoke"],
     expiresAt: "2030-01-01T00:00:00.000Z",
     createdAt: "2026-01-01T00:00:00.000Z",

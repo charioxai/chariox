@@ -66,11 +66,11 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'arroba-kernel'])
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
   if (result.code !== 0) {
     throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   }
-  return path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel')
+  return path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
 }
 
 async function waitForKernel(LocalIpcClient, listSessionsRequest, kernelUrl) {
@@ -210,7 +210,7 @@ async function seedVisualSession(client, requests, workspace) {
   await appendOutput(client, requests, session.id, attachment.id, seeded.providerRun.id, 'provider_output', 'Active latest assistant message should be visible and readable.', 'active-assistant')
 
   const attachmentPart = {
-    url: 'arroba-test://queued-attachment.txt',
+    url: 'chariox-test://queued-attachment.txt',
     mime: 'text/plain',
     filename: 'queued-attachment.txt',
     contents_base64: Buffer.from('queued prompt attachment for TUI visual parity', 'utf8').toString('base64'),
@@ -341,7 +341,7 @@ async function main() {
   const configRoot = path.join(rootDir, 'config')
   const stateRoot = path.join(rootDir, 'state')
   const evidenceDir = path.join(rootDir, 'evidence')
-  const automationSocket = path.join(os.tmpdir(), `arroba-tui-web-parity-visual-${process.pid}-${Date.now()}.sock`)
+  const automationSocket = path.join(os.tmpdir(), `chariox-tui-web-parity-visual-${process.pid}-${Date.now()}.sock`)
   const ports = makePorts()
   const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
   const daemonId = `tui-web-parity-visual-${process.pid}-${Date.now()}`
@@ -350,14 +350,14 @@ async function main() {
     HOME: home,
     XDG_CONFIG_HOME: configRoot,
     XDG_STATE_HOME: stateRoot,
-    ARROBA_KERNEL_PORT: String(ports.kernelPort),
-    ARROBA_MCP_PORT: String(ports.mcpPort),
-    ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-    ARROBA_CODEX_PORT: String(ports.codexPort),
-    ARROBA_DAEMON_ID: daemonId,
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
-    ARROBA_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
-    ARROBA_TEST_TUI: '1',
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
+    CHARIOX_TEST_TUI: '1',
   }
 
   let daemon = null
@@ -385,10 +385,10 @@ async function main() {
 
   try {
     await mkdir(workspace, { recursive: true })
-    await mkdir(path.join(configRoot, 'arroba'), { recursive: true })
+    await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
     await mkdir(stateRoot, { recursive: true })
     await mkdir(evidenceDir, { recursive: true })
-    await writeFile(path.join(configRoot, 'arroba', 'config.toml'), [
+    await writeFile(path.join(configRoot, 'chariox', 'config.toml'), [
       'version = 1',
       '',
       '[history.archive]',
@@ -410,7 +410,7 @@ async function main() {
     const waitingRoom = await seedWaitingRoomSessions(client, requests, workspace)
 
     const manifest = {
-      schema: 'arroba.tui_web_parity_visual_session.v1',
+      schema: 'chariox.tui_web_parity_visual_session.v1',
       startedAt: new Date().toISOString(),
       repoRoot,
       rootDir,
@@ -423,7 +423,7 @@ async function main() {
       ...visual,
       waitingRoom,
       command: {
-        control: `pnpm --filter @arroba/cli run tui-web-parity:visual-control --manifest ${options.manifestPath}`,
+        control: `pnpm --filter @chariox/cli run tui-web-parity:visual-control --manifest ${options.manifestPath}`,
       },
     }
     await writeManifest(options.manifestPath, manifest)

@@ -6,7 +6,7 @@ import { createKernelEventController } from "./kernel-event-controller.js"
 import {
   EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
-} from "@arroba/kernel-client/external-provider-observation"
+} from "@chariox/kernel-client/external-provider-observation"
 
 function createDeps(overrides: Record<string, unknown> = {}) {
   const calls: string[] = []
@@ -71,7 +71,7 @@ function createDeps(overrides: Record<string, unknown> = {}) {
       notices.push({ message, tone })
       calls.push(`notice:${message}:${tone ?? "default"}`)
     },
-    connectedStatusLine: "Connected to the Arroba kernel.",
+    connectedStatusLine: "Connected to the Chariox kernel.",
     markAssistantMessageCompleted: (agentId: string | null | undefined) => calls.push(`completed:${agentId ?? "null"}`),
     ...overrides,
   }
@@ -307,20 +307,20 @@ test("runtime notices and transport lifecycle update the kernel connection state
     "notice:provider resumed:default",
     "notice:worker switched:default",
     "daemon-disconnected:true",
-    "status:Lost connection to the Arroba kernel.",
+    "status:Lost connection to the Chariox kernel.",
     "update-session-chrome",
     "notice:connection lost:warning",
     "activity:kernel_transport_resumed",
     "daemon-disconnected:false",
-    "status:Connected to the Arroba kernel.",
+    "status:Connected to the Chariox kernel.",
     "update-session-chrome",
-    "notice:Reconnected to the Arroba kernel.:default",
+    "notice:Reconnected to the Chariox kernel.:default",
   ])
   assert.deepEqual(notices, [
     { message: "provider resumed", tone: undefined },
     { message: "worker switched", tone: undefined },
     { message: "connection lost", tone: "warning" },
-    { message: "Reconnected to the Arroba kernel.", tone: undefined },
+    { message: "Reconnected to the Chariox kernel.", tone: undefined },
   ])
 })
 

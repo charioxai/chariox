@@ -163,7 +163,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     await client.send(createWorkflowPublicationRequest(websocketSession.id, websocketWorkflow.id, websocketEndpoint.id, {
       alias: 'public_websocket_final',
       ...publicationRequestTransportOptions({
-        route: '/.well-known/arroba/publication/ws',
+        route: '/.well-known/chariox/publication/ws',
         transportKind: 'websocket_json',
       }),
       traceExposure: { nodes: { [websocketNode.id]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } },
@@ -179,7 +179,7 @@ export async function createPublicationDrillSessionSuite(client, sessionIds, {
     workflowAlias: 'published-websocket-tunnel-final',
     endpointAlias: 'websocket-tunnel',
     publicationAlias: 'public_websocket_tunnel_final',
-    route: '/.well-known/arroba/publication/ws',
+    route: '/.well-known/chariox/publication/ws',
     transportKind: 'websocket_json',
     traceExposure: 'all',
   })

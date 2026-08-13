@@ -16,7 +16,7 @@ test('publication drill reads canonical watchdog status with schedule fallback',
 test('publication drill exposes its internal provider during package replay', () => {
   assert.deepEqual(withPublicationDrillProviderInventory({ EXISTING: 'value' }), {
     EXISTING: 'value',
-    ARROBA_PROVIDER_DEV_STUB: '1',
+    CHARIOX_PROVIDER_DEV_STUB: '1',
   })
 })
 
@@ -33,11 +33,11 @@ test('secure publication gateways bind HTTPS and WSS to their matching transport
     },
   )
 
-  assert.equal(secureEnvs.https.ARROBA_PUBLICATION_SESSION_ID, 'human-session')
-  assert.equal(secureEnvs.https.ARROBA_PUBLICATION_ID, 'human-publication')
-  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_SESSION_ID, 'websocket-session')
-  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_ID, 'websocket-publication')
-  assert.equal(secureEnvs.wss.ARROBA_PUBLICATION_TLS_CERT_FILE, '/tmp/gateway.crt')
+  assert.equal(secureEnvs.https.CHARIOX_PUBLICATION_SESSION_ID, 'human-session')
+  assert.equal(secureEnvs.https.CHARIOX_PUBLICATION_ID, 'human-publication')
+  assert.equal(secureEnvs.wss.CHARIOX_PUBLICATION_SESSION_ID, 'websocket-session')
+  assert.equal(secureEnvs.wss.CHARIOX_PUBLICATION_ID, 'websocket-publication')
+  assert.equal(secureEnvs.wss.CHARIOX_PUBLICATION_TLS_CERT_FILE, '/tmp/gateway.crt')
   assert.equal(secureEnvs.wss.EXISTING, 'value')
 })
 

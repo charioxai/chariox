@@ -1,25 +1,25 @@
 import type {
   AgentInstance,
-  ArrobaConnectorAdapterDefinition,
-  ArrobaConnectorDefinition,
-  ArrobaCredentialConfig,
-  ArrobaEnvironmentConfig,
-  ArrobaMcpServerConfig,
-  ArrobaScriptMetadata,
-  ArrobaSkillMetadata,
+  CharioxConnectorAdapterDefinition,
+  CharioxConnectorDefinition,
+  CharioxCredentialConfig,
+  CharioxEnvironmentConfig,
+  CharioxMcpServerConfig,
+  CharioxScriptMetadata,
+  CharioxSkillMetadata,
   McpImportOutcome,
   SkillImportOutcome,
   ExtensionKind,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
-import type { ResolvedAgentReference } from "@arroba/kernel-client/session-agent-resolver"
+import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import {
   formatAgentExtensionGrants as formatSharedAgentExtensionGrants,
   formatHomeExtensionAuditEvents,
   formatRemoteExtensionSyncStatus,
-} from "@arroba/kernel-client/shell-capability-format"
+} from "@chariox/kernel-client/shell-capability-format"
 
-export { formatHomeExtensionAuditEvents } from "@arroba/kernel-client/shell-capability-format"
+export { formatHomeExtensionAuditEvents } from "@chariox/kernel-client/shell-capability-format"
 
 type FooterTone = "info" | "error"
 
@@ -27,50 +27,50 @@ export type CapabilityCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   resolveSessionAgent: (reference?: string | null) => ResolvedAgentReference
-  listMcpServers?: () => Promise<ArrobaMcpServerConfig[]>
-  installMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
-  updateMcpServer?: (config: ArrobaMcpServerConfig) => Promise<ArrobaMcpServerConfig>
+  listMcpServers?: () => Promise<CharioxMcpServerConfig[]>
+  installMcpServer?: (config: CharioxMcpServerConfig) => Promise<CharioxMcpServerConfig>
+  updateMcpServer?: (config: CharioxMcpServerConfig) => Promise<CharioxMcpServerConfig>
   uninstallMcpServer?: (name: string) => Promise<string>
   importMcpServers?: (provider: string, name?: string | null) => Promise<McpImportOutcome>
-  getMcpServer?: (name: string) => Promise<ArrobaMcpServerConfig>
+  getMcpServer?: (name: string) => Promise<CharioxMcpServerConfig>
   grantAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentMcp?: (agentRef: string, name: string) => Promise<AgentInstance>
-  listSkills?: () => Promise<ArrobaSkillMetadata[]>
-  installSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
-  updateSkill?: (sourcePath: string) => Promise<ArrobaSkillMetadata>
-  uninstallSkill?: (name: string) => Promise<ArrobaSkillMetadata>
+  listSkills?: () => Promise<CharioxSkillMetadata[]>
+  installSkill?: (sourcePath: string) => Promise<CharioxSkillMetadata>
+  updateSkill?: (sourcePath: string) => Promise<CharioxSkillMetadata>
+  uninstallSkill?: (name: string) => Promise<CharioxSkillMetadata>
   importSkills?: (provider: string, name?: string | null) => Promise<SkillImportOutcome>
-  getSkill?: (name: string) => Promise<ArrobaSkillMetadata>
+  getSkill?: (name: string) => Promise<CharioxSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
-  listEnvironments?: () => Promise<ArrobaEnvironmentConfig[]>
-  getEnvironment?: (name: string) => Promise<ArrobaEnvironmentConfig>
-  registerEnvironment?: (config: ArrobaEnvironmentConfig) => Promise<ArrobaEnvironmentConfig>
-  removeEnvironment?: (name: string) => Promise<ArrobaEnvironmentConfig>
-  listScripts?: () => Promise<ArrobaScriptMetadata[]>
-  getScript?: (name: string) => Promise<ArrobaScriptMetadata>
-  validateScript?: (sourcePath: string, environment: string, name?: string | null) => Promise<ArrobaScriptMetadata>
-  registerScript?: (sourcePath: string, environment: string, name?: string | null) => Promise<ArrobaScriptMetadata>
-  removeScript?: (name: string) => Promise<ArrobaScriptMetadata>
+  listEnvironments?: () => Promise<CharioxEnvironmentConfig[]>
+  getEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
+  registerEnvironment?: (config: CharioxEnvironmentConfig) => Promise<CharioxEnvironmentConfig>
+  removeEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
+  listScripts?: () => Promise<CharioxScriptMetadata[]>
+  getScript?: (name: string) => Promise<CharioxScriptMetadata>
+  validateScript?: (sourcePath: string, environment: string, name?: string | null) => Promise<CharioxScriptMetadata>
+  registerScript?: (sourcePath: string, environment: string, name?: string | null) => Promise<CharioxScriptMetadata>
+  removeScript?: (name: string) => Promise<CharioxScriptMetadata>
   grantAgentScript?: (agentRef: string, name: string, environment: string) => Promise<AgentInstance>
   revokeAgentScript?: (agentRef: string, name: string) => Promise<AgentInstance>
-  listCredentials?: () => Promise<ArrobaCredentialConfig[]>
-  getCredential?: (id: string) => Promise<ArrobaCredentialConfig>
+  listCredentials?: () => Promise<CharioxCredentialConfig[]>
+  getCredential?: (id: string) => Promise<CharioxCredentialConfig>
   setCredentialSecret?: (key: string, value: string) => Promise<string>
   getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
   lockCredentialVault?: () => Promise<Record<string, unknown>>
   manageCredentialVault?: () => Promise<{ action: string; status: Record<string, unknown> }>
   readSecret?: (prompt: string) => Promise<string>
-  registerCredential?: (sourcePath: string) => Promise<ArrobaCredentialConfig>
-  removeCredential?: (id: string) => Promise<ArrobaCredentialConfig>
-  listConnectors?: () => Promise<ArrobaConnectorDefinition[]>
-  getConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
-  registerConnector?: (sourcePath: string) => Promise<ArrobaConnectorDefinition>
-  removeConnector?: (name: string) => Promise<ArrobaConnectorDefinition>
-  listConnectorAdapters?: () => Promise<ArrobaConnectorAdapterDefinition[]>
-  getConnectorAdapter?: (name: string) => Promise<ArrobaConnectorAdapterDefinition>
-  registerConnectorAdapter?: (sourcePath: string) => Promise<ArrobaConnectorAdapterDefinition>
-  removeConnectorAdapter?: (name: string) => Promise<ArrobaConnectorAdapterDefinition>
+  registerCredential?: (sourcePath: string) => Promise<CharioxCredentialConfig>
+  removeCredential?: (id: string) => Promise<CharioxCredentialConfig>
+  listConnectors?: () => Promise<CharioxConnectorDefinition[]>
+  getConnector?: (name: string) => Promise<CharioxConnectorDefinition>
+  registerConnector?: (sourcePath: string) => Promise<CharioxConnectorDefinition>
+  removeConnector?: (name: string) => Promise<CharioxConnectorDefinition>
+  listConnectorAdapters?: () => Promise<CharioxConnectorAdapterDefinition[]>
+  getConnectorAdapter?: (name: string) => Promise<CharioxConnectorAdapterDefinition>
+  registerConnectorAdapter?: (sourcePath: string) => Promise<CharioxConnectorAdapterDefinition>
+  removeConnectorAdapter?: (name: string) => Promise<CharioxConnectorAdapterDefinition>
   testConnector?: (name: string, operation: string, input: Record<string, unknown>, credential?: string | null, allow?: string | null) => Promise<Record<string, unknown>>
   grantAgentConnector?: (agentRef: string, name: string, credential?: string | null, maxSafety?: string | null) => Promise<AgentInstance>
   revokeAgentConnector?: (agentRef: string, name: string) => Promise<AgentInstance>
@@ -78,7 +78,7 @@ export type CapabilityCommandHandlerDeps = {
   listHomeExtensionAudit?: (agentRef: string, limit?: number | null) => Promise<Record<string, unknown>[]>
 }
 
-export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | null => {
+export const parseMcpInstallConfig = (args: string[]): CharioxMcpServerConfig | null => {
   const name = args[1]
   if (!name) return null
   let command: string | null = null
@@ -133,7 +133,7 @@ export const parseMcpInstallConfig = (args: string[]): ArrobaMcpServerConfig | n
   return null
 }
 
-function parseEnvironmentConfig(args: string[]): ArrobaEnvironmentConfig | null {
+function parseEnvironmentConfig(args: string[]): CharioxEnvironmentConfig | null {
   const name = args[1]
   if (!name) return null
   const python = readOption(args, "--python")
@@ -177,7 +177,7 @@ export async function handleMcpSlashCommand(
       return
     }
     const mcps = await deps.listMcpServers()
-    deps.appendNotice(mcps.length === 0 ? "No Arroba-managed MCPs installed." : mcps.map(formatMcpSummary).join("\n"))
+    deps.appendNotice(mcps.length === 0 ? "No Chariox-managed MCPs installed." : mcps.map(formatMcpSummary).join("\n"))
     deps.flashFooter(`listed ${mcps.length} MCP${mcps.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -276,7 +276,7 @@ export async function handleSkillSlashCommand(
       return
     }
     const skills = await deps.listSkills()
-    deps.appendNotice(skills.length === 0 ? "No Arroba-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
+    deps.appendNotice(skills.length === 0 ? "No Chariox-managed skills installed." : skills.map(formatSkillSummary).join("\n"))
     deps.flashFooter(`listed ${skills.length} skill${skills.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -363,7 +363,7 @@ export async function handleEnvironmentSlashCommand(
   if (!action || action === "list" || action === "ls") {
     if (!deps.listEnvironments) return deps.flashFooter("environment registry is not available in this daemon", "error")
     const environments = await deps.listEnvironments()
-    deps.appendNotice(environments.length === 0 ? "No Arroba environments registered." : environments.map(formatEnvironmentSummary).join("\n"))
+    deps.appendNotice(environments.length === 0 ? "No Chariox environments registered." : environments.map(formatEnvironmentSummary).join("\n"))
     deps.flashFooter(`listed ${environments.length} environment${environments.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -401,7 +401,7 @@ export async function handleScriptSlashCommand(
   if (!action || action === "list" || action === "ls") {
     if (!deps.listScripts) return deps.flashFooter("script registry is not available in this daemon", "error")
     const scripts = await deps.listScripts()
-    deps.appendNotice(scripts.length === 0 ? "No Arroba scripts registered." : scripts.map(formatScriptSummary).join("\n"))
+    deps.appendNotice(scripts.length === 0 ? "No Chariox scripts registered." : scripts.map(formatScriptSummary).join("\n"))
     deps.flashFooter(`listed ${scripts.length} script${scripts.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -462,7 +462,7 @@ export async function handleCredentialSlashCommand(
   if (!action || action === "list" || action === "ls") {
     if (!deps.listCredentials) return deps.flashFooter("credential registry is not available in this daemon", "error")
     const credentials = await deps.listCredentials()
-    deps.appendNotice(credentials.length === 0 ? "No Arroba credentials registered." : credentials.map(formatCredentialSummary).join("\n"))
+    deps.appendNotice(credentials.length === 0 ? "No Chariox credentials registered." : credentials.map(formatCredentialSummary).join("\n"))
     deps.flashFooter(`listed ${credentials.length} credential${credentials.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -488,7 +488,7 @@ export async function handleCredentialSlashCommand(
     const value = await deps.readSecret(`credential ${key}: `)
     if (!value) return deps.flashFooter("credential value must not be empty", "error")
     await deps.setCredentialSecret(key, value)
-    deps.flashFooter(`credential ${key} stored in Arroba Vault`, "info")
+    deps.flashFooter(`credential ${key} stored in Chariox Vault`, "info")
     return
   }
   if (action === "vault") {
@@ -537,7 +537,7 @@ export async function handleConnectorSlashCommand(
     if (!subaction || subaction === "list" || subaction === "ls") {
       if (!deps.listConnectorAdapters) return deps.flashFooter("connector adapter registry is not available in this daemon", "error")
       const adapters = await deps.listConnectorAdapters()
-      deps.appendNotice(adapters.length === 0 ? "No Arroba connector adapters registered." : adapters.map(formatConnectorAdapterSummary).join("\n"))
+      deps.appendNotice(adapters.length === 0 ? "No Chariox connector adapters registered." : adapters.map(formatConnectorAdapterSummary).join("\n"))
       deps.flashFooter(`listed ${adapters.length} connector adapter${adapters.length === 1 ? "" : "s"}`, "info")
       return
     }
@@ -569,7 +569,7 @@ export async function handleConnectorSlashCommand(
   if (!action || action === "list" || action === "ls") {
     if (!deps.listConnectors) return deps.flashFooter("connector registry is not available in this daemon", "error")
     const connectors = await deps.listConnectors()
-    deps.appendNotice(connectors.length === 0 ? "No Arroba connectors registered." : connectors.map(formatConnectorSummary).join("\n"))
+    deps.appendNotice(connectors.length === 0 ? "No Chariox connectors registered." : connectors.map(formatConnectorSummary).join("\n"))
     deps.flashFooter(`listed ${connectors.length} connector${connectors.length === 1 ? "" : "s"}`, "info")
     return
   }
@@ -727,46 +727,46 @@ function readNumberOption(args: string[], flag: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null
 }
 
-function formatMcpSummary(mcp: ArrobaMcpServerConfig): string {
+function formatMcpSummary(mcp: CharioxMcpServerConfig): string {
   const transportType = typeof mcp.transport?.type === "string" ? mcp.transport.type : "unknown"
   const status = mcp.enabled === false ? "disabled" : "enabled"
   return `${mcp.name} [${transportType}, ${status}]`
 }
 
-function formatSkillSummary(skill: ArrobaSkillMetadata): string {
+function formatSkillSummary(skill: CharioxSkillMetadata): string {
   const summary = skill.short_description ?? skill.description
   return `${skill.name}: ${summary}`
 }
 
-function formatEnvironmentSummary(environment: ArrobaEnvironmentConfig): string {
+function formatEnvironmentSummary(environment: CharioxEnvironmentConfig): string {
   const runtime = typeof environment.runtime?.type === "string"
     ? environment.runtime.type
     : Object.keys(environment.runtime ?? {})[0] ?? "runtime"
   return `${environment.name} [${runtime}]`
 }
 
-function formatScriptSummary(script: ArrobaScriptMetadata): string {
+function formatScriptSummary(script: CharioxScriptMetadata): string {
   return `${script.name} [${script.runtime}]: ${script.description}`
 }
 
-function formatCredentialSummary(credential: ArrobaCredentialConfig): string {
+function formatCredentialSummary(credential: CharioxCredentialConfig): string {
   const uses = (credential.allowed_uses ?? []).join(",") || "any"
   return `${credential.id} [${uses}]${credential.description ? `: ${credential.description}` : ""}`
 }
 
-function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
+function formatConnectorSummary(connector: CharioxConnectorDefinition): string {
   const operationCount = Array.isArray(connector.operations) ? connector.operations.length : 0
   return `${connector.name} [${connector.adapter}, ${operationCount} op${operationCount === 1 ? "" : "s"}]: ${connector.description}`
 }
 
-function formatConnectorAdapterSummary(adapter: ArrobaConnectorAdapterDefinition): string {
+function formatConnectorAdapterSummary(adapter: CharioxConnectorAdapterDefinition): string {
   return `${adapter.name}: ${adapter.description ?? adapter.adapter_protocol}`
 }
 
 function formatConnectorDoctor(
-  connector: ArrobaConnectorDefinition,
+  connector: CharioxConnectorDefinition,
   credentialId: string | null,
-  credential: ArrobaCredentialConfig | null,
+  credential: CharioxCredentialConfig | null,
 ): string {
   const findings: string[] = []
   const ok = (message: string) => findings.push(`ok: ${message}`)
@@ -792,11 +792,11 @@ function formatConnectorDoctor(
   return [`${connector.name} connector doctor`, ...findings].join("\n")
 }
 
-function formatMcpDetails(mcp: ArrobaMcpServerConfig): string {
+function formatMcpDetails(mcp: CharioxMcpServerConfig): string {
   return JSON.stringify(mcp, null, 2)
 }
 
-function formatSkillDetails(skill: ArrobaSkillMetadata): string {
+function formatSkillDetails(skill: CharioxSkillMetadata): string {
   return [
     `${skill.name}: ${skill.description}`,
     skill.short_description ? `short: ${skill.short_description}` : null,

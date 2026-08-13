@@ -29,7 +29,7 @@ export async function handleCodexNativeTurnStart(
   try {
     const bindPromise = await waitForNativeBinding(options.bindState)
     if (!bindPromise) {
-      throw new Error("Codex thread is not bound to Arroba yet")
+      throw new Error("Codex thread is not bound to Chariox yet")
     }
     await bindPromise
     const prompt = extractCodexPrompt(message.params)
@@ -39,7 +39,7 @@ export async function handleCodexNativeTurnStart(
     await options.client.send<Record<string, unknown>>(
       submitPromptRequest(options.sessionId, options.attachmentId, options.agentId, prompt, attachments),
     )
-    const turnId = `arroba-native-${Date.now()}`
+    const turnId = `chariox-native-${Date.now()}`
     sendClient({
       id: message.id,
       result: {

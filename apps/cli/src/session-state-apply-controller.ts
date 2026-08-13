@@ -6,14 +6,14 @@ import type { MultiAgentResponseLayout } from "./preferences.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
   sessionResponseLayout,
-} from "@arroba/kernel-client/session-config-projection"
+} from "@chariox/kernel-client/session-config-projection"
 import {
   DEFAULT_CANCELLATION_REQUESTED_STATUS_LINE,
   sessionRuntimeTransitionState,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 import {
   sessionHasTurnWork,
-} from "@arroba/kernel-client/session-prompt-work"
+} from "@chariox/kernel-client/session-prompt-work"
 
 export type SessionStateApplyTurnCompletion = {
   reset(): void

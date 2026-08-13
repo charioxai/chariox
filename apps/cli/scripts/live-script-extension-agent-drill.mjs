@@ -315,11 +315,11 @@ async function runProviderScenario({ client, session, attachment, workspace, out
   const outputRel = `outputs/${provider}-script-extension-result.json`
   const outputPath = path.join(outputsDir, `${provider}-script-extension-result.json`)
   const prompt = [
-    'This is an Arroba script extension end-to-end drill.',
+    'This is a Chariox script extension end-to-end drill.',
     `You have exactly two relevant script tools: \`${scriptNames.python}\` and \`${scriptNames.typescript}\`.`,
     `Call \`${scriptNames.python}\` with {"query":"alpha","limit":1}.`,
     `Call \`${scriptNames.typescript}\` with {"accountId":"acct-42","multiplier":3}.`,
-    `Then write ${outputRel} using Arroba workspace live sync as one JSON object with these keys:`,
+    `Then write ${outputRel} using Chariox workspace live sync as one JSON object with these keys:`,
     'python_source, python_query, python_token, python_first_id, typescript_source, typescript_account, typescript_token, typescript_multiplied, typescript_first_id.',
     'Use only values returned by the script tools. Do not use placeholders and do not guess token values. Reply exactly SCRIPT_EXTENSION_AGENT_DRILL_DONE.',
   ].join('\n')
@@ -354,7 +354,7 @@ async function main() {
   }
   if (options.providers.length === 0) throw new Error('at least one provider is required')
 
-  const root = path.join(tmpdir(), 'arroba-live-script-extension-agent-drill', `${process.pid}-${Date.now()}`)
+  const root = path.join(tmpdir(), 'chariox-live-script-extension-agent-drill', `${process.pid}-${Date.now()}`)
   const workspace = path.join(root, 'workspace')
   const outputsDir = path.join(workspace, 'outputs')
   const historyDir = path.join(root, 'history')
@@ -381,13 +381,13 @@ async function main() {
   try {
     await prepareDrillArtifacts(root)
     await mkdir(outputsDir, { recursive: true })
-    await mkdir(path.join(configHome, 'arroba'), { recursive: true })
-    await writeFile(path.join(configHome, 'arroba', 'config.toml'), 'version = 1\n', 'utf8')
+    await mkdir(path.join(configHome, 'chariox'), { recursive: true })
+    await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     await writeFile(path.join(workspace, 'README.md'), '# script extension agent drill\n', 'utf8')
     const kernelBinary = await resolveBinary(
-      path.join(repoRoot, 'apps/kernel/target/debug/arroba-kernel'),
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
       path.join(repoRoot, 'apps/kernel/Cargo.toml'),
-      'arroba-kernel',
+      'chariox-kernel',
     )
     daemon = startDaemon(kernelBinary, {
       ...process.env,
@@ -398,13 +398,13 @@ async function main() {
       XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? path.join(realHomeDir, '.cache'),
       XDG_CONFIG_HOME: configHome,
       XDG_STATE_HOME: stateHome,
-      ARROBA_KERNEL_PORT: String(ports.kernelPort),
-      ARROBA_MCP_PORT: String(ports.mcpPort),
-      ARROBA_OPENCODE_PORT: String(ports.opencodePort),
-      ARROBA_CODEX_PORT: String(ports.codexPort),
-      ARROBA_DAEMON_ID: `script-agent-drill-${process.pid}-${Date.now()}`,
-      ARROBA_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
-      ARROBA_SESSION_HISTORY_DIR: historyDir,
+      CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+      CHARIOX_MCP_PORT: String(ports.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+      CHARIOX_CODEX_PORT: String(ports.codexPort),
+      CHARIOX_DAEMON_ID: `script-agent-drill-${process.pid}-${Date.now()}`,
+      CHARIOX_DAEMON_SOCKET: path.join(root, 'daemon.sock'),
+      CHARIOX_SESSION_HISTORY_DIR: historyDir,
     })
     await waitForDaemon(kernelUrl, workspace)
     client = new LocalIpcClient(kernelUrl)

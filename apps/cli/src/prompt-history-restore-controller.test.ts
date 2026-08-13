@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { ArrobaPreferences } from "./preferences.js"
+import type { CharioxPreferences } from "./preferences.js"
 import { createPromptHistoryRestoreController } from "./prompt-history-restore-controller.js"
 
 test("prompt history restore controller restores saved history and draft for a session", () => {
@@ -48,7 +48,7 @@ test("prompt history restore controller normalizes missing saved state", () => {
   assert.equal(harness.promptText, "")
 })
 
-function restoreHarness(preferences: ArrobaPreferences) {
+function restoreHarness(preferences: CharioxPreferences) {
   const harness = {
     historyEntries: null as string[] | null,
     navigationResetCount: 0,

@@ -102,7 +102,7 @@ test("rejects artifact index output without a matrix report path", async () => {
       scenarios: [{ id: "pass", description: "passing scenario", script }],
       commandForScenario: (scenario) => ({ command: process.execPath, args: [scenario.script] }),
       cwd: dir,
-      artifactIndexPath: path.join(dir, "arroba-drill-artifacts.json"),
+      artifactIndexPath: path.join(dir, "chariox-drill-artifacts.json"),
     }),
     /artifactIndexPath requires reportPath/,
   )
@@ -134,7 +134,7 @@ test("rejects malformed matrix commands before spawning", async () => {
     () => runDrillMatrix({
       matrixName: "test-matrix",
       scenarios: [{ id: "bad-env", description: "bad env" }],
-      commandForScenario: () => ({ command: process.execPath, args: [], env: { ARROBA_TEST: 42 } }),
+      commandForScenario: () => ({ command: process.execPath, args: [], env: { CHARIOX_TEST: 42 } }),
       cwd: dir,
     }),
     /bad-env command has invalid env/,
@@ -184,23 +184,23 @@ test("builds stable default matrix report paths", () => {
 test("builds stable default matrix artifact index paths", () => {
   assert.equal(
     defaultDrillMatrixArtifactIndexPath("/repo/.artifacts/drill-matrices/test-matrix/2026-06-14T00-00-01-234Z.json"),
-    "/repo/.artifacts/drill-matrices/test-matrix/2026-06-14T00-00-01-234Z-artifacts/arroba-drill-artifacts.json",
+    "/repo/.artifacts/drill-matrices/test-matrix/2026-06-14T00-00-01-234Z-artifacts/chariox-drill-artifacts.json",
   )
   assert.throws(() => defaultDrillMatrixArtifactIndexPath(""), /reportPath is required/)
 })
 
 test("extracts artifact hints from structured and text drill output", () => {
   const hints = extractDrillArtifactHints([
-    '[drill] preserved-failed-run {"rootDir":"/tmp/arroba-drill-one","manifestPath":"/tmp/arroba-drill-one/arroba-drill-failure.json","token":"secret"}',
-    'remote workspace live sync permission drill artifacts kept at /tmp/arroba-drill-two',
-    'bad artifacts kept at /tmp/arroba-drill-sk-this-should-not-persist',
+    '[drill] preserved-failed-run {"rootDir":"/tmp/chariox-drill-one","manifestPath":"/tmp/chariox-drill-one/chariox-drill-failure.json","token":"secret"}',
+    'remote workspace live sync permission drill artifacts kept at /tmp/chariox-drill-two',
+    'bad artifacts kept at /tmp/chariox-drill-sk-this-should-not-persist',
     'ignored token=/not-an-artifact-token',
   ].join("\n"))
 
   assert.deepEqual(hints, [
-    "/tmp/arroba-drill-one",
-    "/tmp/arroba-drill-one/arroba-drill-failure.json",
-    "/tmp/arroba-drill-two",
+    "/tmp/chariox-drill-one",
+    "/tmp/chariox-drill-one/chariox-drill-failure.json",
+    "/tmp/chariox-drill-two",
   ])
 })
 
@@ -234,7 +234,7 @@ test("runs a passing matrix scenario", async () => {
   assert.equal(results.length, 1)
   assert.equal(results[0].ok, true)
   const report = JSON.parse(await readFile(reportPath, "utf8"))
-  assert.equal(report.schema, "arroba.drill.matrix.v1")
+  assert.equal(report.schema, "chariox.drill.matrix.v1")
   assert.equal(report.status, "passed")
   assert.equal(report.scenarios[0].id, "pass")
   assert.deepEqual(report.scenarios[0].exitCriteria, ["child command exits zero"])
@@ -272,7 +272,7 @@ test("passes per-scenario environment to matrix commands", async () => {
   const marker = path.join(dir, "env-marker.txt")
   const script = await writeFixtureScript(dir, "env.mjs", [
     'import { writeFileSync } from "node:fs"',
-    `writeFileSync(${JSON.stringify(marker)}, process.env.ARROBA_MATRIX_ENV_MARKER ?? "")`,
+    `writeFileSync(${JSON.stringify(marker)}, process.env.CHARIOX_MATRIX_ENV_MARKER ?? "")`,
   ].join("\n"))
   const reportPath = path.join(dir, "env-report.json")
 
@@ -282,7 +282,7 @@ test("passes per-scenario environment to matrix commands", async () => {
     commandForScenario: (scenario) => ({
       command: process.execPath,
       args: [scenario.script],
-      env: { ARROBA_MATRIX_ENV_MARKER: "from-scenario" },
+      env: { CHARIOX_MATRIX_ENV_MARKER: "from-scenario" },
     }),
     cwd: dir,
     reportPath,
@@ -329,7 +329,7 @@ test("writes artifact index for matrix reports", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "pass.mjs", "console.log('ok')")
   const reportPath = path.join(dir, "reports", "matrix.json")
-  const artifactIndexPath = path.join(dir, "reports", "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(dir, "reports", "chariox-drill-artifacts.json")
 
   await runDrillMatrix({
     matrixName: "test-matrix",
@@ -369,7 +369,7 @@ test("writes artifact index for matrix reports", async () => {
     schema: artifact.schema,
   })), [{
     path: "matrix.json",
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
   }])
   await rm(dir, { recursive: true, force: true })
 })
@@ -378,7 +378,7 @@ test("writes dry-run report without executing scenarios", async () => {
   const dir = await fixtureDir()
   const script = await writeFixtureScript(dir, "fail-if-executed.mjs", "process.exit(9)")
   const reportPath = path.join(dir, "dry-run.json")
-  const artifactIndexPath = path.join(dir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(dir, "chariox-drill-artifacts.json")
   const logs = []
   const originalLog = console.log
   console.log = (...args) => logs.push(args.join(" "))
@@ -514,7 +514,7 @@ test("stops after the first unexpected failure unless configured otherwise", asy
 
 test("records artifact hints in failed scenario reports", async () => {
   const dir = await fixtureDir()
-  const fail = await writeFixtureScript(dir, "fail-artifacts.mjs", "console.error('artifacts kept at /tmp/arroba-drill-failed'); process.exit(3)")
+  const fail = await writeFixtureScript(dir, "fail-artifacts.mjs", "console.error('artifacts kept at /tmp/chariox-drill-failed'); process.exit(3)")
   const reportPath = path.join(dir, "artifacts.json")
 
   const results = await runDrillMatrix({
@@ -525,9 +525,9 @@ test("records artifact hints in failed scenario reports", async () => {
     reportPath,
   })
 
-  assert.deepEqual(results[0].artifactHints, ["/tmp/arroba-drill-failed"])
+  assert.deepEqual(results[0].artifactHints, ["/tmp/chariox-drill-failed"])
   const report = JSON.parse(await readFile(reportPath, "utf8"))
-  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/arroba-drill-failed"])
+  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/chariox-drill-failed"])
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -536,7 +536,7 @@ test("records artifact hints in passing scenario reports", async () => {
   const pass = await writeFixtureScript(
     dir,
     "pass-artifacts.mjs",
-    "console.log(JSON.stringify({ artifactPath: '/tmp/arroba-drill-passed/replay.json' }))",
+    "console.log(JSON.stringify({ artifactPath: '/tmp/chariox-drill-passed/replay.json' }))",
   )
   const reportPath = path.join(dir, "artifacts.json")
 
@@ -548,9 +548,9 @@ test("records artifact hints in passing scenario reports", async () => {
     reportPath,
   })
 
-  assert.deepEqual(results[0].artifactHints, ["/tmp/arroba-drill-passed/replay.json"])
+  assert.deepEqual(results[0].artifactHints, ["/tmp/chariox-drill-passed/replay.json"])
   const report = JSON.parse(await readFile(reportPath, "utf8"))
-  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/arroba-drill-passed/replay.json"])
+  assert.deepEqual(report.scenarios[0].artifactHints, ["/tmp/chariox-drill-passed/replay.json"])
   await rm(dir, { recursive: true, force: true })
 })
 
@@ -578,7 +578,7 @@ test("continues after failure when configured", async () => {
 })
 
 async function fixtureDir() {
-  return await mkdtemp(path.join(os.tmpdir(), "arroba-drill-matrix-"))
+  return await mkdtemp(path.join(os.tmpdir(), "chariox-drill-matrix-"))
 }
 
 async function writeFixtureScript(dir, name, contents) {

@@ -35,7 +35,7 @@ test("deterministic runtime chaos replay is stable and covers every fault primit
 })
 
 test("deterministic runtime chaos CLI writes a validated replay artifact", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-deterministic-chaos-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-deterministic-chaos-"))
   const outputPath = path.join(root, "replay.json")
   try {
     const { stdout } = await execFile(process.execPath, [

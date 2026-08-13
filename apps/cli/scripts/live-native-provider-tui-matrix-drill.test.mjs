@@ -13,9 +13,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-native-provider-tui-matrix-drill.mjs", import.meta.url))
 
 test("native provider TUI matrix dry-run covers authority placement and provider metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-native-provider-tui-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-native-provider-tui-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -31,7 +31,7 @@ test("native provider TUI matrix dry-run covers authority placement and provider
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "native-provider-tui-matrix")
     assert.equal(report.status, "dry-run")
     assert.deepEqual(report.scenarios.map((scenario) => scenario.id), [
@@ -78,7 +78,7 @@ test("native provider TUI matrix rejects Hetzner scenario without opt-in", async
 })
 
 test("native provider TUI matrix narrows scenario commands and metadata to selected providers", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-native-provider-selection-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-native-provider-selection-"))
   const reportPath = path.join(rootDir, "matrix.json")
   try {
     await execFile(process.execPath, [

@@ -55,13 +55,13 @@ async function run(command, args, options = {}) {
 }
 
 async function buildKernel() {
-  const binary = path.join(repoRoot, "apps/kernel/target/debug/arroba-kernel")
+  const binary = path.join(repoRoot, "apps/kernel/target/debug/chariox-kernel")
   const result = await run("cargo", [
     "build",
     "--manifest-path",
     path.join(repoRoot, "apps/kernel/Cargo.toml"),
     "--bin",
-    "arroba-kernel",
+    "chariox-kernel",
   ])
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
   return binary
@@ -133,19 +133,19 @@ function makeEnv(rootDir, port) {
     HOME: path.join(rootDir, "home"),
     XDG_CONFIG_HOME: path.join(rootDir, "xdg-config"),
     XDG_STATE_HOME: path.join(rootDir, "xdg-state"),
-    ARROBA_KERNEL_HOST: "127.0.0.1",
-    ARROBA_KERNEL_PORT: String(port),
-    ARROBA_MCP_PORT: String(port + 1000),
-    ARROBA_OPENCODE_PORT: String(port + 2000),
-    ARROBA_CODEX_PORT: String(port + 2001),
-    ARROBA_DAEMON_SOCKET: path.join(rootDir, `daemon-${port}.sock`),
+    CHARIOX_KERNEL_HOST: "127.0.0.1",
+    CHARIOX_KERNEL_PORT: String(port),
+    CHARIOX_MCP_PORT: String(port + 1000),
+    CHARIOX_OPENCODE_PORT: String(port + 2000),
+    CHARIOX_CODEX_PORT: String(port + 2001),
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, `daemon-${port}.sock`),
   }
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   const runId = `${process.pid}-${Date.now()}`
-  const rootDir = path.join(os.tmpdir(), `arroba-kernel-identity-${runId}`)
+  const rootDir = path.join(os.tmpdir(), `chariox-kernel-identity-${runId}`)
   const workspace = path.join(rootDir, "workspace")
   const portA = 54000 + Math.floor(Math.random() * 500)
   const portB = portA + 1

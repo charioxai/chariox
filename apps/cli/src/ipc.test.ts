@@ -908,7 +908,7 @@ test("LocalIpcClient reconnects and resubscribes to relay events with the last r
 
 const RELAY_NONCE_LEN = 12
 const RELAY_TAG_LEN = 16
-const RELAY_INFO = Buffer.from("arroba-relay-v1", "utf8")
+const RELAY_INFO = Buffer.from("chariox-relay-v1", "utf8")
 
 function encryptRelayPayload(
   sender: ReturnType<typeof createECDH>,

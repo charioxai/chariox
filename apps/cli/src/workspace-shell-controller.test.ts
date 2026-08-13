@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { createDefaultShellContext } from "@arroba/kernel-client/shell-core"
+import { createDefaultShellContext } from "@chariox/kernel-client/shell-core"
 
 import type { RuntimeSession } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
@@ -160,9 +160,9 @@ test("submitWorkspaceShellCommand rejects empty shell marker before executing", 
   })
 
   assert.equal(result.ok, false)
-  assert.equal(result.output, "usage: @ <arroba-shell command>")
+  assert.equal(result.output, "usage: @ <chariox-shell command>")
   assert.equal(result.context, context)
-  assert.deepEqual(footerFlash, { message: "usage: @ <arroba-shell command>", tone: "error" })
+  assert.deepEqual(footerFlash, { message: "usage: @ <chariox-shell command>", tone: "error" })
 })
 
 test("workspace shell submit controller binds submit dependencies", async () => {

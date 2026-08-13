@@ -100,7 +100,7 @@ async function handleProxyRequest(
 ): Promise<void> {
   const method = request.method ?? "GET"
   const path = request.url ?? "/"
-  const isKernelRequest = request.headers["x-arroba-provider-client"] === "kernel"
+  const isKernelRequest = request.headers["x-chariox-provider-client"] === "kernel"
   options.debug("request", { method, path })
   const promptMatch = method === "POST" ? path.match(/^\/session\/([^/]+)\/(?:message|prompt_async)(?:\?.*)?$/) : null
   if (promptMatch && isKernelRequest) {
@@ -185,7 +185,7 @@ async function handleProxyRequest(
     if (!resolved) {
       response.writeHead(409, { "content-type": "application/json" })
       response.end(JSON.stringify({
-        error: "No active Arroba permission interaction is available for this OpenCode native TUI response.",
+        error: "No active Chariox permission interaction is available for this OpenCode native TUI response.",
       }))
       return
     }

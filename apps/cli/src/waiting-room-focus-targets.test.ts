@@ -72,7 +72,7 @@ test("waiting room focus movement tracks indexed targets", () => {
 })
 
 test("waiting room focus targets include unattached agents and pagination", () => {
-  const sessions = [session({ id: "arroba-session" })]
+  const sessions = [session({ id: "chariox-session" })]
   const targets = waitingRoomFocusTargets(sessions, {
     externalProviderSessions: [
       externalSession({ external_session_id: "codex:first" }),

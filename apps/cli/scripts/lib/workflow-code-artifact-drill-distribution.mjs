@@ -2,8 +2,8 @@ import { execFile, spawn } from 'node:child_process'
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { LocalIpcClient, applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createSessionRequest, endSessionRequest, importWorkflowCodePackageRequest, installSkillRequest, runWorkflowCodeArtifactRequest, runWorkflowCodeRequest, uninstallSkillRequest, validateWorkflowCodeRequest } from '@arroba/kernel-client'
-import { assertHetznerArrobaBinaries, runHetznerCommand, shellQuote } from './native-tui-remote-execution.mjs'
+import { LocalIpcClient, applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createSessionRequest, endSessionRequest, importWorkflowCodePackageRequest, installSkillRequest, runWorkflowCodeArtifactRequest, runWorkflowCodeRequest, uninstallSkillRequest, validateWorkflowCodeRequest } from '@chariox/kernel-client'
+import { assertHetznerCharioxBinaries, runHetznerCommand, shellQuote } from './native-tui-remote-execution.mjs'
 import { assert, buildKernel, expectationFromDefinition, rebindingsForDefinition, repoRoot, sha256Hex, sleep, spawnedKernel, topologyRuntimeExpectation, unwrap, waitForKernel, writeSourceDirectoryExport } from './workflow-code-artifact-drill-runtime.mjs'
 import { completeAppliedTopologyWorkflow, validateApplyResult, validateLiveExportedTopologyDefinition, validateSessionProjection } from './workflow-code-artifact-drill-topology.mjs'
 import { remoteWorkflowCodeRunnerSource } from './workflow-code-artifact-drill-remote-runner.mjs'
@@ -342,7 +342,7 @@ export async function validateHetznerSecondKernelDistribution({
     skillSourceDir,
   })
   await assertHetznerCheckoutMatchesLocal(options)
-  await assertHetznerArrobaBinaries({
+  await assertHetznerCharioxBinaries({
     hetznerHost: options.hetznerHost,
     hetznerKey: options.hetznerKey,
     hetznerRepo: options.hetznerRepo,
@@ -396,7 +396,7 @@ export async function assertHetznerCheckoutMatchesLocal(options) {
   const remoteInfo = await runHetznerCommand(options, [
     `cd ${shellQuote(options.hetznerRepo)}`,
     `printf 'head=%s\\n' "$(git rev-parse HEAD)"`,
-    `printf 'kernel_mtime=%s\\n' "$(stat -c %Y apps/kernel/target/debug/arroba-kernel 2>/dev/null || printf 0)"`,
+    `printf 'kernel_mtime=%s\\n' "$(stat -c %Y apps/kernel/target/debug/chariox-kernel 2>/dev/null || printf 0)"`,
   ].join(' && '))
   const info = Object.fromEntries(remoteInfo
     .trim()
@@ -420,7 +420,7 @@ export async function assertHetznerCheckoutMatchesLocal(options) {
       `Hetzner kernel binary is older than local HEAD at ${options.hetznerRepo}.`,
       `local HEAD epoch: ${localCommitEpoch}`,
       `remote kernel mtime: ${info.kernel_mtime ?? 'unknown'}`,
-      'Rebuild apps/kernel/target/debug/arroba-kernel on Hetzner before running --hetzner-second-kernel.',
+      'Rebuild apps/kernel/target/debug/chariox-kernel on Hetzner before running --hetzner-second-kernel.',
     ].join('\n'))
   }
 }

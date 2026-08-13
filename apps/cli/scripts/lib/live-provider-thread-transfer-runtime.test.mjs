@@ -45,7 +45,7 @@ test("Claude provider state uses the selected provider home", () => {
 })
 
 test("provider state transfer copies into an isolated worker home", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-provider-state-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-provider-state-test-"))
   try {
     const sourceHome = path.join(root, "source")
     const destinationHome = path.join(root, "destination")
@@ -79,7 +79,7 @@ test("provider state transfer copies into an isolated worker home", async () => 
 })
 
 test("Claude credential payloads are validated and written mode 600", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-claude-credentials-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-claude-credentials-test-"))
   try {
     const destination = path.join(root, ".claude", ".credentials.json")
     await writeClaudeCredentialsPayload(destination, Buffer.from('{"oauth":"test"}\n'))
@@ -95,7 +95,7 @@ test("Claude credential payloads are validated and written mode 600", async () =
 })
 
 test("slice provider credentials are removed without deleting provider state", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "arroba-slice-credentials-test-"))
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-slice-credentials-test-"))
   try {
     const codexHome = path.join(root, "codex")
     const opencodeHome = path.join(root, "opencode")
@@ -120,9 +120,9 @@ test("slice provider credentials are removed without deleting provider state", a
     await cleanupSliceModeProviderCredentials({
       CODEX_HOME: codexHome,
       OPENCODE_DATA_HOME: opencodeHome,
-      ARROBA_PROVIDER_THREAD_CODEX_AUTH_COPIED: "1",
-      ARROBA_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: "1",
-      ARROBA_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
+      CHARIOX_PROVIDER_THREAD_CODEX_AUTH_COPIED: "1",
+      CHARIOX_PROVIDER_THREAD_OPENCODE_AUTH_COPIED: "1",
+      CHARIOX_PROVIDER_THREAD_CLAUDE_SECRET_ROOT: claudeSecretRoot,
     })
 
     await assert.rejects(stat(path.join(codexHome, "auth.json")), { code: "ENOENT" })

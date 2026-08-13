@@ -30,7 +30,7 @@ import { drillRuntimeAuthorityManifest } from "./drill-runtime-authority-invaria
 export function validationSuiteRunArtifact(overrides = {}) {
   const manifest = overrides.manifest ?? validationSuiteManifestArtifact()
   return {
-    schema: "arroba.drill.validation_suite_run.v1",
+    schema: "chariox.drill.validation_suite_run.v1",
     status: "passed",
     ok: true,
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -49,7 +49,7 @@ export function validationSuiteRunArtifact(overrides = {}) {
 
 export function validationSuiteManifestArtifact(overrides = {}) {
   return {
-    schema: "arroba.drill.validation_suite.v1",
+    schema: "chariox.drill.validation_suite.v1",
     command: "node --test apps/cli/scripts/lib/drill-artifacts.test.mjs",
     testCount: 1,
     testPaths: ["apps/cli/scripts/lib/drill-artifacts.test.mjs"],
@@ -79,7 +79,7 @@ export function matrixReportArtifact(overrides = {}) {
     artifactHints: [],
   }]
   return {
-    schema: "arroba.drill.matrix.v1",
+    schema: "chariox.drill.matrix.v1",
     matrix: "test-matrix",
     status: "passed",
     dryRun: false,
@@ -98,7 +98,7 @@ export function focusedRuntimeGateReportArtifact(overrides = {}) {
     focusedRuntimeGateReportEntry("distributed-state-health"),
   ]
   return {
-    schema: "arroba.drill.focused_runtime_gate.v1",
+    schema: "chariox.drill.focused_runtime_gate.v1",
     status: reports.some((entry) => entry.report.status === "failed") ? "failed" : "passed",
     presets: ["runtime-authority", "distributed-state-health"],
     reports,
@@ -118,7 +118,7 @@ export function focusedRuntimeGateReportEntry(preset, overrides = {}) {
 
 export function validationGateReportArtifact({ preset = "runtime-authority", status = "passed", nextActions = [] } = {}) {
   return {
-    schema: "arroba.drill.validation_gate.v1",
+    schema: "chariox.drill.validation_gate.v1",
     status,
     presets: [preset],
     checks: {

@@ -27,14 +27,14 @@ const remoteRestartDrill = path.join(scriptDir, "live-remote-restart-drill.mjs")
 const remoteHomeExtensionDrill = path.join(scriptDir, "live-remote-home-extension-drill.mjs")
 const hostedCloudDrill = path.join(scriptDir, "live-hosted-cloud-relay-drill.mjs")
 
-const DEFAULT_CODEX_MODEL = process.env.ARROBA_REMOTE_AGENT_RUNTIME_CODEX_MODEL
-  ?? process.env.ARROBA_CODEX_MODEL
+const DEFAULT_CODEX_MODEL = process.env.CHARIOX_REMOTE_AGENT_RUNTIME_CODEX_MODEL
+  ?? process.env.CHARIOX_CODEX_MODEL
   ?? "gpt-5.2-codex"
-const DEFAULT_OPENCODE_MODEL = process.env.ARROBA_REMOTE_AGENT_RUNTIME_OPENCODE_MODEL
-  ?? process.env.ARROBA_OPENCODE_MODEL
+const DEFAULT_OPENCODE_MODEL = process.env.CHARIOX_REMOTE_AGENT_RUNTIME_OPENCODE_MODEL
+  ?? process.env.CHARIOX_OPENCODE_MODEL
   ?? "opencode/gpt-5.2"
-const DEFAULT_CLAUDE_MODEL = process.env.ARROBA_REMOTE_AGENT_RUNTIME_CLAUDE_MODEL
-  ?? process.env.ARROBA_CLAUDE_MODEL
+const DEFAULT_CLAUDE_MODEL = process.env.CHARIOX_REMOTE_AGENT_RUNTIME_CLAUDE_MODEL
+  ?? process.env.CHARIOX_CLAUDE_MODEL
   ?? "sonnet"
 
 const MATRIX = [
@@ -158,8 +158,8 @@ const MATRIX = [
     script: hostedCloudDrill,
     args: [],
     env: {
-      ARROBA_CLOUD_HOSTED_SECOND_KERNEL: "1",
-      ARROBA_CLOUD_HOSTED_MULTI_USER: "0",
+      CHARIOX_CLOUD_HOSTED_SECOND_KERNEL: "1",
+      CHARIOX_CLOUD_HOSTED_MULTI_USER: "0",
     },
     requires: ["hosted-cloud"],
     classification: "relay-runtime",
@@ -178,8 +178,8 @@ const MATRIX = [
     script: hostedCloudDrill,
     args: [],
     env: {
-      ARROBA_CLOUD_HOSTED_SECOND_KERNEL: "1",
-      ARROBA_CLOUD_HOSTED_MULTI_USER: "1",
+      CHARIOX_CLOUD_HOSTED_SECOND_KERNEL: "1",
+      CHARIOX_CLOUD_HOSTED_MULTI_USER: "1",
     },
     requires: ["hosted-cloud"],
     classification: "kernel-authority",
@@ -232,9 +232,9 @@ function printHelp() {
     "  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios",
     "",
     "Environment defaults:",
-    `  ARROBA_REMOTE_AGENT_RUNTIME_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
-    `  ARROBA_REMOTE_AGENT_RUNTIME_OPENCODE_MODEL=${DEFAULT_OPENCODE_MODEL}`,
-    `  ARROBA_REMOTE_AGENT_RUNTIME_CLAUDE_MODEL=${DEFAULT_CLAUDE_MODEL}`,
+    `  CHARIOX_REMOTE_AGENT_RUNTIME_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
+    `  CHARIOX_REMOTE_AGENT_RUNTIME_OPENCODE_MODEL=${DEFAULT_OPENCODE_MODEL}`,
+    `  CHARIOX_REMOTE_AGENT_RUNTIME_CLAUDE_MODEL=${DEFAULT_CLAUDE_MODEL}`,
     "",
     "Scenario ids:",
     ...MATRIX.map((scenario) => `  ${scenario.id.padEnd(34)} ${scenario.description}`),

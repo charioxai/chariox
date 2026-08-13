@@ -14,11 +14,11 @@ export {
   type ToolDisplayPatchFile,
   type ToolDisplayPatchLine,
   type ToolTranscriptUpdate,
-} from "@arroba/tool-display"
+} from "@chariox/tool-display"
 
 export {
   shouldRenderProviderStatus,
-} from "@arroba/kernel-client/provider-status"
+} from "@chariox/kernel-client/provider-status"
 
 export {
   normalizeMarkdownFenceInfoStrings,

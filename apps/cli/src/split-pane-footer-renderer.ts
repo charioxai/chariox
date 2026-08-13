@@ -10,12 +10,12 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
-import type { PromptMetaTone } from "@arroba/kernel-client/prompt-meta"
+import type { PromptMetaTone } from "@chariox/kernel-client/prompt-meta"
 import {
   formatSplitPaneFooterParts,
   type StatusBadgeTone,
 } from "./split-pane-footer.js"
-import { sessionAgentPaneStatusBadgeForSession } from "@arroba/kernel-client/session-runtime-status"
+import { sessionAgentPaneStatusBadgeForSession } from "@chariox/kernel-client/session-runtime-status"
 import { renderStatusBadgeLabel } from "./status-badge-renderer.js"
 import { theme } from "./theme.js"
 

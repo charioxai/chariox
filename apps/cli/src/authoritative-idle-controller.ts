@@ -2,7 +2,7 @@ import type { RuntimeSession } from "./cli-types.js"
 import { DEFAULT_CONNECTED_STATUS } from "./runtime.js"
 import {
   sessionAuthoritativeIdleTransitionState,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 
 export type AuthoritativeIdleControllerDeps = {
   batchUpdate: (callback: () => void) => void

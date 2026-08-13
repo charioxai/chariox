@@ -14,9 +14,9 @@ const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-workspace-live-sync-matrix-drill.mjs", import.meta.url))
 
 test("workspace live sync matrix dry-run covers local remote Hetzner and provider metadata", async () => {
-  const rootDir = await mkdtemp(path.join(os.tmpdir(), "arroba-workspace-live-sync-matrix-"))
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-workspace-live-sync-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
-  const artifactIndexPath = path.join(rootDir, "arroba-drill-artifacts.json")
+  const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
   try {
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
@@ -35,15 +35,15 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     ], {
       env: {
         ...process.env,
-        ARROBA_WORKSPACE_LIVE_SYNC_CODEX_MODEL: "codex-test-model",
-        ARROBA_WORKSPACE_LIVE_SYNC_OPENCODE_MODEL: "opencode/free-test-model",
+        CHARIOX_WORKSPACE_LIVE_SYNC_CODEX_MODEL: "codex-test-model",
+        CHARIOX_WORKSPACE_LIVE_SYNC_OPENCODE_MODEL: "opencode/free-test-model",
       },
     })
     const report = JSON.parse(await readFile(reportPath, "utf8"))
     const artifactIndex = await verifyDrillArtifactIndex(artifactIndexPath)
     const scenarioIds = report.scenarios.map((scenario) => scenario.id)
 
-    assert.equal(report.schema, "arroba.drill.matrix.v1")
+    assert.equal(report.schema, "chariox.drill.matrix.v1")
     assert.equal(report.matrix, "workspace-live-sync-matrix")
     assert.equal(report.status, "dry-run")
     assert.equal(report.scenarios.length, 20)

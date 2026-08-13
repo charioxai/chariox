@@ -14,8 +14,8 @@ export function generatedEvidenceFixture() {
     validationSuites: {
       enabled: true,
       artifactIndexes: [
-        "/tmp/suites/cloud/arroba-drill-artifacts.json",
-        "/tmp/suites/oss/arroba-drill-artifacts.json",
+        "/tmp/suites/cloud/chariox-drill-artifacts.json",
+        "/tmp/suites/oss/chariox-drill-artifacts.json",
       ],
       failureRoots: [
         "/tmp/suites/cloud/failed-run",
@@ -23,22 +23,22 @@ export function generatedEvidenceFixture() {
       ],
       commands: [
         {
-          artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/oss/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
-          cwd: "/repo/arroba",
+          cwd: "/repo/chariox",
           failureRoot: "/tmp/suites/oss/failed-run",
-          nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+          nodeArgs: ["/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
           reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
-          scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+          scriptPath: "/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs",
         },
         {
-          artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+          artifactIndexPath: "/tmp/suites/cloud/chariox-drill-artifacts.json",
           args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
-          cwd: "/repo/arroba-cloud",
+          cwd: "/repo/chariox-cloud",
           failureRoot: "/tmp/suites/cloud/failed-run",
-          nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+          nodeArgs: ["/repo/chariox-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
           reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
-          scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+          scriptPath: "/repo/chariox-cloud/scripts/cloud-validation-suite.mjs",
         },
       ],
       outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
@@ -58,12 +58,12 @@ export function generatedEvidenceFixture() {
         artifactIndexPath: "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json",
         args: ["--include-hetzner"],
         artifactIndexFlag: "--artifact-index",
-        cwd: "/repo/arroba",
+        cwd: "/repo/chariox",
         matrix: "native-provider-tui-matrix",
-        nodeArgs: ["/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
+        nodeArgs: ["/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/native-provider-tui-matrix.json", "--artifact-index", "/tmp/matrices/oss/native-provider-tui-matrix-artifacts.json"],
         repo: "oss",
         reportPath: "/tmp/matrices/oss/native-provider-tui-matrix.json",
-        scriptPath: "/repo/arroba/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
+        scriptPath: "/repo/chariox/apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs",
       }],
     },
   }
@@ -71,7 +71,7 @@ export function generatedEvidenceFixture() {
 
 export function reportFixture(overrides = {}) {
   return {
-    schema: "arroba.drill.validation_gate.v1",
+    schema: "chariox.drill.validation_gate.v1",
     status: "passed",
     presets: ["workspace-live-sync"],
     checks: {
@@ -85,7 +85,7 @@ export function reportFixture(overrides = {}) {
       },
       artifacts: {
         status: "passed",
-        requiredArtifactSchemas: ["arroba.drill.validation_suite_run.v1"],
+        requiredArtifactSchemas: ["chariox.drill.validation_suite_run.v1"],
         missingArtifactSchemas: [],
         requiredArtifactKinds: ["validation-suite-run"],
         missingArtifactKinds: [],
@@ -101,7 +101,7 @@ export function reportFixture(overrides = {}) {
         missingArtifactRuntimeAuthorityInvariants: [],
         aggregate: {
           schemas: {
-            "arroba.drill.validation_suite_run.v1": 1,
+            "chariox.drill.validation_suite_run.v1": 1,
           },
           runtimeSignals: {
             "session-authority": 2,
@@ -137,7 +137,7 @@ export function reportFixture(overrides = {}) {
             "dry-run-classification-coverage": 1,
           },
           generatedValidationSuiteArtifactIndexes: {
-            "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+            "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
           },
           generatedValidationSuiteFailureRoots: {
             "/tmp/generated-suite/failed-run": 1,

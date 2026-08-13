@@ -1,6 +1,6 @@
 import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
-import type { ProviderAccountSummary } from "@arroba/kernel-client"
+import type { ProviderAccountSummary } from "@chariox/kernel-client"
 import type { ThemeName } from "./theme-registry.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 

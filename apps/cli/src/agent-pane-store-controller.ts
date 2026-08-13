@@ -1,15 +1,15 @@
 import {
   selectCurrentAgentPaneEntries,
-} from "@arroba/kernel-client/agent-pane-state"
+} from "@chariox/kernel-client/agent-pane-state"
 import {
   splitPaneAuxiliaryAgentIds,
-} from "@arroba/kernel-client/response-pane-selection"
+} from "@chariox/kernel-client/response-pane-selection"
 import type {
   AgentInstance,
   TranscriptEntry,
 } from "./cli-types.js"
-import { projectCompactTranscriptDisplayState } from "@arroba/kernel-client/transcript-display-state"
-import { formatTranscriptPreview } from "@arroba/kernel-client/session-history-preview"
+import { projectCompactTranscriptDisplayState } from "@chariox/kernel-client/transcript-display-state"
+import { formatTranscriptPreview } from "@chariox/kernel-client/session-history-preview"
 
 export type AgentPaneStoreControllerDeps = {
   isAttached: () => boolean

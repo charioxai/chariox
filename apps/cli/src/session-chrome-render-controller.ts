@@ -2,13 +2,13 @@ import type { RuntimeSession } from "./cli-types.js"
 import type { WorkspaceLiveSyncStatus } from "./cli-types.js"
 import type { FooterFlash } from "./footer-flash-controller.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
-import type { PromptMetaPart } from "@arroba/kernel-client/prompt-meta"
+import type { PromptMetaPart } from "@chariox/kernel-client/prompt-meta"
 import {
   sessionAttachedFooterSummary,
-} from "@arroba/kernel-client/shell-session-footer"
+} from "@chariox/kernel-client/shell-session-footer"
 import type {
   SessionStatusMode,
-} from "@arroba/kernel-client/session-runtime-status"
+} from "@chariox/kernel-client/session-runtime-status"
 import { compactFooterSummary } from "./footer-summary-compact.js"
 import {
   SESSION_NEW_FOOTER_HINT,

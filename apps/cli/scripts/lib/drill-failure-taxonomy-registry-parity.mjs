@@ -73,7 +73,7 @@ function failureClassificationMap(manifest, source) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
     throw new Error(`${source} is not an object`)
   }
-  if (manifest.schema !== "arroba.drill.failure_taxonomy.v1") {
+  if (manifest.schema !== "chariox.drill.failure_taxonomy.v1") {
     throw new Error(`${source} has unsupported schema ${JSON.stringify(manifest.schema)}`)
   }
   if (manifest.target !== "scenario") {

@@ -4,7 +4,7 @@ import {
   executeWorkflowEventPublicationCommand,
   type RuntimeSession,
   type ShellCommandResult,
-} from "@arroba/kernel-client"
+} from "@chariox/kernel-client"
 
 type WorkflowPublicationCommandDeps = {
   sessionState: () => RuntimeSession

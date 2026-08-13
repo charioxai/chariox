@@ -33,8 +33,8 @@ if (dryRun) {
 }
 
 const port = await availablePort()
-const root = path.join(os.tmpdir(), `arroba-stream-soak-${process.pid}-${Date.now()}`)
-const kernel = spawn(path.join(repoRoot, "target", "release", "arroba-kernel"), [], {
+const root = path.join(os.tmpdir(), `chariox-stream-soak-${process.pid}-${Date.now()}`)
+const kernel = spawn(path.join(repoRoot, "target", "release", "chariox-kernel"), [], {
   cwd: repoRoot,
   detached: true,
   stdio: "ignore",
@@ -44,13 +44,13 @@ const kernel = spawn(path.join(repoRoot, "target", "release", "arroba-kernel"), 
     XDG_CONFIG_HOME: path.join(root, "config"),
     XDG_STATE_HOME: path.join(root, "state"),
     XDG_CACHE_HOME: path.join(root, "cache"),
-    ARROBA_KERNEL_PORT: String(port),
-    ARROBA_MCP_PORT: String(port + 1),
-    ARROBA_OPENCODE_PORT: String(port + 2),
-    ARROBA_CODEX_PORT: String(port + 3),
-    ARROBA_DAEMON_ID: `stream-soak-${process.pid}`,
-    ARROBA_DAEMON_SOCKET: path.join(root, "daemon.sock"),
-    ARROBA_SESSION_HISTORY_DIR: path.join(root, "history"),
+    CHARIOX_KERNEL_PORT: String(port),
+    CHARIOX_MCP_PORT: String(port + 1),
+    CHARIOX_OPENCODE_PORT: String(port + 2),
+    CHARIOX_CODEX_PORT: String(port + 3),
+    CHARIOX_DAEMON_ID: `stream-soak-${process.pid}`,
+    CHARIOX_DAEMON_SOCKET: path.join(root, "daemon.sock"),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(root, "history"),
   },
 })
 let client

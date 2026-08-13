@@ -2,7 +2,7 @@ import path from "node:path"
 import process from "node:process"
 
 import type {
-  ArrobaPreferences,
+  CharioxPreferences,
 } from "./preferences.js"
 import type {
   CliOptions,
@@ -11,7 +11,7 @@ import { describeCliError } from "./runtime.js"
 
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
-    clientId: `arroba-cli-${process.pid}`,
+    clientId: `chariox-cli-${process.pid}`,
     provider: "opencode",
     model: "default",
     accountProfile: "default",
@@ -109,22 +109,22 @@ export function parseArgs(args: string[]): CliOptions {
 }
 
 export function defaultKernelEndpoint(): string {
-  if (process.env.ARROBA_KERNEL_URL) {
-    return process.env.ARROBA_KERNEL_URL
+  if (process.env.CHARIOX_KERNEL_URL) {
+    return process.env.CHARIOX_KERNEL_URL
   }
-  const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
+  const host = process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"
+  const port = process.env.CHARIOX_KERNEL_PORT ?? "43118"
   return `ws://${host}:${port}/kernel`
 }
 
-export function resolveConfiguredCloudRelayApiUrl(preferences: ArrobaPreferences): string | undefined {
-  const configured = process.env.ARROBA_CLOUD_API_URL
-    ?? process.env.ARROBA_CLOUD_HOSTED_API_URL
+export function resolveConfiguredCloudRelayApiUrl(preferences: CharioxPreferences): string | undefined {
+  const configured = process.env.CHARIOX_CLOUD_API_URL
+    ?? process.env.CHARIOX_CLOUD_HOSTED_API_URL
     ?? preferences.relay?.cloud?.apiUrl
   return configured?.trim().replace(/\/+$/, "") || undefined
 }
 
-export function applyProviderPreferenceDefaults(options: CliOptions, preferences: ArrobaPreferences): CliOptions {
+export function applyProviderPreferenceDefaults(options: CliOptions, preferences: CharioxPreferences): CliOptions {
   const configuredProviderPreferences = preferences.providers?.[options.provider ?? "opencode"]
   if (options.model === "default") {
     options.model = configuredProviderPreferences?.model ?? options.model
@@ -160,7 +160,7 @@ function validateOptions(options: CliOptions): void {
 }
 
 function isTerminalPairingLink(value: string) {
-  return value.trim().startsWith("arroba-terminal-pair-v1.")
+  return value.trim().startsWith("chariox-terminal-pair-v1.")
 }
 
 function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: string) {
@@ -175,7 +175,7 @@ function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: strin
 }
 
 function parseTerminalPairingLink(pairingLink: string) {
-  const payload = pairingLink.trim().replace(/^arroba-terminal-pair-v1[.]/, "")
+  const payload = pairingLink.trim().replace(/^chariox-terminal-pair-v1[.]/, "")
   let decoded: Record<string, unknown>
   try {
     decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>
@@ -199,8 +199,8 @@ function parseTerminalPairingLink(pairingLink: string) {
 
 function printUsage() {
   process.stdout.write([
-    "usage: arroba-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
-    "       arroba-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
+    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL --relay-token TOKEN (--target-daemon-id ID|--target-daemon-alias NAME)] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
+    "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
     "",
     "commands:",
     "  /stop                 request cancellation of the active provider turn",
@@ -235,7 +235,7 @@ function printUsage() {
     "  /agent list           list all agents in the session",
     "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
     "  /agent cycle          cycle to the next agent (or use Tab)",
-    "  /extension import     import provider MCPs and skills into Arroba",
+    "  /extension import     import provider MCPs and skills into Chariox",
     "  /extension grant      grant mcp, skill, script, or connector capabilities to an agent",
     "  /extension revoke     revoke an extension from an agent",
     "  /extension grants     show worker-local, home-proxy, and skill snapshot grants",
@@ -267,14 +267,14 @@ function printUsage() {
     "  /slice auth import    copy this machine's provider credentials into the slice",
     "  /slice auth remove    remove slice-local provider credentials and account summary",
     "  /slice auth login     start provider login inside the slice for a different account",
-    "  /slice auth alias     set an Arroba display alias for the slice account",
-    "  /config show          show the Arroba user config",
+    "  /slice auth alias     set a Chariox display alias for the slice account",
+    "  /config show          show the Chariox user config",
     "  /config keys          list settable config keys",
     "  /config schema        show config key metadata",
-    "  /config set <p> <v>   update the Arroba user config",
+    "  /config set <p> <v>   update the Chariox user config",
     "  /config workspace-live-sync off|managed|tracked set global workspace live sync policy",
-    "  /cloud                open Arroba Cloud terminal",
-    "  /cloud link           link this machine to Arroba Cloud",
+    "  /cloud                open Chariox Cloud terminal",
+    "  /cloud link           link this machine to Chariox Cloud",
     "  /cloud status         show Cloud and relay status",
     "  /cloud deployments    manage deployed workflow projects and releases",
     "  /cloud deployments claim create|review|accept|revoke manage customer handoff",

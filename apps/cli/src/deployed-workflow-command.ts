@@ -818,7 +818,7 @@ async function armClaudeCredentialMutation(
   const attachment = runtime?.attachmentState?.() ?? null
   const session = runtime?.sessionState?.()
   if (!runtime?.isAttached?.() || !attachment || !session) {
-    throw new Error("Claude provider-native credential setup requires an attached Arroba TUI")
+    throw new Error("Claude provider-native credential setup requires an attached Chariox TUI")
   }
   if (attachment.session_id !== session.id) {
     throw new Error("Claude credential setup attachment is stale")

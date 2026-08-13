@@ -1,4 +1,4 @@
-import { getProviderRunRequest, getSessionStateRequest } from '@arroba/kernel-client'
+import { getProviderRunRequest, getSessionStateRequest } from '@chariox/kernel-client'
 import { compactWorkflowRunSummary } from './workflow-code-artifact-drill-topology.mjs'
 import { sleep, stage, unwrap, withTimeout } from './workflow-code-artifact-drill-runtime.mjs'
 

@@ -15,7 +15,7 @@ export const HOSTED_HOME_PROXY_MODEL = "native-tui-idle"
 
 export function withHostedKernelIsolation(env, {
   homeDir,
-  arrobaHome,
+  charioxHome,
   xdgConfigHome,
   xdgStateHome,
   xdgRuntimeDir,
@@ -23,7 +23,7 @@ export function withHostedKernelIsolation(env, {
   return {
     ...env,
     HOME: homeDir,
-    ARROBA_HOME: arrobaHome,
+    CHARIOX_HOME: charioxHome,
     XDG_CONFIG_HOME: xdgConfigHome,
     XDG_STATE_HOME: xdgStateHome,
     XDG_RUNTIME_DIR: xdgRuntimeDir,
@@ -34,7 +34,7 @@ async function initHostedLiveSyncWorktree(worktree, label) {
   await mkdir(path.join(worktree, "outputs"), { recursive: true })
   await mkdir(path.join(worktree, "ignored"), { recursive: true })
   await writeFile(path.join(worktree, "seed.txt"), `${label}-seed\n`, "utf8")
-  await writeFile(path.join(worktree, ".arrobaignore"), "ignored/\n*.secret\n", "utf8")
+  await writeFile(path.join(worktree, ".charioxignore"), "ignored/\n*.secret\n", "utf8")
   await runCommand("git", ["init"], worktree)
   await runCommand("git", ["config", "user.email", "hosted-workspace-live-sync@example.com"], worktree)
   await runCommand("git", ["config", "user.name", "Hosted Workspace Live Sync Drill"], worktree)
@@ -145,13 +145,13 @@ async function assertHostedWorkspaceLiveSyncProxy({
   if (!launch.runtime_mcp_server_url || !launch.runtime_mcp_auth_token) {
     throw new Error(`launched run lacks runtime MCP binding for workspace live sync: ${JSON.stringify(launch)}`)
   }
-  log("second-kernel-workspace-live-sync-tool-wait", { tool: "arroba.write_artifact" })
-  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "arroba.write_artifact", true)
+  log("second-kernel-workspace-live-sync-tool-wait", { tool: "chariox.write_artifact" })
+  await waitForRuntimeTool(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "chariox.write_artifact", true)
   const relativePath = `outputs/hosted-managed-live-sync-${label}.txt`
   const expected = `HOSTED_MANAGED_WORKSPACE_LIVE_SYNC_${label.toUpperCase()}_OK\n`
   log("second-kernel-workspace-live-sync-write-start", { label, relativePath })
   const write = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
-    name: "arroba.write_artifact",
+    name: "chariox.write_artifact",
     arguments: { path: relativePath, content_text: expected },
   })
   if (write.isError) throw new Error(`hosted workspace live sync write returned error: ${JSON.stringify(write)}`)
@@ -162,7 +162,7 @@ async function assertHostedWorkspaceLiveSyncProxy({
   const ignoredPath = `ignored/hosted-managed-live-sync-${label}.txt`
   log("second-kernel-workspace-live-sync-ignore-check", { label, path: ignoredPath })
   const ignored = await expectRuntimeMcpReject(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
-    name: "arroba.write_artifact",
+    name: "chariox.write_artifact",
     arguments: { path: ignoredPath, content_text: "SHOULD_NOT_WRITE\n" },
   })
   if (!JSON.stringify(ignored).includes("excluded from workspace live sync")) {
@@ -367,7 +367,7 @@ rl.on('line', (line) => {
 kind: connector_adapter
 name: hosted_home_stub
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
+adapter_protocol: chariox-connector-adapter-v2
 command: ${process.execPath}
 args:
   - ${connectorAdapterScript}
@@ -621,7 +621,7 @@ async function assertHostedCollaboratorHomeExtensions({
       timeoutMs: pollTimeoutMs,
     })
     const deniedRequest = await callRuntimeMcp(launch.runtime_mcp_server_url, launch.runtime_mcp_auth_token, "tools/call", {
-      name: "arroba.request_extension",
+      name: "chariox.request_extension",
       arguments: { kind: "script", name: "hosted_home_only_lookup", environment: env.name },
     }, { retryTransient: true })
     if (!deniedRequest.isError || !JSON.stringify(deniedRequest).includes("home-owned extensions for collaborator remote agents")) {
@@ -739,7 +739,7 @@ export async function runHostedSecondKernelAssertions({
   const workerDaemonId = `hosted-worker-daemon-${process.pid}-${Date.now()}`
   const workerAlias = `hosted-worker-${process.pid}`
   const workerHome = path.join(rootDir, "worker-home")
-  const workerArrobaHome = path.join(workerHome, ".arroba")
+  const workerCharioxHome = path.join(workerHome, ".chariox")
   const workerCapabilityRoot = path.join(rootDir, "worker-capabilities")
   const workerWorkspace = path.join(rootDir, "worker-workspace")
   const workerHistoryDir = path.join(rootDir, "worker-session-history")
@@ -762,26 +762,26 @@ export async function runHostedSecondKernelAssertions({
       profile: ownerProfile,
       machineId: workerDaemonId,
     })
-    await mkdir(workerArrobaHome, { recursive: true })
+    await mkdir(workerCharioxHome, { recursive: true })
     await mkdir(workerWorkspace, { recursive: true })
     const workerEnv = withDevStubProviderInventory({
       ...process.env,
       HOME: workerHome,
-      ARROBA_HOME: workerArrobaHome,
-      ARROBA_KERNEL_PORT: String(workerPorts.kernelPort),
-      ARROBA_MCP_PORT: String(workerPorts.mcpPort),
-      ARROBA_OPENCODE_PORT: String(workerPorts.opencodePort),
-      ARROBA_CODEX_PORT: String(workerPorts.codexPort),
-      ARROBA_RELAY_URL: ownerProfile.relayUrl,
-      ARROBA_RELAY_TOKEN: workerRelayToken,
-      ARROBA_DAEMON_ID: workerDaemonId,
-      ARROBA_DAEMON_ALIAS: workerAlias,
-      ARROBA_MACHINE_ID: workerDaemonId,
-      ARROBA_MACHINE_ALIAS: workerAlias,
-      ARROBA_ACCEPT_REMOTE_LEASES: "1",
-      ARROBA_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
-      ARROBA_SESSION_HISTORY_DIR: workerHistoryDir,
-      ARROBA_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
+      CHARIOX_HOME: workerCharioxHome,
+      CHARIOX_KERNEL_PORT: String(workerPorts.kernelPort),
+      CHARIOX_MCP_PORT: String(workerPorts.mcpPort),
+      CHARIOX_OPENCODE_PORT: String(workerPorts.opencodePort),
+      CHARIOX_CODEX_PORT: String(workerPorts.codexPort),
+      CHARIOX_RELAY_URL: ownerProfile.relayUrl,
+      CHARIOX_RELAY_TOKEN: workerRelayToken,
+      CHARIOX_DAEMON_ID: workerDaemonId,
+      CHARIOX_DAEMON_ALIAS: workerAlias,
+      CHARIOX_MACHINE_ID: workerDaemonId,
+      CHARIOX_MACHINE_ALIAS: workerAlias,
+      CHARIOX_ACCEPT_REMOTE_LEASES: "1",
+      CHARIOX_DAEMON_SOCKET: path.join(rootDir, "worker-daemon.sock"),
+      CHARIOX_SESSION_HISTORY_DIR: workerHistoryDir,
+      CHARIOX_CAPABILITY_ISOLATION_ROOT: workerCapabilityRoot,
       ...(trackedWorkspaceLiveSyncProvider === "codex"
         ? { CODEX_HOME: process.env.CODEX_HOME?.trim() || path.join(process.env.HOME ?? "", ".codex") }
         : {}),

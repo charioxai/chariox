@@ -40,8 +40,8 @@ import {
 import { validateDrillRuntimeAuthorityInvariant } from "./drill-runtime-authority-invariants.mjs"
 import { normalizeCloudRuntimeAuthorityInvariantId } from "./drill-runtime-authority-registry-parity.mjs"
 
-export const DRILL_ARTIFACT_INDEX_SCHEMA = "arroba.drill.artifact_index.v1"
-export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "arroba.drill.artifact_index.aggregate.v1"
+export const DRILL_ARTIFACT_INDEX_SCHEMA = "chariox.drill.artifact_index.v1"
+export const DRILL_ARTIFACT_INDEX_AGGREGATE_SCHEMA = "chariox.drill.artifact_index.aggregate.v1"
 export const DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS = Object.freeze([
   "runtimeSignals",
   "runtimeSignalOwners",
@@ -93,7 +93,7 @@ export const DRILL_ARTIFACT_AGGREGATE_COUNT_KEYS = Object.freeze([
   "schemas",
   ...DRILL_ARTIFACT_DIAGNOSTIC_METADATA_KEYS,
 ])
-const DRILL_ARTIFACT_INDEX_FILE = "arroba-drill-artifacts.json"
+const DRILL_ARTIFACT_INDEX_FILE = "chariox-drill-artifacts.json"
 const DRILL_ARTIFACT_DIAGNOSTIC_LABELS = Object.freeze({
   runtimeSignals: "runtime_signals",
   runtimeSignalOwners: "runtime_signal_owners",
@@ -176,7 +176,7 @@ export async function finalizeDrillArtifacts({
 
   await mkdir(resolvedRootDir, { recursive: true }).catch(() => {})
   const manifest = failureManifest({ rootDir: resolvedRootDir, failure, metadata })
-  const manifestPath = path.join(resolvedRootDir, "arroba-drill-failure.json")
+  const manifestPath = path.join(resolvedRootDir, "chariox-drill-failure.json")
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8").catch(() => {})
   if (log) {
     log("preserved-failed-run", { rootDir: resolvedRootDir, manifestPath })
@@ -697,7 +697,7 @@ function validateDrillArtifactIndexAggregateNextActions(nextActions, source) {
 
 function failureManifest({ rootDir, failure, metadata }) {
   return {
-    schema: "arroba.drill.failure.v1",
+    schema: "chariox.drill.failure.v1",
     rootDir,
     failedAt: new Date().toISOString(),
     metadata: sanitizeDrillMetadata(metadata),

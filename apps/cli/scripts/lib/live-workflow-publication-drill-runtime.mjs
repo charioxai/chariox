@@ -34,7 +34,7 @@ export function envFlag(name, defaultValue = false) {
 }
 
 export function withPublicationDrillProviderInventory(env) {
-  return { ...env, ARROBA_PROVIDER_DEV_STUB: '1' }
+  return { ...env, CHARIOX_PROVIDER_DEV_STUB: '1' }
 }
 
 export function secureGatewayPublicationEnvs(env, {
@@ -49,41 +49,41 @@ export function secureGatewayPublicationEnvs(env, {
     ...env,
     HOST: host,
     PORT: String(port),
-    ARROBA_KERNEL_URL: kernelUrl,
-    ARROBA_PUBLICATION_TLS_KEY_FILE: tls.keyFile,
-    ARROBA_PUBLICATION_TLS_CERT_FILE: tls.certFile,
+    CHARIOX_KERNEL_URL: kernelUrl,
+    CHARIOX_PUBLICATION_TLS_KEY_FILE: tls.keyFile,
+    CHARIOX_PUBLICATION_TLS_CERT_FILE: tls.certFile,
   }
   return {
     https: {
       ...common,
-      ARROBA_PUBLICATION_SESSION_ID: humanHttp.sessionId,
-      ARROBA_PUBLICATION_ID: humanHttp.publicationId,
+      CHARIOX_PUBLICATION_SESSION_ID: humanHttp.sessionId,
+      CHARIOX_PUBLICATION_ID: humanHttp.publicationId,
     },
     wss: {
       ...common,
-      ARROBA_PUBLICATION_SESSION_ID: websocket.sessionId,
-      ARROBA_PUBLICATION_ID: websocket.publicationId,
+      CHARIOX_PUBLICATION_SESSION_ID: websocket.sessionId,
+      CHARIOX_PUBLICATION_ID: websocket.publicationId,
     },
   }
 }
 
 export function realDashboardOptionsFromEnv() {
-  if (!envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD')) return null
-  const provider = process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_PROVIDER || 'codex'
+  if (!envFlag('CHARIOX_PUBLICATION_REAL_DASHBOARD')) return null
+  const provider = process.env.CHARIOX_PUBLICATION_REAL_DASHBOARD_PROVIDER || 'codex'
   return {
     provider,
-    accountProfile: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_ACCOUNT || 'default',
-    model: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_MODEL || (provider === 'opencode' ? 'opencode/gpt-5.4' : 'gpt-5.5'),
-    effort: process.env.ARROBA_PUBLICATION_REAL_DASHBOARD_EFFORT || 'high',
-    expectThinking: envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_EXPECT_THINKING', true),
-    useHostProviderHome: envFlag('ARROBA_PUBLICATION_REAL_DASHBOARD_USE_HOST_PROVIDER_HOME', true),
+    accountProfile: process.env.CHARIOX_PUBLICATION_REAL_DASHBOARD_ACCOUNT || 'default',
+    model: process.env.CHARIOX_PUBLICATION_REAL_DASHBOARD_MODEL || (provider === 'opencode' ? 'opencode/gpt-5.4' : 'gpt-5.5'),
+    effort: process.env.CHARIOX_PUBLICATION_REAL_DASHBOARD_EFFORT || 'high',
+    expectThinking: envFlag('CHARIOX_PUBLICATION_REAL_DASHBOARD_EXPECT_THINKING', true),
+    useHostProviderHome: envFlag('CHARIOX_PUBLICATION_REAL_DASHBOARD_USE_HOST_PROVIDER_HOME', true),
   }
 }
 
 export const REAL_DASHBOARD_PROMPT = [
   'Generate a vibrant dashboard as a compact self-contained HTML document.',
   'The dashboard must visibly include the title text `Real Provider Workflow Dashboard`.',
-  'The main dashboard element must include `data-arroba-real-provider-dashboard="true"`.',
+  'The main dashboard element must include `data-chariox-real-provider-dashboard="true"`.',
   'Before writing the file, reason through a compact layout plan that balances mobile responsiveness, contrast, KPI cards, one chart-like visual, and a status section.',
   'Use inline CSS only; no scripts, external assets, network calls, or unrelated file inspection.',
   'This is the final workflow node: submit final workflow output as {"kind":"html","html":"<full html document>"} by calling validate_and_submit_workflow_run_output, then emit the final fenced workflow JSON block with the same output.message object.',
@@ -321,7 +321,7 @@ export function startPublicationContainer({
     '-v',
     `${workspaceDir}:/workspace`,
     '-e',
-    'ARROBA_PUBLICATION_PACKAGE=/publication',
+    'CHARIOX_PUBLICATION_PACKAGE=/publication',
     '-e',
     'HOST=0.0.0.0',
     '-e',
@@ -393,13 +393,13 @@ export function startServeWithProviderPrompt({
 }) {
   const script = `
 set timeout 45
-set cli $env(ARROBA_EXPECT_CLI_BINARY)
-set package_dir $env(ARROBA_EXPECT_PUBLICATION_PACKAGE)
-set port $env(ARROBA_EXPECT_PUBLICATION_PORT)
-set kernel_url $env(ARROBA_EXPECT_KERNEL_URL)
-set provider $env(ARROBA_EXPECT_REPLACEMENT_PROVIDER)
-set model $env(ARROBA_EXPECT_REPLACEMENT_MODEL)
-set effort $env(ARROBA_EXPECT_REPLACEMENT_EFFORT)
+set cli $env(CHARIOX_EXPECT_CLI_BINARY)
+set package_dir $env(CHARIOX_EXPECT_PUBLICATION_PACKAGE)
+set port $env(CHARIOX_EXPECT_PUBLICATION_PORT)
+set kernel_url $env(CHARIOX_EXPECT_KERNEL_URL)
+set provider $env(CHARIOX_EXPECT_REPLACEMENT_PROVIDER)
+set model $env(CHARIOX_EXPECT_REPLACEMENT_MODEL)
+set effort $env(CHARIOX_EXPECT_REPLACEMENT_EFFORT)
 trap { catch { exec kill [exp_pid] }; exit 143 } SIGTERM
 spawn -noecho $cli serve $package_dir $port --kernel-url $kernel_url
 expect {
@@ -425,14 +425,14 @@ expect {
 `
   return startProcess('/usr/bin/expect', ['-c', script], {
     ...env,
-    ARROBA_EXPECT_CLI_BINARY: cliBinary,
-    ARROBA_EXPECT_PUBLICATION_PACKAGE: packageDir,
-    ARROBA_EXPECT_PUBLICATION_PORT: String(port),
-    ARROBA_EXPECT_KERNEL_URL: kernelUrl,
-    ARROBA_EXPECT_REPLACEMENT_PROVIDER: provider,
-    ARROBA_EXPECT_REPLACEMENT_MODEL: model,
-    ARROBA_EXPECT_REPLACEMENT_EFFORT: effort,
-  }, 'arroba-serve-provider-override')
+    CHARIOX_EXPECT_CLI_BINARY: cliBinary,
+    CHARIOX_EXPECT_PUBLICATION_PACKAGE: packageDir,
+    CHARIOX_EXPECT_PUBLICATION_PORT: String(port),
+    CHARIOX_EXPECT_KERNEL_URL: kernelUrl,
+    CHARIOX_EXPECT_REPLACEMENT_PROVIDER: provider,
+    CHARIOX_EXPECT_REPLACEMENT_MODEL: model,
+    CHARIOX_EXPECT_REPLACEMENT_EFFORT: effort,
+  }, 'chariox-serve-provider-override')
 }
 
 export async function stopProcess(child) {

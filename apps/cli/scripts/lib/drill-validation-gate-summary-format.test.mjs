@@ -90,7 +90,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
         missingFailureClassifications: [],
         artifacts: [{
           path: "validation-suite.json",
-          schema: "arroba.drill.validation_suite.v1",
+          schema: "chariox.drill.validation_suite.v1",
           sha256: "a".repeat(64),
           sizeBytes: 100,
         }],
@@ -131,7 +131,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /platform_validation_suite_tests=2 coverage=matrix-validation:2/)
   assert.match(text, /platform_failure_taxonomy=drill:1 scenario:2/)
   assert.match(text, /artifact_total=3 size_bytes=42/)
-  assert.match(text, /artifact_schemas=arroba\.drill\.matrix\.v1:2,arroba\.drill\.validation_suite_run\.v1:1/)
+  assert.match(text, /artifact_schemas=chariox\.drill\.matrix\.v1:2,chariox\.drill\.validation_suite_run\.v1:1/)
   assert.match(text, /artifact_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
   assert.match(text, /artifact_runtime_signal_owners=kernel-authority:1,runtime-state:1/)
   assert.match(text, /artifact_required_runtime_signals=session-authority:2,workspace-live-sync-state:1/)
@@ -146,7 +146,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_generated_evidence_kinds=matrix-report:1,validation-suite-run:1/)
   assert.match(text, /artifact_generated_evidence_repos=cloud:1,oss:1/)
   assert.match(text, /artifact_generated_matrix_limitations=dry-run-classification-coverage:1/)
-  assert.match(text, /artifact_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
+  assert.match(text, /artifact_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/chariox-drill-artifacts\.json:1/)
   assert.match(text, /artifact_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
   assert.match(text, /artifact_required_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/failed-run:1/)
   assert.match(text, /artifact_missing_generated_validation_suite_failure_roots=\/tmp\/generated-suite\/missing-run:1/)
@@ -154,7 +154,7 @@ test("formats aggregate summaries for platform, artifact, matrix, and failure ev
   assert.match(text, /artifact_missing_generated_evidence_kinds=matrix-report:1/)
   assert.match(text, /artifact_required_generated_matrix_limitations=dry-run-classification-coverage:1/)
   assert.match(text, /artifact_missing_generated_matrix_limitations=dry-run-classification-coverage:1/)
-  assert.match(text, /artifact_required_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/arroba-drill-artifacts\.json:1/)
+  assert.match(text, /artifact_required_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/chariox-drill-artifacts\.json:1/)
   assert.match(text, /artifact_missing_generated_validation_suite_artifact_indexes=\/tmp\/generated-suite\/missing-artifacts\.json:1/)
   assert.match(text, /artifact_provider_account_aliases=codex=work:1,opencode=zen:1/)
   assert.match(text, /artifact_evidence_repos=cloud:1,oss:1/)
@@ -180,8 +180,8 @@ test("formats generated evidence provenance when present", () => {
         enabled: true,
         outputRoots: ["/tmp/suites/cloud", "/tmp/suites/oss"],
         artifactIndexes: [
-          "/tmp/suites/cloud/arroba-drill-artifacts.json",
-          "/tmp/suites/oss/arroba-drill-artifacts.json",
+          "/tmp/suites/cloud/chariox-drill-artifacts.json",
+          "/tmp/suites/oss/chariox-drill-artifacts.json",
         ],
         failureRoots: [
           "/tmp/suites/oss/failed-run",
@@ -189,22 +189,22 @@ test("formats generated evidence provenance when present", () => {
         ],
         commands: [
           {
-            artifactIndexPath: "/tmp/suites/oss/arroba-drill-artifacts.json",
+            artifactIndexPath: "/tmp/suites/oss/chariox-drill-artifacts.json",
             args: ["--run-json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
-            cwd: "/repo/arroba",
+            cwd: "/repo/chariox",
             failureRoot: "/tmp/suites/oss/failed-run",
-            nodeArgs: ["/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
+            nodeArgs: ["/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/oss/drill-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/oss/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/oss/failed-run"],
             reportPath: "/tmp/suites/oss/drill-validation-suite-run.json",
-            scriptPath: "/repo/arroba/apps/cli/scripts/drill-validation-suite.mjs",
+            scriptPath: "/repo/chariox/apps/cli/scripts/drill-validation-suite.mjs",
           },
           {
-            artifactIndexPath: "/tmp/suites/cloud/arroba-drill-artifacts.json",
+            artifactIndexPath: "/tmp/suites/cloud/chariox-drill-artifacts.json",
             args: ["--run-json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
-            cwd: "/repo/arroba-cloud",
+            cwd: "/repo/chariox-cloud",
             failureRoot: "/tmp/suites/cloud/failed-run",
-            nodeArgs: ["/repo/arroba-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/arroba-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
+            nodeArgs: ["/repo/chariox-cloud/scripts/cloud-validation-suite.mjs", "--run-json", "--output", "/tmp/suites/cloud/cloud-validation-suite-run.json", "--output-artifact-index", "/tmp/suites/cloud/chariox-drill-artifacts.json", "--preserve-failure-root", "/tmp/suites/cloud/failed-run"],
             reportPath: "/tmp/suites/cloud/cloud-validation-suite-run.json",
-            scriptPath: "/repo/arroba-cloud/scripts/cloud-validation-suite.mjs",
+            scriptPath: "/repo/chariox-cloud/scripts/cloud-validation-suite.mjs",
           },
         ],
       },
@@ -220,23 +220,23 @@ test("formats generated evidence provenance when present", () => {
             args: ["--include-hetzner"],
             artifactIndexFlag: "--artifact-index",
             artifactIndexPath: "/tmp/matrices/oss/a-artifacts.json",
-            cwd: "/repo/arroba",
+            cwd: "/repo/chariox",
             matrix: "native-provider-tui-matrix",
-            nodeArgs: ["/repo/arroba/a.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/a.json", "--artifact-index", "/tmp/matrices/oss/a-artifacts.json"],
+            nodeArgs: ["/repo/chariox/a.mjs", "--include-hetzner", "--report", "/tmp/matrices/oss/a.json", "--artifact-index", "/tmp/matrices/oss/a-artifacts.json"],
             repo: "oss",
             reportPath: "/tmp/matrices/oss/a.json",
-            scriptPath: "/repo/arroba/a.mjs",
+            scriptPath: "/repo/chariox/a.mjs",
           },
           {
             args: ["--include-hosted-cloud"],
             artifactIndexFlag: "--output-artifact-index",
             artifactIndexPath: "/tmp/matrices/cloud/b-artifacts.json",
-            cwd: "/repo/arroba-cloud",
+            cwd: "/repo/chariox-cloud",
             matrix: "cloud-slice-runtime-matrix",
-            nodeArgs: ["/repo/arroba-cloud/b.mjs", "--include-hosted-cloud", "--report", "/tmp/matrices/cloud/b.json", "--output-artifact-index", "/tmp/matrices/cloud/b-artifacts.json"],
+            nodeArgs: ["/repo/chariox-cloud/b.mjs", "--include-hosted-cloud", "--report", "/tmp/matrices/cloud/b.json", "--output-artifact-index", "/tmp/matrices/cloud/b-artifacts.json"],
             repo: "cloud",
             reportPath: "/tmp/matrices/cloud/b.json",
-            scriptPath: "/repo/arroba-cloud/b.mjs",
+            scriptPath: "/repo/chariox-cloud/b.mjs",
           },
         ],
         dryRun: false,
@@ -250,7 +250,7 @@ test("formats generated evidence provenance when present", () => {
     },
   }))
 
-  assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/arroba-drill-artifacts\.json,\/tmp\/suites\/oss\/arroba-drill-artifacts\.json commands=2 failure_roots=\/tmp\/suites\/oss\/failed-run,\/tmp\/suites\/cloud\/failed-run/)
+  assert.match(text, /generated_validation_suites=enabled output_roots=\/tmp\/suites\/cloud,\/tmp\/suites\/oss artifact_indexes=\/tmp\/suites\/cloud\/chariox-drill-artifacts\.json,\/tmp\/suites\/oss\/chariox-drill-artifacts\.json commands=2 failure_roots=\/tmp\/suites\/oss\/failed-run,\/tmp\/suites\/cloud\/failed-run/)
   assert.match(text, /generated_matrices=enabled roots=\/tmp\/matrices\/cloud,\/tmp\/matrices\/oss artifact_indexes=\/tmp\/matrices\/cloud\/b-artifacts\.json,\/tmp\/matrices\/oss\/a-artifacts\.json commands=2 dry_run=false continue_on_failure=true/)
   assert.match(text, /generated_matrix_limitations:/)
   assert.match(text, /- kind=dry-run-classification-coverage owner=validation-harness: rerun distributed runtime matrix reports without --matrix-dry-run before release/)
@@ -315,11 +315,11 @@ function matrixCheck(overrides = {}) {
 
 function artifactAggregateFixture() {
   return {
-    schema: "arroba.drill.artifact_index.aggregate.v1",
+    schema: "chariox.drill.artifact_index.aggregate.v1",
     totals: { indexes: 1, artifacts: 3, sizeBytes: 42 },
     schemas: {
-      "arroba.drill.matrix.v1": 2,
-      "arroba.drill.validation_suite_run.v1": 1,
+      "chariox.drill.matrix.v1": 2,
+      "chariox.drill.validation_suite_run.v1": 1,
     },
     runtimeSignals: {
       "session-authority": 2,
@@ -393,7 +393,7 @@ function artifactAggregateFixture() {
       oss: 1,
     },
     generatedValidationSuiteArtifactIndexes: {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     },
     generatedValidationSuiteFailureRoots: {
       "/tmp/generated-suite/failed-run": 1,
@@ -428,7 +428,7 @@ function artifactAggregateFixture() {
     },
     missingGeneratedMatrixRepos: {},
     requiredGeneratedValidationSuiteArtifactIndexes: {
-      "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+      "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
     },
     missingGeneratedValidationSuiteArtifactIndexes: {
       "/tmp/generated-suite/missing-artifacts.json": 1,
@@ -450,8 +450,8 @@ function artifactAggregateFixture() {
       artifacts: 3,
       sizeBytes: 42,
       schemas: {
-        "arroba.drill.validation_suite_run.v1": 1,
-        "arroba.drill.matrix.v1": 2,
+        "chariox.drill.validation_suite_run.v1": 1,
+        "chariox.drill.matrix.v1": 2,
       },
       runtimeSignals: {
         "session-authority": 2,
@@ -525,7 +525,7 @@ function artifactAggregateFixture() {
         oss: 1,
       },
       generatedValidationSuiteArtifactIndexes: {
-        "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+        "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
       },
       generatedValidationSuiteFailureRoots: {
         "/tmp/generated-suite/failed-run": 1,
@@ -560,7 +560,7 @@ function artifactAggregateFixture() {
       },
       missingGeneratedMatrixRepos: {},
       requiredGeneratedValidationSuiteArtifactIndexes: {
-        "/tmp/generated-suite/arroba-drill-artifacts.json": 1,
+        "/tmp/generated-suite/chariox-drill-artifacts.json": 1,
       },
       missingGeneratedValidationSuiteArtifactIndexes: {
         "/tmp/generated-suite/missing-artifacts.json": 1,
@@ -582,7 +582,7 @@ function artifactAggregateFixture() {
 
 function matrixAggregateFixture() {
   return {
-    schema: "arroba.drill.matrix.aggregate.v1",
+    schema: "chariox.drill.matrix.aggregate.v1",
     status: "passed",
     totals: { reports: 1, scenarios: 3, passed: 0, failed: 0, skipped: 1, dryRun: 2, durationMs: 30 },
     failedScenarios: [],
@@ -657,7 +657,7 @@ function matrixScenarioFixture(id, status) {
 function failureAggregateFixture() {
   const nextAction = "inspect relay and kernel logs in the preserved artifact root, then rerun the drill"
   return {
-    schema: "arroba.drill.failure.aggregate.v1",
+    schema: "chariox.drill.failure.aggregate.v1",
     total: 1,
     owners: { "runtime-network": 1 },
     classifications: { "relay-runtime": 1 },

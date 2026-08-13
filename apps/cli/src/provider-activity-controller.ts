@@ -1,6 +1,6 @@
 import {
   providerActivityRuntimeTransition,
-} from "@arroba/kernel-client/session-runtime-transition"
+} from "@chariox/kernel-client/session-runtime-transition"
 
 export type ProviderActivityControllerDeps = {
   setWorking: (working: boolean) => void

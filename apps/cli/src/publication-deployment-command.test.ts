@@ -48,7 +48,7 @@ test("publication deployment CLI deploy output makes public unmanaged access exp
   })
 
   assert.match(output, /warning public_unmanaged_access anyone with the generated URL can invoke this deployment/)
-  assert.match(output, /serve arroba serve \/tmp\/publication <port> --cloud-deployment deployment-1/)
+  assert.match(output, /serve chariox serve \/tmp\/publication <port> --cloud-deployment deployment-1/)
 })
 
 function deployment(overrides: Partial<PublicationDeploymentSummary> = {}): PublicationDeploymentSummary {

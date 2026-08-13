@@ -10,7 +10,7 @@ import {
   submitPromptRequest,
 } from "../ipc-requests.js"
 import { preparePromptAttachmentsForSubmit } from "../prompt-attachment-transfer.js"
-import { PROVIDER_TERMINAL_OUTPUT_KIND } from "@arroba/kernel-client/terminal-record-transcript"
+import { PROVIDER_TERMINAL_OUTPUT_KIND } from "@chariox/kernel-client/terminal-record-transcript"
 import {
   extractClaudeNativePromptAttachmentReferences,
   stripClaudeAttachmentMentions,
