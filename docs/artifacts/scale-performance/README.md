@@ -24,7 +24,7 @@ Each release pass covered ten cases: 20×50, 50×20, 100×10, single-session 200
 
 The responsiveness gate bounds maximum and aggregate long-task duration (100 ms and 250 ms) instead of requiring a scheduler-sensitive count of zero. Task counts remain diagnostic. All latency, batching, request-count, DOM, WebSocket, CPU, and memory gates passed.
 
-The final visual artifact, `single-500-terminal.png`, shows 500 sidebar agents with two mounted panes, one completed prompt, 499 idle agents, and a ready kernel. The full UI retained 1,109–1,150 DOM nodes in the 500-agent cases rather than mounting 500 terminal panes.
+The frontend matrices recorded 1,109–1,150 DOM nodes in the 500-agent cases rather than mounting 500 terminal panes.
 
 ## Distributed 500-active gate
 
@@ -75,6 +75,5 @@ Per the plan assumptions, provider quotas and credentials are outside the Chario
 - `stream-soak-pass-{1,2,3}.json`: raw 30-minute stream metrics.
 - `reconnect-storm.json`: slow-subscriber and reconnect-isolation report.
 - `restart-persistence-pass-{1,2,3}.txt`: live stop/restart verification records.
-- `single-500-terminal.png`: final visual validation.
 
 Temporary provider transcripts are deliberately not committed because they can contain provider-native prompt and account metadata.
