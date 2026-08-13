@@ -172,43 +172,44 @@ Rules:
 - output-producing nodes may be the same nodes used as workflow entry targets
 - explicit first-class output endpoints may be added later if publishing/integration needs them
 
-### 3.3.5 Workflow Publication Runtime
+### 3.3.5 Workflow Triggers and Deployments
 
-Workflow publication turns a workflow snapshot into an externally callable or
-scheduled runtime without making the publication gateway a workflow authority.
+A trigger routes input into the existing workflow in its existing session. A
+deployment is the separate operation that captures an immutable workflow
+revision and materializes it on another kernel. Neither an HTTP gateway nor an
+event producer becomes a workflow authority.
 
 Target concepts:
 
-- `published workflow`
-  - the deployable runtime unit
-  - contains a durable workflow snapshot, endpoints, queue definitions, agent
-    settings, extension requirements, generated app assets, and hooks
-- `hook`
-  - an access surface into one published workflow runtime
-  - binds one transport to one workflow endpoint and one workflow queue
+- `trigger`
+  - an HTTP, schedule, or notification input attached to one workflow endpoint
+    and one workflow queue
 - `publication package`
-  - an editable, shareable external program directory containing
+  - an immutable, portable deployment directory containing
     `publication.json`, `workflow.snapshot.json`, `requirements.json`, app
     assets, packaged scripts, and a launcher
-- `publication runtime session`
+- `deployed workflow session`
   - a hidden, non-editable kernel-owned session materialized from a publication
-    package when the publication is served or deployed
+    package on a destination kernel
 
 Rules:
 
-- publication runtime sessions MUST NOT appear in normal local/web CLI session
+- adding, enabling, disabling, or exposing a trigger MUST NOT clone the source
+  workflow, agents, queues, or session
+- every source-kernel trigger invocation enters the same workflow queue system
+  as manual input and is serialized by the source session arbiter
+- deployed workflow sessions MUST NOT appear in normal local/web CLI session
   lists
-- publication runtime sessions MUST NOT be editable through ordinary workflow,
+- deployed workflow sessions MUST NOT be editable through ordinary workflow,
   session, or agent authoring commands
-- the kernel remains the authority for materialized publication runtime
+- the kernel remains the authority for source and deployed workflow
   sessions, workflow queues, workflow runs, provider runs, artifacts, and
   outputs
-- the generated publication app/gateway owns HTTP transport handling,
+- the HTTP gateway owns HTTP transport handling,
   static/editable HTML/assets, request parsing, internal progress streaming, and
   response forwarding only
-- a published workflow may have multiple hooks; those hooks share the same
-  materialized runtime session and queue namespace so workflow queue priority
-  semantics remain meaningful
+- one workflow may have multiple triggers; those triggers share the source
+  workflow's agents and configured queue namespace
 - output fanout and trace fanout are distinct publication surfaces. Outputs are
   the endpoint consumer result stream. Traces are an explicitly configured
   observability stream filtered before they leave the publication runtime.
@@ -222,9 +223,9 @@ Rules:
 - if a final output is a renderable HTML payload, the `human_http` viewer
   replaces the left output region with a sandboxed iframe containing the
   generated HTML while the trace pane remains visible in the parent viewer.
-- publishing a workflow captures extension requirements but does not export
-  secrets
-- serving or deploying a publication MUST verify required providers, models,
+- building or deploying a workflow captures extension requirements but does not
+  export secrets
+- serving a source HTTP trigger or deploying a package MUST verify required providers, models,
   extensions, and credentials before accepting traffic
 - if the captured provider/model is unavailable, `chariox serve` may prompt for
   a replacement provider/model from the kernel's available catalog and persist
@@ -236,16 +237,17 @@ V1 ingress:
 - HTTP POST: form and API invocation
 - internal HTTP event streaming for viewer progress
 
-Deployment modes:
+Execution and deployment modes:
 
-- localhost: local publication server bound to `127.0.0.1` by default
-- Cloud ingress with local runtime: a public publication ingress forwards
+- local trigger: HTTP gateway bound to `127.0.0.1` by default; schedules and
+  notifications require no HTTP listener
+- public ingress to current kernel: a Chariox ingress forwards
   requests over an outbound publication connector to the user's local
-  `chariox serve` runtime. Workflow execution, provider credentials, provider
+  trigger. Workflow execution, provider credentials, provider
   processes, artifacts, queues, traces, and outputs remain local.
-- hosted container: one Docker container per deployment runs the kernel,
-  publication runtime, gateway, snapshot, requirements, scripts, and assets on a
-  publication runner host.
+- hosted deployment: one Docker container per deployment runs an independent
+  kernel, hidden deployed session, selected triggers, gateway when HTTP is
+  selected, snapshot, requirements, scripts, and assets on a runner host
 
 For v1 Cloud deployment, Scalingo-hosted Chariox Cloud remains the control plane
 only. It owns account auth, deployment records, runner registration, deployment
