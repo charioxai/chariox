@@ -209,6 +209,45 @@ pub fn select_test_subscription(
         }))
 }
 
+/// Applies a trigger's declared filter values to synthetic provider metadata, including dotted
+/// object paths, so the authentic test event traverses ordinary filter matching.
+pub fn apply_test_filter_constraints(metadata: &mut Value, filter: &Value) {
+    let Some(filter) = filter.as_object() else {
+        return;
+    };
+    for (path, expected) in filter {
+        set_dotted_value(metadata, path, expected.clone());
+    }
+}
+
+fn set_dotted_value(target: &mut Value, path: &str, value: Value) {
+    let parts = path
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return;
+    }
+    let mut current = target;
+    for part in &parts[..parts.len() - 1] {
+        if !current.is_object() {
+            *current = Value::Object(Default::default());
+        }
+        current = current
+            .as_object_mut()
+            .expect("object was created above")
+            .entry((*part).to_string())
+            .or_insert_with(|| Value::Object(Default::default()));
+    }
+    if !current.is_object() {
+        *current = Value::Object(Default::default());
+    }
+    current
+        .as_object_mut()
+        .expect("object was created above")
+        .insert(parts[parts.len() - 1].to_string(), value);
+}
+
 pub fn metadata_matches_filter(metadata: &Value, filter: &Value) -> bool {
     let Some(filter) = filter.as_object() else {
         return filter.is_null();
@@ -251,5 +290,16 @@ mod tests {
             &metadata,
             &serde_json::json!({"repository.owner": "other"})
         ));
+    }
+
+    #[test]
+    fn test_filter_constraints_materialize_dotted_paths() {
+        let mut metadata = serde_json::json!({"repository": {"name": "chariox"}});
+        apply_test_filter_constraints(
+            &mut metadata,
+            &serde_json::json!({"repository.owner.login": "charioxai"}),
+        );
+        assert_eq!(metadata["repository"]["name"], "chariox");
+        assert_eq!(metadata["repository"]["owner"]["login"], "charioxai");
     }
 }
