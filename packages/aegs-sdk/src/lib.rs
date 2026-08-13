@@ -22,8 +22,8 @@ pub use provider::{
 pub use publisher::AedsPublisher;
 pub use server::{read_secret, run_from_environment};
 pub use store::{
-    AegsStore, AegsStoreMetrics, AuthorizationRecord, ConnectionRecord, ProviderHookRecord,
-    SubscriptionClaim,
+    AegsStore, AegsStoreMetrics, AuthorizationRecord, ConnectionRecord, CreateAuthorizationRequest,
+    ProviderHookRecord, SubscriptionClaim,
 };
 
 pub const AEGS_PROTOCOL_VERSION: u32 = 2;
